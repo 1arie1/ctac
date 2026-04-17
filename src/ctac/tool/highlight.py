@@ -17,11 +17,12 @@ class TacHighlighter(RegexHighlighter):
         r"(?P<block>(?<=\belse\s)[A-Za-z0-9_]+)",
         r"(?P<function>\b[A-Za-z_][A-Za-z0-9_]*(?=\())",
         r"(?P<boolean>\b(?:true|false)\b)",
+        r"(?P<power>\b(?:2|10)\^\d+(?:[+-]\d+)?\b)",
         r"(?P<number>\b0x[0-9a-fA-F_]+\b)",
         # Decimal numbers: plain digits, or 10k-grouped with 4-digit underscore chunks.
         r"(?P<number>\b(?:\d+|\d{1,4}(?:_\d{4})+)(?:\([A-Za-z0-9_]+\))?\b)",
         r"(?P<symbol>\b[RBIFTS][A-Za-z0-9_]*(?::\d+)?\b)",
-        r"(?P<operator>==|<=|>=|<s|<=s|>s|>=s|&&|\|\||<<|>>s|>>|\+int|-int|\*int|/int|%int|[-+*/%&|^~!=<>])",
+        r"(?P<operator>==|<=|>=|<s|<=s|>s|>=s|&&|\|\||<<|>>s|>>|\+int|-int|\*int|/int|%int|(?<!\d)\^(?!\d)|(?<!\d)\+(?!\d)|(?<!\d)-(?!\d)|[*/%&|~!=<>])",
         r"(?P<comment>\s#.*$)",
         r"^(?P<label>[A-Za-z0-9_]+):\s*$",
     ]
@@ -34,6 +35,7 @@ TAC_THEME = Theme(
         "ctac.control": "bold cyan",
         "ctac.block": "bold bright_green",
         "ctac.function": "bold bright_magenta",
+        "ctac.power": "bold bright_yellow",
         "ctac.boolean": "bold magenta",
         "ctac.number": "yellow",
         "ctac.symbol": "bright_blue",

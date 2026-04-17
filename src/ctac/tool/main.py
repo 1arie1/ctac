@@ -3,6 +3,7 @@ from __future__ import annotations
 import difflib
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
@@ -14,9 +15,10 @@ from rich.text import Text
 from ctac.ast.models import TacFile
 from ctac.diff.match_cfg import compare_matched_blocks, match_cfg_blocks
 from ctac.eval import RunConfig, Value, parse_tac_model_path, run_program, value_to_text
+from ctac.eval.value_format import format_value_plain
 from ctac.graph import Cfg, CfgFilter, CfgStyle
 from ctac.parse import ParseError, parse_path
-from ctac.tac_ast.nodes import AssignExpCmd, AssignHavocCmd
+from ctac.tac_ast.nodes import AssignExpCmd, AssignHavocCmd, JumpCmd, JumpiCmd
 from ctac.tac_ast.pretty import DEFAULT_PRINTERS, configured_printer, pretty_lines
 from ctac.tool.highlight import TAC_THEME, highlight_tac_line
 
@@ -24,10 +26,11 @@ app = typer.Typer(no_args_is_help=True, add_completion=False)
 
 
 def _console(plain: bool) -> Console:
-    force_terminal = None if plain else True
+    # Auto-detect TTY by default so redirected output stays plain (no ANSI styles).
+    force_terminal = False if plain else None
     return Console(
         force_terminal=force_terminal,
-        no_color=plain or bool(os.environ.get("NO_COLOR")),
+        no_color=plain or bool(os.environ.get("NO_COLOR")) or not sys.stdout.isatty(),
         highlight=False,
         theme=TAC_THEME,
     )
@@ -389,6 +392,21 @@ def _strip_meta_suffix(name: str) -> str:
     return _META_SUFFIX_RE.sub("", name)
 
 
+def _pp_terminator_line(block: Any, *, strip_var_suffixes: bool) -> str | None:
+    """Render block terminator from TAC commands, preserving jump guards."""
+    term: JumpCmd | JumpiCmd | None = None
+    for cmd in reversed(getattr(block, "commands", [])):
+        if isinstance(cmd, (JumpCmd, JumpiCmd)):
+            term = cmd
+            break
+    if isinstance(term, JumpiCmd):
+        cond = _strip_meta_suffix(term.condition) if strip_var_suffixes else term.condition
+        return f"if {cond} goto {term.then_target} else {term.else_target}"
+    if isinstance(term, JumpCmd):
+        return f"goto {term.target}"
+    return None
+
+
 def _coerce_value_kind(v: Value, target_kind: str) -> Value:
     if v.kind == target_kind:
         return v
@@ -587,63 +605,7 @@ def _is_sign_extended(u: int, width: int) -> bool:
 
 
 def _format_value_plain(v: Value) -> str:
-    if v.kind == "bool":
-        return "true" if bool(v.data) else "false"
-    if v.kind == "int":
-        n = int(v.data)
-        if -SINGLE_REPR_SMALL_MAX <= n <= SINGLE_REPR_SMALL_MAX:
-            return str(n)
-        p2 = _pow2_family_label(abs(n)) if n >= 0 else None
-        p10 = _pow10_family_label(abs(n)) if n >= 0 else None
-        dec = _format_dec_10k(n)
-        if abs(n) >= 256:
-            s = f"{dec} ({hex(n)})"
-            if p2:
-                s += f" [{p2}]"
-            if p10:
-                s += f" [{p10}]"
-            return s
-        s = dec
-        if p2:
-            s += f" [{p2}]"
-        if p10:
-            s += f" [{p10}]"
-        return s
-
-    # bv
-    u = int(v.data) % MOD_256
-    if _is_zero_extended(u, 32) and u <= SINGLE_REPR_SMALL_MAX:
-        return str(u)
-    p2 = _pow2_family_label(u)
-    p10 = _pow10_family_label(u)
-    # Small zero-extended values: prefer decimal with hex hint.
-    if _is_zero_extended(u, 32):
-        s = f"{_format_dec_10k(u)} ({hex(u)})"
-        if p2:
-            s += f" [{p2}]"
-        if p10:
-            s += f" [{p10}]"
-        return s
-    # Typical sign-extended machine-size values: prefer signed decimal.
-    for w in (8, 16, 32, 64):
-        if _is_sign_extended(u, w):
-            s = _signed_from_width(u, w)
-            if s < 0:
-                if -SINGLE_REPR_SMALL_MAX <= s <= SINGLE_REPR_SMALL_MAX:
-                    return str(s)
-                out = f"{_format_dec_10k(s)} ({hex(u)})"
-                if p2:
-                    out += f" [{p2}]"
-                if p10:
-                    out += f" [{p10}]"
-                return out
-            break
-    out = hex(u)
-    if p2:
-        out += f" [{p2}]"
-    if p10:
-        out += f" [{p10}]"
-    return out
+    return format_value_plain(v)
 
 
 def _format_value_rich(v: Value) -> Text:
@@ -850,6 +812,11 @@ def pp(
         "--strip-var-suffix/--keep-var-suffix",
         help="Strip TAC var meta suffixes like ':1' in printed symbols (default: strip).",
     ),
+    human: bool = typer.Option(
+        True,
+        "--human/--no-human",
+        help="Enable human-oriented pattern rewrites in pretty output (default: on).",
+    ),
     max_blocks: Annotated[
         Optional[int],
         typer.Option("--max-blocks", help="List at most this many blocks in file order."),
@@ -896,6 +863,7 @@ def pp(
     pp_backend = configured_printer(
         printer_name,
         strip_var_suffixes=strip_var_suffixes,
+        human_patterns=human,
     )
 
     if tac.path:
@@ -915,7 +883,10 @@ def pp(
         c.print(highlight_tac_line(f"{b.id}:"))
         for cmd_line in pretty_lines(b.commands, printer=pp_backend):
             c.print(highlight_tac_line(f"  {cmd_line}"))
-        if b.successors:
+        term_line = _pp_terminator_line(b, strip_var_suffixes=strip_var_suffixes)
+        if term_line is not None:
+            c.print(highlight_tac_line(f"  {term_line}"))
+        elif b.successors:
             c.print(highlight_tac_line(f"  goto {', '.join(b.successors)}"))
         else:
             c.print(highlight_tac_line("  stop"))
@@ -959,6 +930,11 @@ def run(
         "--strip-var-suffix/--keep-var-suffix",
         help="Strip TAC var suffixes like ':1' in traced symbols (default: strip).",
     ),
+    human: bool = typer.Option(
+        True,
+        "--human/--no-human",
+        help="Enable human-oriented pattern rewrites in trace pretty-printer (default: on).",
+    ),
     model: Annotated[
         Optional[Path],
         typer.Option(
@@ -1000,7 +976,11 @@ def run(
         raise typer.BadParameter("--fallback requires --model", param_hint="--fallback")
 
     printer_name = _normalize_printer_name(printer)
-    pp_backend = configured_printer(printer_name, strip_var_suffixes=strip_var_suffixes)
+    pp_backend = configured_printer(
+        printer_name,
+        strip_var_suffixes=strip_var_suffixes,
+        human_patterns=human,
+    )
     model_values: dict[str, Value] = {}
     model_warnings: list[str] = []
     fallback_model_values: dict[str, Value] = {}

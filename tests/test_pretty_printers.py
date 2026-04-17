@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ctac.tac_ast import AssignExpCmd, parse_command_line
-from ctac.tac_ast.pretty import DEFAULT_PRINTERS, HumanPrettyPrinter, pretty_lines
+from ctac.tac_ast.pretty import DEFAULT_PRINTERS, HumanPrettyPrinter, configured_printer, pretty_lines
 
 
 def test_default_printers_present() -> None:
@@ -14,7 +14,7 @@ def test_human_pretty_assign() -> None:
     cmd = parse_command_line('AssignExpCmd R10 0x159')
     human = DEFAULT_PRINTERS.get('human')
     lines = pretty_lines([cmd], printer=human)
-    assert lines == ['R10 = 0x159']
+    assert lines == ['R10 = 345']
 
 
 def test_human_skips_annotation_and_label() -> None:
@@ -25,7 +25,7 @@ def test_human_skips_annotation_and_label() -> None:
     ]
     human = DEFAULT_PRINTERS.get('human')
     lines = pretty_lines(cmds, printer=human)
-    assert lines == ['R1 = 0x1']
+    assert lines == ['R1 = 1']
 
 
 def test_human_havoc_and_ops_and_skips_jump() -> None:
@@ -70,7 +70,7 @@ def test_human_ite_rust_style() -> None:
     cmd = parse_command_line("AssignExpCmd R1 Ite(Eq(R2 0x0) 0x1 0x2)")
     human = DEFAULT_PRINTERS.get("human")
     lines = pretty_lines([cmd], printer=human)
-    assert lines == ["R1 = if R2 == 0x0 { 0x1 } else { 0x2 }"]
+    assert lines == ["R1 = if R2 == 0 { 1 } else { 2 }"]
 
 
 def test_raw_printer_preserves_line() -> None:
@@ -84,11 +84,60 @@ def test_human_strips_var_suffixes_by_default() -> None:
     cmd = parse_command_line("AssignExpCmd B1114:1 Eq(R2:25 0x0)")
     human = DEFAULT_PRINTERS.get("human")
     lines = pretty_lines([cmd], printer=human)
-    assert lines == ["B1114 = R2 == 0x0"]
+    assert lines == ["B1114 = R2 == 0"]
 
 
 def test_human_can_keep_var_suffixes() -> None:
     cmd = parse_command_line("AssignExpCmd B1114:1 Eq(R2:25 0x0)")
     human = HumanPrettyPrinter(strip_var_suffixes=False)
     lines = pretty_lines([cmd], printer=human)
-    assert lines == ["B1114:1 = R2:25 == 0x0"]
+    assert lines == ["B1114:1 = R2:25 == 0"]
+
+
+def test_human_pretty_bit_slice_low_mask() -> None:
+    cmd = parse_command_line("AssignExpCmd R1 BWAnd(R349 0xffffffffffffffff)")
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["R1 = R349[..64]"]
+
+
+def test_human_pretty_bit_slice_shift_right() -> None:
+    cmd = parse_command_line("AssignExpCmd R1 ShiftRightLogical(R349 0x40)")
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["R1 = R349[64..]"]
+
+
+def test_human_patterns_can_be_disabled() -> None:
+    cmd = parse_command_line("AssignExpCmd R1 ShiftRightLogical(R349 0x40)")
+    human = configured_printer("human", human_patterns=False)
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["R1 = R349 >> 0x40"]
+
+
+def test_human_number_formatting_can_be_disabled() -> None:
+    cmd = parse_command_line("AssignExpCmd R10 0x159")
+    human = configured_printer("human", human_patterns=False)
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["R10 = 0x159"]
+
+
+def test_human_prefers_pow2_label_for_large_exact_power() -> None:
+    cmd = parse_command_line("AssignExpCmd I1 IntMul(0x10000000000000000(int) R2)")
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["I1 = [2^64] *int R2"]
+
+
+def test_human_prefers_near_pow2_label_within_delta_16() -> None:
+    cmd = parse_command_line("AssignExpCmd I1 IntMul(18446744073709551614(int) R2)")
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["I1 = [2^64-2] *int R2"]
+
+
+def test_human_assume_range_rewrite() -> None:
+    cmd = parse_command_line("AssumeExpCmd LAnd(Ge(R341 0x1) Le(R341 0xffffffffffffffff))")
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["assume R341 in [1, 2^64-1]"]

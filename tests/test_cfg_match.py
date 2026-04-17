@@ -124,7 +124,7 @@ def test_compare_matched_blocks_detects_local_delta() -> None:
     by_pair = {(c.left_id, c.right_id): c for c in comps}
     assert ("B", "Y") in by_pair
     assert by_pair[("B", "Y")].changed
-    assert any("0x2" in ln or "0x9" in ln for ln in by_pair[("B", "Y")].diff_lines)
+    assert any("2" in ln or "9" in ln for ln in by_pair[("B", "Y")].diff_lines)
     assert ("C", "Z") in by_pair
     assert not by_pair[("C", "Z")].changed
 

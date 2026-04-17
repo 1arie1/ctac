@@ -29,3 +29,9 @@ def test_highlight_goto_block_ids_not_as_numbers() -> None:
     assert "ctac.block" in styles
     assert "ctac.number" not in styles
 
+
+def test_highlight_power_token_not_split_by_operator() -> None:
+    styles = _styles("assume R341 in [1, 2^64-1]")
+    assert "ctac.power" in styles
+    assert "ctac.operator" not in styles
+

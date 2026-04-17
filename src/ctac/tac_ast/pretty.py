@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
+from ctac.eval.value_format import format_const_token_human
 from ctac.tac_ast.nodes import (
     AnnotationCmd,
     ApplyExpr,
@@ -127,6 +128,10 @@ class HumanPrettyPrinter(PrettyPrinter):
 
     name = 'human'
 
+    def __init__(self, *, strip_var_suffixes: bool = True, human_patterns: bool = True) -> None:
+        super().__init__(strip_var_suffixes=strip_var_suffixes)
+        self.human_patterns = human_patterns
+
     _binary_infix = {
         "Eq": "==",
         "Lt": "<",
@@ -162,6 +167,56 @@ class HumanPrettyPrinter(PrettyPrinter):
         "BWNot": "~",
     }
 
+    @staticmethod
+    def _const_to_int(expr: TacExpr) -> int | None:
+        if not isinstance(expr, ConstExpr):
+            return None
+        tok = expr.value.strip()
+        if tok.endswith(")") and "(" in tok:
+            lp = tok.rfind("(")
+            rp = tok.rfind(")")
+            if rp == len(tok) - 1 and lp > 0:
+                tok = tok[:lp]
+        tok = tok.replace("_", "")
+        try:
+            if tok.startswith(("0x", "0X")):
+                return int(tok, 16)
+            return int(tok, 10)
+        except ValueError:
+            return None
+
+    def _bit_slice_low_mask(self, node: ApplyExpr) -> str | None:
+        if node.op != "BWAnd" or len(node.args) != 2:
+            return None
+        lhs, rhs = node.args
+        sym: SymExpr | None = None
+        mask: int | None = None
+        if isinstance(lhs, SymExpr):
+            sym = lhs
+            mask = self._const_to_int(rhs)
+        elif isinstance(rhs, SymExpr):
+            sym = rhs
+            mask = self._const_to_int(lhs)
+        if sym is None or mask is None or mask <= 0:
+            return None
+        # Match mask = 2^k - 1; then print Rust-style [..k] (end-exclusive).
+        bit_width = mask.bit_length()
+        if mask != (1 << bit_width) - 1:
+            return None
+        return f"{self._fmt_symbol_token(sym.name)}[..{bit_width}]"
+
+    def _bit_slice_shift_right(self, node: ApplyExpr) -> str | None:
+        if node.op != "ShiftRightLogical" or len(node.args) != 2:
+            return None
+        lhs, rhs = node.args
+        if not isinstance(lhs, SymExpr):
+            return None
+        shift = self._const_to_int(rhs)
+        if shift is None or shift < 0:
+            return None
+        # Rust-style [k..] (start-inclusive, open-ended).
+        return f"{self._fmt_symbol_token(lhs.name)}[{shift}..]"
+
     def _short_fn_name(self, fn: str) -> str:
         # Common builtin in TAC dumps: convert Int -> bv256.
         # Keep it compact in human output.
@@ -169,7 +224,61 @@ class HumanPrettyPrinter(PrettyPrinter):
             return "narrow"
         return fn
 
+    @staticmethod
+    def _unbracket_label(s: str) -> str:
+        t = s.strip()
+        if len(t) >= 3 and t.startswith("[") and t.endswith("]"):
+            return t[1:-1]
+        return t
+
+    def _format_bound_expr(self, expr: TacExpr) -> str:
+        if isinstance(expr, ConstExpr):
+            return self._unbracket_label(format_const_token_human(expr.value))
+        return self._strip_outer_parens_once(self.print_expr(expr))
+
+    def _match_inclusive_range(
+        self, left: TacExpr, right: TacExpr
+    ) -> tuple[str, str, str] | None:
+        """Match (x >= lo) && (x <= hi), order-agnostic across conjunction sides."""
+
+        def _cmp_parts(expr: TacExpr) -> tuple[str, TacExpr, TacExpr] | None:
+            if isinstance(expr, ApplyExpr) and expr.op in {"Ge", "Le"} and len(expr.args) == 2:
+                a, b = expr.args
+                if isinstance(a, SymExpr):
+                    return expr.op, a, b
+            return None
+
+        lcmp = _cmp_parts(left)
+        rcmp = _cmp_parts(right)
+        if lcmp is None or rcmp is None:
+            return None
+        lop, lvar, lbound = lcmp
+        rop, rvar, rbound = rcmp
+        if lvar.name != rvar.name:
+            return None
+        if {lop, rop} != {"Ge", "Le"}:
+            return None
+        lo_expr = lbound if lop == "Ge" else rbound
+        hi_expr = lbound if lop == "Le" else rbound
+        var_txt = self._fmt_symbol_token(lvar.name)
+        lo_txt = self._format_bound_expr(lo_expr)
+        hi_txt = self._format_bound_expr(hi_expr)
+        return var_txt, lo_txt, hi_txt
+
+    def visit_ConstExpr(self, node: ConstExpr) -> str:
+        if not self.human_patterns:
+            return super().visit_ConstExpr(node)
+        return format_const_token_human(node.value)
+
     def visit_ApplyExpr(self, node: ApplyExpr) -> str:
+        if self.human_patterns:
+            masked = self._bit_slice_low_mask(node)
+            if masked is not None:
+                return masked
+            shifted = self._bit_slice_shift_right(node)
+            if shifted is not None:
+                return shifted
+
         op = node.op
         args = [self.print_expr(a) for a in node.args]
 
@@ -194,6 +303,16 @@ class HumanPrettyPrinter(PrettyPrinter):
 
     def visit_AssignHavocCmd(self, node: AssignHavocCmd) -> str:
         return f"{self._fmt_symbol_token(node.lhs)} = havoc"
+
+    def visit_AssumeExpCmd(self, node: AssumeExpCmd) -> str:
+        if self.human_patterns and isinstance(node.condition, ApplyExpr):
+            cond = node.condition
+            if cond.op == "LAnd" and len(cond.args) == 2:
+                rng = self._match_inclusive_range(cond.args[0], cond.args[1])
+                if rng is not None:
+                    var_txt, lo_txt, hi_txt = rng
+                    return f"assume {var_txt} in [{lo_txt}, {hi_txt}]"
+        return super().visit_AssumeExpCmd(node)
 
     def visit_JumpCmd(self, node: JumpCmd) -> str | None:
         # Block terminator is rendered from CFG successors in `pp`.
@@ -242,10 +361,18 @@ class PrinterRegistry:
 DEFAULT_PRINTERS = PrinterRegistry.with_defaults()
 
 
-def configured_printer(name: str, *, strip_var_suffixes: bool = True) -> CommandPrinter:
+def configured_printer(
+    name: str,
+    *,
+    strip_var_suffixes: bool = True,
+    human_patterns: bool = True,
+) -> CommandPrinter:
     """Instantiate a configurable printer by name from defaults registry."""
     if name == "human":
-        return HumanPrettyPrinter(strip_var_suffixes=strip_var_suffixes)
+        return HumanPrettyPrinter(
+            strip_var_suffixes=strip_var_suffixes,
+            human_patterns=human_patterns,
+        )
     if name == "raw":
         # Raw printer intentionally preserves `cmd.raw` exactly.
         return RawPrettyPrinter(strip_var_suffixes=strip_var_suffixes)

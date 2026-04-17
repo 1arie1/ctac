@@ -103,5 +103,5 @@ def test_normalized_diff_hides_pure_renaming() -> None:
 def test_normalized_diff_reports_actual_expression_change() -> None:
     d = unified_semantic_diff(_lines(TAC_A), _lines(TAC_B_CHANGED), a_name="a", b_name="b")
     assert d
-    assert any("0x3" in line or "0x4" in line for line in d)
+    assert any(" 3" in line or " 4" in line for line in d)
 
