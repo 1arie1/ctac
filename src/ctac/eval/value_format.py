@@ -1,6 +1,19 @@
 from __future__ import annotations
 
-from ctac.eval.interpreter import MOD_256, Value
+from typing import TYPE_CHECKING, Any
+
+MOD_256 = 1 << 256
+
+if TYPE_CHECKING:
+    from ctac.eval.interpreter import Value
+
+
+def _mk_value(kind: str, data: Any) -> "Value":
+    # Late import avoids import cycle:
+    # value_format -> interpreter -> tac_ast.pretty -> value_format.
+    from ctac.eval.interpreter import Value
+
+    return Value(kind, data)
 
 SINGLE_REPR_SMALL_MAX = 15
 
@@ -17,9 +30,9 @@ def _typed_const_kind(tag: str) -> str:
 def parse_const_token(text: str) -> Value | None:
     t = text.strip()
     if t == "true":
-        return Value("bool", True)
+        return _mk_value("bool", True)
     if t == "false":
-        return Value("bool", False)
+        return _mk_value("bool", False)
     if t.endswith(")") and "(" in t:
         lp = t.rfind("(")
         rp = t.rfind(")")
@@ -32,14 +45,14 @@ def parse_const_token(text: str) -> Value | None:
                 n = int(base, 10)
             kind = _typed_const_kind(tag)
             if kind == "bv":
-                return Value("bv", n % MOD_256)
+                return _mk_value("bv", n % MOD_256)
             if kind == "bool":
-                return Value("bool", bool(n))
-            return Value("int", n)
+                return _mk_value("bool", bool(n))
+            return _mk_value("int", n)
     if t.startswith(("0x", "0X")):
-        return Value("bv", int(t, 16) % MOD_256)
+        return _mk_value("bv", int(t, 16) % MOD_256)
     try:
-        return Value("int", int(t, 10))
+        return _mk_value("int", int(t, 10))
     except ValueError:
         return None
 

@@ -500,7 +500,8 @@ def run_program(
                 take_then = _as_bool(cv)
                 next_block = cmd.then_target if take_then else cmd.else_target
                 note = next_block
-                shown = rendered or f"if {cmd.condition} goto {cmd.then_target} else {cmd.else_target}"
+                cond_txt = canonical_symbol(cmd.condition, strip_var_suffixes=cfg.strip_var_suffixes)
+                shown = rendered or f"if {cond_txt} goto {cmd.then_target} else {cmd.else_target}"
                 events.append(RunEvent(current, cmd, shown, note=note, color="green"))
                 break
 
