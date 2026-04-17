@@ -81,6 +81,14 @@ Prompt template:
     - `--fallback <path>`
     - `--validate`
 
+## Repo Structure (Key Paths)
+
+- VSCode extension for `.htac` lives under `tools/vscode-tac/`.
+- Extension entrypoint: `tools/vscode-tac/extension.js`.
+- TextMate grammar (syntax highlighting): `tools/vscode-tac/syntaxes/htac.tmLanguage.json`.
+- Language config (brackets/comments/etc): `tools/vscode-tac/language-configuration.json`.
+- Preview theme used for scopes: `tools/vscode-tac/themes/tac-preview-color-theme.json`.
+
 ## Minimal Workflows
 
 - Inspect one program:

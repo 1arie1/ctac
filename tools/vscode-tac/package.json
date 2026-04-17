@@ -4,6 +4,7 @@
   "description": "Syntax highlighting and go-to-definition for human TAC (ctac pp) files.",
   "version": "0.0.1",
   "publisher": "ctac-local",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
   },

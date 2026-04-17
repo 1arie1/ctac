@@ -13,7 +13,7 @@ class TacHighlighter(RegexHighlighter):
         r"(?P<keyword>\b(?:assume|assert|goto|stop|havoc)\b)",
         r"(?P<control>\b(?:if|else)\b)",
         r"(?P<block>(?<=\bgoto\s)[A-Za-z0-9_]+)",
-        r"(?P<block>(?<=,\s)[A-Za-z0-9_]+)",
+        r"(?P<block>(?<=,\s)[A-Za-z0-9_]+(?!\^))",
         r"(?P<block>(?<=\belse\s)[A-Za-z0-9_]+)",
         r"(?P<function>\b[A-Za-z_][A-Za-z0-9_]*(?=\())",
         r"(?P<boolean>\b(?:true|false)\b)",
