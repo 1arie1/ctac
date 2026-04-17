@@ -332,9 +332,9 @@ def bb_diff_cmd(
 
 def _normalize_cfg_style(raw: str) -> CfgStyle:
     s = raw.strip().lower()
-    if s in ("goto", "edges"):
+    if s in ("goto", "edges", "dot"):
         return s  # type: ignore[return-value]
-    raise typer.BadParameter("use 'goto' or 'edges'", param_hint="--style")
+    raise typer.BadParameter("use 'goto', 'edges', or 'dot'", param_hint="--style")
 
 
 def _normalize_printer_name(raw: str) -> str:
@@ -687,7 +687,10 @@ def cfg(
         str,
         typer.Option(
             "--style",
-            help="goto: block label + goto targets (default). edges: one 'src -> dst' line per edge.",
+            help=(
+                "goto: block label + goto targets (default). edges: one 'src -> dst' line per edge. "
+                "dot: Graphviz digraph (block id labels; asserts red, clog pastel, source tooltips)."
+            ),
         ),
     ] = "goto",
     max_blocks: Annotated[
@@ -784,16 +787,31 @@ def cfg(
             c.print(f"[red]cfg filter error:[/red] {e}")
         raise typer.Exit(2) from e
 
-    if tac.path:
-        c.print(f"# path: {tac.path}")
-    for w in warnings:
-        c.print(f"# {w}")
-    if flt.any_active():
-        c.print(f"# filter: {len(filtered_cfg.blocks)} of {len(tac.program.blocks)} block(s)")
-
     st = _normalize_cfg_style(style)
-    for line in filtered_cfg.iter_lines(style=st, max_blocks=max_blocks, check_refs=check_refs):
-        c.print(line)
+    _pfx = "//" if st == "dot" else "#"
+    if tac.path:
+        if st == "dot":
+            c.print(f"{_pfx} path: {tac.path}", markup=False)
+        else:
+            c.print(f"{_pfx} path: {tac.path}")
+    for w in warnings:
+        if st == "dot":
+            c.print(f"{_pfx} {w}", markup=False)
+        else:
+            c.print(f"{_pfx} {w}")
+    if flt.any_active():
+        msg = f"{_pfx} filter: {len(filtered_cfg.blocks)} of {len(tac.program.blocks)} block(s)"
+        if st == "dot":
+            c.print(msg, markup=False)
+        else:
+            c.print(msg)
+
+    if st == "dot":
+        for line in filtered_cfg.iter_dot(tac.metas, max_blocks=max_blocks, check_refs=check_refs):
+            c.print(line, markup=False)
+    else:
+        for line in filtered_cfg.iter_lines(style=st, max_blocks=max_blocks, check_refs=check_refs):
+            c.print(line)
 
 
 @app.command()
