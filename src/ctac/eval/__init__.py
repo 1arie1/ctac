@@ -1,11 +1,10 @@
 """Program interpreter and evaluation helpers."""
 
+from ctac.eval.types import HavocMode, Value
 from ctac.eval.interpreter import (
-    HavocMode,
     RunConfig,
     RunEvent,
     RunResult,
-    Value,
     run_program,
     value_to_text,
 )

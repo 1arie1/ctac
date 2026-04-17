@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 from ctac.ast.models import TacBlock, TacProgram
+from ctac.eval.constants import MOD_256, SIGN_BIT_256
+from ctac.eval.types import HavocMode, Value, ValueKind
 from ctac.tac_ast.nodes import (
     AnnotationCmd,
     ApplyExpr,
@@ -26,17 +28,7 @@ from ctac.tac_ast.nodes import (
     TacExpr,
 )
 
-HavocMode = Literal["zero", "random", "ask"]
-ValueKind = Literal["bv", "int", "bool"]
-MOD_256 = 1 << 256
-SIGN_BIT_256 = 1 << 255
 _META_SUFFIX_RE = re.compile(r":\d+$")
-
-
-@dataclass(frozen=True)
-class Value:
-    kind: ValueKind
-    data: int | bool
 
 
 @dataclass

@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ctac.eval.interpreter import MOD_256, Value
+from ctac.eval.constants import MOD_256
+from ctac.eval.types import Value
 
 
 @dataclass(frozen=True)

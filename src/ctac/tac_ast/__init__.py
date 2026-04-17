@@ -24,17 +24,28 @@ from ctac.tac_ast.nodes import (
 )
 from ctac.tac_ast.parse_cmd import parse_command_line
 from ctac.tac_ast.parse_expr import parse_expr, parse_expr_safe
-from ctac.tac_ast.pretty import (
-    DEFAULT_PRINTERS,
-    CommandPrinter,
-    HumanPrettyPrinter,
-    PrettyPrinter,
-    PrinterRegistry,
-    RawPrettyPrinter,
-    configured_printer,
-    pretty_lines,
-)
 from ctac.tac_ast.visitor import TacVisitor
+
+_PRETTY_EXPORTS = {
+    "DEFAULT_PRINTERS",
+    "CommandPrinter",
+    "HumanPrettyPrinter",
+    "PrettyPrinter",
+    "PrinterRegistry",
+    "RawPrettyPrinter",
+    "configured_printer",
+    "pretty_lines",
+}
+
+
+def __getattr__(name: str):
+    # Keep ctac.tac_ast public API stable without eagerly importing pretty.py.
+    # Eager import creates a cycle through eval/value_format during interpreter imports.
+    if name in _PRETTY_EXPORTS:
+        from ctac.tac_ast import pretty as _pretty
+
+        return getattr(_pretty, name)
+    raise AttributeError(name)
 
 __all__ = [
     "AnnotationCmd",
