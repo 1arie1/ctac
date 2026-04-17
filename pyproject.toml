@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.21.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ctac"
+version = "0.1.0"
+description = "Certora TAC dump parser and tools"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Arie" },
+]
+dependencies = [
+    "rich>=13.0",
+    "typer>=0.12.0",
+    "networkx>=3.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6.0",
+]
+
+[project.scripts]
+ctac = "ctac.tool.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ctac"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]

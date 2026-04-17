@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+from ctac.tac_ast import AssignExpCmd, parse_command_line
+from ctac.tac_ast.pretty import DEFAULT_PRINTERS, HumanPrettyPrinter, pretty_lines
+
+
+def test_default_printers_present() -> None:
+    names = DEFAULT_PRINTERS.names()
+    assert 'human' in names
+    assert 'raw' in names
+
+
+def test_human_pretty_assign() -> None:
+    cmd = parse_command_line('AssignExpCmd R10 0x159')
+    human = DEFAULT_PRINTERS.get('human')
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ['R10 = 0x159']
+
+
+def test_human_skips_annotation_and_label() -> None:
+    cmds = [
+        parse_command_line('AnnotationCmd JSON{"key":"x"}'),
+        parse_command_line('LabelCmd "hello"'),
+        AssignExpCmd(raw='AssignExpCmd R1 0x1', lhs='R1', rhs=parse_command_line('AssignExpCmd R0 0x1').rhs),
+    ]
+    human = DEFAULT_PRINTERS.get('human')
+    lines = pretty_lines(cmds, printer=human)
+    assert lines == ['R1 = 0x1']
+
+
+def test_human_havoc_and_ops_and_skips_jump() -> None:
+    cmds = [
+        parse_command_line('AssignHavocCmd:18 R1588'),
+        parse_command_line('AssumeExpCmd LOr(LNot(B1777) Eq(R0 0x1))'),
+        parse_command_line('JumpiCmd:1 T F C'),
+        parse_command_line('JumpCmd Z'),
+    ]
+    human = DEFAULT_PRINTERS.get('human')
+    lines = pretty_lines(cmds, printer=human)
+    assert lines[0] == 'R1588 = havoc'
+    assert lines[1].startswith('assume ')
+    assert '||' in lines[1]
+    assert '==' in lines[1]
+    assert '!' in lines[1]
+    assert len(lines) == 2
+
+
+def test_human_distinguishes_mul_and_intmul() -> None:
+    cmds = [
+        parse_command_line("AssignExpCmd R1 Mul(R2 R3)"),
+        parse_command_line("AssignExpCmd I1 IntMul(R2 R3)"),
+    ]
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines(cmds, printer=human)
+    assert lines[0] == "R1 = R2 * R3"
+    assert lines[1] == "I1 = R2 *int R3"
+
+
+def test_human_shortens_safe_math_narrow_name() -> None:
+    cmd = parse_command_line(
+        "AssignExpCmd R1 Apply(safe_math_narrow_bv256:bif IntAdd(0x1 R2))"
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines[0].startswith("R1 = narrow(")
+    assert "safe_math_narrow_bv256" not in lines[0]
+
+
+def test_human_ite_rust_style() -> None:
+    cmd = parse_command_line("AssignExpCmd R1 Ite(Eq(R2 0x0) 0x1 0x2)")
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["R1 = if R2 == 0x0 { 0x1 } else { 0x2 }"]
+
+
+def test_raw_printer_preserves_line() -> None:
+    cmd = parse_command_line('JumpiCmd:1 B C cond')
+    rawp = DEFAULT_PRINTERS.get('raw')
+    lines = pretty_lines([cmd], printer=rawp)
+    assert lines == ['JumpiCmd:1 B C cond']
+
+
+def test_human_strips_var_suffixes_by_default() -> None:
+    cmd = parse_command_line("AssignExpCmd B1114:1 Eq(R2:25 0x0)")
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["B1114 = R2 == 0x0"]
+
+
+def test_human_can_keep_var_suffixes() -> None:
+    cmd = parse_command_line("AssignExpCmd B1114:1 Eq(R2:25 0x0)")
+    human = HumanPrettyPrinter(strip_var_suffixes=False)
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["B1114:1 = R2:25 == 0x0"]
