@@ -6,6 +6,8 @@ Use `ctac` in plain mode unless color is required.
 
 - Prefer `--plain` for deterministic output.
 - First step on unknown file: `ctac stats <file> --plain`.
+- `ctac stats` now includes command-kind counts and top blocks by default.
+- Use `ctac stats <file> --plain --top-blocks 0 --no-by-cmd-kind` for compact stats.
 - If parse fails with `Missing line 'Program {'`, input is not a full `.tac` file.
 - For focused views, use `pp`/`cfg` with `--from` and `--to`.
 - For cross-build comparison, use `cfg-match` then `bb-diff`.
@@ -35,7 +37,8 @@ Prompt template:
 ## Core Commands
 
 - `ctac stats <file> --plain`
-  - Cheap sanity: blocks, commands, metas.
+  - Cheap sanity: blocks, commands, metas (+ command kinds + top blocks by default).
+  - Compact mode: `--top-blocks 0 --no-by-cmd-kind`.
 
 - `ctac pp <file> --plain`
   - Humanized TAC as goto program.

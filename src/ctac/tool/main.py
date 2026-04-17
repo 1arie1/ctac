@@ -4,6 +4,7 @@ import difflib
 import os
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
@@ -51,7 +52,13 @@ def _truncate_diff_lines(lines: list[str], max_lines: int) -> tuple[list[str], i
     return keep, omitted
 
 
-def _print_tac_stats(tac: TacFile, *, plain: bool) -> None:
+def _print_tac_stats(
+    tac: TacFile,
+    *,
+    plain: bool,
+    by_cmd_kind: bool = False,
+    top_blocks: int = 0,
+) -> None:
     c = _console(plain)
     n_blocks = len(tac.program.blocks)
     n_cmds = sum(len(b.commands) for b in tac.program.blocks)
@@ -71,8 +78,45 @@ def _print_tac_stats(tac: TacFile, *, plain: bool) -> None:
         c.print(f"[bold]commands[/bold] {n_cmds}")
         c.print(f"[bold]metas keys[/bold] {n_meta_keys}")
 
+    if by_cmd_kind:
+        cmd_kinds = Counter(type(cmd).__name__ for b in tac.program.blocks for cmd in b.commands)
+        if plain:
+            c.print("command_kinds:")
+            for name, cnt in sorted(cmd_kinds.items(), key=lambda kv: (-kv[1], kv[0])):
+                c.print(f"  {name}: {cnt}")
+        else:
+            c.print("[bold]command kinds[/bold]")
+            t = Table(expand=False)
+            t.add_column("kind", no_wrap=True)
+            t.add_column("count", justify="right", no_wrap=True)
+            for name, cnt in sorted(cmd_kinds.items(), key=lambda kv: (-kv[1], kv[0])):
+                t.add_row(name, str(cnt))
+            c.print(t)
 
-def _run_stats(path: Path, *, plain: bool) -> None:
+    if top_blocks > 0:
+        ranked = sorted(tac.program.blocks, key=lambda b: len(b.commands), reverse=True)[:top_blocks]
+        if plain:
+            c.print("top_blocks_by_command_count:")
+            for b in ranked:
+                c.print(f"  {b.id}: commands={len(b.commands)} succ={len(b.successors)}")
+        else:
+            c.print(f"[bold]top {len(ranked)} blocks by command count[/bold]")
+            t = Table(expand=False)
+            t.add_column("block", no_wrap=True)
+            t.add_column("commands", justify="right", no_wrap=True)
+            t.add_column("successors", justify="right", no_wrap=True)
+            for b in ranked:
+                t.add_row(b.id, str(len(b.commands)), str(len(b.successors)))
+            c.print(t)
+
+
+def _run_stats(
+    path: Path,
+    *,
+    plain: bool,
+    by_cmd_kind: bool = False,
+    top_blocks: int = 0,
+) -> None:
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
@@ -83,7 +127,12 @@ def _run_stats(path: Path, *, plain: bool) -> None:
         else:
             c.print(f"[red]parse error:[/red] {e}")
         raise typer.Exit(1) from e
-    _print_tac_stats(tac, plain=plain)
+    _print_tac_stats(
+        tac,
+        plain=plain,
+        by_cmd_kind=by_cmd_kind,
+        top_blocks=top_blocks,
+    )
 
 
 _PATH_KW = dict(exists=True, dir_okay=False, readable=True)
@@ -94,18 +143,40 @@ _PLAIN_HELP = "Plain text only (no Rich styling); also set CTAC_PLAIN=1 or NO_CO
 def stats(
     path: Path = typer.Argument(..., **_PATH_KW),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
+    by_cmd_kind: bool = typer.Option(
+        True,
+        "--by-cmd-kind/--no-by-cmd-kind",
+        help="Show counts by parsed TAC command class.",
+    ),
+    top_blocks: int = typer.Option(
+        10,
+        "--top-blocks",
+        min=0,
+        help="Show top N blocks by command count (0 disables). Default: 10.",
+    ),
 ) -> None:
     """Print summary statistics for a .tac file (blocks, commands, metas, symbol table size)."""
-    _run_stats(path, plain=plain)
+    _run_stats(path, plain=plain, by_cmd_kind=by_cmd_kind, top_blocks=top_blocks)
 
 
 @app.command()
 def parse(
     path: Path = typer.Argument(..., **_PATH_KW),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
+    by_cmd_kind: bool = typer.Option(
+        True,
+        "--by-cmd-kind/--no-by-cmd-kind",
+        help="Show counts by parsed TAC command class.",
+    ),
+    top_blocks: int = typer.Option(
+        10,
+        "--top-blocks",
+        min=0,
+        help="Show top N blocks by command count (0 disables). Default: 10.",
+    ),
 ) -> None:
     """Parse a .tac file and print basic statistics (same output as ``ctac stats``)."""
-    _run_stats(path, plain=plain)
+    _run_stats(path, plain=plain, by_cmd_kind=by_cmd_kind, top_blocks=top_blocks)
 
 
 @app.command("cfg-match")

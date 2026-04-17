@@ -19,7 +19,9 @@ Then run tools with `.venv/bin/ctac` or `source .venv/bin/activate`.
 
 ```bash
 ctac stats path/to/file.tac
-# same numbers:
+# compact/legacy-style stats only:
+ctac stats path/to/file.tac --top-blocks 0 --no-by-cmd-kind
+# parse command prints the same stats payload:
 ctac parse path/to/file.tac
 
 # control-flow graph (goto-style text, default) 🗺️
