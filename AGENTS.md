@@ -9,6 +9,28 @@ Use `ctac` in plain mode unless color is required.
 - If parse fails with `Missing line 'Program {'`, input is not a full `.tac` file.
 - For focused views, use `pp`/`cfg` with `--from` and `--to`.
 - For cross-build comparison, use `cfg-match` then `bb-diff`.
+- For CFG reasoning, prefer structured text (edges + block summaries), not images.
+
+## CFG Communication Format (Agent-First)
+
+- Do not rely on rendered CFG pictures.
+- Provide:
+  - entry block id
+  - relevant node ids
+  - edge list (`src -> dst`)
+  - block summaries (key `assume`/`assert`/branch condition + critical assignments)
+  - target question (e.g. assert reachability, mismatch cause)
+- Keep scope sliced (`--from/--to`) before analysis.
+
+Minimal extraction:
+
+1. `ctac cfg f.tac --plain --style edges --from <a> --to <b>`
+2. `ctac pp f.tac --plain --from <a> --to <b>`
+3. Use outputs as structured context for reasoning.
+
+Prompt template:
+
+- "Given this edge list and block summaries, determine whether `<assert_block>` is reachable and identify the branch/assume that causes divergence."
 
 ## Core Commands
 
