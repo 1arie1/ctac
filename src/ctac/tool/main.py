@@ -18,6 +18,7 @@ from ctac.graph import Cfg, CfgFilter, CfgStyle
 from ctac.parse import ParseError, parse_path
 from ctac.tac_ast.nodes import AssignExpCmd, AssignHavocCmd
 from ctac.tac_ast.pretty import DEFAULT_PRINTERS, configured_printer, pretty_lines
+from ctac.tool.highlight import TAC_THEME, highlight_tac_line
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -28,6 +29,7 @@ def _console(plain: bool) -> Console:
         force_terminal=force_terminal,
         no_color=plain or bool(os.environ.get("NO_COLOR")),
         highlight=False,
+        theme=TAC_THEME,
     )
 
 
@@ -910,13 +912,13 @@ def pp(
             rest = len(filtered_cfg.blocks) - shown
             c.print(f"# ... truncated: {rest} more block(s) not listed (--max-blocks {max_blocks})")
             break
-        c.print(f"{b.id}:")
+        c.print(highlight_tac_line(f"{b.id}:"))
         for cmd_line in pretty_lines(b.commands, printer=pp_backend):
-            c.print(f"  {cmd_line}")
+            c.print(highlight_tac_line(f"  {cmd_line}"))
         if b.successors:
-            c.print(f"  goto {', '.join(b.successors)}")
+            c.print(highlight_tac_line(f"  goto {', '.join(b.successors)}"))
         else:
-            c.print("  stop")
+            c.print(highlight_tac_line("  stop"))
         c.print("")
         shown += 1
 
@@ -1183,7 +1185,7 @@ def run(
                 block_table.add_row(Text(src_prefix, style="grey50"), Text(""))
 
             left_style = ev.color if ev.color else None
-            left = Text(ev.rendered or "", style=left_style)
+            left = highlight_tac_line(ev.rendered or "", base_style=left_style)
 
             if ev.value is not None:
                 right = _format_value_rich(ev.value)
