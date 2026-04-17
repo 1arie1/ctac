@@ -141,3 +141,33 @@ def test_human_assume_range_rewrite() -> None:
     human = DEFAULT_PRINTERS.get("human")
     lines = pretty_lines([cmd], printer=human)
     assert lines == ["assume R341 in [1, 2^64-1]"]
+
+
+def test_human_renders_cex_print_value_annotation() -> None:
+    cmd = parse_command_line(
+        'AnnotationCmd JSON{"key":{"name":"snippet.cmd"},"value":{"#class":"vc.data.SnippetCmd.CvlrSnippetCmd.CexPrintValues","displayMessage":"user_borrow_amount","symbols":[{"namePrefix":"R1289:7"}]}}'
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ['clog("user_borrow_amount", R1289)']
+
+
+def test_human_renders_cex_print_128_annotation() -> None:
+    cmd = parse_command_line(
+        'AnnotationCmd JSON{"key":{"name":"snippet.cmd"},"value":{"#class":"vc.data.SnippetCmd.CvlrSnippetCmd.CexPrint128BitsValue","displayMessage":"amount","low":{"namePrefix":"R1:2"},"high":{"namePrefix":"R2:9"},"signed":true}}'
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ['clog("amount", "R1..R2 (signed)", R1, R2)']
+
+
+def test_human_renders_scope_annotations_as_calls() -> None:
+    start = parse_command_line(
+        'AnnotationCmd JSON{"key":{"name":"snippet.cmd"},"value":{"#class":"vc.data.SnippetCmd.CvlrSnippetCmd.ScopeStart","scopeName":"pre"}}'
+    )
+    end = parse_command_line(
+        'AnnotationCmd JSON{"key":{"name":"snippet.cmd"},"value":{"#class":"vc.data.SnippetCmd.CvlrSnippetCmd.ScopeEnd","scopeName":"pre"}}'
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([start, end], printer=human)
+    assert lines == ['clog_scope_start("pre")', 'clog_scope_end("pre")']

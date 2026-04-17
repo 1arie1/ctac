@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -313,6 +314,82 @@ class HumanPrettyPrinter(PrettyPrinter):
                     var_txt, lo_txt, hi_txt = rng
                     return f"assume {var_txt} in [{lo_txt}, {hi_txt}]"
         return super().visit_AssumeExpCmd(node)
+
+    def visit_AnnotationCmd(self, node: AnnotationCmd) -> str | None:
+        payload = node.payload.strip()
+        if not payload.startswith("JSON"):
+            return None
+        try:
+            obj = json.loads(payload[4:])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(obj, dict):
+            return None
+        key = obj.get("key")
+        val = obj.get("value")
+        if not isinstance(key, dict) or not isinstance(val, dict):
+            return None
+        if key.get("name") != "snippet.cmd":
+            return None
+        klass = val.get("#class")
+        if not isinstance(klass, str):
+            return None
+
+        if klass.endswith(".ScopeStart"):
+            scope = val.get("scopeName")
+            if isinstance(scope, str):
+                return f"clog_scope_start({json.dumps(scope)})"
+            return None
+
+        if klass.endswith(".ScopeEnd"):
+            scope = val.get("scopeName")
+            if isinstance(scope, str):
+                return f"clog_scope_end({json.dumps(scope)})"
+            return "clog_scope_end()"
+
+        if klass.endswith(".CexPrintValues"):
+            msg = val.get("displayMessage")
+            syms = val.get("symbols")
+            if not isinstance(msg, str) or not isinstance(syms, list) or not syms:
+                return None
+            regs: list[str] = []
+            for ent in syms:
+                if not isinstance(ent, dict):
+                    continue
+                reg = ent.get("namePrefix")
+                if isinstance(reg, str):
+                    regs.append(self._fmt_symbol_token(reg))
+            if not regs:
+                return None
+            msg_q = json.dumps(msg)
+            reg_args = ", ".join(regs)
+            return f"clog({msg_q}, {reg_args})"
+
+        if klass.endswith(".CexPrint128BitsValue"):
+            msg = val.get("displayMessage")
+            low = val.get("low")
+            high = val.get("high")
+            signed = bool(val.get("signed", False))
+            if not isinstance(msg, str) or not isinstance(low, dict) or not isinstance(high, dict):
+                return None
+            low_sym = low.get("namePrefix")
+            high_sym = high.get("namePrefix")
+            if not isinstance(low_sym, str) or not isinstance(high_sym, str):
+                return None
+            msg_q = json.dumps(msg)
+            low_txt = self._fmt_symbol_token(low_sym)
+            high_txt = self._fmt_symbol_token(high_sym)
+            if signed:
+                return f'clog({msg_q}, "{low_txt}..{high_txt} (signed)", {low_txt}, {high_txt})'
+            return f'clog({msg_q}, "{low_txt}..{high_txt}", {low_txt}, {high_txt})'
+
+        if klass.endswith(".CexPrintTag"):
+            msg = val.get("displayMessage")
+            if isinstance(msg, str):
+                return f"clog({json.dumps(msg)})"
+            return None
+
+        return None
 
     def visit_JumpCmd(self, node: JumpCmd) -> str | None:
         # Block terminator is rendered from CFG successors in `pp`.

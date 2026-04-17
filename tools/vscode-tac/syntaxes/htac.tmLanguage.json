@@ -6,6 +6,9 @@
       "include": "#comments"
     },
     {
+      "include": "#strings"
+    },
+    {
       "include": "#control"
     },
     {
@@ -28,6 +31,31 @@
     }
   ],
   "repository": {
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.htac",
+          "begin": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.htac"
+            }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.htac"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.htac",
+              "match": "\\\\(?:[\"\\\\/bfnrt]|u[0-9a-fA-F]{4})"
+            }
+          ]
+        }
+      ]
+    },
     "comments": {
       "patterns": [
         {

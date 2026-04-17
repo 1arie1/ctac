@@ -61,7 +61,17 @@
         "string.quoted.double.htac"
       ],
       "settings": {
-        "foreground": "#A5D6FF"
+        "foreground": "#FFD1DC"
+      }
+    },
+    {
+      "scope": [
+        "punctuation.definition.string.begin.htac",
+        "punctuation.definition.string.end.htac"
+      ],
+      "settings": {
+        "foreground": "#FF9BB0",
+        "fontStyle": "bold"
       }
     },
     {
