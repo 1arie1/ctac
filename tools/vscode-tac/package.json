@@ -1,0 +1,46 @@
+{
+  "name": "ctac-vscode",
+  "displayName": "CTAC TAC Tools",
+  "description": "Syntax highlighting and go-to-definition for human TAC (ctac pp) files.",
+  "version": "0.0.1",
+  "publisher": "ctac-local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:htac"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "htac",
+        "aliases": [
+          "Human TAC",
+          "htac"
+        ],
+        "extensions": [
+          ".htac"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "htac",
+        "scopeName": "source.htac",
+        "path": "./syntaxes/htac.tmLanguage.json"
+      }
+    ],
+    "themes": [
+      {
+        "label": "TAC Preview Dark",
+        "uiTheme": "vs-dark",
+        "path": "./themes/tac-preview-color-theme.json"
+      }
+    ]
+  }
+}

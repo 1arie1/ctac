@@ -1,0 +1,77 @@
+{
+  "name": "TAC Preview Dark",
+  "type": "dark",
+  "colors": {},
+  "tokenColors": [
+    {
+      "scope": [
+        "keyword.control.htac"
+      ],
+      "settings": {
+        "foreground": "#4FC1FF",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "entity.name.label.block.htac"
+      ],
+      "settings": {
+        "foreground": "#7EE787",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "variable.other.register.htac"
+      ],
+      "settings": {
+        "foreground": "#79C0FF"
+      }
+    },
+    {
+      "scope": [
+        "constant.numeric.power.htac"
+      ],
+      "settings": {
+        "foreground": "#FFD166",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
+        "constant.numeric.hex.htac",
+        "constant.numeric.decimal.htac",
+        "constant.language.boolean.htac"
+      ],
+      "settings": {
+        "foreground": "#F2CC60"
+      }
+    },
+    {
+      "scope": [
+        "keyword.operator.htac"
+      ],
+      "settings": {
+        "foreground": "#C9D1D9"
+      }
+    },
+    {
+      "scope": [
+        "string.quoted.double.htac"
+      ],
+      "settings": {
+        "foreground": "#A5D6FF"
+      }
+    },
+    {
+      "scope": [
+        "comment.line.number-sign.htac"
+      ],
+      "settings": {
+        "foreground": "#8B949E",
+        "fontStyle": "italic"
+      }
+    }
+  ]
+}

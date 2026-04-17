@@ -1,0 +1,116 @@
+{
+  "name": "Human TAC",
+  "scopeName": "source.htac",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#control"
+    },
+    {
+      "include": "#blocks"
+    },
+    {
+      "include": "#power"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#symbols"
+    },
+    {
+      "include": "#functions"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.number-sign.htac",
+          "match": "#.*$"
+        }
+      ]
+    },
+    "control": {
+      "patterns": [
+        {
+          "name": "keyword.control.htac",
+          "match": "\\b(?:assume|assert|goto|stop|if|else|in|havoc)\\b"
+        }
+      ]
+    },
+    "blocks": {
+      "patterns": [
+        {
+          "name": "entity.name.label.block.htac",
+          "match": "^[A-Za-z0-9_]+(?=:\\s*$)"
+        },
+        {
+          "name": "entity.name.label.block.htac",
+          "match": "(?<=\\bgoto\\s)[A-Za-z0-9_]+"
+        },
+        {
+          "name": "entity.name.label.block.htac",
+          "match": "(?<=,\\s)[A-Za-z0-9_]+"
+        },
+        {
+          "name": "entity.name.label.block.htac",
+          "match": "(?<=\\belse\\s)[A-Za-z0-9_]+"
+        }
+      ]
+    },
+    "power": {
+      "patterns": [
+        {
+          "name": "constant.numeric.power.htac",
+          "match": "\\b(?:2|10)\\^\\d+(?:[+-]\\d+)?\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.htac",
+          "match": "\\b0x[0-9a-fA-F_]+\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.htac",
+          "match": "\\b(?:\\d+|\\d{1,4}(?:_\\d{4})+)\\b"
+        },
+        {
+          "name": "constant.language.boolean.htac",
+          "match": "\\b(?:true|false)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.htac",
+          "match": "==|<=|>=|<s|<=s|>s|>=s|&&|\\|\\||<<|>>s|>>|\\+int|-int|\\*int|/int|%int|[+\\-*/%&|^~!=<>]"
+        }
+      ]
+    },
+    "symbols": {
+      "patterns": [
+        {
+          "name": "variable.other.register.htac",
+          "match": "\\b[RBIFTS][A-Za-z0-9_]*(?::\\d+)?\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.htac",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\()"
+        }
+      ]
+    }
+  }
+}
