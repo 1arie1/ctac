@@ -10,6 +10,7 @@ import_module("ctac.tool.commands_cfg_pp_search")
 import_module("ctac.tool.commands_df")
 import_module("ctac.tool.commands_diff")
 import_module("ctac.tool.commands_run")
+import_module("ctac.tool.commands_smt")
 import_module("ctac.tool.commands_stats")
 
 __all__ = [

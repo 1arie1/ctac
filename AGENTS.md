@@ -108,6 +108,12 @@ Prompt template:
     - `--model <dir>` resolves `<dir>/Reports/ctpp_<rule>-Assertions.txt` for the selected TAC rule.
     - Non-`Assertions` suffix models are ignored with an input warning.
 
+- `ctac smt <file> --plain`
+  - Emit SMT-LIB VC (default encoding: `sea_vc`).
+  - Alternative encoding: `--encoding vc-path-predicates` (QF_BV path-predicate style).
+  - Current preconditions: loop-free TAC, exactly one `AssertCmd`, and assert must be last in its block.
+  - VC semantics: SAT iff assertion-failure state is reachable.
+
 ## Repo Structure (Key Paths)
 
 - VSCode extension for `.htac` lives under `tools/vscode-tac/`.

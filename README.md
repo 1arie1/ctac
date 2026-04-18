@@ -83,6 +83,17 @@ ctac run file.tac --model primary.txt --fallback secondary.txt
 # validate computed assignments against the model
 ctac run file.tac --model path/to/Assertions.txt --validate
 
+# SMT VC dump (requires loop-free TAC with exactly one AssertCmd, last in its block)
+# semantics: SAT iff failing assertion is reachable
+ctac smt file.tac --plain
+# default encoding is sea_vc (simplified DSA+reachability, QF_NIA/QF_UFNIA)
+# semantics: static assignments as top-level equalities, dynamic defs as ITEs
+ctac smt file.tac --encoding sea_vc
+# alternative path-predicate encoding (QF_BV)
+ctac smt file.tac --encoding vc-path-predicates
+# write SMT-LIB to file
+ctac smt file.tac --output out.smt2
+
 # coarse CFG matching (weighted structure + source/function/snippet signals) 🛰️
 ctac cfg-match a.tac b.tac
 # tighten/relax accepted matches

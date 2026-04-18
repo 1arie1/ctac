@@ -20,6 +20,7 @@ Key use-cases:
 - Cross-build drift: `ctac cfg-match` then `ctac bb-diff`
 - Concrete replay/model checks: `ctac run --model ... --trace --plain`
 - Pattern mining in commands: `ctac search <file> <pattern> --plain`
+- SMT VC dump (assert-failure query): `ctac smt <file> --plain`
 
 Why better than plain text tools:
 - Parses TAC structure (blocks, commands, CFG), so filters are semantic.
@@ -85,6 +86,14 @@ Use for concrete execution/replay.
 Model replay: `--model ... --trace --plain`.
 Validation mode: add `--validate`.
 Use `--fallback` only with `--model`.
+""",
+    "smt": """ctac smt --agent
+
+Use for SMT-LIB VC generation from loop-free TAC.
+Preconditions: exactly one `AssertCmd`, and it must be last in its block.
+Current semantics: SAT iff a failing assertion is reachable.
+Default encoding: `sea_vc`; set with `--encoding`.
+Alternative: `vc-path-predicates` for the QF_BV path-predicate encoding.
 """,
 }
 
