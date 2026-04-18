@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from ctac.analysis.expr_walk import command_uses
+from ctac.analysis.expr_walk import command_uses, command_weak_uses
 from ctac.analysis.model import BlockDefUse, DefUseResult, DefinitionSite, UseSite
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import AssignExpCmd, AssignHavocCmd, JumpCmd, JumpiCmd
@@ -19,6 +19,7 @@ def extract_def_use(program: TacProgram, *, strip_var_suffixes: bool = True) -> 
     by_block: dict[str, BlockDefUse] = {}
     defs_by_symbol: dict[str, list[DefinitionSite]] = defaultdict(list)
     uses_by_symbol: dict[str, list[UseSite]] = defaultdict(list)
+    weak_uses_by_symbol: dict[str, list[UseSite]] = defaultdict(list)
     symbol_to_id: dict[str, int] = {}
     id_to_symbol: list[str] = []
     definitions: list[DefinitionSite] = []
@@ -38,6 +39,7 @@ def extract_def_use(program: TacProgram, *, strip_var_suffixes: bool = True) -> 
         kills_in_block: set[str] = set()
         definition_sites: list[DefinitionSite] = []
         use_sites: list[UseSite] = []
+        weak_use_sites: list[UseSite] = []
 
         seen_static = False
         seen_dynamic = False
@@ -62,6 +64,20 @@ def extract_def_use(program: TacProgram, *, strip_var_suffixes: bool = True) -> 
                 uses_by_symbol[sym].append(us)
                 if sym not in uses_in_block:
                     uses_in_block.append(sym)
+
+            for sym in command_weak_uses(cmd, strip_var_suffixes=strip_var_suffixes):
+                sid = _symbol_id(sym)
+                wus = UseSite(
+                    symbol_id=sid,
+                    symbol=sym,
+                    block_id=block.id,
+                    cmd_index=idx,
+                    cmd_kind=cmd_kind,
+                    raw=cmd.raw,
+                    is_weak=True,
+                )
+                weak_use_sites.append(wus)
+                weak_uses_by_symbol[sym].append(wus)
 
             if isinstance(cmd, AssignExpCmd):
                 seen_static = True
@@ -131,16 +147,19 @@ def extract_def_use(program: TacProgram, *, strip_var_suffixes: bool = True) -> 
             kills=tuple(sorted(kills_in_block)),
             definition_sites=tuple(definition_sites),
             use_sites=tuple(use_sites),
+            weak_use_sites=tuple(weak_use_sites),
             dsa_shape_ok=dsa_shape_ok,
             dsa_shape_violation=dsa_shape_violation,
         )
 
     defs_out = {k: tuple(v) for k, v in defs_by_symbol.items()}
     uses_out = {k: tuple(v) for k, v in uses_by_symbol.items()}
+    weak_uses_out = {k: tuple(v) for k, v in weak_uses_by_symbol.items()}
     return DefUseResult(
         by_block=by_block,
         definitions_by_symbol=defs_out,
         uses_by_symbol=uses_out,
+        weak_uses_by_symbol=weak_uses_out,
         symbol_to_id=symbol_to_id,
         id_to_symbol=tuple(id_to_symbol),
         definitions=tuple(definitions),

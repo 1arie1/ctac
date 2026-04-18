@@ -23,6 +23,8 @@ from ctac.tac_ast.nodes import (
     LabelCmd,
     RawCmd,
     SymExpr,
+    SymbolRef,
+    SymbolWeakRef,
     TacCmd,
     TacExpr,
 )
@@ -83,7 +85,10 @@ class PrettyPrinter(TacVisitor):
         return self.visit(cmd)
 
     # expressions
-    def visit_SymExpr(self, node: SymExpr) -> str:
+    def visit_SymbolRef(self, node: SymbolRef) -> str:
+        return self._fmt_symbol_token(node.name)
+
+    def visit_SymbolWeakRef(self, node: SymbolWeakRef) -> str:
         return self._fmt_symbol_token(node.name)
 
     def visit_ConstExpr(self, node: ConstExpr) -> str:

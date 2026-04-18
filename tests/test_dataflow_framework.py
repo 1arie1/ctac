@@ -14,6 +14,7 @@ from ctac.analysis import (
     extract_def_use,
     normalize_program_symbols,
 )
+from ctac.ast.nodes import AnnotationCmd
 from ctac.parse import parse_string
 from ctac.tool.main import app
 
@@ -302,6 +303,28 @@ Metas {
 }
 """
 
+TAC_WEAK_SNIPPET_USE = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignExpCmd x 0x1
+\t\tAnnotationCmd JSON{"key":{"name":"snippet.cmd"},"value":{"#class":"vc.data.SnippetCmd.CvlrSnippetCmd.CexPrintValues","displayMessage":"dbg","symbols":[{"namePrefix":"x"}]}}
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
 
 def _write_tac(tmp_path: Path, content: str, name: str = "sample.tac") -> Path:
     p = tmp_path / name
@@ -399,6 +422,19 @@ def test_ambiguous_use_requires_non_dynamic_reaching_defs() -> None:
     assert any(i.kind == "ambiguous-use" and i.symbol == "x" for i in dsa.issues)
 
 
+def test_weak_snippet_uses_are_tracked_but_ignored_by_liveness_dce() -> None:
+    tac = parse_string(TAC_WEAK_SNIPPET_USE, path="<string>")
+    du = extract_def_use(tac.program)
+    # weak uses are tracked separately
+    assert "x" in du.weak_uses_by_symbol
+    assert "x" not in du.uses_by_symbol
+    # weak uses do not keep x live
+    lv = analyze_liveness(tac.program, def_use=du)
+    assert "x" not in lv.live_out_by_block["entry"]
+    dce = eliminate_dead_assignments(tac.program, liveness=lv)
+    assert any(rem.symbol == "x" for rem in dce.removed)
+
+
 def test_df_cli_liveness_plain_golden(tmp_path: Path) -> None:
     p = _write_tac(tmp_path, TAC_DCE, "liveness.tac")
     runner = CliRunner()
@@ -449,3 +485,33 @@ def test_df_cli_dce_plain_details_raw_switch(tmp_path: Path) -> None:
     lines = res.stdout.splitlines()
     assert "  format: block:loc | symbol | command" in lines
     assert any(ln.startswith("  entry:2") and " | AssignExpCmd y 0x2" in ln for ln in lines)
+
+
+def test_df_cli_defuse_reports_weak_uses(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_WEAK_SNIPPET_USE, "defuse-weak.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["df", str(p), "--plain", "--show", "def-use", "--details"])
+    assert res.exit_code == 0
+    lines = res.stdout.splitlines()
+    assert any("symbols_with_weak_uses: 1" in ln for ln in lines)
+    assert any("weak_use_count[x] = 1" in ln for ln in lines)
+
+
+def test_parse_with_weak_is_strong_moves_snippet_refs_to_strong() -> None:
+    tac = parse_string(TAC_WEAK_SNIPPET_USE, path="<string>", weak_is_strong=True)
+    ann = next(c for c in tac.program.blocks[0].commands if isinstance(c, AnnotationCmd))
+    assert len(ann.strong_refs) == 1
+    assert ann.strong_refs[0].name == "x"
+    assert len(ann.weak_refs) == 0
+
+
+def test_df_cli_weak_is_strong_prevents_dce_removal(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_WEAK_SNIPPET_USE, "dce-weak-is-strong.tac")
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["df", str(p), "--plain", "--show", "dce", "--weak-is-strong"],
+    )
+    assert res.exit_code == 0
+    lines = res.stdout.splitlines()
+    assert any("removed_count: 0" in ln for ln in lines)

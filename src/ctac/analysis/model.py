@@ -34,6 +34,7 @@ class UseSite:
     cmd_index: int
     cmd_kind: str
     raw: str
+    is_weak: bool = False
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class BlockDefUse:
     kills: tuple[str, ...]
     definition_sites: tuple[DefinitionSite, ...]
     use_sites: tuple[UseSite, ...]
+    weak_use_sites: tuple[UseSite, ...]
     dsa_shape_ok: bool
     dsa_shape_violation: str | None
 
@@ -53,6 +55,7 @@ class DefUseResult:
     by_block: dict[str, BlockDefUse]
     definitions_by_symbol: dict[str, tuple[DefinitionSite, ...]]
     uses_by_symbol: dict[str, tuple[UseSite, ...]]
+    weak_uses_by_symbol: dict[str, tuple[UseSite, ...]]
     symbol_to_id: dict[str, int]
     id_to_symbol: tuple[str, ...]
     definitions: tuple[DefinitionSite, ...]  # indexed by `def_id`

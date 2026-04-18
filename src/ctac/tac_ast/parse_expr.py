@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from ctac.tac_ast.nodes import ApplyExpr, ConstExpr, SymExpr, TacExpr
+from ctac.tac_ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 
 _CONST_BOOL = frozenset({"true", "false"})
 _TYPED_CONST = re.compile(
@@ -62,7 +62,7 @@ def parse_expr(s: str) -> TacExpr:
         tok = s.split()[0] if s.split() else s
         if _is_const_token(tok) and len(s.split()) <= 1:
             return ConstExpr(s if len(s.split()) <= 1 else tok)
-        return SymExpr(s.strip())
+        return SymbolRef(s.strip())
     # Op(subexpr ...)
     open_paren = s.index("(")
     op = s[:open_paren].strip()
@@ -94,4 +94,4 @@ def parse_expr_safe(s: str) -> TacExpr:
     try:
         return parse_expr(s)
     except ValueError:
-        return SymExpr(s.strip())
+        return SymbolRef(s.strip())

@@ -6,13 +6,15 @@ from dataclasses import replace
 
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
+    AnnotationCmd,
     ApplyExpr,
     AssertCmd,
     AssignExpCmd,
     AssignHavocCmd,
     AssumeExpCmd,
     JumpiCmd,
-    SymExpr,
+    SymbolRef,
+    SymbolWeakRef,
     TacCmd,
     TacExpr,
 )
@@ -20,7 +22,7 @@ from ctac.ir.models import TacBlock, TacProgram
 
 
 def _normalize_expr(expr: TacExpr, *, strip_var_suffixes: bool) -> TacExpr:
-    if isinstance(expr, SymExpr):
+    if isinstance(expr, SymbolRef):
         name = canonical_symbol(expr.name, strip_var_suffixes=strip_var_suffixes)
         if name == expr.name:
             return expr
@@ -60,6 +62,18 @@ def _normalize_cmd(cmd: TacCmd, *, strip_var_suffixes: bool) -> TacCmd:
         if pred == cmd.predicate:
             return cmd
         return replace(cmd, predicate=pred)
+    if isinstance(cmd, AnnotationCmd):
+        strong_refs = tuple(
+            SymbolRef(canonical_symbol(ref.name, strip_var_suffixes=strip_var_suffixes))
+            for ref in cmd.strong_refs
+        )
+        weak_refs = tuple(
+            SymbolWeakRef(canonical_symbol(ref.name, strip_var_suffixes=strip_var_suffixes))
+            for ref in cmd.weak_refs
+        )
+        if strong_refs == cmd.strong_refs and weak_refs == cmd.weak_refs:
+            return cmd
+        return replace(cmd, strong_refs=strong_refs, weak_refs=weak_refs)
     return cmd
 
 

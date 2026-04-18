@@ -131,13 +131,14 @@ def run_stats(
     plain: bool,
     by_cmd_kind: bool = False,
     top_blocks: int = 0,
+    weak_is_strong: bool = False,
 ) -> None:
     plain = plain_requested(plain)
     c = console(plain)
     try:
         user_path, user_warnings = resolve_user_path(path)
         tac_path, input_warnings = resolve_tac_input_path(user_path)
-        tac = parse_path(tac_path)
+        tac = parse_path(tac_path, weak_is_strong=weak_is_strong)
         for w in (user_warnings + input_warnings):
             c.print(f"input warning: {w}" if plain else f"[yellow]input warning:[/yellow] {w}")
     except ParseError as e:
@@ -176,10 +177,21 @@ def stats(
         min=0,
         help="Show top N blocks by command count (0 disables). Default: 10.",
     ),
+    weak_is_strong: bool = typer.Option(
+        False,
+        "--weak-is-strong",
+        help="Parse snippet weak refs as strong refs.",
+    ),
 ) -> None:
     """Print summary statistics for a .tac file (blocks, commands, metas, symbol table size)."""
     _ = agent
-    run_stats(path, plain=plain, by_cmd_kind=by_cmd_kind, top_blocks=top_blocks)
+    run_stats(
+        path,
+        plain=plain,
+        by_cmd_kind=by_cmd_kind,
+        top_blocks=top_blocks,
+        weak_is_strong=weak_is_strong,
+    )
 
 
 @app.command()
@@ -198,7 +210,18 @@ def parse(
         min=0,
         help="Show top N blocks by command count (0 disables). Default: 10.",
     ),
+    weak_is_strong: bool = typer.Option(
+        False,
+        "--weak-is-strong",
+        help="Parse snippet weak refs as strong refs.",
+    ),
 ) -> None:
     """Parse a .tac file and print basic statistics (same output as ``ctac stats``)."""
     _ = agent
-    run_stats(path, plain=plain, by_cmd_kind=by_cmd_kind, top_blocks=top_blocks)
+    run_stats(
+        path,
+        plain=plain,
+        by_cmd_kind=by_cmd_kind,
+        top_blocks=top_blocks,
+        weak_is_strong=weak_is_strong,
+    )

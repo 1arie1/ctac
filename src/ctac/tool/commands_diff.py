@@ -48,6 +48,11 @@ def match_cfg_cmd(
         min=1,
         help="Maximum number of matched rows to print.",
     ),
+    weak_is_strong: bool = typer.Option(
+        False,
+        "--weak-is-strong",
+        help="Parse snippet weak refs as strong refs.",
+    ),
 ) -> None:
     _ = agent
     plain = plain_requested(plain)
@@ -55,8 +60,8 @@ def match_cfg_cmd(
     try:
         left_tac_path, left_w = resolve_tac_input_path(left)
         right_tac_path, right_w = resolve_tac_input_path(right)
-        a = parse_path(left_tac_path)
-        b = parse_path(right_tac_path)
+        a = parse_path(left_tac_path, weak_is_strong=weak_is_strong)
+        b = parse_path(right_tac_path, weak_is_strong=weak_is_strong)
         for w in left_w:
             c.print(f"input warning: left: {w}" if plain else f"[yellow]input warning:[/yellow] left: {w}")
         for w in right_w:
@@ -176,6 +181,11 @@ def bb_diff_cmd(
         min=1,
         help="Maximum diff lines printed per changed block.",
     ),
+    weak_is_strong: bool = typer.Option(
+        False,
+        "--weak-is-strong",
+        help="Parse snippet weak refs as strong refs.",
+    ),
 ) -> None:
     _ = agent
     plain = plain_requested(plain)
@@ -183,8 +193,8 @@ def bb_diff_cmd(
     try:
         left_tac_path, left_w = resolve_tac_input_path(left)
         right_tac_path, right_w = resolve_tac_input_path(right)
-        a = parse_path(left_tac_path)
-        b = parse_path(right_tac_path)
+        a = parse_path(left_tac_path, weak_is_strong=weak_is_strong)
+        b = parse_path(right_tac_path, weak_is_strong=weak_is_strong)
         for w in left_w:
             c.print(f"input warning: left: {w}" if plain else f"[yellow]input warning:[/yellow] left: {w}")
         for w in right_w:

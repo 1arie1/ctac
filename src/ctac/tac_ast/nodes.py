@@ -24,10 +24,21 @@ class TacExpr(TacNode):
 
 
 @dataclass(frozen=True)
-class SymExpr(TacExpr):
-    """Variable / symbol token (may contain ``:`` for meta suffix in dumps)."""
+class SymbolRef(TacExpr):
+    """Strong variable/symbol reference token."""
 
     name: str
+
+
+@dataclass(frozen=True)
+class SymbolWeakRef(SymbolRef):
+    """Weak variable/symbol reference token."""
+
+    pass
+
+
+# Backward-compatible alias used across existing code/tests.
+SymExpr = SymbolRef
 
 
 @dataclass(frozen=True)
@@ -77,6 +88,8 @@ class AnnotationCmd(TacCmd):
     """Payload after ``AnnotationCmd`` (usually ``JSON{...}``)."""
 
     payload: str
+    strong_refs: tuple[SymbolRef, ...] = field(default_factory=tuple)
+    weak_refs: tuple[SymbolWeakRef, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

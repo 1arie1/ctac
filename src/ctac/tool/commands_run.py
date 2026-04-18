@@ -64,6 +64,11 @@ def run(
         "--strip-var-suffix/--keep-var-suffix",
         help="Strip TAC var suffixes like ':1' in traced symbols (default: strip).",
     ),
+    weak_is_strong: bool = typer.Option(
+        False,
+        "--weak-is-strong",
+        help="Parse snippet weak refs as strong refs (annotations use strong dereference).",
+    ),
     human: bool = typer.Option(
         True,
         "--human/--no-human",
@@ -95,7 +100,7 @@ def run(
     try:
         user_path, user_warnings = resolve_user_path(path)
         tac_path, input_warnings = resolve_tac_input_path(user_path)
-        tac = parse_path(tac_path)
+        tac = parse_path(tac_path, weak_is_strong=weak_is_strong)
     except ParseError as e:
         if plain:
             c.print(f"parse error: {e}")

@@ -24,7 +24,9 @@ from ctac.ast.nodes import (
     JumpiCmd,
     LabelCmd,
     RawCmd,
+    SymbolRef,
     SymExpr,
+    SymbolWeakRef,
     TacCmd,
     TacExpr,
 )
@@ -160,7 +162,7 @@ def _mk_bool(x: bool) -> Value:
     return Value("bool", bool(x))
 
 
-def _parse_snippet_cmd(payload: str) -> dict[str, object] | None:
+def _parse_snippet_cmd(payload: str, *, weak_is_strong: bool = False) -> dict[str, object] | None:
     s = payload.strip()
     if not s.startswith("JSON"):
         return None
@@ -201,7 +203,8 @@ def _parse_snippet_cmd(payload: str) -> dict[str, object] | None:
         reg = first.get("namePrefix")
         if not isinstance(reg, str):
             return None
-        return {"kind": "print_value", "tag": msg, "symbol": reg}
+        ref = SymbolRef(reg) if weak_is_strong else SymbolWeakRef(reg)
+        return {"kind": "print_value", "tag": msg, "symbol": ref}
     if klass.endswith(".CexPrint128BitsValue"):
         msg = val.get("displayMessage")
         low = val.get("low")
@@ -213,11 +216,13 @@ def _parse_snippet_cmd(payload: str) -> dict[str, object] | None:
         high_sym = high.get("namePrefix")
         if not isinstance(low_sym, str) or not isinstance(high_sym, str):
             return None
+        low_ref = SymbolRef(low_sym) if weak_is_strong else SymbolWeakRef(low_sym)
+        high_ref = SymbolRef(high_sym) if weak_is_strong else SymbolWeakRef(high_sym)
         return {
             "kind": "print_128",
             "tag": msg,
-            "low": low_sym,
-            "high": high_sym,
+            "low": low_ref,
+            "high": high_ref,
             "signed": signed,
         }
     if klass.endswith(".CexPrintTag"):
@@ -265,6 +270,10 @@ class Evaluator:
             k = infer_kind(key)
             self.store[key] = _mk_bool(False) if k == "bool" else (_mk_int(0) if k == "int" else _mk_bv(0))
         return self.store[key]
+
+    def peek_symbol(self, name: str) -> Value | None:
+        key = self._normalize_symbol(name)
+        return self.store.get(key)
 
     def eval_expr(self, expr: TacExpr) -> Value:
         if isinstance(expr, ConstExpr):
@@ -508,7 +517,10 @@ def run_program(
                 break
 
             if isinstance(cmd, AnnotationCmd):
-                snippet = _parse_snippet_cmd(cmd.payload)
+                snippet = _parse_snippet_cmd(
+                    cmd.payload,
+                    weak_is_strong=bool(cmd.strong_refs),
+                )
                 if snippet is not None:
                     kind = snippet["kind"]
                     if kind == "scope_start":
@@ -520,16 +532,76 @@ def run_program(
                         continue
                     if kind == "print_value":
                         tag = str(snippet["tag"])
-                        sym = str(snippet["symbol"])
-                        v = ev.get_symbol(sym)
-                        events.append(RunEvent(current, cmd, f"  {tag}", value=v, color="cyan"))
+                        sym_ref = snippet["symbol"]
+                        if isinstance(sym_ref, SymbolWeakRef):
+                            v = ev.peek_symbol(sym_ref.name)
+                            if v is None:
+                                events.append(
+                                    RunEvent(
+                                        current,
+                                        cmd,
+                                        f"  {tag}",
+                                        note=f"dangling weak use: {sym_ref.name}",
+                                        color="yellow",
+                                    )
+                                )
+                            else:
+                                events.append(RunEvent(current, cmd, f"  {tag}", value=v, color="cyan"))
+                        elif isinstance(sym_ref, SymbolRef):
+                            v = ev.get_symbol(sym_ref.name)
+                            events.append(RunEvent(current, cmd, f"  {tag}", value=v, color="cyan"))
+                        else:
+                            sym = str(sym_ref)
+                            v = ev.peek_symbol(sym)
+                            if v is None:
+                                events.append(
+                                    RunEvent(
+                                        current,
+                                        cmd,
+                                        f"  {tag}",
+                                        note=f"dangling weak use: {sym}",
+                                        color="yellow",
+                                    )
+                                )
+                            else:
+                                events.append(RunEvent(current, cmd, f"  {tag}", value=v, color="cyan"))
                         continue
                     if kind == "print_128":
                         tag = str(snippet["tag"])
-                        low = ev.get_symbol(str(snippet["low"]))
-                        high = ev.get_symbol(str(snippet["high"]))
-                        v = _compose_128_from_regs(low, high, signed=bool(snippet["signed"]))
-                        events.append(RunEvent(current, cmd, f"  {tag}", value=v, color="cyan"))
+                        low_ref = snippet["low"]
+                        high_ref = snippet["high"]
+                        low_is_weak = isinstance(low_ref, SymbolWeakRef)
+                        high_is_weak = isinstance(high_ref, SymbolWeakRef)
+                        low_name = (
+                            low_ref.name
+                            if isinstance(low_ref, SymbolRef)
+                            else str(low_ref)
+                        )
+                        high_name = (
+                            high_ref.name
+                            if isinstance(high_ref, SymbolRef)
+                            else str(high_ref)
+                        )
+                        low = ev.peek_symbol(low_name) if low_is_weak else ev.get_symbol(low_name)
+                        high = ev.peek_symbol(high_name) if high_is_weak else ev.get_symbol(high_name)
+                        if (low_is_weak and low is None) or (high_is_weak and high is None):
+                            missing: list[str] = []
+                            if low_is_weak and low is None:
+                                missing.append(low_name)
+                            if high_is_weak and high is None:
+                                missing.append(high_name)
+                            events.append(
+                                RunEvent(
+                                    current,
+                                    cmd,
+                                    f"  {tag}",
+                                    note=f"dangling weak use: {', '.join(missing)}",
+                                    color="yellow",
+                                )
+                            )
+                        else:
+                            v = _compose_128_from_regs(low, high, signed=bool(snippet["signed"]))
+                            events.append(RunEvent(current, cmd, f"  {tag}", value=v, color="cyan"))
                         continue
                     if kind == "print_tag":
                         tag = str(snippet["tag"])

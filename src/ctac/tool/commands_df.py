@@ -119,6 +119,11 @@ def dataflow_cmd(
         "--strip-var-suffix/--keep-var-suffix",
         help="Strip TAC var suffixes like ':1' in analysis symbols (default: strip).",
     ),
+    weak_is_strong: bool = typer.Option(
+        False,
+        "--weak-is-strong",
+        help="Parse snippet weak refs as strong refs (annotations behave as strong uses).",
+    ),
     to_block: Annotated[Optional[str], typer.Option("--to", metavar="NBID")] = None,
     from_block: Annotated[Optional[str], typer.Option("--from", metavar="NBID")] = None,
     only: Annotated[Optional[str], typer.Option("--only")] = None,
@@ -134,7 +139,7 @@ def dataflow_cmd(
         modes = _parse_show_modes(show)
         user_path, user_warnings = resolve_user_path(path)
         tac_path, input_warnings = resolve_tac_input_path(user_path)
-        tac = parse_path(tac_path)
+        tac = parse_path(tac_path, weak_is_strong=weak_is_strong)
         filtered_program, filter_warnings = apply_cfg_filters(
             tac.program,
             CfgFilterOptions(
@@ -191,9 +196,22 @@ def dataflow_cmd(
     }
 
     if "def-use" in modes:
+        weak_use_rows = [
+            {
+                "symbol": us.symbol,
+                "block_id": us.block_id,
+                "cmd_index": us.cmd_index,
+                "cmd_kind": us.cmd_kind,
+                "raw": us.raw,
+            }
+            for b in normalized_program.blocks
+            for us in du.by_block[b.id].weak_use_sites
+        ]
         payload["def_use"] = {
             "defs_by_symbol": {k: len(v) for k, v in sorted(du.definitions_by_symbol.items())},
             "uses_by_symbol": {k: len(v) for k, v in sorted(du.uses_by_symbol.items())},
+            "weak_uses_by_symbol": {k: len(v) for k, v in sorted(du.weak_uses_by_symbol.items())},
+            "weak_uses": weak_use_rows,
         }
     if "liveness" in modes:
         t0 = time.perf_counter()
@@ -281,13 +299,16 @@ def dataflow_cmd(
         if "def-use" in modes:
             defs = payload["def_use"]["defs_by_symbol"]  # type: ignore[index]
             uses = payload["def_use"]["uses_by_symbol"]  # type: ignore[index]
+            weak_uses = payload["def_use"]["weak_uses_by_symbol"]  # type: ignore[index]
             c.print("def-use:", markup=False)
             c.print(f"  time: {_format_duration(timings_sec.get('def-use', 0.0))}", markup=False)
             c.print(
                 (
                     "  symbols_with_defs: "
                     f"{len(defs)}, symbols_with_uses: {len(uses)}, "
-                    f"total_defs: {_total_counts(defs)}, total_uses: {_total_counts(uses)}"
+                    f"symbols_with_weak_uses: {len(weak_uses)}, "
+                    f"total_defs: {_total_counts(defs)}, total_uses: {_total_counts(uses)}, "
+                    f"total_weak_uses: {_total_counts(weak_uses)}"
                 ),
                 markup=False,
             )
@@ -296,6 +317,38 @@ def dataflow_cmd(
                     c.print(f"  def_count[{sym}] = {cnt}", markup=False)
                 for sym, cnt in _top_items(uses):
                     c.print(f"  use_count[{sym}] = {cnt}", markup=False)
+                for sym, cnt in _top_items(weak_uses):
+                    c.print(f"  weak_use_count[{sym}] = {cnt}", markup=False)
+                weak_rows = sorted(
+                    payload["def_use"]["weak_uses"],  # type: ignore[index]
+                    key=lambda w: (str(w["block_id"]), int(w["cmd_index"]), str(w["symbol"])),
+                )[:max_items]
+                if weak_rows:
+                    c.print("  weak_uses_format: block:loc | symbol | command", markup=False)
+                    loc_w = max(
+                        9,
+                        max(
+                            len(
+                                _display_loc(
+                                    w["block_id"],
+                                    w["cmd_index"],
+                                    pretty_loc_by_point=pretty_loc_by_point,
+                                    use_pretty_loc=not raw_output,
+                                )
+                            )
+                            for w in weak_rows
+                        ),
+                    )
+                    sym_w = max(6, max(len(str(w["symbol"])) for w in weak_rows))
+                    for w in weak_rows:
+                        rendered = render_by_point.get((w["block_id"], w["cmd_index"]), w["raw"])
+                        loc = _display_loc(
+                            w["block_id"],
+                            w["cmd_index"],
+                            pretty_loc_by_point=pretty_loc_by_point,
+                            use_pretty_loc=not raw_output,
+                        )
+                        c.print(f"  {loc:<{loc_w}} | {str(w['symbol']):<{sym_w}} | {rendered}", markup=False)
 
         if "liveness" in modes:
             assert lv is not None
@@ -501,14 +554,17 @@ def dataflow_cmd(
     if "def-use" in modes:
         defs = payload["def_use"]["defs_by_symbol"]  # type: ignore[index]
         uses = payload["def_use"]["uses_by_symbol"]  # type: ignore[index]
+        weak_uses = payload["def_use"]["weak_uses_by_symbol"]  # type: ignore[index]
         sec = _add_section(
             "def-use",
             [
                 ("time", _format_duration(timings_sec.get("def-use", 0.0)), "", False),
                 ("symbols_with_defs", str(len(defs)), "", False),
                 ("symbols_with_uses", str(len(uses)), "", False),
+                ("symbols_with_weak_uses", str(len(weak_uses)), "", False),
                 ("total_defs", str(_total_counts(defs)), "", False),
                 ("total_uses", str(_total_counts(uses)), "", False),
+                ("total_weak_uses", str(_total_counts(weak_uses)), "", False),
             ],
         )
         if details:
@@ -517,6 +573,29 @@ def dataflow_cmd(
                 top.add(_node_text(f"def_count[{sym}]", str(cnt), "top"))
             for sym, cnt in sorted(_top_items(uses), key=lambda kv: kv[0]):
                 top.add(_node_text(f"use_count[{sym}]", str(cnt), "top"))
+            for sym, cnt in sorted(_top_items(weak_uses), key=lambda kv: kv[0]):
+                top.add(_node_text(f"weak_use_count[{sym}]", str(cnt), "top"))
+            weak_rows = sorted(
+                payload["def_use"]["weak_uses"],  # type: ignore[index]
+                key=lambda w: (str(w["block_id"]), int(w["cmd_index"]), str(w["symbol"])),
+            )[:max_items]
+            if weak_rows:
+                weak_node = sec.add(_node_text("weak-use sites"))
+                weak_node.add(_node_text("format", "block:loc | symbol | command"))
+                for w in weak_rows:
+                    rendered = render_by_point.get((w["block_id"], w["cmd_index"]), w["raw"])
+                    weak_node.add(
+                        _node_text(
+                            _display_loc(
+                                w["block_id"],
+                                w["cmd_index"],
+                                pretty_loc_by_point=pretty_loc_by_point,
+                                use_pretty_loc=not raw_output,
+                            ),
+                            str(w["symbol"]),
+                            str(rendered),
+                        )
+                    )
 
     if "liveness" in modes:
         assert lv is not None

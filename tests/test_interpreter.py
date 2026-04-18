@@ -119,6 +119,28 @@ Metas {
 }
 """
 
+PRINT_SNIPPET_DANGLING_TAC = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR1:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignExpCmd R1 0x2
+\t\tAnnotationCmd JSON{"key":{"name":"snippet.cmd"},"value":{"#class":"vc.data.SnippetCmd.CvlrSnippetCmd.CexPrintValues","displayMessage":"missing","symbols":[{"namePrefix":"R9"}]}}
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
 
 def test_run_zero_havoc_basic_flow() -> None:
     tac = parse_string(RUN_TAC, path="<string>")
@@ -173,3 +195,11 @@ def test_run_snippet_print_events() -> None:
     assert int(y_event.value.data) == ((3 << 64) | 2)  # type: ignore[union-attr]
     tag_event = next(e for e in res.events if e.rendered.strip() == "x <= y")
     assert tag_event.value is None
+
+
+def test_run_snippet_weak_use_dangling_does_not_materialize_store() -> None:
+    tac = parse_string(PRINT_SNIPPET_DANGLING_TAC, path="<string>")
+    res = run_program(tac.program, config=RunConfig())
+    missing_event = next(e for e in res.events if e.rendered.strip() == "missing")
+    assert missing_event.note == "dangling weak use: R9"
+    assert "R9" not in res.final_store

@@ -113,13 +113,14 @@ def run_search(
     id_regex: str | None,
     cmd_contains: str | None,
     exclude: str | None,
+    weak_is_strong: bool,
 ) -> None:
     plain = plain_requested(plain)
     c = console(plain)
     try:
         user_path, user_warnings = resolve_user_path(path)
         tac_path, input_warnings = resolve_tac_input_path(user_path)
-        tac = parse_path(tac_path)
+        tac = parse_path(tac_path, weak_is_strong=weak_is_strong)
     except ParseError as e:
         if plain:
             c.print(f"parse error: {e}")
@@ -277,6 +278,11 @@ def cfg(
             help="Comma-separated NBIds to remove after other filters.",
         ),
     ] = None,
+    weak_is_strong: bool = typer.Option(
+        False,
+        "--weak-is-strong",
+        help="Parse snippet weak refs as strong refs.",
+    ),
 ) -> None:
     _ = agent
     plain = plain_requested(plain)
@@ -284,7 +290,7 @@ def cfg(
     try:
         user_path, user_warnings = resolve_user_path(path)
         tac_path, input_warnings = resolve_tac_input_path(user_path)
-        tac = parse_path(tac_path)
+        tac = parse_path(tac_path, weak_is_strong=weak_is_strong)
     except ParseError as e:
         if plain:
             c.print(f"parse error: {e}")
@@ -383,6 +389,11 @@ def pp(
     id_regex: Annotated[Optional[str], typer.Option("--id-regex")] = None,
     cmd_contains: Annotated[Optional[str], typer.Option("--cmd-contains")] = None,
     exclude: Annotated[Optional[str], typer.Option("--exclude")] = None,
+    weak_is_strong: bool = typer.Option(
+        False,
+        "--weak-is-strong",
+        help="Parse snippet weak refs as strong refs.",
+    ),
 ) -> None:
     _ = agent
     plain = plain_requested(plain)
@@ -390,7 +401,7 @@ def pp(
     try:
         user_path, user_warnings = resolve_user_path(path)
         tac_path, input_warnings = resolve_tac_input_path(user_path)
-        tac = parse_path(tac_path)
+        tac = parse_path(tac_path, weak_is_strong=weak_is_strong)
     except ParseError as e:
         if plain:
             c.print(f"parse error: {e}")
@@ -518,6 +529,11 @@ def search_cmd(
     id_regex: Annotated[Optional[str], typer.Option("--id-regex")] = None,
     cmd_contains: Annotated[Optional[str], typer.Option("--cmd-contains")] = None,
     exclude: Annotated[Optional[str], typer.Option("--exclude")] = None,
+    weak_is_strong: bool = typer.Option(
+        False,
+        "--weak-is-strong",
+        help="Parse snippet weak refs as strong refs.",
+    ),
 ) -> None:
     _ = agent
     run_search(
@@ -539,4 +555,5 @@ def search_cmd(
         id_regex=id_regex,
         cmd_contains=cmd_contains,
         exclude=exclude,
+        weak_is_strong=weak_is_strong,
     )

@@ -17,22 +17,24 @@ class ParseError(ValueError):
     """Invalid or unsupported `.tac` layout."""
 
 
-def parse_path(path: str | Path, *, encoding: str = "utf-8") -> TacFile:
+def parse_path(
+    path: str | Path, *, encoding: str = "utf-8", weak_is_strong: bool = False
+) -> TacFile:
     """Parse a `.tac` file from disk."""
     p = Path(path)
     text = p.read_text(encoding=encoding)
-    return parse_string(text, path=str(p))
+    return parse_string(text, path=str(p), weak_is_strong=weak_is_strong)
 
 
-def parse_string(text: str, path: str | None = None) -> TacFile:
+def parse_string(text: str, path: str | None = None, *, weak_is_strong: bool = False) -> TacFile:
     """Parse `.tac` content. Normalizes ``\\r\\n`` to ``\\n``."""
     if "\r\n" in text:
         text = text.replace("\r\n", "\n")
     lines = text.split("\n")
-    return _parse_lines(lines, path=path)
+    return _parse_lines(lines, path=path, weak_is_strong=weak_is_strong)
 
 
-def _parse_lines(lines: list[str], *, path: str | None) -> TacFile:
+def _parse_lines(lines: list[str], *, path: str | None, weak_is_strong: bool) -> TacFile:
     try:
         p_idx = _find_line(lines, "Program {")
     except ParseError as e:
@@ -54,7 +56,7 @@ def _parse_lines(lines: list[str], *, path: str | None) -> TacFile:
         raise ParseError("Expected closing '}' of Program before 'Axioms {'")
 
     program_lines = lines[p_idx:a_idx]
-    program = _parse_program_section(program_lines)
+    program = _parse_program_section(program_lines, weak_is_strong=weak_is_strong)
 
     try:
         m_idx = _find_line_from(lines, a_idx, "Metas")
@@ -89,7 +91,7 @@ def _find_line_from(lines: list[str], start: int, prefix: str) -> int:
     raise ParseError(f"Missing line starting with {prefix!r}")
 
 
-def _parse_program_section(program_lines: list[str]) -> TacProgram:
+def _parse_program_section(program_lines: list[str], *, weak_is_strong: bool) -> TacProgram:
     if not program_lines or program_lines[0].strip() != "Program {":
         raise ParseError("Program section must start with 'Program {'")
 
@@ -112,13 +114,13 @@ def _parse_program_section(program_lines: list[str]) -> TacProgram:
                     i += 1
                     break
                 if t.startswith("\t\t"):
-                    cmds.append(parse_command_line(t[2:].rstrip()))
+                    cmds.append(parse_command_line(t[2:].rstrip(), weak_is_strong=weak_is_strong))
                 elif t.strip() == "}":
                     raise ParseError(
                         "Unexpected program-level '}' inside block (missing indented block close?)"
                     )
                 else:
-                    cmds.append(parse_command_line(t.lstrip().rstrip()))
+                    cmds.append(parse_command_line(t.lstrip().rstrip(), weak_is_strong=weak_is_strong))
                 i += 1
             blocks.append(TacBlock(id=bid, successors=successors, commands=cmds))
             continue
