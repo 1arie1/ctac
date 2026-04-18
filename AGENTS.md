@@ -56,6 +56,21 @@ Prompt template:
   - `--style goto|edges`
   - Same filters as `pp`.
 
+- `ctac search <file> <pattern> --plain` (alias: `ctac grep`)
+  - Search command lines in TAC blocks (regex by default; use `--literal` for substring).
+  - Useful flags:
+    - `--blocks-only`
+    - `--count`
+    - `--max-matches <n>`
+  - Supports same structural filters as `pp` (`--from/--to/--only/...`).
+  - Useful analysis examples:
+    - `ctac search f.tac 'if (R[0-9]+) < \1' --plain --regex`
+      - Finds tautological-false self-compare candidates (optimization opportunities).
+    - `ctac search f.tac 'if .* == .* \{ 1 \} else \{ 0 \}' --plain --regex`
+      - Finds bool-temp equality checks often followed by `assume ... == 1` (canonicalization opportunities).
+    - `ctac search f.tac 'assume R[0-9]+ <= \[2\^64-1\]' --plain --count --from <a> --to <b>`
+      - Quantifies repeated range guards inside a path slice.
+
 - `ctac cfg-match <left> <right> --plain`
   - Coarse block mapping across programs.
   - Key flags:

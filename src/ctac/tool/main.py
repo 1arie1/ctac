@@ -456,6 +456,131 @@ def _parse_user_value(text: str, kind: str) -> Value:
     return Value("int", n)
 
 
+def _search_matcher(
+    *,
+    pattern: str,
+    regex: bool,
+    case_sensitive: bool,
+):
+    if regex:
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            rx = re.compile(pattern, flags=flags)
+        except re.error as e:
+            raise typer.BadParameter(f"invalid --pattern regex: {e}", param_hint="pattern") from e
+        return lambda text: rx.search(text) is not None
+
+    needle = pattern if case_sensitive else pattern.casefold()
+
+    def _match_literal(text: str) -> bool:
+        hay = text if case_sensitive else text.casefold()
+        return needle in hay
+
+    return _match_literal
+
+
+def _run_search(
+    *,
+    path: Path,
+    pattern: str,
+    plain: bool,
+    printer: str,
+    strip_var_suffixes: bool,
+    human: bool,
+    regex: bool,
+    case_sensitive: bool,
+    max_matches: int,
+    count_only: bool,
+    blocks_only: bool,
+    to_block: str | None,
+    from_block: str | None,
+    only: str | None,
+    id_contains: str | None,
+    id_regex: str | None,
+    cmd_contains: str | None,
+    exclude: str | None,
+) -> None:
+    plain = _plain_requested(plain)
+    c = _console(plain)
+    try:
+        tac = parse_path(path)
+    except ParseError as e:
+        if plain:
+            c.print(f"parse error: {e}")
+        else:
+            c.print(f"[red]parse error:[/red] {e}")
+        raise typer.Exit(1) from e
+
+    flt = _build_cfg_filter(
+        to_block=to_block,
+        from_block=from_block,
+        only=only,
+        id_contains=id_contains,
+        id_regex=id_regex,
+        cmd_contains=cmd_contains,
+        exclude=exclude,
+    )
+    try:
+        filtered_cfg, warnings = Cfg(tac.program).filtered(flt)
+    except ValueError as e:
+        if plain:
+            c.print(f"search filter error: {e}")
+        else:
+            c.print(f"[red]search filter error:[/red] {e}")
+        raise typer.Exit(2) from e
+
+    printer_name = _normalize_printer_name(printer)
+    pp_backend = configured_printer(
+        printer_name,
+        strip_var_suffixes=strip_var_suffixes,
+        human_patterns=human,
+    )
+    matches = _search_matcher(pattern=pattern, regex=regex, case_sensitive=case_sensitive)
+
+    if tac.path:
+        c.print(f"# path: {tac.path}")
+    c.print(f"# printer: {printer_name}")
+    c.print(f"# mode: {'regex' if regex else 'literal'}")
+    c.print(f"# case_sensitive: {case_sensitive}")
+    c.print(f"# pattern: {pattern!r}")
+    for w in warnings:
+        c.print(f"# {w}")
+    if flt.any_active():
+        c.print(f"# filter: {len(filtered_cfg.blocks)} of {len(tac.program.blocks)} block(s)")
+
+    total = 0
+    blocks_hit: set[str] = set()
+    for b in filtered_cfg.ordered_blocks():
+        for idx, cmd in enumerate(b.commands):
+            line = pp_backend.print_cmd(cmd)
+            if line is None or line == "":
+                continue
+            if not matches(line):
+                continue
+            total += 1
+            blocks_hit.add(b.id)
+
+            if total > max_matches:
+                break
+            if count_only:
+                continue
+            if blocks_only:
+                continue
+            c.print(f"{b.id}:{idx}: [{type(cmd).__name__}] {line}")
+        if total > max_matches:
+            break
+
+    shown_total = min(total, max_matches)
+    if blocks_only and not count_only:
+        for bid in sorted(blocks_hit):
+            c.print(bid)
+
+    c.print(f"matches: {shown_total}")
+    c.print(f"blocks_with_matches: {len(blocks_hit)}")
+    if total > max_matches:
+        c.print(f"# truncated after {max_matches} matches; raise --max-matches to see more")
+
+
 _META_SUFFIX_RE = re.compile(r":\d+$")
 
 
@@ -981,6 +1106,86 @@ def pp(
             c.print(highlight_tac_line("  stop"))
         c.print("")
         shown += 1
+
+
+@app.command("grep")
+@app.command("search")
+def search_cmd(
+    path: Path = typer.Argument(..., **_PATH_KW),
+    pattern: str = typer.Argument(..., help="Pattern to search in rendered command lines."),
+    plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
+    printer: Annotated[
+        str,
+        typer.Option(
+            "--printer",
+            help="Pretty-printer backend name. Built-ins: human (default), raw.",
+        ),
+    ] = "human",
+    strip_var_suffixes: bool = typer.Option(
+        True,
+        "--strip-var-suffix/--keep-var-suffix",
+        help="Strip TAC var meta suffixes like ':1' in printed symbols (default: strip).",
+    ),
+    human: bool = typer.Option(
+        True,
+        "--human/--no-human",
+        help="Enable human-oriented pattern rewrites in printed command lines (default: on).",
+    ),
+    regex: bool = typer.Option(
+        True,
+        "--regex/--literal",
+        help="Interpret PATTERN as regex (default) or plain substring.",
+    ),
+    case_sensitive: bool = typer.Option(
+        True,
+        "--case-sensitive/--ignore-case",
+        help="Case-sensitive matching (default) or case-insensitive.",
+    ),
+    max_matches: int = typer.Option(
+        200,
+        "--max-matches",
+        min=1,
+        help="Maximum number of matches to print/count before truncation.",
+    ),
+    count_only: bool = typer.Option(
+        False,
+        "--count",
+        help="Print only total matches and blocks_with_matches.",
+    ),
+    blocks_only: bool = typer.Option(
+        False,
+        "--blocks-only",
+        help="Print only block ids that contain at least one match.",
+    ),
+    to_block: Annotated[Optional[str], typer.Option("--to", metavar="NBID")] = None,
+    from_block: Annotated[Optional[str], typer.Option("--from", metavar="NBID")] = None,
+    only: Annotated[Optional[str], typer.Option("--only")] = None,
+    id_contains: Annotated[Optional[str], typer.Option("--id-contains")] = None,
+    id_regex: Annotated[Optional[str], typer.Option("--id-regex")] = None,
+    cmd_contains: Annotated[Optional[str], typer.Option("--cmd-contains")] = None,
+    exclude: Annotated[Optional[str], typer.Option("--exclude")] = None,
+) -> None:
+    """Search TAC command lines using regex or literal pattern matching."""
+    _run_search(
+        path=path,
+        pattern=pattern,
+        plain=plain,
+        printer=printer,
+        strip_var_suffixes=strip_var_suffixes,
+        human=human,
+        regex=regex,
+        case_sensitive=case_sensitive,
+        max_matches=max_matches,
+        count_only=count_only,
+        blocks_only=blocks_only,
+        to_block=to_block,
+        from_block=from_block,
+        only=only,
+        id_contains=id_contains,
+        id_regex=id_regex,
+        cmd_contains=cmd_contains,
+        exclude=exclude,
+    )
 
 
 @app.command()

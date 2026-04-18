@@ -46,6 +46,19 @@ ctac pp file.tac --printer raw
 # pp supports the same filters as cfg
 ctac pp file.tac --from 0_0_0_0_0_0 --to 236_1_0_0_0_0
 
+# search command lines (alias: `ctac grep`)
+ctac search file.tac 'assume R[0-9]+ <= \\[2\\^64-1\\]'
+# literal substring mode
+ctac search file.tac 'assert' --literal
+# print only block ids that matched
+ctac grep file.tac 'if .* < .*' --blocks-only
+# optimization hunt: detect self-compare candidates like A < A
+ctac search file.tac 'if (R[0-9]+) < \\1' --regex
+# optimization hunt: bool-temp equality checks constrained true (candidate: inline into assume)
+ctac search file.tac 'if .* == .* \\{ 1 \\} else \\{ 0 \\}' --regex
+# hotspot triage: where many repeated u64 guards appear (count + constrained path slice)
+ctac search file.tac 'assume R[0-9]+ <= \\[2\\^64-1\\]' --count --from A --to B
+
 # interpret TAC program (assume-fail stops, assert-fail continues) 🧪
 ctac run file.tac
 # trace execution with per-instruction values and taken branches
