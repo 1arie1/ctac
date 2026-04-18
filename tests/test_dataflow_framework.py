@@ -222,12 +222,13 @@ def test_df_cli_liveness_plain_golden(tmp_path: Path) -> None:
     assert res.exit_code == 0
     lines = res.stdout.splitlines()
     assert lines[0].startswith("# path: ")
-    assert lines[1:] == [
+    assert lines[1:4] == [
         "# show: liveness",
         "# blocks: 2",
         "liveness:",
-        "  blocks_with_live_in: 1, max_live_in_size: 1, max_live_out_size: 1",
     ]
+    assert lines[4].startswith("  time: ")
+    assert lines[5] == "  blocks_with_live_in: 1, max_live_in_size: 1, max_live_out_size: 1"
 
 
 def test_df_cli_dce_plain_golden(tmp_path: Path) -> None:
@@ -237,12 +238,13 @@ def test_df_cli_dce_plain_golden(tmp_path: Path) -> None:
     assert res.exit_code == 0
     lines = res.stdout.splitlines()
     assert lines[0].startswith("# path: ")
-    assert lines[1:] == [
+    assert lines[1:4] == [
         "# show: dce",
         "# blocks: 2",
         "dce:",
-        "  removed_count: 1, remaining_commands: 4",
     ]
+    assert lines[4].startswith("  time: ")
+    assert lines[5] == "  removed_count: 1, remaining_commands: 4"
 
 
 def test_df_cli_dce_plain_details_lists_removed(tmp_path: Path) -> None:

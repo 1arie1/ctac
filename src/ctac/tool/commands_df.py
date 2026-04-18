@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Optional
@@ -46,6 +47,21 @@ def _parse_show_modes(raw: str) -> set[str]:
     if "all" in items:
         return valid - {"all"}
     return items
+
+
+def _format_duration(seconds: float) -> str:
+    s = max(0.0, seconds)
+    units = [
+        (1.0, "s"),
+        (1e-3, "ms"),
+        (1e-6, "us"),
+        (1e-9, "ns"),
+    ]
+    for scale, unit in units:
+        if s >= scale or unit == "ns":
+            val = s / scale
+            return f"{val:.3g}{unit}"
+    return "0ns"
 
 
 @app.command("df")
@@ -115,7 +131,10 @@ def dataflow_cmd(
         c.print(f"input error: {e}" if plain else f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
 
+    timings_sec: dict[str, float] = {}
+    t0 = time.perf_counter()
     du = extract_def_use(filtered_program, strip_var_suffixes=strip_var_suffixes)
+    timings_sec["def-use"] = time.perf_counter() - t0
     lv = None
     payload: dict[str, object] = {
         "path": tac.path,
@@ -131,6 +150,7 @@ def dataflow_cmd(
             "uses_by_symbol": {k: len(v) for k, v in sorted(du.uses_by_symbol.items())},
         }
     if "liveness" in modes:
+        t0 = time.perf_counter()
         lv = analyze_liveness(filtered_program, strip_var_suffixes=strip_var_suffixes, def_use=du)
         payload["liveness"] = {
             "live_in_by_block": lv.live_in_by_block,
@@ -144,9 +164,13 @@ def dataflow_cmd(
                 for pt, vals in lv.live_after_command.items()
             },
         }
+        timings_sec["liveness"] = time.perf_counter() - t0
     if "dce" in modes:
         if lv is None:
+            t0 = time.perf_counter()
             lv = analyze_liveness(filtered_program, strip_var_suffixes=strip_var_suffixes, def_use=du)
+            timings_sec.setdefault("liveness", time.perf_counter() - t0)
+        t0 = time.perf_counter()
         dce = eliminate_dead_assignments(
             filtered_program,
             strip_var_suffixes=strip_var_suffixes,
@@ -157,23 +181,31 @@ def dataflow_cmd(
             "removed": [asdict(x) for x in dce.removed],
             "remaining_commands": sum(len(b.commands) for b in dce.program.blocks),
         }
+        timings_sec["dce"] = time.perf_counter() - t0
     if "use-before-def" in modes:
+        t0 = time.perf_counter()
         ubd = analyze_use_before_def(
             filtered_program,
             strip_var_suffixes=strip_var_suffixes,
             def_use=du,
         )
         payload["use_before_def"] = {"issues": [asdict(x) for x in ubd.issues]}
+        timings_sec["use-before-def"] = time.perf_counter() - t0
     if "dsa" in modes:
+        t0 = time.perf_counter()
         dsa = analyze_dsa(
             filtered_program,
             strip_var_suffixes=strip_var_suffixes,
             def_use=du,
         )
         payload["dsa"] = {"is_valid": dsa.is_valid, "issues": [asdict(x) for x in dsa.issues]}
+        timings_sec["dsa"] = time.perf_counter() - t0
     if "control-dependence" in modes:
+        t0 = time.perf_counter()
         cd = analyze_control_dependence(filtered_program)
         payload["control_dependence"] = asdict(cd)
+        timings_sec["control-dependence"] = time.perf_counter() - t0
+    payload["timings_sec"] = {k: timings_sec[k] for k in sorted(timings_sec)}
 
     if json_out:
         c.print(json.dumps(payload, indent=2, sort_keys=True))
@@ -204,6 +236,7 @@ def dataflow_cmd(
             defs = payload["def_use"]["defs_by_symbol"]  # type: ignore[index]
             uses = payload["def_use"]["uses_by_symbol"]  # type: ignore[index]
             c.print("def-use:", markup=False)
+            c.print(f"  time: {_format_duration(timings_sec.get('def-use', 0.0))}", markup=False)
             c.print(
                 (
                     "  symbols_with_defs: "
@@ -222,6 +255,7 @@ def dataflow_cmd(
             assert lv is not None
             blocks_with_live_in = sum(1 for x in lv.live_in_by_block.values() if x)
             c.print("liveness:", markup=False)
+            c.print(f"  time: {_format_duration(timings_sec.get('liveness', 0.0))}", markup=False)
             c.print(
                 (
                     f"  blocks_with_live_in: {blocks_with_live_in}, "
@@ -239,6 +273,7 @@ def dataflow_cmd(
         if "dce" in modes:
             dce_obj = payload["dce"]  # type: ignore[assignment]
             c.print("dce:", markup=False)
+            c.print(f"  time: {_format_duration(timings_sec.get('dce', 0.0))}", markup=False)
             c.print(
                 (
                     f"  removed_count: {dce_obj['removed_count']}, "
@@ -257,6 +292,7 @@ def dataflow_cmd(
             ubd_obj = payload["use_before_def"]  # type: ignore[assignment]
             issue_count = len(ubd_obj["issues"])
             c.print("use-before-def:", markup=False)
+            c.print(f"  time: {_format_duration(timings_sec.get('use-before-def', 0.0))}", markup=False)
             c.print(f"  issues: {issue_count}", markup=False)
             for issue in ubd_obj["issues"][: max_items if details else 0]:
                 c.print(
@@ -269,6 +305,7 @@ def dataflow_cmd(
             dsa_obj = payload["dsa"]  # type: ignore[assignment]
             issue_count = len(dsa_obj["issues"])
             c.print("dsa:", markup=False)
+            c.print(f"  time: {_format_duration(timings_sec.get('dsa', 0.0))}", markup=False)
             c.print(f"  is_valid: {dsa_obj['is_valid']}, issues: {issue_count}", markup=False)
             for issue in dsa_obj["issues"][: max_items if details else 0]:
                 cmd_idx = issue["cmd_index"] if issue["cmd_index"] is not None else "-"
@@ -281,6 +318,10 @@ def dataflow_cmd(
         if "control-dependence" in modes:
             cd_obj = payload["control_dependence"]  # type: ignore[assignment]
             c.print("control-dependence:", markup=False)
+            c.print(
+                f"  time: {_format_duration(timings_sec.get('control-dependence', 0.0))}",
+                markup=False,
+            )
             c.print(f"  edges: {len(cd_obj['edges'])}", markup=False)
             for src, dst in cd_obj["edges"][: max_items if details else 0]:
                 c.print(f"  {src} -> {dst}", markup=False)
@@ -309,7 +350,7 @@ def dataflow_cmd(
 
     def _add_section(label: str, rows: list[tuple[str, str, str, bool]]) -> Tree:
         sec = tree.add(f"[bold]{escape(label)}[/bold]")
-        for metric, value, notes, value_markup in rows:
+        for metric, value, notes, value_markup in sorted(rows, key=lambda r: r[0]):
             sec.add(_node_text(metric, value, notes, value_markup=value_markup))
         return sec
 
@@ -337,6 +378,7 @@ def dataflow_cmd(
         sec = _add_section(
             "def-use",
             [
+                ("time", _format_duration(timings_sec.get("def-use", 0.0)), "", False),
                 ("symbols_with_defs", str(len(defs)), "", False),
                 ("symbols_with_uses", str(len(uses)), "", False),
                 ("total_defs", str(_total_counts(defs)), "", False),
@@ -345,9 +387,9 @@ def dataflow_cmd(
         )
         if details:
             top = sec.add(_node_text("top symbols"))
-            for sym, cnt in _top_items(defs):
+            for sym, cnt in sorted(_top_items(defs), key=lambda kv: kv[0]):
                 top.add(_node_text(f"def_count[{sym}]", str(cnt), "top"))
-            for sym, cnt in _top_items(uses):
+            for sym, cnt in sorted(_top_items(uses), key=lambda kv: kv[0]):
                 top.add(_node_text(f"use_count[{sym}]", str(cnt), "top"))
 
     if "liveness" in modes:
@@ -356,6 +398,7 @@ def dataflow_cmd(
         sec = _add_section(
             "liveness",
             [
+                ("time", _format_duration(timings_sec.get("liveness", 0.0)), "", False),
                 ("blocks_with_live_in", str(blocks_with_live_in), "", False),
                 ("max_live_in_size", str(_live_size(lv.live_in_by_block)), "", False),
                 ("max_live_out_size", str(_live_size(lv.live_out_by_block)), "", False),
@@ -373,13 +416,18 @@ def dataflow_cmd(
         sec = _add_section(
             "dce",
             [
+                ("time", _format_duration(timings_sec.get("dce", 0.0)), "", False),
                 ("removed_count", str(dce_obj["removed_count"]), "", False),
                 ("remaining_commands", str(dce_obj["remaining_commands"]), "", False),
             ],
         )
         if details:
             removed = sec.add(_node_text("removed defs"))
-            for ent in dce_obj["removed"][:max_items]:
+            removed_entries = sorted(
+                dce_obj["removed"],
+                key=lambda e: (str(e["block_id"]), int(e["cmd_index"]), str(e["symbol"])),
+            )[:max_items]
+            for ent in removed_entries:
                 removed.add(
                     _node_text(
                         f"remove {ent['block_id']}:{ent['cmd_index']}",
@@ -395,13 +443,18 @@ def dataflow_cmd(
         sec = _add_section(
             "use-before-def",
             [
+                ("time", _format_duration(timings_sec.get("use-before-def", 0.0)), "", False),
                 ("status", status, "", True),
                 ("issue_count", _warning_value(issue_count), "", True),
             ],
         )
         if details:
             issues = sec.add(_node_text("issues"))
-            for issue in ubd_obj["issues"][:max_items]:
+            issue_rows = sorted(
+                ubd_obj["issues"],
+                key=lambda i: (str(i["block_id"]), int(i["cmd_index"]), str(i["symbol"])),
+            )[:max_items]
+            for issue in issue_rows:
                 issues.add(
                     _node_text(
                         f"{issue['block_id']}:{issue['cmd_index']}",
@@ -417,13 +470,23 @@ def dataflow_cmd(
         sec = _add_section(
             "dsa",
             [
+                ("time", _format_duration(timings_sec.get("dsa", 0.0)), "", False),
                 ("status", status, "", True),
                 ("issue_count", _warning_value(issue_count), "", True),
             ],
         )
         if details:
             issues = sec.add(_node_text("issues"))
-            for issue in dsa_obj["issues"][:max_items]:
+            issue_rows = sorted(
+                dsa_obj["issues"],
+                key=lambda i: (
+                    str(i["block_id"]),
+                    int(i["cmd_index"]) if i["cmd_index"] is not None else -1,
+                    str(i["symbol"]) if i["symbol"] is not None else "",
+                    str(i["kind"]),
+                ),
+            )[:max_items]
+            for issue in issue_rows:
                 cmd_idx = issue["cmd_index"] if issue["cmd_index"] is not None else "-"
                 sym = issue["symbol"] if issue["symbol"] is not None else "-"
                 issues.add(
@@ -438,11 +501,14 @@ def dataflow_cmd(
         cd_obj = payload["control_dependence"]  # type: ignore[assignment]
         sec = _add_section(
             "control-dependence",
-            [("edge_count", str(len(cd_obj["edges"])), "", False)],
+            [
+                ("time", _format_duration(timings_sec.get("control-dependence", 0.0)), "", False),
+                ("edge_count", str(len(cd_obj["edges"])), "", False),
+            ],
         )
         if details:
             edges = sec.add(_node_text("edges"))
-            for src, dst in cd_obj["edges"][:max_items]:
+            for src, dst in sorted(cd_obj["edges"])[:max_items]:
                 edges.add(_node_text(f"{src} -> {dst}"))
 
     c.print(tree)
