@@ -11,12 +11,10 @@ from typing import Annotated, Any, Optional
 import typer
 from rich.console import Console
 from rich.table import Table
-from rich.text import Text
 
 from ctac.ast.models import TacFile
 from ctac.diff.match_cfg import compare_matched_blocks, match_cfg_blocks
 from ctac.eval import RunConfig, Value, parse_tac_model_path, run_program, value_to_text
-from ctac.eval.value_format import format_value_plain
 from ctac.graph import Cfg, CfgFilter, CfgStyle
 from ctac.parse import ParseError, parse_path
 from ctac.tac_ast.nodes import (
@@ -25,12 +23,26 @@ from ctac.tac_ast.nodes import (
     AssignHavocCmd,
     AssumeExpCmd,
     ConstExpr,
-    JumpCmd,
-    JumpiCmd,
     TacExpr,
 )
 from ctac.tac_ast.pretty import DEFAULT_PRINTERS, configured_printer, pretty_lines
 from ctac.tool.highlight import TAC_THEME, highlight_tac_line
+from ctac.tool.input_resolution import (
+    resolve_model_input_path as _resolve_model_input_path,
+    resolve_tac_input_path as _resolve_tac_input_path,
+    resolve_user_path as _resolve_user_path,
+)
+from ctac.tool.run_format import (
+    MODEL_HAVOC_FALLBACK_NUM,
+    coerce_value_kind as _coerce_value_kind,
+    format_value_plain_local as _format_value_plain,
+    format_value_rich as _format_value_rich,
+    model_fallback_value as _model_fallback_value,
+    pp_terminator_line as _pp_terminator_line,
+    source_prefix_for_cmd as _source_prefix_for_cmd,
+    strip_meta_suffix as _strip_meta_suffix,
+    values_equal as _values_equal,
+)
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -52,8 +64,6 @@ Why better than plain text tools:
 If you must use plain text tools first, start from `ctac pp --plain` output.
 If functionality is missing, say it explicitly and request the exact feature.
 """
-
-_EMV_DIR_RE = re.compile(r"^emv-(?P<idx>\d+)-certora.*$")
 
 _AGENT_GUIDE_BY_CMD: dict[str, str] = {
     "stats": """ctac stats --agent
@@ -181,120 +191,6 @@ def _truncate_diff_lines(lines: list[str], max_lines: int) -> tuple[list[str], i
     keep = lines[:max_lines]
     omitted = len(lines) - max_lines
     return keep, omitted
-
-
-def _resolve_default_certora_out_path() -> tuple[Path | None, str | None]:
-    cwd = Path.cwd()
-    for out_name in ("certora_out", "certrora_out"):
-        root = cwd / out_name
-        if not root.is_dir():
-            continue
-        best_idx = -1
-        best_path: Path | None = None
-        for ent in root.iterdir():
-            if not ent.is_dir():
-                continue
-            m = _EMV_DIR_RE.match(ent.name)
-            if not m:
-                continue
-            idx = int(m.group("idx"))
-            if idx > best_idx or (idx == best_idx and best_path is not None and ent.name > best_path.name):
-                best_idx = idx
-                best_path = ent
-        if best_path is not None:
-            return best_path, out_name
-    return None, None
-
-
-def _resolve_user_path(path: Path | None) -> tuple[Path, list[str]]:
-    warnings: list[str] = []
-    if path is not None:
-        if not path.exists():
-            raise ValueError(f"path does not exist: {path}")
-        if not os.access(path, os.R_OK):
-            raise ValueError(f"path is not readable: {path}")
-        return path, warnings
-
-    auto, out_name = _resolve_default_certora_out_path()
-    if auto is None:
-        raise ValueError(
-            "no path was provided and no certora_out/certrora_out emv-* directory was found in current directory"
-        )
-    warnings.append(f"path not provided; using latest emv directory from {out_name}: {auto}")
-    return auto, warnings
-
-
-def _rule_name_from_tac_path(tac_path: Path) -> str:
-    stem = tac_path.stem
-    if "-" in stem:
-        return stem.split("-", 1)[1]
-    return stem
-
-
-def _resolve_tac_input_path(path: Path) -> tuple[Path, list[str]]:
-    warnings: list[str] = []
-    if path.is_file():
-        return path, warnings
-    if not path.is_dir():
-        raise ValueError(f"input is neither file nor directory: {path}")
-
-    outputs_dir = path / "outputs"
-    if not outputs_dir.is_dir():
-        raise ValueError(f"directory input must contain 'outputs/': {path}")
-
-    all_tacs = sorted(p for p in outputs_dir.rglob("*.tac") if p.is_file())
-    cands = [p for p in all_tacs if "-rule_not_vacuous" not in p.name]
-    if not cands:
-        raise ValueError(f"no non-vacuity .tac files found under: {outputs_dir}")
-
-    preferred = sorted(p for p in cands if p.name.startswith("PresolverRule-"))
-    chosen = preferred[0] if preferred else cands[0]
-    if len(cands) > 1:
-        warnings.append(f"multiple TAC files found under {outputs_dir}; using {chosen.name}")
-    return chosen, warnings
-
-
-def _resolve_model_input_path(
-    path: Path,
-    *,
-    tac_path: Path,
-    kind: str,
-) -> tuple[Path | None, list[str]]:
-    warnings: list[str] = []
-    if path.is_file():
-        return path, warnings
-    if not path.is_dir():
-        raise ValueError(f"{kind} input is neither file nor directory: {path}")
-
-    reports_dir = path / "Reports"
-    if not reports_dir.is_dir():
-        warnings.append(f"{kind} not found: expected Reports/ under {path}")
-        return None, warnings
-
-    rule = _rule_name_from_tac_path(tac_path)
-    prefix = f"ctpp_{rule}-"
-    candidates = sorted(
-        p
-        for p in reports_dir.glob("ctpp_*.txt")
-        if p.is_file() and p.name.startswith(prefix)
-    )
-    assertions = [p for p in candidates if p.name.endswith("-Assertions.txt")]
-
-    if assertions:
-        chosen = assertions[0]
-        if len(assertions) > 1:
-            warnings.append(
-                f"multiple {kind} files match rule '{rule}' with Assertions suffix; using {chosen.name}"
-            )
-        return chosen, warnings
-
-    if candidates:
-        warnings.append(
-            f"{kind} not found for rule '{rule}': only non-Assertions model suffixes were found; ignoring"
-        )
-    else:
-        warnings.append(f"{kind} not found for rule '{rule}' under {reports_dir}")
-    return None, warnings
 
 
 def _print_tac_stats(
@@ -923,300 +819,6 @@ def _run_search(
     c.print(f"blocks_with_matches: {len(blocks_hit)}")
     if total > max_matches:
         c.print(f"# truncated after {max_matches} matches; raise --max-matches to see more")
-
-
-_META_SUFFIX_RE = re.compile(r":\d+$")
-
-
-def _strip_meta_suffix(name: str) -> str:
-    return _META_SUFFIX_RE.sub("", name)
-
-
-def _pp_terminator_line(block: Any, *, strip_var_suffixes: bool) -> str | None:
-    """Render block terminator from TAC commands, preserving jump guards."""
-    term: JumpCmd | JumpiCmd | None = None
-    for cmd in reversed(getattr(block, "commands", [])):
-        if isinstance(cmd, (JumpCmd, JumpiCmd)):
-            term = cmd
-            break
-    if isinstance(term, JumpiCmd):
-        cond = _strip_meta_suffix(term.condition) if strip_var_suffixes else term.condition
-        return f"if {cond} goto {term.then_target} else {term.else_target}"
-    if isinstance(term, JumpCmd):
-        return f"goto {term.target}"
-    return None
-
-
-def _coerce_value_kind(v: Value, target_kind: str) -> Value:
-    if v.kind == target_kind:
-        return v
-    if target_kind == "bool":
-        return Value("bool", bool(v.data) if v.kind == "bool" else int(v.data) != 0)
-    if target_kind == "int":
-        if v.kind == "bool":
-            return Value("int", 1 if bool(v.data) else 0)
-        return Value("int", int(v.data))
-    # target_kind == "bv"
-    if v.kind == "bool":
-        return Value("bv", 1 if bool(v.data) else 0)
-    return Value("bv", int(v.data) % MOD_256)
-
-
-def _values_equal(lhs: Value, rhs: Value) -> bool:
-    if lhs.kind == rhs.kind:
-        if lhs.kind == "bool":
-            return bool(lhs.data) == bool(rhs.data)
-        if lhs.kind == "bv":
-            return int(lhs.data) % MOD_256 == int(rhs.data) % MOD_256
-        return int(lhs.data) == int(rhs.data)
-    rhs_cast = _coerce_value_kind(rhs, lhs.kind)
-    return _values_equal(lhs, rhs_cast)
-
-
-MODEL_HAVOC_FALLBACK_NUM = 12_345_678
-
-
-def _model_fallback_value(kind: str) -> Value:
-    if kind == "bool":
-        return Value("bool", True)
-    if kind == "int":
-        return Value("int", MODEL_HAVOC_FALLBACK_NUM)
-    return Value("bv", MODEL_HAVOC_FALLBACK_NUM)
-
-
-def _trim_path_left(path: str, max_chars: int) -> str:
-    if max_chars <= 0:
-        return ""
-    if len(path) <= max_chars:
-        return path
-    if max_chars <= 2:
-        return "…"
-    tail_budget = max_chars - 2  # reserve for "…/"
-    tail = path[-tail_budget:]
-    slash = tail.find("/")
-    if slash > 0:
-        tail = tail[slash + 1 :]
-    if len(tail) + 2 > max_chars:
-        tail = tail[-(max_chars - 2) :]
-    return "…/" + tail
-
-
-def _source_prefix_for_cmd(cmd: Any, metas: dict[str, Any], *, max_path_chars: int = 56) -> str | None:
-    meta_idx = getattr(cmd, "meta_index", None)
-    if meta_idx is None:
-        return None
-    bucket = metas.get(str(meta_idx))
-    if not isinstance(bucket, list):
-        return None
-
-    def _mk_prefix(spec_file: Any, line: Any) -> str | None:
-        if not isinstance(spec_file, str):
-            return None
-        if not isinstance(line, int):
-            return None
-        return f"{_trim_path_left(spec_file, max_path_chars)}:{line}"
-
-    for ent in bucket:
-        if not isinstance(ent, dict):
-            continue
-        key = ent.get("key")
-        val = ent.get("value")
-        if not isinstance(key, dict):
-            continue
-
-        name = key.get("name")
-        if name == "cvl.range" and isinstance(val, dict):
-            start = val.get("start")
-            if isinstance(start, dict):
-                p = _mk_prefix(val.get("specFile"), start.get("line"))
-                if p is not None:
-                    return p
-        if name == "sbf.source.segment" and isinstance(val, dict):
-            rng = val.get("range")
-            if isinstance(rng, dict):
-                start = rng.get("start")
-                if isinstance(start, dict):
-                    p = _mk_prefix(rng.get("specFile"), start.get("line"))
-                    if p is not None:
-                        return p
-    return None
-
-
-MOD_256 = 1 << 256
-SINGLE_REPR_SMALL_MAX = 15
-
-
-def _format_dec_10k(n: int) -> str:
-    """Group decimal digits by 10_000 chunks for readability."""
-    sign = "-" if n < 0 else ""
-    s = str(abs(n))
-    if len(s) <= 4:
-        return f"{sign}{s}"
-    parts: list[str] = []
-    while s:
-        parts.append(s[-4:])
-        s = s[:-4]
-    parts.reverse()
-    return sign + "_".join(parts)
-
-
-def _ilog2_pow2(n: int) -> int:
-    return n.bit_length() - 1
-
-
-def _pow2_family_label(n: int) -> str | None:
-    """
-    Human-friendly label for powers of two and near-powers.
-
-    Returns one of:
-    - ``2^k``
-    - ``2^k+1``
-    - ``2^k-1``
-    or ``None`` if not in this family.
-    """
-    if n <= 0:
-        return None
-    if n & (n - 1) == 0:
-        return f"2^{_ilog2_pow2(n)}"
-    m = n - 1
-    if m > 0 and (m & (m - 1) == 0):
-        return f"2^{_ilog2_pow2(m)}+1"
-    p = n + 1
-    if p > 0 and (p & (p - 1) == 0):
-        return f"2^{_ilog2_pow2(p)}-1"
-    return None
-
-
-def _pow10_family_label(n: int, *, near_delta: int = 9) -> str | None:
-    """
-    Human-friendly label for powers of ten and near-powers.
-
-    Examples:
-    - ``10^8``
-    - ``10^8+4``
-    - ``10^8-3``
-    """
-    if n <= 0:
-        return None
-
-    p = 1
-    k = 0
-    while p < n:
-        p *= 10
-        k += 1
-    # Now p >= n and p == 10^k.
-
-    best_k = k
-    best_p = p
-    if k > 0:
-        prev_p = p // 10
-        if abs(n - prev_p) <= abs(n - p):
-            best_k = k - 1
-            best_p = prev_p
-
-    d = n - best_p
-    if d == 0:
-        return f"10^{best_k}"
-    if abs(d) <= near_delta:
-        sign = "+" if d > 0 else "-"
-        return f"10^{best_k}{sign}{abs(d)}"
-    return None
-
-
-def _signed_from_width(u: int, width: int) -> int:
-    low = u & ((1 << width) - 1)
-    sign_bit = 1 << (width - 1)
-    return low - (1 << width) if (low & sign_bit) else low
-
-
-def _is_zero_extended(u: int, width: int) -> bool:
-    return (u >> width) == 0
-
-
-def _is_sign_extended(u: int, width: int) -> bool:
-    low_mask = (1 << width) - 1
-    low = u & low_mask
-    sign_bit = 1 << (width - 1)
-    if low & sign_bit:
-        ext = low | (MOD_256 - (1 << width))
-    else:
-        ext = low
-    return ext == u
-
-
-def _format_value_plain(v: Value) -> str:
-    return format_value_plain(v)
-
-
-def _format_value_rich(v: Value) -> Text:
-    if v.kind == "bool":
-        b = bool(v.data)
-        if b:
-            return Text("true", style="bold bright_green")
-        return Text("false", style="bold bright_red")
-
-    if v.kind == "int":
-        n = int(v.data)
-        if -SINGLE_REPR_SMALL_MAX <= n <= SINGLE_REPR_SMALL_MAX:
-            return Text(str(n), style="bold bright_green")
-        p2 = _pow2_family_label(abs(n)) if n >= 0 else None
-        p10 = _pow10_family_label(abs(n)) if n >= 0 else None
-        t = Text(_format_dec_10k(n), style="bold bright_green")
-        if abs(n) >= 256:
-            t.append(" ")
-            t.append(f"({hex(n)})", style="yellow")
-        if p2:
-            t.append(" ")
-            t.append(f"[{p2}]", style="bold magenta")
-        if p10:
-            t.append(" ")
-            t.append(f"[{p10}]", style="bold bright_blue")
-        return t
-
-    # bv
-    u = int(v.data) % MOD_256
-    if _is_zero_extended(u, 32) and u <= SINGLE_REPR_SMALL_MAX:
-        return Text(str(u), style="bold bright_green")
-    p2 = _pow2_family_label(u)
-    p10 = _pow10_family_label(u)
-    if _is_zero_extended(u, 32):
-        t = Text(_format_dec_10k(u), style="bold bright_green")
-        t.append(" ")
-        t.append(f"({hex(u)})", style="yellow")
-        if p2:
-            t.append(" ")
-            t.append(f"[{p2}]", style="bold magenta")
-        if p10:
-            t.append(" ")
-            t.append(f"[{p10}]", style="bold bright_blue")
-        return t
-
-    for w in (8, 16, 32, 64):
-        if _is_sign_extended(u, w):
-            s = _signed_from_width(u, w)
-            if s < 0:
-                if -SINGLE_REPR_SMALL_MAX <= s <= SINGLE_REPR_SMALL_MAX:
-                    return Text(str(s), style="bold bright_red")
-                t = Text(_format_dec_10k(s), style="bold bright_red")
-                t.append(" ")
-                t.append(f"({hex(u)})", style="yellow")
-                if p2:
-                    t.append(" ")
-                    t.append(f"[{p2}]", style="bold magenta")
-                if p10:
-                    t.append(" ")
-                    t.append(f"[{p10}]", style="bold bright_blue")
-                return t
-            break
-
-    t = Text(hex(u), style="yellow")
-    if p2:
-        t.append(" ")
-        t.append(f"[{p2}]", style="bold magenta")
-    if p10:
-        t.append(" ")
-        t.append(f"[{p10}]", style="bold bright_blue")
-    return t
 
 
 @app.command()
