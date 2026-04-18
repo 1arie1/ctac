@@ -53,6 +53,8 @@ If you must use plain text tools first, start from `ctac pp --plain` output.
 If functionality is missing, say it explicitly and request the exact feature.
 """
 
+_EMV_DIR_RE = re.compile(r"^emv-(?P<idx>\d+)-certora.*$")
+
 _AGENT_GUIDE_BY_CMD: dict[str, str] = {
     "stats": """ctac stats --agent
 
@@ -181,6 +183,120 @@ def _truncate_diff_lines(lines: list[str], max_lines: int) -> tuple[list[str], i
     return keep, omitted
 
 
+def _resolve_default_certora_out_path() -> tuple[Path | None, str | None]:
+    cwd = Path.cwd()
+    for out_name in ("certora_out", "certrora_out"):
+        root = cwd / out_name
+        if not root.is_dir():
+            continue
+        best_idx = -1
+        best_path: Path | None = None
+        for ent in root.iterdir():
+            if not ent.is_dir():
+                continue
+            m = _EMV_DIR_RE.match(ent.name)
+            if not m:
+                continue
+            idx = int(m.group("idx"))
+            if idx > best_idx or (idx == best_idx and best_path is not None and ent.name > best_path.name):
+                best_idx = idx
+                best_path = ent
+        if best_path is not None:
+            return best_path, out_name
+    return None, None
+
+
+def _resolve_user_path(path: Path | None) -> tuple[Path, list[str]]:
+    warnings: list[str] = []
+    if path is not None:
+        if not path.exists():
+            raise ValueError(f"path does not exist: {path}")
+        if not os.access(path, os.R_OK):
+            raise ValueError(f"path is not readable: {path}")
+        return path, warnings
+
+    auto, out_name = _resolve_default_certora_out_path()
+    if auto is None:
+        raise ValueError(
+            "no path was provided and no certora_out/certrora_out emv-* directory was found in current directory"
+        )
+    warnings.append(f"path not provided; using latest emv directory from {out_name}: {auto}")
+    return auto, warnings
+
+
+def _rule_name_from_tac_path(tac_path: Path) -> str:
+    stem = tac_path.stem
+    if "-" in stem:
+        return stem.split("-", 1)[1]
+    return stem
+
+
+def _resolve_tac_input_path(path: Path) -> tuple[Path, list[str]]:
+    warnings: list[str] = []
+    if path.is_file():
+        return path, warnings
+    if not path.is_dir():
+        raise ValueError(f"input is neither file nor directory: {path}")
+
+    outputs_dir = path / "outputs"
+    if not outputs_dir.is_dir():
+        raise ValueError(f"directory input must contain 'outputs/': {path}")
+
+    all_tacs = sorted(p for p in outputs_dir.rglob("*.tac") if p.is_file())
+    cands = [p for p in all_tacs if "-rule_not_vacuous" not in p.name]
+    if not cands:
+        raise ValueError(f"no non-vacuity .tac files found under: {outputs_dir}")
+
+    preferred = sorted(p for p in cands if p.name.startswith("PresolverRule-"))
+    chosen = preferred[0] if preferred else cands[0]
+    if len(cands) > 1:
+        warnings.append(f"multiple TAC files found under {outputs_dir}; using {chosen.name}")
+    return chosen, warnings
+
+
+def _resolve_model_input_path(
+    path: Path,
+    *,
+    tac_path: Path,
+    kind: str,
+) -> tuple[Path | None, list[str]]:
+    warnings: list[str] = []
+    if path.is_file():
+        return path, warnings
+    if not path.is_dir():
+        raise ValueError(f"{kind} input is neither file nor directory: {path}")
+
+    reports_dir = path / "Reports"
+    if not reports_dir.is_dir():
+        warnings.append(f"{kind} not found: expected Reports/ under {path}")
+        return None, warnings
+
+    rule = _rule_name_from_tac_path(tac_path)
+    prefix = f"ctpp_{rule}-"
+    candidates = sorted(
+        p
+        for p in reports_dir.glob("ctpp_*.txt")
+        if p.is_file() and p.name.startswith(prefix)
+    )
+    assertions = [p for p in candidates if p.name.endswith("-Assertions.txt")]
+
+    if assertions:
+        chosen = assertions[0]
+        if len(assertions) > 1:
+            warnings.append(
+                f"multiple {kind} files match rule '{rule}' with Assertions suffix; using {chosen.name}"
+            )
+        return chosen, warnings
+
+    if candidates:
+        warnings.append(
+            f"{kind} not found for rule '{rule}': only non-Assertions model suffixes were found; ignoring"
+        )
+    else:
+        warnings.append(f"{kind} not found for rule '{rule}' under {reports_dir}")
+    return None, warnings
+
+
 def _print_tac_stats(
     tac: TacFile,
     *,
@@ -293,7 +409,7 @@ def _print_tac_stats(
 
 
 def _run_stats(
-    path: Path,
+    path: Path | None,
     *,
     plain: bool,
     by_cmd_kind: bool = False,
@@ -302,12 +418,22 @@ def _run_stats(
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
-        tac = parse_path(path)
+        user_path, user_warnings = _resolve_user_path(path)
+        tac_path, input_warnings = _resolve_tac_input_path(user_path)
+        tac = parse_path(tac_path)
+        for w in (user_warnings + input_warnings):
+            c.print(f"input warning: {w}" if plain else f"[yellow]input warning:[/yellow] {w}")
     except ParseError as e:
         if plain:
             c.print(f"parse error: {e}")
         else:
             c.print(f"[red]parse error:[/red] {e}")
+        raise typer.Exit(1) from e
+    except ValueError as e:
+        if plain:
+            c.print(f"input error: {e}")
+        else:
+            c.print(f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
     _print_tac_stats(
         tac,
@@ -317,13 +443,13 @@ def _run_stats(
     )
 
 
-_PATH_KW = dict(exists=True, dir_okay=False, readable=True)
+_PATH_KW = dict(exists=True, dir_okay=True, readable=True)
 _PLAIN_HELP = "Plain text only (no Rich styling); also set CTAC_PLAIN=1 or NO_COLOR."
 
 
 @app.command()
 def stats(
-    path: Path = typer.Argument(..., **_PATH_KW),
+    path: Optional[Path] = typer.Argument(None),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
     agent: bool = _agent_option(),
     by_cmd_kind: bool = typer.Option(
@@ -345,7 +471,7 @@ def stats(
 
 @app.command()
 def parse(
-    path: Path = typer.Argument(..., **_PATH_KW),
+    path: Optional[Path] = typer.Argument(None),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
     agent: bool = _agent_option(),
     by_cmd_kind: bool = typer.Option(
@@ -367,8 +493,8 @@ def parse(
 
 @app.command("cfg-match")
 def match_cfg_cmd(
-    left: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
-    right: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    left: Path = typer.Argument(..., exists=True, dir_okay=True, readable=True),
+    right: Path = typer.Argument(..., exists=True, dir_okay=True, readable=True),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
     agent: bool = _agent_option(),
     min_score: float = typer.Option(
@@ -397,10 +523,19 @@ def match_cfg_cmd(
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
-        a = parse_path(left)
-        b = parse_path(right)
+        left_tac_path, left_w = _resolve_tac_input_path(left)
+        right_tac_path, right_w = _resolve_tac_input_path(right)
+        a = parse_path(left_tac_path)
+        b = parse_path(right_tac_path)
+        for w in left_w:
+            c.print(f"input warning: left: {w}" if plain else f"[yellow]input warning:[/yellow] left: {w}")
+        for w in right_w:
+            c.print(f"input warning: right: {w}" if plain else f"[yellow]input warning:[/yellow] right: {w}")
     except ParseError as e:
         c.print(f"parse error: {e}" if plain else f"[red]parse error:[/red] {e}")
+        raise typer.Exit(1) from e
+    except ValueError as e:
+        c.print(f"input error: {e}" if plain else f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
 
     mr = match_cfg_blocks(a, b, min_score=min_score, const_weight=const_weight)
@@ -459,8 +594,8 @@ def match_cfg_cmd(
 
 @app.command("bb-diff")
 def bb_diff_cmd(
-    left: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
-    right: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    left: Path = typer.Argument(..., exists=True, dir_okay=True, readable=True),
+    right: Path = typer.Argument(..., exists=True, dir_okay=True, readable=True),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
     agent: bool = _agent_option(),
     min_score: float = typer.Option(
@@ -517,10 +652,19 @@ def bb_diff_cmd(
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
-        a = parse_path(left)
-        b = parse_path(right)
+        left_tac_path, left_w = _resolve_tac_input_path(left)
+        right_tac_path, right_w = _resolve_tac_input_path(right)
+        a = parse_path(left_tac_path)
+        b = parse_path(right_tac_path)
+        for w in left_w:
+            c.print(f"input warning: left: {w}" if plain else f"[yellow]input warning:[/yellow] left: {w}")
+        for w in right_w:
+            c.print(f"input warning: right: {w}" if plain else f"[yellow]input warning:[/yellow] right: {w}")
     except ParseError as e:
         c.print(f"parse error: {e}" if plain else f"[red]parse error:[/red] {e}")
+        raise typer.Exit(1) from e
+    except ValueError as e:
+        c.print(f"input error: {e}" if plain else f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
 
     mr = match_cfg_blocks(a, b, min_score=min_score, const_weight=const_weight)
@@ -671,7 +815,7 @@ def _search_matcher(
 
 def _run_search(
     *,
-    path: Path,
+    path: Path | None,
     pattern: str,
     plain: bool,
     printer: str,
@@ -693,12 +837,20 @@ def _run_search(
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
-        tac = parse_path(path)
+        user_path, user_warnings = _resolve_user_path(path)
+        tac_path, input_warnings = _resolve_tac_input_path(user_path)
+        tac = parse_path(tac_path)
     except ParseError as e:
         if plain:
             c.print(f"parse error: {e}")
         else:
             c.print(f"[red]parse error:[/red] {e}")
+        raise typer.Exit(1) from e
+    except ValueError as e:
+        if plain:
+            c.print(f"input error: {e}")
+        else:
+            c.print(f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
 
     flt = _build_cfg_filter(
@@ -729,6 +881,8 @@ def _run_search(
 
     if tac.path:
         c.print(f"# path: {tac.path}")
+    for w in (user_warnings + input_warnings):
+        c.print(f"# input warning: {w}")
     c.print(f"# printer: {printer_name}")
     c.print(f"# mode: {'regex' if regex else 'literal'}")
     c.print(f"# case_sensitive: {case_sensitive}")
@@ -1067,7 +1221,7 @@ def _format_value_rich(v: Value) -> Text:
 
 @app.command()
 def cfg(
-    path: Path = typer.Argument(..., **_PATH_KW),
+    path: Optional[Path] = typer.Argument(None),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
     agent: bool = _agent_option(),
     style: Annotated[
@@ -1147,12 +1301,20 @@ def cfg(
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
-        tac = parse_path(path)
+        user_path, user_warnings = _resolve_user_path(path)
+        tac_path, input_warnings = _resolve_tac_input_path(user_path)
+        tac = parse_path(tac_path)
     except ParseError as e:
         if plain:
             c.print(f"parse error: {e}")
         else:
             c.print(f"[red]parse error:[/red] {e}")
+        raise typer.Exit(1) from e
+    except ValueError as e:
+        if plain:
+            c.print(f"input error: {e}")
+        else:
+            c.print(f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
 
     flt = _build_cfg_filter(
@@ -1182,6 +1344,11 @@ def cfg(
             c.print(f"{_pfx} path: {tac.path}", markup=False)
         else:
             c.print(f"{_pfx} path: {tac.path}")
+    for w in (user_warnings + input_warnings):
+        if st == "dot":
+            c.print(f"{_pfx} input warning: {w}", markup=False)
+        else:
+            c.print(f"{_pfx} input warning: {w}")
     for w in warnings:
         if st == "dot":
             c.print(f"{_pfx} {w}", markup=False)
@@ -1204,7 +1371,7 @@ def cfg(
 
 @app.command()
 def pp(
-    path: Path = typer.Argument(..., **_PATH_KW),
+    path: Optional[Path] = typer.Argument(None),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
     agent: bool = _agent_option(),
     printer: Annotated[
@@ -1241,12 +1408,20 @@ def pp(
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
-        tac = parse_path(path)
+        user_path, user_warnings = _resolve_user_path(path)
+        tac_path, input_warnings = _resolve_tac_input_path(user_path)
+        tac = parse_path(tac_path)
     except ParseError as e:
         if plain:
             c.print(f"parse error: {e}")
         else:
             c.print(f"[red]parse error:[/red] {e}")
+        raise typer.Exit(1) from e
+    except ValueError as e:
+        if plain:
+            c.print(f"input error: {e}")
+        else:
+            c.print(f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
 
     flt = _build_cfg_filter(
@@ -1276,6 +1451,8 @@ def pp(
 
     if tac.path:
         c.print(f"# path: {tac.path}")
+    for w in (user_warnings + input_warnings):
+        c.print(f"# input warning: {w}")
     c.print(f"# printer: {printer_name}")
     for w in warnings:
         c.print(f"# {w}")
@@ -1305,7 +1482,7 @@ def pp(
 @app.command("grep")
 @app.command("search")
 def search_cmd(
-    path: Path = typer.Argument(..., **_PATH_KW),
+    path: Optional[Path] = typer.Argument(None),
     pattern: str = typer.Argument(..., help="Pattern to search in rendered command lines."),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
     agent: bool = _agent_option(),
@@ -1386,7 +1563,7 @@ def search_cmd(
 
 @app.command()
 def run(
-    path: Path = typer.Argument(..., **_PATH_KW),
+    path: Optional[Path] = typer.Argument(None),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
     agent: bool = _agent_option(),
     trace: bool = typer.Option(
@@ -1451,21 +1628,71 @@ def run(
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
-        tac = parse_path(path)
+        user_path, user_warnings = _resolve_user_path(path)
+        tac_path, input_warnings = _resolve_tac_input_path(user_path)
+        tac = parse_path(tac_path)
     except ParseError as e:
         if plain:
             c.print(f"parse error: {e}")
         else:
             c.print(f"[red]parse error:[/red] {e}")
         raise typer.Exit(1) from e
+    except ValueError as e:
+        if plain:
+            c.print(f"input error: {e}")
+        else:
+            c.print(f"[red]input error:[/red] {e}")
+        raise typer.Exit(1) from e
 
     hm = havoc_mode.strip().lower()
     if hm not in ("zero", "random", "ask"):
         raise typer.BadParameter("use one of: zero, random, ask", param_hint="--havoc-mode")
-    if validate and model is None:
-        raise typer.BadParameter("--validate requires --model", param_hint="--validate")
+
+    input_warnings_run = list(user_warnings) + list(input_warnings)
+    if model is None and user_path.is_dir():
+        try:
+            auto_model, auto_model_w = _resolve_model_input_path(
+                user_path,
+                tac_path=tac_path,
+                kind="auto model",
+            )
+        except ValueError as e:
+            raise typer.BadParameter(str(e), param_hint="path") from e
+        input_warnings_run.extend(auto_model_w)
+        model = auto_model
+
     if fallback is not None and model is None:
         raise typer.BadParameter("--fallback requires --model", param_hint="--fallback")
+
+    if model is not None:
+        try:
+            resolved_model, model_input_w = _resolve_model_input_path(
+                model,
+                tac_path=tac_path,
+                kind="model",
+            )
+        except ValueError as e:
+            raise typer.BadParameter(str(e), param_hint="--model") from e
+        input_warnings_run.extend(model_input_w)
+        model = resolved_model
+    if fallback is not None:
+        try:
+            resolved_fallback, fallback_input_w = _resolve_model_input_path(
+                fallback,
+                tac_path=tac_path,
+                kind="fallback model",
+            )
+        except ValueError as e:
+            raise typer.BadParameter(str(e), param_hint="--fallback") from e
+        input_warnings_run.extend(fallback_input_w)
+        fallback = resolved_fallback
+
+    if model is None and fallback is not None:
+        input_warnings_run.append("fallback model ignored because primary model was not resolved")
+        fallback = None
+
+    if validate and model is None:
+        raise typer.BadParameter("--validate requires --model", param_hint="--validate")
 
     printer_name = _normalize_printer_name(printer)
     pp_backend = configured_printer(
@@ -1591,6 +1818,8 @@ def run(
 
     if tac.path:
         c.print(f"# path: {tac.path}")
+    for w in input_warnings_run:
+        c.print(f"# input warning: {w}")
     c.print(f"# mode: run (havoc={run_havoc_mode}, max_steps={max_steps})")
     if model is not None:
         c.print(f"# model: {model}")

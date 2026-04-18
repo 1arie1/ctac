@@ -26,6 +26,8 @@ ctac stats path/to/file.tac
 # compact/legacy-style stats only:
 ctac stats path/to/file.tac --top-blocks 0 --no-by-cmd-kind
 # stats now also include expression-op counts and non-linear mul/div counters.
+# directory input is allowed (Certora Prover output dir); ctac auto-picks a non-vacuity TAC from outputs/
+ctac stats path/to/EvmOutput3-good --plain
 # parse command prints the same stats payload:
 ctac parse path/to/file.tac
 
@@ -72,6 +74,10 @@ ctac run file.tac --trace
 ctac run file.tac --havoc-mode random
 # use TAC model values for havoc; missing values use sentinel fallback
 ctac run file.tac --model path/to/Assertions.txt
+# if PATH is a prover-output directory, ctac run auto-attempts model resolution from the same directory
+ctac run path/to/EvmOutput3-bad --plain
+# directory model input is allowed; ctac resolves Reports/ctpp_<rule>-Assertions.txt
+ctac run path/to/EvmOutput3-bad --model path/to/EvmOutput3-bad --trace --plain
 # optional second model for havoc fallback (when --model has no value)
 ctac run file.tac --model primary.txt --fallback secondary.txt
 # validate computed assignments against the model
@@ -91,6 +97,14 @@ ctac bb-diff a.tac b.tac --with-source --max-blocks 50
 # cap per-block diff verbosity for huge blocks
 ctac bb-diff a.tac b.tac --max-diff-lines 80
 ```
+
+Directory input behavior:
+- For TAC path arguments, if a directory is passed, ctac scans `<dir>/outputs/*.tac`,
+  ignores files containing `-rule_not_vacuous`, and picks one TAC deterministically.
+- If multiple TAC files remain, ctac prints an input warning and continues.
+- For `run --model <dir>` (and `--fallback <dir>`), ctac resolves models from `<dir>/Reports/`
+  using `ctpp_<rule>-Assertions.txt`, where `<rule>` comes from the selected TAC name.
+- Non-`Assertions` model suffixes are ignored; ctac prints an input warning.
 
 ## Library 🏗️
 

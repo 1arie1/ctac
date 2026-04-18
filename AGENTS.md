@@ -7,6 +7,8 @@ Use `ctac` in plain mode unless color is required.
 - Prefer `--plain` for deterministic output.
 - Use `--agent` for terse, plain-text command guidance (`ctac --agent`, `ctac <subcmd> --agent`).
 - First step on unknown file: `ctac stats <file> --plain`.
+- TAC path args accept files or Certora output directories.
+- Directory TAC resolution: scan `<dir>/outputs/*.tac`, ignore `-rule_not_vacuous`, pick one, warn if multiple.
 - `ctac stats` now includes command-kind counts and top blocks by default.
 - `ctac stats` also includes expression-op counts and non-linear mul/div counters.
 - Use `ctac stats <file> --plain --top-blocks 0 --no-by-cmd-kind` for compact stats.
@@ -101,6 +103,10 @@ Prompt template:
     - `--model <path>`
     - `--fallback <path>`
     - `--validate`
+  - Model directory resolution:
+    - When PATH is a directory and `--model` is omitted, ctac auto-attempts model resolution from the same directory.
+    - `--model <dir>` resolves `<dir>/Reports/ctpp_<rule>-Assertions.txt` for the selected TAC rule.
+    - Non-`Assertions` suffix models are ignored with an input warning.
 
 ## Repo Structure (Key Paths)
 
