@@ -9,6 +9,7 @@ from ctac.analysis.passes import (
     analyze_reaching_definitions,
     analyze_use_before_def,
     eliminate_dead_assignments,
+    eliminate_useless_assumes,
 )
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "analyze_reaching_definitions",
     "analyze_use_before_def",
     "eliminate_dead_assignments",
+    "eliminate_useless_assumes",
     "extract_def_use",
     "normalize_program_symbols",
 ]

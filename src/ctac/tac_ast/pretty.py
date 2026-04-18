@@ -28,6 +28,7 @@ from ctac.tac_ast.nodes import (
     TacCmd,
     TacExpr,
 )
+from ctac.tac_ast.range_constraints import match_inclusive_range_constraint
 from ctac.tac_ast.visitor import TacVisitor
 
 
@@ -240,35 +241,6 @@ class HumanPrettyPrinter(PrettyPrinter):
             return self._unbracket_label(format_const_token_human(expr.value))
         return self._strip_outer_parens_once(self.print_expr(expr))
 
-    def _match_inclusive_range(
-        self, left: TacExpr, right: TacExpr
-    ) -> tuple[str, str, str] | None:
-        """Match (x >= lo) && (x <= hi), order-agnostic across conjunction sides."""
-
-        def _cmp_parts(expr: TacExpr) -> tuple[str, TacExpr, TacExpr] | None:
-            if isinstance(expr, ApplyExpr) and expr.op in {"Ge", "Le"} and len(expr.args) == 2:
-                a, b = expr.args
-                if isinstance(a, SymExpr):
-                    return expr.op, a, b
-            return None
-
-        lcmp = _cmp_parts(left)
-        rcmp = _cmp_parts(right)
-        if lcmp is None or rcmp is None:
-            return None
-        lop, lvar, lbound = lcmp
-        rop, rvar, rbound = rcmp
-        if lvar.name != rvar.name:
-            return None
-        if {lop, rop} != {"Ge", "Le"}:
-            return None
-        lo_expr = lbound if lop == "Ge" else rbound
-        hi_expr = lbound if lop == "Le" else rbound
-        var_txt = self._fmt_symbol_token(lvar.name)
-        lo_txt = self._format_bound_expr(lo_expr)
-        hi_txt = self._format_bound_expr(hi_expr)
-        return var_txt, lo_txt, hi_txt
-
     def visit_ConstExpr(self, node: ConstExpr) -> str:
         if not self.human_patterns:
             return super().visit_ConstExpr(node)
@@ -309,13 +281,16 @@ class HumanPrettyPrinter(PrettyPrinter):
         return f"{self._fmt_symbol_token(node.lhs)} = havoc"
 
     def visit_AssumeExpCmd(self, node: AssumeExpCmd) -> str:
-        if self.human_patterns and isinstance(node.condition, ApplyExpr):
-            cond = node.condition
-            if cond.op == "LAnd" and len(cond.args) == 2:
-                rng = self._match_inclusive_range(cond.args[0], cond.args[1])
-                if rng is not None:
-                    var_txt, lo_txt, hi_txt = rng
-                    return f"assume {var_txt} in [{lo_txt}, {hi_txt}]"
+        if self.human_patterns:
+            rng = match_inclusive_range_constraint(
+                node.condition,
+                strip_var_suffixes=self.strip_var_suffixes,
+            )
+            if rng is not None:
+                var_txt = self._fmt_symbol_token(rng.symbol)
+                lo_txt = self._format_bound_expr(rng.lower)
+                hi_txt = self._format_bound_expr(rng.upper)
+                return f"assume {var_txt} in [{lo_txt}, {hi_txt}]"
         return super().visit_AssumeExpCmd(node)
 
     def visit_AnnotationCmd(self, node: AnnotationCmd) -> str | None:

@@ -11,6 +11,7 @@ from ctac.analysis import (
     analyze_reaching_definitions,
     analyze_use_before_def,
     eliminate_dead_assignments,
+    eliminate_useless_assumes,
     extract_def_use,
     normalize_program_symbols,
 )
@@ -350,6 +351,145 @@ Metas {
 }
 """
 
+TAC_UCE_POSITIVE = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd x
+\t\tAssumeExpCmd Le(x 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+TAC_UCE_RANGE_INTERSECTS = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd x
+\t\tAssumeExpCmd LAnd(Le(0x8 x) Ge(0x17 x))
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+TAC_UCE_NON_TAUTOLOGY = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd x
+\t\tAssumeExpCmd Eq(x 0x10)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+TAC_UCE_RANGE_DISJOINT = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd x
+\t\tAssumeExpCmd LAnd(Ge(x -5(int)) Le(x -1(int)))
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+TAC_UCE_NOT_HAVOC_ONLY = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+\ty:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd x
+\t\tAssignExpCmd y Add(x 0x1)
+\t\tAssumeExpCmd Ge(x 0x0)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+TAC_DCE_UCE_PIPELINE = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+\ty:bv256
+\tz:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd x
+\t\tAssignExpCmd y 0x2
+\t\tAssignExpCmd z 0x3
+\t\tAssumeExpCmd Le(x 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
+\t\tAssumeExpCmd Eq(z 0x3)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
 
 def _write_tac(tmp_path: Path, content: str, name: str = "sample.tac") -> Path:
     p = tmp_path / name
@@ -458,6 +598,49 @@ def test_weak_snippet_uses_are_tracked_but_ignored_by_liveness_dce() -> None:
     assert "x" not in lv.live_out_by_block["entry"]
     dce = eliminate_dead_assignments(tac.program, liveness=lv)
     assert any(rem.symbol == "x" for rem in dce.removed)
+
+
+def test_useless_assume_tautology_removed_for_havoc_only_symbol() -> None:
+    tac = parse_string(TAC_UCE_POSITIVE, path="<string>")
+    uce = eliminate_useless_assumes(tac.program)
+    assert len(uce.removed) == 1
+    assert uce.removed[0].symbol == "x"
+    assert uce.removed[0].reason == "u256-domain-tautology"
+
+
+def test_useless_assume_range_removed_when_interval_intersects_u256() -> None:
+    tac = parse_string(TAC_UCE_RANGE_INTERSECTS, path="<string>")
+    uce = eliminate_useless_assumes(tac.program)
+    assert len(uce.removed) == 1
+    assert uce.removed[0].reason == "range-intersects-u256-domain"
+
+
+def test_useless_assume_one_sided_range_removed_when_interval_intersects_u256() -> None:
+    tac = parse_string(
+        TAC_UCE_NON_TAUTOLOGY.replace("Eq(x 0x10)", "Le(x 0xffffffffffffffff)"),
+        path="<string>",
+    )
+    uce = eliminate_useless_assumes(tac.program)
+    assert len(uce.removed) == 1
+    assert uce.removed[0].reason == "range-intersects-u256-domain"
+
+
+def test_useless_assume_non_tautological_is_preserved() -> None:
+    tac = parse_string(TAC_UCE_NON_TAUTOLOGY, path="<string>")
+    uce = eliminate_useless_assumes(tac.program)
+    assert len(uce.removed) == 0
+
+
+def test_useless_assume_range_disjoint_from_u256_is_preserved() -> None:
+    tac = parse_string(TAC_UCE_RANGE_DISJOINT, path="<string>")
+    uce = eliminate_useless_assumes(tac.program)
+    assert len(uce.removed) == 0
+
+
+def test_useless_assume_preserved_when_symbol_not_havoc_only() -> None:
+    tac = parse_string(TAC_UCE_NOT_HAVOC_ONLY, path="<string>")
+    uce = eliminate_useless_assumes(tac.program)
+    assert len(uce.removed) == 0
 
 
 def test_df_cli_liveness_plain_golden(tmp_path: Path) -> None:
@@ -572,6 +755,67 @@ def test_df_cli_output_requires_transform_mode(tmp_path: Path) -> None:
     runner = CliRunner()
     res = runner.invoke(app, ["df", str(p), "--plain", "--show", "liveness", "--style", "pp"])
     assert res.exit_code == 2
+
+
+def test_df_cli_uce_plain_reports_removed_assumes(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_UCE_POSITIVE, "uce.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["df", str(p), "--plain", "--show", "uce"])
+    assert res.exit_code == 0
+    lines = res.stdout.splitlines()
+    assert lines[1:4] == [
+        "# show: uce",
+        "# blocks: 1",
+        "uce:",
+    ]
+    assert lines[4].startswith("  time: ")
+    assert lines[5] == "  removed_count: 1, remaining_commands: 1"
+
+
+def test_df_cli_uce_plain_details_includes_reason(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_UCE_POSITIVE, "uce-details.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["df", str(p), "--plain", "--show", "uce", "--details"])
+    assert res.exit_code == 0
+    lines = res.stdout.splitlines()
+    assert "  format: block:loc | symbol | reason | command" in lines
+    assert any("u256-domain-tautology" in ln for ln in lines)
+
+
+def test_df_cli_dce_uce_pipeline_transformed_output(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_DCE_UCE_PIPELINE, "dce-uce.tac")
+    out = tmp_path / "dce-uce-out.tac"
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["df", str(p), "--plain", "--show", "dce,uce", "-o", str(out), "--style", "raw"],
+    )
+    assert res.exit_code == 0
+    out_tac = parse_path(out)
+    block = out_tac.program.block_by_id()["entry"]
+    raws = [c.raw for c in block.commands]
+    assert "AssignExpCmd y 0x2" not in raws
+    assert (
+        "AssumeExpCmd Le(x 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)"
+        not in raws
+    )
+    assert "AssignExpCmd z 0x3" in raws
+    assert "AssumeExpCmd Eq(z 0x3)" in raws
+
+
+def test_df_cli_uce_then_dce_removes_havoc_unblocked_by_removed_assume(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_UCE_POSITIVE, "uce-dce-order.tac")
+    out = tmp_path / "uce-dce-order-out.tac"
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["df", str(p), "--plain", "--show", "dce,uce", "-o", str(out), "--style", "raw"],
+    )
+    assert res.exit_code == 0
+    out_tac = parse_path(out)
+    raws = [c.raw for c in out_tac.program.block_by_id()["entry"].commands]
+    assert "AssumeExpCmd Le(x 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)" not in raws
+    assert "AssignHavocCmd x" not in raws
 
 
 def test_df_cli_style_pp_uses_topological_block_order(tmp_path: Path) -> None:

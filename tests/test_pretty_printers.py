@@ -143,6 +143,13 @@ def test_human_assume_range_rewrite() -> None:
     assert lines == ["assume R341 in [1, 2^64-1]"]
 
 
+def test_human_assume_range_rewrite_with_flipped_bounds() -> None:
+    cmd = parse_command_line("AssumeExpCmd LAnd(Le(0x8 R341) Ge(0x17 R341))")
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["assume R341 in [8, 2^4+7]"]
+
+
 def test_human_renders_cex_print_value_annotation() -> None:
     cmd = parse_command_line(
         'AnnotationCmd JSON{"key":{"name":"snippet.cmd"},"value":{"#class":"vc.data.SnippetCmd.CvlrSnippetCmd.CexPrintValues","displayMessage":"user_borrow_amount","symbols":[{"namePrefix":"R1289:7"}]}}'

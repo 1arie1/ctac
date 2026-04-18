@@ -6,6 +6,7 @@ from collections import defaultdict
 from dataclasses import replace
 
 from ctac.analysis.defuse import extract_def_use
+from ctac.analysis.expr_walk import command_uses, iter_expr_symbols
 from ctac.analysis.framework import run_backward, run_forward
 from ctac.analysis.model import (
     ControlDependenceResult,
@@ -19,13 +20,21 @@ from ctac.analysis.model import (
     LivenessResult,
     ProgramPoint,
     ReachingDefinitionsResult,
+    RemovedAssume,
+    UceResult,
     UseBeforeDefIssue,
     UseBeforeDefResult,
 )
 from ctac.analysis.symbols import canonical_symbol
-from ctac.ast.nodes import AssignExpCmd, AssignHavocCmd
+from ctac.ast.nodes import ApplyExpr, AssignExpCmd, AssignHavocCmd, AssumeExpCmd, SymbolRef
 from ctac.graph import Cfg
 from ctac.ir.models import TacBlock, TacProgram
+from ctac.tac_ast.range_constraints import (
+    MAX_U256,
+    const_expr_to_int,
+    interval_constraint_intersects_u256,
+    match_symbol_interval_constraint,
+)
 
 RDStateFast = dict[int, int]  # symbol_id -> bitset(def_id)
 
@@ -291,6 +300,159 @@ def eliminate_dead_assignments(
         new_blocks.append(replace(block, commands=kept_cmds))
 
     return DceResult(removed=tuple(removed), program=TacProgram(blocks=new_blocks))
+
+
+def _is_havoc_only_symbol(
+    symbol: str,
+    *,
+    has_havoc_def: set[str],
+    disallowed_non_assume: set[str],
+) -> bool:
+    return symbol in has_havoc_def and symbol not in disallowed_non_assume
+
+
+def _normalize_symbol_const_cmp(
+    expr: ApplyExpr,
+    *,
+    strip_var_suffixes: bool,
+) -> tuple[str, str, int] | None:
+    if expr.op not in {"Lt", "Le", "Gt", "Ge"} or len(expr.args) != 2:
+        return None
+    left, right = expr.args
+    left_const = const_expr_to_int(left)
+    right_const = const_expr_to_int(right)
+
+    if isinstance(left, SymbolRef) and right_const is not None:
+        sym = canonical_symbol(left.name, strip_var_suffixes=strip_var_suffixes)
+        return expr.op, sym, right_const
+    if isinstance(right, SymbolRef) and left_const is not None:
+        sym = canonical_symbol(right.name, strip_var_suffixes=strip_var_suffixes)
+        flipped = {
+            "Lt": "Gt",
+            "Le": "Ge",
+            "Gt": "Lt",
+            "Ge": "Le",
+        }[expr.op]
+        return flipped, sym, left_const
+    return None
+
+
+def _is_u256_tautology_for_symbol(
+    expr,
+    *,
+    symbol: str,
+    strip_var_suffixes: bool,
+) -> bool:
+    if not isinstance(expr, ApplyExpr):
+        return False
+    norm = _normalize_symbol_const_cmp(expr, strip_var_suffixes=strip_var_suffixes)
+    if norm is None:
+        return False
+    op, sym, c = norm
+    if sym != symbol:
+        return False
+    if op == "Le":
+        return c >= MAX_U256
+    if op == "Lt":
+        return c >= MAX_U256 + 1
+    if op == "Ge":
+        return c <= 0
+    if op == "Gt":
+        return c < 0
+    return False
+
+
+def _range_intersects_u256_domain(
+    expr,
+    *,
+    symbol: str,
+    strip_var_suffixes: bool,
+) -> bool:
+    interval = match_symbol_interval_constraint(
+        expr,
+        strip_var_suffixes=strip_var_suffixes,
+    )
+    if interval is None or interval.symbol != symbol:
+        return False
+    return interval_constraint_intersects_u256(interval)
+
+
+def eliminate_useless_assumes(
+    program: TacProgram,
+    *,
+    strip_var_suffixes: bool = True,
+) -> UceResult:
+    removed: list[RemovedAssume] = []
+    new_blocks: list[TacBlock] = []
+    has_havoc_def: set[str] = set()
+    disallowed_non_assume: set[str] = set()
+
+    for block in program.blocks:
+        for cmd in block.commands:
+            if isinstance(cmd, AssumeExpCmd):
+                continue
+            if isinstance(cmd, AssignHavocCmd):
+                lhs = canonical_symbol(cmd.lhs, strip_var_suffixes=strip_var_suffixes)
+                has_havoc_def.add(lhs)
+                continue
+            if isinstance(cmd, AssignExpCmd):
+                lhs = canonical_symbol(cmd.lhs, strip_var_suffixes=strip_var_suffixes)
+                disallowed_non_assume.add(lhs)
+            for sym in command_uses(cmd, strip_var_suffixes=strip_var_suffixes):
+                disallowed_non_assume.add(sym)
+
+    for block in program.blocks:
+        kept_cmds = []
+        for idx, cmd in enumerate(block.commands):
+            if not isinstance(cmd, AssumeExpCmd):
+                kept_cmds.append(cmd)
+                continue
+
+            symbols = tuple(dict.fromkeys(iter_expr_symbols(cmd.condition, strip_var_suffixes=strip_var_suffixes)))
+            if len(symbols) != 1:
+                kept_cmds.append(cmd)
+                continue
+
+            sym = symbols[0]
+            if not _is_havoc_only_symbol(
+                sym,
+                has_havoc_def=has_havoc_def,
+                disallowed_non_assume=disallowed_non_assume,
+            ):
+                kept_cmds.append(cmd)
+                continue
+
+            reason: str | None = None
+            if _is_u256_tautology_for_symbol(
+                cmd.condition,
+                symbol=sym,
+                strip_var_suffixes=strip_var_suffixes,
+            ):
+                reason = "u256-domain-tautology"
+            elif _range_intersects_u256_domain(
+                cmd.condition,
+                symbol=sym,
+                strip_var_suffixes=strip_var_suffixes,
+            ):
+                reason = "range-intersects-u256-domain"
+
+            if reason is None:
+                kept_cmds.append(cmd)
+                continue
+
+            removed.append(
+                RemovedAssume(
+                    symbol=sym,
+                    block_id=block.id,
+                    cmd_index=idx,
+                    cmd_kind=type(cmd).__name__,
+                    raw=cmd.raw,
+                    reason=reason,
+                )
+            )
+        new_blocks.append(replace(block, commands=kept_cmds))
+
+    return UceResult(removed=tuple(removed), program=TacProgram(blocks=new_blocks))
 
 
 def analyze_dsa(

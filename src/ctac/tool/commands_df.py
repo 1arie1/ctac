@@ -18,6 +18,7 @@ from ctac.analysis import (
     analyze_liveness,
     analyze_use_before_def,
     eliminate_dead_assignments,
+    eliminate_useless_assumes,
     extract_def_use,
     normalize_program_symbols,
 )
@@ -49,16 +50,18 @@ def _display_loc(
 
 
 def _parse_show_modes(raw: str) -> set[str]:
+    aliases = {"useless-assume": "uce"}
     valid = {
         "def-use",
         "liveness",
         "dce",
+        "uce",
         "use-before-def",
         "dsa",
         "control-dependence",
         "all",
     }
-    items = {x.strip().lower() for x in raw.split(",") if x.strip()}
+    items = {aliases.get(x.strip().lower(), x.strip().lower()) for x in raw.split(",") if x.strip()}
     if not items:
         raise typer.BadParameter("at least one mode required", param_hint="--show")
     unknown = sorted(items - valid)
@@ -134,7 +137,7 @@ def dataflow_cmd(
             "--show",
             help=(
                 "Comma-separated analysis outputs: def-use,liveness,dce,use-before-def,dsa,"
-                "control-dependence,all"
+                "control-dependence,uce,all"
             ),
         ),
     ] = "all",
@@ -283,16 +286,44 @@ def dataflow_cmd(
             },
         }
         timings_sec["liveness"] = time.perf_counter() - t0
+    if "uce" in modes or "useless-assume" in modes:
+        t0 = time.perf_counter()
+        uce = eliminate_useless_assumes(
+            transformed_program,
+            strip_var_suffixes=strip_var_suffixes,
+        )
+        payload["uce"] = {
+            "removed_count": len(uce.removed),
+            "removed": [asdict(x) for x in uce.removed],
+            "remaining_commands": sum(len(b.commands) for b in uce.program.blocks),
+        }
+        transformed_program = uce.program
+        has_transform_output = True
+        timings_sec["uce"] = time.perf_counter() - t0
     if "dce" in modes:
-        if lv is None:
+        dce_input = transformed_program
+        if dce_input is normalized_program and lv is not None:
+            lv_for_dce = lv
+        else:
             t0 = time.perf_counter()
-            lv = analyze_liveness(normalized_program, strip_var_suffixes=strip_var_suffixes, def_use=du)
-            timings_sec.setdefault("liveness", time.perf_counter() - t0)
+            dce_du = (
+                du
+                if dce_input is normalized_program
+                else extract_def_use(dce_input, strip_var_suffixes=strip_var_suffixes)
+            )
+            lv_for_dce = analyze_liveness(
+                dce_input,
+                strip_var_suffixes=strip_var_suffixes,
+                def_use=dce_du,
+            )
+            if dce_input is normalized_program:
+                lv = lv_for_dce
+                timings_sec.setdefault("liveness", time.perf_counter() - t0)
         t0 = time.perf_counter()
         dce = eliminate_dead_assignments(
-            normalized_program,
+            dce_input,
             strip_var_suffixes=strip_var_suffixes,
-            liveness=lv,
+            liveness=lv_for_dce,
         )
         payload["dce"] = {
             "removed_count": len(dce.removed),
@@ -330,7 +361,7 @@ def dataflow_cmd(
     wants_output = output_path is not None or style is not None
     if wants_output and not has_transform_output:
         raise typer.BadParameter(
-            "transformed output is available only when at least one transform pass is selected (currently: dce)",
+            "transformed output is available only when at least one transform pass is selected (currently: dce, uce)",
             param_hint="-o/--style",
         )
     if output_path is not None and style is None:
@@ -501,6 +532,52 @@ def dataflow_cmd(
                         )
                         sym = str(ent["symbol"])
                         c.print(f"  {loc:<{loc_w}} | {sym:<{sym_w}} | {rendered}", markup=False)
+
+        if "uce" in modes or "useless-assume" in modes:
+            uce_obj = payload["uce"]  # type: ignore[assignment]
+            c.print("uce:", markup=False)
+            c.print(f"  time: {_format_duration(timings_sec.get('uce', 0.0))}", markup=False)
+            c.print(
+                (
+                    f"  removed_count: {uce_obj['removed_count']}, "
+                    f"remaining_commands: {uce_obj['remaining_commands']}"
+                ),
+                markup=False,
+            )
+            if details:
+                removed_rows = uce_obj["removed"][:max_items]
+                if removed_rows:
+                    c.print("  format: block:loc | symbol | reason | command", markup=False)
+                    loc_w = max(
+                        9,
+                        max(
+                            len(
+                                _display_loc(
+                                    e["block_id"],
+                                    e["cmd_index"],
+                                    pretty_loc_by_point=pretty_loc_by_point,
+                                    use_pretty_loc=not raw_output,
+                                )
+                            )
+                            for e in removed_rows
+                        ),
+                    )
+                    sym_w = max(6, max(len(str(e["symbol"])) for e in removed_rows))
+                    reason_w = max(6, max(len(str(e["reason"])) for e in removed_rows))
+                    for ent in removed_rows:
+                        rendered = render_by_point.get((ent["block_id"], ent["cmd_index"]), ent["raw"])
+                        loc = _display_loc(
+                            ent["block_id"],
+                            ent["cmd_index"],
+                            pretty_loc_by_point=pretty_loc_by_point,
+                            use_pretty_loc=not raw_output,
+                        )
+                        sym = str(ent["symbol"])
+                        reason = str(ent["reason"])
+                        c.print(
+                            f"  {loc:<{loc_w}} | {sym:<{sym_w}} | {reason:<{reason_w}} | {rendered}",
+                            markup=False,
+                        )
 
         if "use-before-def" in modes:
             ubd_obj = payload["use_before_def"]  # type: ignore[assignment]
@@ -741,6 +818,32 @@ def dataflow_cmd(
                         f"remove {_display_loc(ent['block_id'], ent['cmd_index'], pretty_loc_by_point=pretty_loc_by_point, use_pretty_loc=not raw_output)}",
                         str(ent["symbol"]),
                         str(rendered),
+                    )
+                )
+
+    if "uce" in modes or "useless-assume" in modes:
+        uce_obj = payload["uce"]  # type: ignore[assignment]
+        sec = _add_section(
+            "uce",
+            [
+                ("time", _format_duration(timings_sec.get("uce", 0.0)), "", False),
+                ("removed_count", str(uce_obj["removed_count"]), "", False),
+                ("remaining_commands", str(uce_obj["remaining_commands"]), "", False),
+            ],
+        )
+        if details:
+            removed = sec.add(_node_text("removed assumes"))
+            removed_entries = sorted(
+                uce_obj["removed"],
+                key=lambda e: (str(e["block_id"]), int(e["cmd_index"]), str(e["symbol"])),
+            )[:max_items]
+            for ent in removed_entries:
+                rendered = render_by_point.get((ent["block_id"], ent["cmd_index"]), ent["raw"])
+                removed.add(
+                    _node_text(
+                        f"remove {_display_loc(ent['block_id'], ent['cmd_index'], pretty_loc_by_point=pretty_loc_by_point, use_pretty_loc=not raw_output)}",
+                        str(ent["symbol"]),
+                        f"{ent['reason']}; {rendered}",
                     )
                 )
 

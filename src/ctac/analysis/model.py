@@ -139,3 +139,19 @@ class DeadAssignment:
 class DceResult:
     removed: tuple[DeadAssignment, ...]
     program: TacProgram
+
+
+@dataclass(frozen=True)
+class RemovedAssume:
+    symbol: str
+    block_id: str
+    cmd_index: int
+    cmd_kind: str
+    raw: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class UceResult:
+    removed: tuple[RemovedAssume, ...]
+    program: TacProgram
