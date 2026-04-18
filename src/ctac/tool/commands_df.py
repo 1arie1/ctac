@@ -646,7 +646,6 @@ def dataflow_cmd(
                         max(len(str(i["symbol"]) if i["symbol"] is not None else "-") for i in issue_rows),
                     )
                     for issue in issue_rows:
-                        cmd_idx = issue["cmd_index"] if issue["cmd_index"] is not None else "-"
                         sym = issue["symbol"] if issue["symbol"] is not None else "-"
                         rendered = (
                             render_by_point.get((issue["block_id"], issue["cmd_index"]), issue["detail"])
@@ -907,7 +906,6 @@ def dataflow_cmd(
                 ),
             )[:max_items]
             for issue in issue_rows:
-                cmd_idx = issue["cmd_index"] if issue["cmd_index"] is not None else "-"
                 sym = issue["symbol"] if issue["symbol"] is not None else "-"
                 issues.add(
                     _node_text(

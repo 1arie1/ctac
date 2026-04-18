@@ -27,7 +27,6 @@ from ctac.analysis.model import (
 )
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import ApplyExpr, AssignExpCmd, AssignHavocCmd, AssumeExpCmd, SymbolRef
-from ctac.graph import Cfg
 from ctac.ir.models import TacBlock, TacProgram
 from ctac.tac_ast.range_constraints import (
     MAX_U256,

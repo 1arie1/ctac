@@ -41,8 +41,6 @@ def extract_def_use(program: TacProgram, *, strip_var_suffixes: bool = True) -> 
         use_sites: list[UseSite] = []
         weak_use_sites: list[UseSite] = []
 
-        seen_static = False
-        seen_dynamic = False
         seen_terminator = False
         dsa_shape_ok = True
         dsa_shape_violation: str | None = None
@@ -80,10 +78,6 @@ def extract_def_use(program: TacProgram, *, strip_var_suffixes: bool = True) -> 
                 weak_uses_by_symbol[sym].append(wus)
 
             if isinstance(cmd, AssignExpCmd):
-                seen_static = True
-                if seen_dynamic and dsa_shape_ok:
-                    dsa_shape_ok = False
-                    dsa_shape_violation = "static assignment appears after dynamic assignment"
                 if seen_terminator and dsa_shape_ok:
                     dsa_shape_ok = False
                     dsa_shape_violation = "assignment appears after terminator"
@@ -110,7 +104,6 @@ def extract_def_use(program: TacProgram, *, strip_var_suffixes: bool = True) -> 
                 # Havoc is environment/model initialization in many TACs (especially entry blocks),
                 # not a DSA "dynamic assignment" in the sense of late-block dynamic updates.
                 # Treat havoc as a regular assignment for shape checks.
-                seen_static = True
                 if seen_terminator and dsa_shape_ok:
                     dsa_shape_ok = False
                     dsa_shape_violation = "assignment appears after terminator"
