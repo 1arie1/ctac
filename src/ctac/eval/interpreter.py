@@ -384,7 +384,10 @@ def run_program(
     pretty_cmd: Callable[[TacCmd], str | None] | None = None,
 ) -> RunResult:
     cfg = config or RunConfig()
-    normalize_symbol = lambda s: canonical_symbol(s, strip_var_suffixes=cfg.strip_var_suffixes)
+
+    def normalize_symbol(s: str) -> str:
+        return canonical_symbol(s, strip_var_suffixes=cfg.strip_var_suffixes)
+
     store = {normalize_symbol(k): v for k, v in cfg.initial_store.items()}
     ev = Evaluator(store, normalize_symbol=normalize_symbol)
     blocks_by_id = program.block_by_id()
