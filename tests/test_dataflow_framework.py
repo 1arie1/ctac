@@ -15,7 +15,7 @@ from ctac.analysis import (
     normalize_program_symbols,
 )
 from ctac.ast.nodes import AnnotationCmd
-from ctac.parse import parse_string
+from ctac.parse import parse_path, parse_string
 from ctac.tool.main import app
 
 
@@ -325,6 +325,31 @@ Metas {
 }
 """
 
+TAC_UNORDERED_BLOCKS = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+}
+Program {
+\tBlock b Succ [] {
+\t\tAssignExpCmd x 0x2
+\t}
+\tBlock entry Succ [b] {
+\t\tAssignExpCmd x 0x1
+\t\tJumpCmd b
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
 
 def _write_tac(tmp_path: Path, content: str, name: str = "sample.tac") -> Path:
     p = tmp_path / name
@@ -515,3 +540,60 @@ def test_df_cli_weak_is_strong_prevents_dce_removal(tmp_path: Path) -> None:
     assert res.exit_code == 0
     lines = res.stdout.splitlines()
     assert any("removed_count: 0" in ln for ln in lines)
+
+
+def test_df_cli_dce_output_raw_writes_parseable_tac(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_DCE, "dce-out-raw.tac")
+    out = tmp_path / "out.tac"
+    runner = CliRunner()
+    res = runner.invoke(app, ["df", str(p), "--plain", "--show", "dce", "-o", str(out), "--style", "raw"])
+    assert res.exit_code == 0
+    assert out.exists()
+    out_tac = parse_path(out)
+    entry = out_tac.program.block_by_id()["entry"]
+    raw_cmds = [c.raw for c in entry.commands]
+    assert "AssignExpCmd y 0x2" not in raw_cmds
+    assert "AssignExpCmd x 0x1" in raw_cmds
+
+
+def test_df_cli_dce_style_pp_prints_transformed_program(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_DCE, "dce-out-pp.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["df", str(p), "--plain", "--show", "dce", "--style", "pp"])
+    assert res.exit_code == 0
+    lines = res.stdout.splitlines()
+    assert "entry:" in lines
+    assert not any("y = 2" in ln for ln in lines)
+    assert any("x = 1" in ln for ln in lines)
+
+
+def test_df_cli_output_requires_transform_mode(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_DCE, "no-transform-out.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["df", str(p), "--plain", "--show", "liveness", "--style", "pp"])
+    assert res.exit_code == 2
+
+
+def test_df_cli_style_pp_uses_topological_block_order(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_UNORDERED_BLOCKS, "unordered.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["df", str(p), "--plain", "--show", "dce", "--style", "pp"])
+    assert res.exit_code == 0
+    lines = res.stdout.splitlines()
+    entry_i = lines.index("entry:")
+    b_i = lines.index("b:")
+    assert entry_i < b_i
+
+
+def test_df_cli_style_raw_uses_topological_block_order(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_UNORDERED_BLOCKS, "unordered-raw.tac")
+    out = tmp_path / "unordered-out.tac"
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["df", str(p), "--plain", "--show", "dce", "-o", str(out), "--style", "raw"],
+    )
+    assert res.exit_code == 0
+    out_tac = parse_path(out)
+    ids = [b.id for b in out_tac.program.blocks]
+    assert ids.index("entry") < ids.index("b")

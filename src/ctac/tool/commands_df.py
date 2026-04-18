@@ -11,6 +11,7 @@ from rich.markup import escape
 from rich.tree import Tree
 
 from ctac.ast.pretty import configured_printer
+from ctac.ast.run_format import pp_terminator_line
 from ctac.analysis import (
     analyze_control_dependence,
     analyze_dsa,
@@ -20,7 +21,8 @@ from ctac.analysis import (
     extract_def_use,
     normalize_program_symbols,
 )
-from ctac.parse import ParseError, parse_path
+from ctac.graph import Cfg
+from ctac.parse import ParseError, parse_path, render_tac_file
 from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
 from ctac.tool.filters import CfgFilterOptions, apply_cfg_filters
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
@@ -82,6 +84,45 @@ def _format_duration(seconds: float) -> str:
     return "0ns"
 
 
+def _normalize_output_style(style: str) -> str:
+    s = style.strip().lower()
+    if s not in {"pp", "raw"}:
+        raise typer.BadParameter("use one of: pp, raw", param_hint="--style")
+    return s
+
+
+def _render_program_pp_lines(
+    program,
+    *,
+    strip_var_suffixes: bool,
+) -> list[str]:
+    pp = configured_printer(
+        "human",
+        strip_var_suffixes=strip_var_suffixes,
+        human_patterns=True,
+    )
+    out: list[str] = []
+    for b in Cfg(program).ordered_blocks():
+        out.append(f"{b.id}:")
+        for cmd in b.commands:
+            line = pp.print_cmd(cmd)
+            if line is not None and line != "":
+                out.append(f"  {line}")
+        term = pp_terminator_line(b, strip_var_suffixes=strip_var_suffixes)
+        if term is not None:
+            out.append(f"  {term}")
+        elif b.successors:
+            out.append(f"  goto {', '.join(b.successors)}")
+        else:
+            out.append("  stop")
+        out.append("")
+    return out
+
+
+def _program_topologically_ordered(program):
+    return type(program)(blocks=Cfg(program).ordered_blocks())
+
+
 @app.command("df")
 def dataflow_cmd(
     path: Optional[Path] = typer.Argument(None),
@@ -124,6 +165,14 @@ def dataflow_cmd(
         "--weak-is-strong",
         help="Parse snippet weak refs as strong refs (annotations behave as strong uses).",
     ),
+    output_path: Annotated[
+        Optional[Path],
+        typer.Option("-o", "--output", help="Write transformed output to this path."),
+    ] = None,
+    output_style: Annotated[
+        Optional[str],
+        typer.Option("--style", help="Transformed output style: pp or raw."),
+    ] = None,
     to_block: Annotated[Optional[str], typer.Option("--to", metavar="NBID")] = None,
     from_block: Annotated[Optional[str], typer.Option("--from", metavar="NBID")] = None,
     only: Annotated[Optional[str], typer.Option("--only")] = None,
@@ -135,6 +184,9 @@ def dataflow_cmd(
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)
+    style: str | None = None
+    if output_style is not None:
+        style = _normalize_output_style(output_style)
     try:
         modes = _parse_show_modes(show)
         user_path, user_warnings = resolve_user_path(path)
@@ -170,6 +222,8 @@ def dataflow_cmd(
     du = extract_def_use(normalized_program, strip_var_suffixes=strip_var_suffixes)
     timings_sec["def-use"] = time.perf_counter() - t0
     lv = None
+    transformed_program = normalized_program
+    has_transform_output = False
     render_by_point: dict[tuple[str, int], str] = {}
     pretty_loc_by_point: dict[tuple[str, int], int] = {}
     if details:
@@ -245,6 +299,8 @@ def dataflow_cmd(
             "removed": [asdict(x) for x in dce.removed],
             "remaining_commands": sum(len(b.commands) for b in dce.program.blocks),
         }
+        transformed_program = dce.program
+        has_transform_output = True
         timings_sec["dce"] = time.perf_counter() - t0
     if "use-before-def" in modes:
         t0 = time.perf_counter()
@@ -271,8 +327,44 @@ def dataflow_cmd(
         timings_sec["control-dependence"] = time.perf_counter() - t0
     payload["timings_sec"] = {k: timings_sec[k] for k in sorted(timings_sec)}
 
+    wants_output = output_path is not None or style is not None
+    if wants_output and not has_transform_output:
+        raise typer.BadParameter(
+            "transformed output is available only when at least one transform pass is selected (currently: dce)",
+            param_hint="-o/--style",
+        )
+    if output_path is not None and style is None:
+        style = "raw"
+    if output_path is None and style is not None and json_out:
+        raise typer.BadParameter(
+            "--style without -o is incompatible with --json output",
+            param_hint="--style",
+        )
+
+    transformed_text: str | None = None
+    transformed_lines: list[str] | None = None
+    transformed_program_out = _program_topologically_ordered(transformed_program)
+    if has_transform_output and style == "raw":
+        transformed_text = render_tac_file(tac, program=transformed_program_out)
+    elif has_transform_output and style == "pp":
+        transformed_lines = _render_program_pp_lines(
+            transformed_program_out,
+            strip_var_suffixes=strip_var_suffixes,
+        )
+
+    if output_path is not None:
+        assert style is not None
+        text_to_write = (
+            transformed_text
+            if style == "raw"
+            else ("\n".join(transformed_lines or []) + ("\n" if transformed_lines else ""))
+        )
+        output_path.write_text(text_to_write, encoding="utf-8")
+
     if json_out:
         c.print(json.dumps(payload, indent=2, sort_keys=True))
+        if output_path is not None:
+            c.print(f"# wrote transformed output: {output_path}")
         return
 
     def _total_counts(x: dict[str, int]) -> int:
@@ -504,6 +596,16 @@ def dataflow_cmd(
             c.print(f"  edges: {len(cd_obj['edges'])}", markup=False)
             for src, dst in cd_obj["edges"][: max_items if details else 0]:
                 c.print(f"  {src} -> {dst}", markup=False)
+        if output_path is not None:
+            c.print(f"# wrote transformed output: {output_path}", markup=False)
+        if style is not None and output_path is None:
+            c.print("# transformed output:", markup=False)
+            if style == "raw":
+                for ln in (transformed_text or "").splitlines():
+                    c.print(ln, markup=False)
+            else:
+                for ln in transformed_lines or []:
+                    c.print(ln, markup=False)
         return
 
     tree = Tree("[bold]Data-flow Summary[/bold]", guide_style="dim")
@@ -730,3 +832,13 @@ def dataflow_cmd(
                 edges.add(_node_text(f"{src} -> {dst}"))
 
     c.print(tree)
+    if output_path is not None:
+        c.print(f"[cyan]wrote transformed output[/cyan]: [bold]{escape(str(output_path))}[/bold]")
+    if style is not None and output_path is None:
+        c.print("[bold]Transformed Output[/bold]")
+        if style == "raw":
+            for ln in (transformed_text or "").splitlines():
+                c.print(ln, markup=False)
+        else:
+            for ln in transformed_lines or []:
+                c.print(ln)

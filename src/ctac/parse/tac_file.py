@@ -17,6 +17,28 @@ class ParseError(ValueError):
     """Invalid or unsupported `.tac` layout."""
 
 
+def render_program(program: TacProgram) -> str:
+    """Serialize a `TacProgram` back into TAC Program-section text."""
+    lines: list[str] = ["Program {"]
+    for block in program.blocks:
+        succ = ", ".join(block.successors)
+        lines.append(f"\tBlock {block.id} Succ [{succ}] {{")
+        for cmd in block.commands:
+            lines.append(f"\t\t{cmd.raw}")
+        lines.append("\t}")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def render_tac_file(tac: TacFile, *, program: TacProgram | None = None) -> str:
+    """Serialize a `TacFile`, optionally replacing only the Program section."""
+    prog_text = render_program(program if program is not None else tac.program)
+    sym_text = tac.symbol_table_text.rstrip("\n")
+    axioms_text = tac.axioms_text.rstrip("\n")
+    metas_text = "Metas " + json.dumps(tac.metas, indent=2, sort_keys=True)
+    return "\n".join([sym_text, prog_text, axioms_text, metas_text]) + "\n"
+
+
 def parse_path(
     path: str | Path, *, encoding: str = "utf-8", weak_is_strong: bool = False
 ) -> TacFile:
