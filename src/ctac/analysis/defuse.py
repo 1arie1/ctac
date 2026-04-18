@@ -91,10 +91,13 @@ def extract_def_use(program: TacProgram, *, strip_var_suffixes: bool = True) -> 
                     defs_in_block.append(lhs)
                 kills_in_block.add(lhs)
             elif isinstance(cmd, AssignHavocCmd):
-                seen_dynamic = True
+                # Havoc is environment/model initialization in many TACs (especially entry blocks),
+                # not a DSA "dynamic assignment" in the sense of late-block dynamic updates.
+                # Treat havoc as a regular assignment for shape checks.
+                seen_static = True
                 if seen_terminator and dsa_shape_ok:
                     dsa_shape_ok = False
-                    dsa_shape_violation = "dynamic assignment appears after terminator"
+                    dsa_shape_violation = "assignment appears after terminator"
                 lhs = canonical_symbol(cmd.lhs, strip_var_suffixes=strip_var_suffixes)
                 sid = _symbol_id(lhs)
                 ds = DefinitionSite(

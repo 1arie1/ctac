@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from ctac.ir.models import TacProgram
@@ -98,8 +98,19 @@ class DsaIssue:
 
 
 @dataclass(frozen=True)
+class DsaDynamicAssignment:
+    symbol: str
+    block_id: str
+    cmd_index: int
+    cmd_kind: str
+    raw: str
+    sibling_defs: tuple[str, ...]  # "block_id:cmd_index"
+
+
+@dataclass(frozen=True)
 class DsaResult:
     issues: tuple[DsaIssue, ...]
+    dynamic_assignments: tuple[DsaDynamicAssignment, ...] = field(default_factory=tuple)
 
     @property
     def is_valid(self) -> bool:

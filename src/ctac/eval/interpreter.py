@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 from ctac.ir.models import TacBlock, TacProgram
+from ctac.builtins import is_known_builtin_function_symbol
 from ctac.eval.constants import MOD_256, SIGN_BIT_256
 from ctac.eval.types import HavocMode, Value, ValueKind
 from ctac.ast.nodes import (
@@ -280,7 +281,7 @@ class Evaluator:
 
         if op == "Apply" and len(args) >= 2 and isinstance(whole.args[0], SymExpr):
             fn = whole.args[0].name
-            if fn.startswith("safe_math_narrow_bv256"):
+            if is_known_builtin_function_symbol(fn):
                 return _mk_bv(_as_int(args[1]))
             # unknown builtin/application: conservative fallback
             return args[1]

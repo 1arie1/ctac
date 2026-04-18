@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from ctac.builtins import is_known_builtin_function_symbol
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
     ApplyExpr,
@@ -22,6 +23,14 @@ def iter_expr_symbols(expr: TacExpr, *, strip_var_suffixes: bool = True) -> Iter
         yield canonical_symbol(expr.name, strip_var_suffixes=strip_var_suffixes)
         return
     if isinstance(expr, ApplyExpr):
+        # TAC `Apply(fn, ...)` encodes function application where the first arg is function symbol.
+        # Known builtins are not dataflow variables and should be excluded from use-def.
+        if expr.op == "Apply" and expr.args and isinstance(expr.args[0], SymExpr):
+            fn_sym = canonical_symbol(expr.args[0].name, strip_var_suffixes=strip_var_suffixes)
+            start = 1 if is_known_builtin_function_symbol(fn_sym) else 0
+            for arg in expr.args[start:]:
+                yield from iter_expr_symbols(arg, strip_var_suffixes=strip_var_suffixes)
+            return
         for arg in expr.args:
             yield from iter_expr_symbols(arg, strip_var_suffixes=strip_var_suffixes)
 

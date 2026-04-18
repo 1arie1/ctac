@@ -13,6 +13,7 @@ from ctac.analysis.model import (
     DeadAssignment,
     DefUseResult,
     DefinitionSite,
+    DsaDynamicAssignment,
     DsaIssue,
     DsaResult,
     LivenessResult,
@@ -307,20 +308,89 @@ def analyze_dsa(
                 preds[s].add(b.id)
 
     issues: list[DsaIssue] = []
+    dynamic_assignments: list[DsaDynamicAssignment] = []
+    dynamic_symbols = {sym for sym, defs in du.definitions_by_symbol.items() if len(defs) > 1}
+
+    # Dynamic assignment is shape-based: every assignment to a multiply-defined symbol.
+    defs_by_symbol = du.definitions_by_symbol
+    for sym in sorted(dynamic_symbols):
+        defs = defs_by_symbol[sym]
+        for ds in defs:
+            sib = tuple(
+                sorted(
+                    f"{d.block_id}:{d.cmd_index}"
+                    for d in defs
+                    if d.block_id != ds.block_id or d.cmd_index != ds.cmd_index
+                )
+            )
+            dynamic_assignments.append(
+                DsaDynamicAssignment(
+                    symbol=sym,
+                    block_id=ds.block_id,
+                    cmd_index=ds.cmd_index,
+                    cmd_kind=ds.cmd_kind,
+                    raw=ds.raw,
+                    sibling_defs=sib,
+                )
+            )
+
+    # Block shape check with dynamic classification by symbol multiplicity:
+    # (static)*(dynamic)*terminator
+    by_id = program.block_by_id()
+    for block in program.blocks:
+        defs_by_idx: dict[int, list[DefinitionSite]] = defaultdict(list)
+        for ds in du.by_block[block.id].definition_sites:
+            defs_by_idx[ds.cmd_index].append(ds)
+
+        seen_dynamic = False
+        seen_terminator = False
+        for idx, cmd in enumerate(block.commands):
+            cmd_kind = type(cmd).__name__
+            is_term = cmd_kind in {"JumpCmd", "JumpiCmd"}
+            defs_here = defs_by_idx.get(idx, [])
+            if defs_here:
+                if seen_terminator:
+                    issues.append(
+                        DsaIssue(
+                            kind="shape",
+                            symbol=None,
+                            block_id=block.id,
+                            cmd_index=idx,
+                            detail="assignment appears after terminator",
+                        )
+                    )
+                dyn_here = any(ds.symbol in dynamic_symbols for ds in defs_here)
+                stat_here = any(ds.symbol not in dynamic_symbols for ds in defs_here)
+                if stat_here and seen_dynamic:
+                    issues.append(
+                        DsaIssue(
+                            kind="shape",
+                            symbol=None,
+                            block_id=block.id,
+                            cmd_index=idx,
+                            detail="static assignment appears after dynamic assignment",
+                        )
+                    )
+                if dyn_here:
+                    seen_dynamic = True
+            else:
+                if seen_terminator and not is_term:
+                    issues.append(
+                        DsaIssue(
+                            kind="shape",
+                            symbol=None,
+                            block_id=block.id,
+                            cmd_index=idx,
+                            detail=f"non-terminator command {cmd_kind} appears after terminator",
+                        )
+                    )
+            if is_term:
+                seen_terminator = True
+
     if reaching_defs is not None:
         rd = reaching_defs
         for block in program.blocks:
             bdu = du.by_block[block.id]
-            if not bdu.dsa_shape_ok:
-                issues.append(
-                    DsaIssue(
-                        kind="shape",
-                        symbol=None,
-                        block_id=block.id,
-                        cmd_index=None,
-                        detail=bdu.dsa_shape_violation or "invalid block assignment/terminator shape",
-                    )
-                )
             uses_by_idx: dict[int, list] = defaultdict(list)
             for us in bdu.use_sites:
                 uses_by_idx[us.cmd_index].append(us)
@@ -345,22 +415,13 @@ def analyze_dsa(
                                 ),
                             )
                         )
-        return DsaResult(issues=tuple(issues))
+        uniq_issues = tuple(dict.fromkeys(issues))
+        return DsaResult(issues=uniq_issues, dynamic_assignments=tuple(dynamic_assignments))
 
     block_in_fast, _ = _compute_reaching_block_states(program, du=du)
     defs_by_id = du.definitions
     for block in program.blocks:
         bdu = du.by_block[block.id]
-        if not bdu.dsa_shape_ok:
-            issues.append(
-                DsaIssue(
-                    kind="shape",
-                    symbol=None,
-                    block_id=block.id,
-                    cmd_index=None,
-                    detail=bdu.dsa_shape_violation or "invalid block assignment/terminator shape",
-                )
-            )
         state: RDStateFast = dict(block_in_fast.get(block.id, {}))
         uses_by_idx: dict[int, list] = defaultdict(list)
         defs_by_idx: dict[int, list[DefinitionSite]] = defaultdict(list)
@@ -375,12 +436,14 @@ def analyze_dsa(
                 if mask.bit_count() <= 1:
                     continue
                 def_blocks: set[str] = set()
+                sib_defs: list[str] = []
                 m = mask
                 while m:
                     lsb = m & -m
                     did = lsb.bit_length() - 1
                     if 0 <= did < len(defs_by_id):
                         def_blocks.add(defs_by_id[did].block_id)
+                        sib_defs.append(f"{defs_by_id[did].block_id}:{defs_by_id[did].cmd_index}")
                     m ^= lsb
                 if not def_blocks.issubset(pred_set):
                     issues.append(
@@ -396,7 +459,8 @@ def analyze_dsa(
                     )
             for ds in defs_by_idx.get(idx, []):
                 state[ds.symbol_id] = 1 << ds.def_id
-    return DsaResult(issues=tuple(issues))
+    uniq_issues = tuple(dict.fromkeys(issues))
+    return DsaResult(issues=uniq_issues, dynamic_assignments=tuple(dynamic_assignments))
 
 
 def analyze_control_dependence(program: TacProgram) -> ControlDependenceResult:

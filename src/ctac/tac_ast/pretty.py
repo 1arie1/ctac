@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
+from ctac.builtins import pretty_builtin_name
 from ctac.eval.value_format import format_const_token_human
 from ctac.tac_ast.nodes import (
     AnnotationCmd,
@@ -219,11 +220,8 @@ class HumanPrettyPrinter(PrettyPrinter):
         return f"{self._fmt_symbol_token(lhs.name)}[{shift}..]"
 
     def _short_fn_name(self, fn: str) -> str:
-        # Common builtin in TAC dumps: convert Int -> bv256.
-        # Keep it compact in human output.
-        if fn.startswith("safe_math_narrow_bv256"):
-            return "narrow"
-        return fn
+        # Map known TAC builtins to compact names.
+        return pretty_builtin_name(fn)
 
     @staticmethod
     def _unbracket_label(s: str) -> str:

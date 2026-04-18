@@ -10,6 +10,7 @@ import typer
 from rich.markup import escape
 from rich.tree import Tree
 
+from ctac.ast.pretty import configured_printer
 from ctac.analysis import (
     analyze_control_dependence,
     analyze_dsa,
@@ -17,6 +18,7 @@ from ctac.analysis import (
     analyze_use_before_def,
     eliminate_dead_assignments,
     extract_def_use,
+    normalize_program_symbols,
 )
 from ctac.parse import ParseError, parse_path
 from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
@@ -26,6 +28,22 @@ from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 
 def _program_point_key(block_id: str, cmd_index: int) -> str:
     return f"{block_id}:{cmd_index}"
+
+
+def _display_loc(
+    block_id: str,
+    cmd_index: int | None,
+    *,
+    pretty_loc_by_point: dict[tuple[str, int], int] | None = None,
+    use_pretty_loc: bool = False,
+) -> str:
+    if cmd_index is None:
+        return f"{block_id}:-"
+    if use_pretty_loc and pretty_loc_by_point is not None:
+        loc = pretty_loc_by_point.get((block_id, cmd_index))
+        if loc is not None:
+            return f"{block_id}:{loc}"
+    return f"{block_id}:{cmd_index + 1}"
 
 
 def _parse_show_modes(raw: str) -> set[str]:
@@ -91,6 +109,11 @@ def dataflow_cmd(
         min=1,
         help="Maximum detailed rows per section when --details is enabled.",
     ),
+    raw_output: bool = typer.Option(
+        False,
+        "--raw",
+        help="Use raw TAC command text for detail lines (default: pretty-printed lines).",
+    ),
     strip_var_suffixes: bool = typer.Option(
         True,
         "--strip-var-suffix/--keep-var-suffix",
@@ -133,15 +156,38 @@ def dataflow_cmd(
 
     timings_sec: dict[str, float] = {}
     t0 = time.perf_counter()
-    du = extract_def_use(filtered_program, strip_var_suffixes=strip_var_suffixes)
+    normalized_program = normalize_program_symbols(
+        filtered_program,
+        strip_var_suffixes=strip_var_suffixes,
+    )
+    timings_sec["normalize"] = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    du = extract_def_use(normalized_program, strip_var_suffixes=strip_var_suffixes)
     timings_sec["def-use"] = time.perf_counter() - t0
     lv = None
+    render_by_point: dict[tuple[str, int], str] = {}
+    pretty_loc_by_point: dict[tuple[str, int], int] = {}
+    if details:
+        pp = configured_printer(
+            "raw" if raw_output else "human",
+            strip_var_suffixes=strip_var_suffixes,
+            human_patterns=True,
+        )
+        for b in normalized_program.blocks:
+            vis_loc = 0
+            for idx, cmd in enumerate(b.commands):
+                line = pp.print_cmd(cmd)
+                if line is not None and line != "":
+                    vis_loc += 1
+                    pretty_loc_by_point[(b.id, idx)] = vis_loc
+                render_by_point[(b.id, idx)] = line if line else cmd.raw
     payload: dict[str, object] = {
         "path": tac.path,
         "show": sorted(modes),
         "blocks": len(filtered_program.blocks),
         "input_warnings": user_warnings + input_warnings,
         "filter_warnings": filter_warnings,
+        "detail_rendering": "raw" if raw_output else "pretty",
     }
 
     if "def-use" in modes:
@@ -151,7 +197,7 @@ def dataflow_cmd(
         }
     if "liveness" in modes:
         t0 = time.perf_counter()
-        lv = analyze_liveness(filtered_program, strip_var_suffixes=strip_var_suffixes, def_use=du)
+        lv = analyze_liveness(normalized_program, strip_var_suffixes=strip_var_suffixes, def_use=du)
         payload["liveness"] = {
             "live_in_by_block": lv.live_in_by_block,
             "live_out_by_block": lv.live_out_by_block,
@@ -168,11 +214,11 @@ def dataflow_cmd(
     if "dce" in modes:
         if lv is None:
             t0 = time.perf_counter()
-            lv = analyze_liveness(filtered_program, strip_var_suffixes=strip_var_suffixes, def_use=du)
+            lv = analyze_liveness(normalized_program, strip_var_suffixes=strip_var_suffixes, def_use=du)
             timings_sec.setdefault("liveness", time.perf_counter() - t0)
         t0 = time.perf_counter()
         dce = eliminate_dead_assignments(
-            filtered_program,
+            normalized_program,
             strip_var_suffixes=strip_var_suffixes,
             liveness=lv,
         )
@@ -185,7 +231,7 @@ def dataflow_cmd(
     if "use-before-def" in modes:
         t0 = time.perf_counter()
         ubd = analyze_use_before_def(
-            filtered_program,
+            normalized_program,
             strip_var_suffixes=strip_var_suffixes,
             def_use=du,
         )
@@ -194,7 +240,7 @@ def dataflow_cmd(
     if "dsa" in modes:
         t0 = time.perf_counter()
         dsa = analyze_dsa(
-            filtered_program,
+            normalized_program,
             strip_var_suffixes=strip_var_suffixes,
             def_use=du,
         )
@@ -202,7 +248,7 @@ def dataflow_cmd(
         timings_sec["dsa"] = time.perf_counter() - t0
     if "control-dependence" in modes:
         t0 = time.perf_counter()
-        cd = analyze_control_dependence(filtered_program)
+        cd = analyze_control_dependence(normalized_program)
         payload["control_dependence"] = asdict(cd)
         timings_sec["control-dependence"] = time.perf_counter() - t0
     payload["timings_sec"] = {k: timings_sec[k] for k in sorted(timings_sec)}
@@ -281,12 +327,35 @@ def dataflow_cmd(
                 ),
                 markup=False,
             )
-            for ent in dce_obj["removed"][: max_items if details else 0]:
-                c.print(
-                    f"  remove {ent['block_id']}:{ent['cmd_index']} "
-                    f"{ent['cmd_kind']} {ent['symbol']}  # {ent['raw']}",
-                    markup=False,
-                )
+            if details:
+                removed_rows = dce_obj["removed"][:max_items]
+                if removed_rows:
+                    c.print("  format: block:loc | symbol | command", markup=False)
+                    loc_w = max(
+                        9,
+                        max(
+                            len(
+                                _display_loc(
+                                    e["block_id"],
+                                    e["cmd_index"],
+                                    pretty_loc_by_point=pretty_loc_by_point,
+                                    use_pretty_loc=not raw_output,
+                                )
+                            )
+                            for e in removed_rows
+                        ),
+                    )
+                    sym_w = max(6, max(len(str(e["symbol"])) for e in removed_rows))
+                    for ent in removed_rows:
+                        rendered = render_by_point.get((ent["block_id"], ent["cmd_index"]), ent["raw"])
+                        loc = _display_loc(
+                            ent["block_id"],
+                            ent["cmd_index"],
+                            pretty_loc_by_point=pretty_loc_by_point,
+                            use_pretty_loc=not raw_output,
+                        )
+                        sym = str(ent["symbol"])
+                        c.print(f"  {loc:<{loc_w}} | {sym:<{sym_w}} | {rendered}", markup=False)
 
         if "use-before-def" in modes:
             ubd_obj = payload["use_before_def"]  # type: ignore[assignment]
@@ -294,12 +363,35 @@ def dataflow_cmd(
             c.print("use-before-def:", markup=False)
             c.print(f"  time: {_format_duration(timings_sec.get('use-before-def', 0.0))}", markup=False)
             c.print(f"  issues: {issue_count}", markup=False)
-            for issue in ubd_obj["issues"][: max_items if details else 0]:
-                c.print(
-                    f"  {issue['block_id']}:{issue['cmd_index']} {issue['symbol']} "
-                    f"[{issue['cmd_kind']}] {issue['raw']}",
-                    markup=False,
-                )
+            if details:
+                issue_rows = ubd_obj["issues"][:max_items]
+                if issue_rows:
+                    c.print("  format: block:loc | symbol | command", markup=False)
+                    loc_w = max(
+                        9,
+                        max(
+                            len(
+                                _display_loc(
+                                    i["block_id"],
+                                    i["cmd_index"],
+                                    pretty_loc_by_point=pretty_loc_by_point,
+                                    use_pretty_loc=not raw_output,
+                                )
+                            )
+                            for i in issue_rows
+                        ),
+                    )
+                    sym_w = max(6, max(len(str(i["symbol"])) for i in issue_rows))
+                    for issue in issue_rows:
+                        rendered = render_by_point.get((issue["block_id"], issue["cmd_index"]), issue["raw"])
+                        loc = _display_loc(
+                            issue["block_id"],
+                            issue["cmd_index"],
+                            pretty_loc_by_point=pretty_loc_by_point,
+                            use_pretty_loc=not raw_output,
+                        )
+                        sym = str(issue["symbol"])
+                        c.print(f"  {loc:<{loc_w}} | {sym:<{sym_w}} | {rendered}", markup=False)
 
         if "dsa" in modes:
             dsa_obj = payload["dsa"]  # type: ignore[assignment]
@@ -307,13 +399,47 @@ def dataflow_cmd(
             c.print("dsa:", markup=False)
             c.print(f"  time: {_format_duration(timings_sec.get('dsa', 0.0))}", markup=False)
             c.print(f"  is_valid: {dsa_obj['is_valid']}, issues: {issue_count}", markup=False)
-            for issue in dsa_obj["issues"][: max_items if details else 0]:
-                cmd_idx = issue["cmd_index"] if issue["cmd_index"] is not None else "-"
-                sym = issue["symbol"] if issue["symbol"] is not None else "-"
-                c.print(
-                    f"  {issue['kind']} {issue['block_id']}:{cmd_idx} {sym}  # {issue['detail']}",
-                    markup=False,
-                )
+            if details:
+                issue_rows = dsa_obj["issues"][:max_items]
+                if issue_rows:
+                    c.print("  format: kind | block:loc | symbol | command", markup=False)
+                    kind_w = max(4, max(len(str(i["kind"])) for i in issue_rows))
+                    loc_w = max(
+                        9,
+                        max(
+                            len(
+                                _display_loc(
+                                    i["block_id"],
+                                    i["cmd_index"],
+                                    pretty_loc_by_point=pretty_loc_by_point,
+                                    use_pretty_loc=not raw_output,
+                                )
+                            )
+                            for i in issue_rows
+                        ),
+                    )
+                    sym_w = max(
+                        6,
+                        max(len(str(i["symbol"]) if i["symbol"] is not None else "-") for i in issue_rows),
+                    )
+                    for issue in issue_rows:
+                        cmd_idx = issue["cmd_index"] if issue["cmd_index"] is not None else "-"
+                        sym = issue["symbol"] if issue["symbol"] is not None else "-"
+                        rendered = (
+                            render_by_point.get((issue["block_id"], issue["cmd_index"]), issue["detail"])
+                            if issue["cmd_index"] is not None
+                            else issue["detail"]
+                        )
+                        loc = _display_loc(
+                            issue["block_id"],
+                            issue["cmd_index"],
+                            pretty_loc_by_point=pretty_loc_by_point,
+                            use_pretty_loc=not raw_output,
+                        )
+                        c.print(
+                            f"  {issue['kind']:<{kind_w}} | {loc:<{loc_w}} | {str(sym):<{sym_w}} | {rendered}",
+                            markup=False,
+                        )
 
         if "control-dependence" in modes:
             cd_obj = payload["control_dependence"]  # type: ignore[assignment]
@@ -428,11 +554,12 @@ def dataflow_cmd(
                 key=lambda e: (str(e["block_id"]), int(e["cmd_index"]), str(e["symbol"])),
             )[:max_items]
             for ent in removed_entries:
+                rendered = render_by_point.get((ent["block_id"], ent["cmd_index"]), ent["raw"])
                 removed.add(
                     _node_text(
-                        f"remove {ent['block_id']}:{ent['cmd_index']}",
+                        f"remove {_display_loc(ent['block_id'], ent['cmd_index'], pretty_loc_by_point=pretty_loc_by_point, use_pretty_loc=not raw_output)}",
                         str(ent["symbol"]),
-                        str(ent["raw"]),
+                        str(rendered),
                     )
                 )
 
@@ -450,16 +577,23 @@ def dataflow_cmd(
         )
         if details:
             issues = sec.add(_node_text("issues"))
+            issues.add(_node_text("format", "block:loc | symbol | command"))
             issue_rows = sorted(
                 ubd_obj["issues"],
                 key=lambda i: (str(i["block_id"]), int(i["cmd_index"]), str(i["symbol"])),
             )[:max_items]
             for issue in issue_rows:
+                rendered = render_by_point.get((issue["block_id"], issue["cmd_index"]), issue["raw"])
                 issues.add(
                     _node_text(
-                        f"{issue['block_id']}:{issue['cmd_index']}",
+                        _display_loc(
+                            issue["block_id"],
+                            issue["cmd_index"],
+                            pretty_loc_by_point=pretty_loc_by_point,
+                            use_pretty_loc=not raw_output,
+                        ),
                         str(issue["symbol"]),
-                        str(issue["raw"]),
+                        str(rendered),
                     )
                 )
 
@@ -477,6 +611,7 @@ def dataflow_cmd(
         )
         if details:
             issues = sec.add(_node_text("issues"))
+            issues.add(_node_text("format", "kind | block:loc | symbol | command"))
             issue_rows = sorted(
                 dsa_obj["issues"],
                 key=lambda i: (
@@ -491,9 +626,13 @@ def dataflow_cmd(
                 sym = issue["symbol"] if issue["symbol"] is not None else "-"
                 issues.add(
                     _node_text(
-                        f"{issue['kind']} {issue['block_id']}:{cmd_idx}",
+                        f"{issue['kind']} {_display_loc(issue['block_id'], issue['cmd_index'], pretty_loc_by_point=pretty_loc_by_point, use_pretty_loc=not raw_output)}",
                         str(sym),
-                        str(issue["detail"]),
+                        str(
+                            render_by_point.get((issue["block_id"], issue["cmd_index"]), issue["detail"])
+                            if issue["cmd_index"] is not None
+                            else issue["detail"]
+                        ),
                     )
                 )
 
