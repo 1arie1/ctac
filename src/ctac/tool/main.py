@@ -11,6 +11,7 @@ from typing import Annotated, Any, Optional
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from ctac.ir.models import TacFile
 from ctac.diff.match_cfg import compare_matched_blocks, match_cfg_blocks

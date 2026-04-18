@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ctac.tool.highlight import highlight_tac_line
+from ctac.ast.highlight import highlight_tac_line
 
 
 def _styles(line: str) -> set[str]:

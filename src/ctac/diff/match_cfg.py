@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ctac.ir.models import TacFile, TacProgram
+from ctac.ir.models import TacFile
 from ctac.diff.semantic import collect_records, render_records, unified_semantic_diff
 from ctac.ast.nodes import (
     AnnotationCmd,
