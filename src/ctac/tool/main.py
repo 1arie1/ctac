@@ -12,7 +12,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ctac.ast.models import TacFile
+from ctac.ir.models import TacFile
 from ctac.diff.match_cfg import compare_matched_blocks, match_cfg_blocks
 from ctac.eval import RunConfig, Value, parse_tac_model_path, run_program, value_to_text
 from ctac.graph import Cfg, CfgFilter, CfgStyle

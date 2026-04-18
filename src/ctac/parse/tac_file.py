@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ctac.ast.models import NBId, TacBlock, TacFile, TacProgram
+from ctac.ir.models import NBId, TacBlock, TacFile, TacProgram
 from ctac.tac_ast import parse_command_line
 
 _BLOCK_HEADER = re.compile(

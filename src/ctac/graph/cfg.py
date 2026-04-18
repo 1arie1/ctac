@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 import networkx as nx
 
-from ctac.ast.models import TacBlock, TacProgram
+from ctac.ir.models import TacBlock, TacProgram
 from ctac.tac_ast.nodes import AnnotationCmd, AssertCmd, TacCmd
 
 CfgStyle = Literal["goto", "edges", "dot"]

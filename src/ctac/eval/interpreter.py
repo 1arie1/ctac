@@ -8,7 +8,7 @@ import secrets
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
-from ctac.ast.models import TacBlock, TacProgram
+from ctac.ir.models import TacBlock, TacProgram
 from ctac.eval.constants import MOD_256, SIGN_BIT_256
 from ctac.eval.types import HavocMode, Value, ValueKind
 from ctac.tac_ast.nodes import (

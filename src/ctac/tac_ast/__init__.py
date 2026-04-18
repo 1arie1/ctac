@@ -1,7 +1,7 @@
 """
 TAC command / expression AST, parsers, visitor, and pretty-printer.
 
-``ctac.ast`` holds program-level structures (``TacProgram``, ``TacBlock``);
+``ctac.ir`` holds program-level structures (``TacProgram``, ``TacBlock``);
 ``ctac.tac_ast`` holds per-command IR (``TacCmd``, ``TacExpr``) like a small compiler front-end.
 """
 

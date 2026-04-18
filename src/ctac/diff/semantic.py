@@ -6,7 +6,7 @@ import difflib
 import re
 from dataclasses import dataclass
 
-from ctac.ast.models import TacFile
+from ctac.ir.models import TacFile
 from ctac.tac_ast.nodes import (
     AnnotationCmd,
     ApplyExpr,

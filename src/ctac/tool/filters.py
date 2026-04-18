@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from ctac.ast.models import TacProgram
+from ctac.ir.models import TacProgram
 from ctac.graph import Cfg, CfgFilter
 
 
