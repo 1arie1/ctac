@@ -184,6 +184,7 @@ def dataflow_cmd(
     cmd_contains: Annotated[Optional[str], typer.Option("--cmd-contains")] = None,
     exclude: Annotated[Optional[str], typer.Option("--exclude")] = None,
 ) -> None:
+    """Run TAC data-flow analyses and report summaries or detailed diagnostics."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)

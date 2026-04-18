@@ -54,6 +54,7 @@ def match_cfg_cmd(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
+    """Coarse CFG block matching with weighted structural/meta features."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)
@@ -187,6 +188,7 @@ def bb_diff_cmd(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
+    """Compare matched basic blocks and print per-block semantic deltas."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)

@@ -284,6 +284,11 @@ def cfg(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
+    """Print the control-flow graph structure as text (goto view by default).
+
+    Filters use **intersection** (AND): e.g. ``--to X --id-contains foo`` keeps ancestors of ``X``
+    whose ids contain ``foo``. ``--from A --to B`` keeps blocks on some path from ``A`` to ``B``.
+    """
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)
@@ -395,6 +400,7 @@ def pp(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
+    """Pretty-print TAC as a goto program, using a selectable printer backend."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)
@@ -535,6 +541,7 @@ def search_cmd(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
+    """Search TAC command lines using regex or literal pattern matching."""
     _ = agent
     run_search(
         path=path,

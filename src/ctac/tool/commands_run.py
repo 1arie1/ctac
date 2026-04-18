@@ -94,6 +94,7 @@ def run(
         help="Compare computed assignments against model values and report mismatches.",
     ),
 ) -> None:
+    """Execute TAC with a concrete interpreter (assume-fail stops, assert-fail continues)."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)
