@@ -8,3 +8,4 @@ dist/
 build/
 examples/
 .DS_Store
+.z3-trace
