@@ -21,6 +21,7 @@ Then run tools with `.venv/bin/ctac` or `source .venv/bin/activate`.
 ctac stats path/to/file.tac
 # compact/legacy-style stats only:
 ctac stats path/to/file.tac --top-blocks 0 --no-by-cmd-kind
+# stats now also include expression-op counts and non-linear mul/div counters.
 # parse command prints the same stats payload:
 ctac parse path/to/file.tac
 

@@ -19,7 +19,16 @@ from ctac.eval import RunConfig, Value, parse_tac_model_path, run_program, value
 from ctac.eval.value_format import format_value_plain
 from ctac.graph import Cfg, CfgFilter, CfgStyle
 from ctac.parse import ParseError, parse_path
-from ctac.tac_ast.nodes import AssignExpCmd, AssignHavocCmd, JumpCmd, JumpiCmd
+from ctac.tac_ast.nodes import (
+    ApplyExpr,
+    AssignExpCmd,
+    AssignHavocCmd,
+    AssumeExpCmd,
+    ConstExpr,
+    JumpCmd,
+    JumpiCmd,
+    TacExpr,
+)
 from ctac.tac_ast.pretty import DEFAULT_PRINTERS, configured_printer, pretty_lines
 from ctac.tool.highlight import TAC_THEME, highlight_tac_line
 
@@ -108,6 +117,59 @@ def _print_tac_stats(
             for b in ranked:
                 t.add_row(b.id, str(len(b.commands)), str(len(b.successors)))
             c.print(t)
+
+    expr_ops: Counter[str] = Counter()
+    nonlinear_mul = 0
+    nonlinear_div = 0
+
+    def _visit_expr(expr: TacExpr) -> None:
+        nonlocal nonlinear_mul, nonlinear_div
+        if not isinstance(expr, ApplyExpr):
+            return
+        expr_ops[expr.op] += 1
+
+        if len(expr.args) >= 2:
+            lhs, rhs = expr.args[0], expr.args[1]
+            if expr.op in ("Mul", "IntMul"):
+                if not isinstance(lhs, ConstExpr) and not isinstance(rhs, ConstExpr):
+                    nonlinear_mul += 1
+            if expr.op in ("Div", "IntDiv", "Mod", "IntMod"):
+                if not isinstance(rhs, ConstExpr):
+                    nonlinear_div += 1
+
+        for arg in expr.args:
+            _visit_expr(arg)
+
+    for b in tac.program.blocks:
+        for cmd in b.commands:
+            if isinstance(cmd, AssignExpCmd):
+                _visit_expr(cmd.rhs)
+            elif isinstance(cmd, AssumeExpCmd):
+                _visit_expr(cmd.condition)
+
+    if plain:
+        c.print("expression_ops:")
+        for op, cnt in sorted(expr_ops.items(), key=lambda kv: (-kv[1], kv[0])):
+            c.print(f"  {op}: {cnt}")
+        c.print("nonlinear_ops:")
+        c.print(f"  multiplication: {nonlinear_mul}")
+        c.print(f"  division_or_mod: {nonlinear_div}")
+    else:
+        c.print("[bold]expression ops[/bold]")
+        t_ops = Table(expand=False)
+        t_ops.add_column("op", no_wrap=True)
+        t_ops.add_column("count", justify="right", no_wrap=True)
+        for op, cnt in sorted(expr_ops.items(), key=lambda kv: (-kv[1], kv[0])):
+            t_ops.add_row(op, str(cnt))
+        c.print(t_ops)
+
+        c.print("[bold]nonlinear arithmetic ops[/bold]")
+        t_nl = Table(expand=False)
+        t_nl.add_column("kind", no_wrap=True)
+        t_nl.add_column("count", justify="right", no_wrap=True)
+        t_nl.add_row("multiplication", str(nonlinear_mul))
+        t_nl.add_row("division_or_mod", str(nonlinear_div))
+        c.print(t_nl)
 
 
 def _run_stats(
