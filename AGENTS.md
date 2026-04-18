@@ -5,6 +5,7 @@ Use `ctac` in plain mode unless color is required.
 ## Quick Rules
 
 - Prefer `--plain` for deterministic output.
+- Use `--agent` for terse, plain-text command guidance (`ctac --agent`, `ctac <subcmd> --agent`).
 - First step on unknown file: `ctac stats <file> --plain`.
 - `ctac stats` now includes command-kind counts and top blocks by default.
 - `ctac stats` also includes expression-op counts and non-linear mul/div counters.

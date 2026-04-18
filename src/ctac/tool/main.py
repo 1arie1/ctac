@@ -34,6 +34,126 @@ from ctac.tool.highlight import TAC_THEME, highlight_tac_line
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
+_AGENT_GUIDE_MAIN = """ctac agent guide (plain, terse)
+
+Use ctac when you need TAC-aware structure, not raw text scraping.
+Key use-cases:
+- Fast sanity: `ctac stats <file> --plain`
+- Slice/control-flow: `ctac cfg|pp <file> --from A --to B --plain`
+- Cross-build drift: `ctac cfg-match` then `ctac bb-diff`
+- Concrete replay/model checks: `ctac run --model ... --trace --plain`
+- Pattern mining in commands: `ctac search <file> <pattern> --plain`
+
+Why better than plain text tools:
+- Parses TAC structure (blocks, commands, CFG), so filters are semantic.
+- Handles block/path slicing directly (`--from/--to/--only/...`).
+- Produces deterministic, grep-friendly plain output.
+
+If you must use plain text tools first, start from `ctac pp --plain` output.
+If functionality is missing, say it explicitly and request the exact feature.
+"""
+
+_AGENT_GUIDE_BY_CMD: dict[str, str] = {
+    "stats": """ctac stats --agent
+
+Use for quick TAC sanity and complexity triage.
+Gives: block/command/meta counts, command-kind counts, top dense blocks,
+expression op frequencies, and non-linear mul/div counters.
+Start here on unknown files.
+""",
+    "parse": """ctac parse --agent
+
+Same output shape as `ctac stats`.
+Use when you want an explicit parse-oriented entrypoint.
+""",
+    "cfg": """ctac cfg --agent
+
+Use for control-flow only.
+Best flags: `--style edges --from A --to B --plain`.
+Use `--only`/`--id-*`/`--exclude` to narrow scope.
+""",
+    "pp": """ctac pp --agent
+
+Use for block-level TAC reasoning with humanized commands.
+Best flags: `--from A --to B --plain`.
+If external text tooling is needed, use `ctac pp --plain` as the source.
+""",
+    "search": """ctac search --agent
+
+Use to find command patterns in parsed TAC blocks.
+Defaults to regex; use `--literal` for substring.
+Useful: `--blocks-only`, `--count`, `--max-matches`, and path filters.
+Alias: `ctac grep`.
+""",
+    "grep": """ctac grep --agent
+
+Alias of `ctac search`.
+Use exactly like `search`; defaults to regex.
+""",
+    "cfg-match": """ctac cfg-match --agent
+
+Use for coarse block mapping between two TACs.
+Run before `bb-diff` to understand structural correspondence.
+Tune with `--const-weight` and `--min-score`.
+""",
+    "bb-diff": """ctac bb-diff --agent
+
+Use for semantic deltas in matched basic blocks.
+Typical: `--drop-empty --normalize-vars --max-diff-lines N --plain`.
+Run after `cfg-match`.
+""",
+    "run": """ctac run --agent
+
+Use for concrete execution/replay.
+Model replay: `--model ... --trace --plain`.
+Validation mode: add `--validate`.
+Use `--fallback` only with `--model`.
+""",
+}
+
+
+def _agent_guide_text(ctx: typer.Context | None) -> str:
+    if ctx is None:
+        return _AGENT_GUIDE_MAIN
+    path = (ctx.command_path or "").strip().split()
+    cmd = path[-1] if path else "ctac"
+    return _AGENT_GUIDE_BY_CMD.get(cmd, _AGENT_GUIDE_MAIN)
+
+
+def _agent_callback(ctx: typer.Context, _param: Any, value: bool) -> bool:
+    if not value:
+        return value
+    # Intentionally plain text (no Rich formatting).
+    guide = _agent_guide_text(ctx).rstrip()
+    path = (ctx.command_path or "").strip().split()
+    if not path:
+        help_cmd = "ctac --help"
+    elif len(path) == 1:
+        help_cmd = "ctac --help"
+    else:
+        help_cmd = f"ctac {path[-1]} --help"
+    print(f"{guide}\n\nNeed full flag reference? run: {help_cmd}\n")
+    raise typer.Exit(0)
+
+
+def _agent_option() -> Any:
+    return typer.Option(
+        False,
+        "--agent",
+        help="Show terse agent-focused usage guidance and exit.",
+        is_eager=True,
+        callback=_agent_callback,
+    )
+
+
+@app.callback(invoke_without_command=True)
+def _app_callback(
+    ctx: typer.Context,
+    agent: bool = _agent_option(),
+) -> None:
+    # Guidance/exit is handled by callback above when --agent is present.
+    _ = (ctx, agent)
+
 
 def _console(plain: bool) -> Console:
     # Auto-detect TTY by default so redirected output stays plain (no ANSI styles).
@@ -205,6 +325,7 @@ _PLAIN_HELP = "Plain text only (no Rich styling); also set CTAC_PLAIN=1 or NO_CO
 def stats(
     path: Path = typer.Argument(..., **_PATH_KW),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
+    agent: bool = _agent_option(),
     by_cmd_kind: bool = typer.Option(
         True,
         "--by-cmd-kind/--no-by-cmd-kind",
@@ -218,6 +339,7 @@ def stats(
     ),
 ) -> None:
     """Print summary statistics for a .tac file (blocks, commands, metas, symbol table size)."""
+    _ = agent
     _run_stats(path, plain=plain, by_cmd_kind=by_cmd_kind, top_blocks=top_blocks)
 
 
@@ -225,6 +347,7 @@ def stats(
 def parse(
     path: Path = typer.Argument(..., **_PATH_KW),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
+    agent: bool = _agent_option(),
     by_cmd_kind: bool = typer.Option(
         True,
         "--by-cmd-kind/--no-by-cmd-kind",
@@ -238,6 +361,7 @@ def parse(
     ),
 ) -> None:
     """Parse a .tac file and print basic statistics (same output as ``ctac stats``)."""
+    _ = agent
     _run_stats(path, plain=plain, by_cmd_kind=by_cmd_kind, top_blocks=top_blocks)
 
 
@@ -246,6 +370,7 @@ def match_cfg_cmd(
     left: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     right: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
+    agent: bool = _agent_option(),
     min_score: float = typer.Option(
         0.45,
         "--min-score",
@@ -268,6 +393,7 @@ def match_cfg_cmd(
     ),
 ) -> None:
     """Coarse CFG block matching with weighted structural/meta features."""
+    _ = agent
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
@@ -336,6 +462,7 @@ def bb_diff_cmd(
     left: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     right: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
+    agent: bool = _agent_option(),
     min_score: float = typer.Option(
         0.45,
         "--min-score",
@@ -386,6 +513,7 @@ def bb_diff_cmd(
     ),
 ) -> None:
     """Compare matched basic blocks and print per-block semantic deltas."""
+    _ = agent
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
@@ -941,6 +1069,7 @@ def _format_value_rich(v: Value) -> Text:
 def cfg(
     path: Path = typer.Argument(..., **_PATH_KW),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
+    agent: bool = _agent_option(),
     style: Annotated[
         str,
         typer.Option(
@@ -1014,6 +1143,7 @@ def cfg(
     Filters use **intersection** (AND): e.g. ``--to X --id-contains foo`` keeps ancestors of ``X``
     whose ids contain ``foo``. ``--from A --to B`` keeps blocks on some path from ``A`` to ``B``.
     """
+    _ = agent
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
@@ -1076,6 +1206,7 @@ def cfg(
 def pp(
     path: Path = typer.Argument(..., **_PATH_KW),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
+    agent: bool = _agent_option(),
     printer: Annotated[
         str,
         typer.Option(
@@ -1106,6 +1237,7 @@ def pp(
     exclude: Annotated[Optional[str], typer.Option("--exclude")] = None,
 ) -> None:
     """Pretty-print TAC as a goto program, using a selectable printer backend."""
+    _ = agent
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
@@ -1176,6 +1308,7 @@ def search_cmd(
     path: Path = typer.Argument(..., **_PATH_KW),
     pattern: str = typer.Argument(..., help="Pattern to search in rendered command lines."),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
+    agent: bool = _agent_option(),
     printer: Annotated[
         str,
         typer.Option(
@@ -1228,6 +1361,7 @@ def search_cmd(
     exclude: Annotated[Optional[str], typer.Option("--exclude")] = None,
 ) -> None:
     """Search TAC command lines using regex or literal pattern matching."""
+    _ = agent
     _run_search(
         path=path,
         pattern=pattern,
@@ -1254,6 +1388,7 @@ def search_cmd(
 def run(
     path: Path = typer.Argument(..., **_PATH_KW),
     plain: bool = typer.Option(False, "--plain", help=_PLAIN_HELP),
+    agent: bool = _agent_option(),
     trace: bool = typer.Option(
         False,
         "--trace/--no-trace",
@@ -1312,6 +1447,7 @@ def run(
     ),
 ) -> None:
     """Execute TAC with a concrete interpreter (assume-fail stops, assert-fail continues)."""
+    _ = agent
     plain = _plain_requested(plain)
     c = _console(plain)
     try:
