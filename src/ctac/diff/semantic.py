@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 
 from ctac.ir.models import TacFile
-from ctac.tac_ast.nodes import (
+from ctac.ast.nodes import (
     AnnotationCmd,
     ApplyExpr,
     AssertCmd,
@@ -23,7 +23,7 @@ from ctac.tac_ast.nodes import (
     TacCmd,
     TacExpr,
 )
-from ctac.tac_ast.pretty import configured_printer
+from ctac.ast.pretty import configured_printer
 
 _META_SUFFIX_RE = re.compile(r":\d+$")
 

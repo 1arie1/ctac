@@ -17,8 +17,8 @@ from ctac.diff.match_cfg import compare_matched_blocks, match_cfg_blocks
 from ctac.eval import RunConfig, Value, parse_tac_model_path, run_program, value_to_text
 from ctac.graph import Cfg, CfgFilter, CfgStyle
 from ctac.parse import ParseError, parse_path
-from ctac.tac_ast.highlight import TAC_THEME, highlight_tac_line
-from ctac.tac_ast.nodes import (
+from ctac.ast.highlight import TAC_THEME, highlight_tac_line
+from ctac.ast.nodes import (
     ApplyExpr,
     AssignExpCmd,
     AssignHavocCmd,
@@ -26,13 +26,13 @@ from ctac.tac_ast.nodes import (
     ConstExpr,
     TacExpr,
 )
-from ctac.tac_ast.pretty import DEFAULT_PRINTERS, configured_printer, pretty_lines
+from ctac.ast.pretty import DEFAULT_PRINTERS, configured_printer, pretty_lines
 from ctac.tool.input_resolution import (
     resolve_model_input_path as _resolve_model_input_path,
     resolve_tac_input_path as _resolve_tac_input_path,
     resolve_user_path as _resolve_user_path,
 )
-from ctac.tac_ast.run_format import (
+from ctac.ast.run_format import (
     MODEL_HAVOC_FALLBACK_NUM,
     coerce_value_kind as _coerce_value_kind,
     format_value_plain_local as _format_value_plain,

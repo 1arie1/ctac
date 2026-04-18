@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ctac.ir.models import TacBlock
-from ctac.tac_ast.nodes import JumpCmd, JumpiCmd
+from ctac.ast.nodes import JumpCmd, JumpiCmd
 from ctac.tool.main import _pp_terminator_line
 
 

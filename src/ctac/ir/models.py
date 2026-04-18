@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ctac.tac_ast.nodes import TacCmd
+    from ctac.ast.nodes import TacCmd
 
 # Block id in dumps (e.g. "0_0_0_0_0_0")
 NBId = str

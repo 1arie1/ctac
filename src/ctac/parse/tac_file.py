@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ctac.ir.models import NBId, TacBlock, TacFile, TacProgram
-from ctac.tac_ast import parse_command_line
+from ctac.ast import parse_command_line
 
 _BLOCK_HEADER = re.compile(
     r"^Block\s+(?P<id>\S+)\s+Succ\s+\[(?P<succ>[^\]]*)\]\s*\{\s*$"

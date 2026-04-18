@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ctac.tac_ast.nodes import AssertCmd
+from ctac.ast.nodes import AssertCmd
 from ctac.tool.main import _source_prefix_for_cmd
 
 

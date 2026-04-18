@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from ctac.tac_ast import AssignExpCmd, parse_command_line
-from ctac.tac_ast.pretty import DEFAULT_PRINTERS, HumanPrettyPrinter, configured_printer, pretty_lines
+from ctac.ast import AssignExpCmd, parse_command_line
+from ctac.ast.pretty import DEFAULT_PRINTERS, HumanPrettyPrinter, configured_printer, pretty_lines
 
 
 def test_default_printers_present() -> None:
