@@ -1,0 +1,127 @@
+"""Shared data models for TAC data-flow analyses."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+from ctac.ir.models import TacProgram
+
+
+@dataclass(frozen=True)
+class ProgramPoint:
+    block_id: str
+    cmd_index: int
+
+
+@dataclass(frozen=True)
+class DefinitionSite:
+    def_id: int
+    origin_uid: str
+    symbol_id: int
+    symbol: str
+    block_id: str
+    cmd_index: int
+    cmd_kind: str
+    raw: str
+
+
+@dataclass(frozen=True)
+class UseSite:
+    symbol_id: int
+    symbol: str
+    block_id: str
+    cmd_index: int
+    cmd_kind: str
+    raw: str
+
+
+@dataclass(frozen=True)
+class BlockDefUse:
+    block_id: str
+    defs: tuple[str, ...]
+    uses: tuple[str, ...]
+    kills: tuple[str, ...]
+    definition_sites: tuple[DefinitionSite, ...]
+    use_sites: tuple[UseSite, ...]
+    dsa_shape_ok: bool
+    dsa_shape_violation: str | None
+
+
+@dataclass(frozen=True)
+class DefUseResult:
+    by_block: dict[str, BlockDefUse]
+    definitions_by_symbol: dict[str, tuple[DefinitionSite, ...]]
+    uses_by_symbol: dict[str, tuple[UseSite, ...]]
+    symbol_to_id: dict[str, int]
+    id_to_symbol: tuple[str, ...]
+    definitions: tuple[DefinitionSite, ...]  # indexed by `def_id`
+
+
+@dataclass(frozen=True)
+class ReachingDefinitionsResult:
+    in_by_block: dict[str, dict[str, tuple[DefinitionSite, ...]]]
+    out_by_block: dict[str, dict[str, tuple[DefinitionSite, ...]]]
+    in_by_command: dict[ProgramPoint, dict[str, tuple[DefinitionSite, ...]]]
+    out_by_command: dict[ProgramPoint, dict[str, tuple[DefinitionSite, ...]]]
+
+
+@dataclass(frozen=True)
+class LivenessResult:
+    live_in_by_block: dict[str, tuple[str, ...]]
+    live_out_by_block: dict[str, tuple[str, ...]]
+    live_before_command: dict[ProgramPoint, tuple[str, ...]]
+    live_after_command: dict[ProgramPoint, tuple[str, ...]]
+
+
+@dataclass(frozen=True)
+class UseBeforeDefIssue:
+    symbol: str
+    block_id: str
+    cmd_index: int
+    cmd_kind: str
+    raw: str
+
+
+@dataclass(frozen=True)
+class UseBeforeDefResult:
+    issues: tuple[UseBeforeDefIssue, ...]
+
+
+@dataclass(frozen=True)
+class DsaIssue:
+    kind: Literal["shape", "ambiguous-use"]
+    symbol: str | None
+    block_id: str
+    cmd_index: int | None
+    detail: str
+
+
+@dataclass(frozen=True)
+class DsaResult:
+    issues: tuple[DsaIssue, ...]
+
+    @property
+    def is_valid(self) -> bool:
+        return len(self.issues) == 0
+
+
+@dataclass(frozen=True)
+class ControlDependenceResult:
+    edges: tuple[tuple[str, str], ...]  # controller -> dependent
+    postdominators: dict[str, tuple[str, ...]]
+
+
+@dataclass(frozen=True)
+class DeadAssignment:
+    symbol: str
+    block_id: str
+    cmd_index: int
+    cmd_kind: str
+    raw: str
+
+
+@dataclass(frozen=True)
+class DceResult:
+    removed: tuple[DeadAssignment, ...]
+    program: TacProgram
