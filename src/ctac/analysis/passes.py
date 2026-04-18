@@ -301,17 +301,38 @@ def analyze_dsa(
     reaching_defs: ReachingDefinitionsResult | None = None,
 ) -> DsaResult:
     du = def_use if def_use is not None else extract_def_use(program, strip_var_suffixes=strip_var_suffixes)
-    preds: dict[str, set[str]] = {b.id: set() for b in program.blocks}
-    for b in program.blocks:
-        for s in b.successors:
-            if s in preds:
-                preds[s].add(b.id)
+    by_id = program.block_by_id()
+    succs: dict[str, tuple[str, ...]] = {
+        b.id: tuple(s for s in b.successors if s in by_id) for b in program.blocks
+    }
+
+    def _is_dynamic_symbol(defs: tuple[DefinitionSite, ...]) -> bool:
+        # Dynamic definition conditions:
+        # (a) symbol has multiple definitions
+        # (b) all definitions are in different blocks
+        # (c) all those blocks have the same unique successor
+        if len(defs) <= 1:
+            return False
+        def_blocks = [d.block_id for d in defs]
+        uniq_blocks = set(def_blocks)
+        if len(uniq_blocks) != len(def_blocks):
+            return False
+        uniq_succs: set[str] = set()
+        for bid in uniq_blocks:
+            out = succs.get(bid, tuple())
+            if len(out) != 1:
+                return False
+            uniq_succs.add(out[0])
+        return len(uniq_succs) == 1
 
     issues: list[DsaIssue] = []
     dynamic_assignments: list[DsaDynamicAssignment] = []
-    dynamic_symbols = {sym for sym, defs in du.definitions_by_symbol.items() if len(defs) > 1}
+    dynamic_symbols = {
+        sym for sym, defs in du.definitions_by_symbol.items() if _is_dynamic_symbol(defs)
+    }
 
-    # Dynamic assignment is shape-based: every assignment to a multiply-defined symbol.
+    # Dynamic assignment: every assignment to a symbol that satisfies the
+    # DSA "dynamic definition" conditions.
     defs_by_symbol = du.definitions_by_symbol
     for sym in sorted(dynamic_symbols):
         defs = defs_by_symbol[sym]
@@ -334,9 +355,8 @@ def analyze_dsa(
                 )
             )
 
-    # Block shape check with dynamic classification by symbol multiplicity:
+    # Block shape check with dynamic classification from DSA conditions:
     # (static)*(dynamic)*terminator
-    by_id = program.block_by_id()
     for block in program.blocks:
         defs_by_idx: dict[int, list[DefinitionSite]] = defaultdict(list)
         for ds in du.by_block[block.id].definition_sites:
@@ -397,29 +417,24 @@ def analyze_dsa(
             for idx, _cmd in enumerate(block.commands):
                 pt = ProgramPoint(block.id, idx)
                 reaching_here = rd.in_by_command.get(pt, {})
-                pred_set = preds.get(block.id, set())
                 for us in uses_by_idx.get(idx, []):
                     defs = reaching_here.get(us.symbol, tuple())
                     if len(defs) <= 1:
                         continue
-                    def_blocks = {d.block_id for d in defs}
-                    if not def_blocks.issubset(pred_set):
+                    if us.symbol not in dynamic_symbols:
                         issues.append(
                             DsaIssue(
                                 kind="ambiguous-use",
                                 symbol=us.symbol,
                                 block_id=us.block_id,
                                 cmd_index=us.cmd_index,
-                                detail=(
-                                    "multiple reaching defs are not all predecessor defs of the current block"
-                                ),
+                                detail="multiple reaching defs for non-dynamic symbol",
                             )
                         )
         uniq_issues = tuple(dict.fromkeys(issues))
         return DsaResult(issues=uniq_issues, dynamic_assignments=tuple(dynamic_assignments))
 
     block_in_fast, _ = _compute_reaching_block_states(program, du=du)
-    defs_by_id = du.definitions
     for block in program.blocks:
         bdu = du.by_block[block.id]
         state: RDStateFast = dict(block_in_fast.get(block.id, {}))
@@ -430,31 +445,18 @@ def analyze_dsa(
         for us in bdu.use_sites:
             uses_by_idx[us.cmd_index].append(us)
         for idx, _cmd in enumerate(block.commands):
-            pred_set = preds.get(block.id, set())
             for us in uses_by_idx.get(idx, []):
                 mask = state.get(us.symbol_id, 0)
                 if mask.bit_count() <= 1:
                     continue
-                def_blocks: set[str] = set()
-                sib_defs: list[str] = []
-                m = mask
-                while m:
-                    lsb = m & -m
-                    did = lsb.bit_length() - 1
-                    if 0 <= did < len(defs_by_id):
-                        def_blocks.add(defs_by_id[did].block_id)
-                        sib_defs.append(f"{defs_by_id[did].block_id}:{defs_by_id[did].cmd_index}")
-                    m ^= lsb
-                if not def_blocks.issubset(pred_set):
+                if us.symbol not in dynamic_symbols:
                     issues.append(
                         DsaIssue(
                             kind="ambiguous-use",
                             symbol=us.symbol,
                             block_id=us.block_id,
                             cmd_index=us.cmd_index,
-                            detail=(
-                                "multiple reaching defs are not all predecessor defs of the current block"
-                            ),
+                            detail="multiple reaching defs for non-dynamic symbol",
                         )
                     )
             for ds in defs_by_idx.get(idx, []):

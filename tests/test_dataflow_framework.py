@@ -247,13 +247,52 @@ TAC_DYNAMIC_BY_MULTIDEF = """TACSymbolTable {
 \ty:bv256
 }
 Program {
-\tBlock entry Succ [b] {
+\tBlock left Succ [join] {
 \t\tAssignExpCmd x 0x1
-\t\tJumpCmd b
+\t\tJumpCmd join
 \t}
-\tBlock b Succ [] {
+\tBlock right Succ [join] {
 \t\tAssignExpCmd x 0x2
+\t\tJumpCmd join
+\t}
+\tBlock join Succ [] {
 \t\tAssignExpCmd y 0x7
+\t\tAssumeExpCmd Eq(x y)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+TAC_AMBIGUOUS_NON_DYNAMIC = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+\tc:bool
+}
+Program {
+\tBlock entry Succ [left, right] {
+\t\tAssignExpCmd x 0x0
+\t\tAssignExpCmd c true
+\t\tJumpiCmd left right c
+\t}
+\tBlock left Succ [join] {
+\t\tAssignExpCmd x 0x1
+\t\tJumpCmd join
+\t}
+\tBlock right Succ [join] {
+\t\tAssignExpCmd x 0x2
+\t\tJumpCmd join
+\t}
+\tBlock join Succ [] {
+\t\tAssumeExpCmd Eq(x 0x1)
 \t}
 }
 Axioms {
@@ -345,14 +384,19 @@ def test_havoc_not_treated_as_dsa_dynamic_shape_violation() -> None:
 def test_dynamic_assignment_defined_by_symbol_multiplicity_with_siblings() -> None:
     tac = parse_string(TAC_DYNAMIC_BY_MULTIDEF, path="<string>")
     dsa = analyze_dsa(tac.program)
-    assert not dsa.is_valid
-    # x is multiply defined => both defs are dynamic assignments with sibling links.
+    assert dsa.is_valid
+    # x definitions are in different blocks and all flow to one unique successor.
     dyn_x = [d for d in dsa.dynamic_assignments if d.symbol == "x"]
     assert len(dyn_x) == 2
     sib_sets = {tuple(d.sibling_defs) for d in dyn_x}
-    assert ("b:0",) in sib_sets or ("entry:0",) in sib_sets
-    # In block b, static y assignment appears after dynamic x assignment.
-    assert any(i.kind == "shape" and "static assignment appears after dynamic assignment" in i.detail for i in dsa.issues)
+    assert ("right:0",) in sib_sets or ("left:0",) in sib_sets
+
+
+def test_ambiguous_use_requires_non_dynamic_reaching_defs() -> None:
+    tac = parse_string(TAC_AMBIGUOUS_NON_DYNAMIC, path="<string>")
+    dsa = analyze_dsa(tac.program)
+    assert not dsa.is_valid
+    assert any(i.kind == "ambiguous-use" and i.symbol == "x" for i in dsa.issues)
 
 
 def test_df_cli_liveness_plain_golden(tmp_path: Path) -> None:
