@@ -39,6 +39,7 @@ _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 _BV256_MOD = 1 << 256
 _BV256_MAX = _BV256_MOD - 1
+_BLANK_LINE_MARKER = "__CTAC_BLANK_LINE__"
 
 
 def _sort_from_tag(tag: str) -> str | None:
@@ -666,13 +667,14 @@ class SeaVcEncoder(SmtEncoder):
 
         for block in program.blocks:
             guard = block_guard(block.id, entry_block_id=entry_block_id)
+            has_assume_in_block = any(isinstance(c, AssumeExpCmd) for c in block.commands)
             for idx, cmd in enumerate(block.commands):
                 if isinstance(cmd, AssumeExpCmd):
-                    cond, s = emit_expr(cmd.condition, expected_sort="Bool")
-                    if s != "Bool":
-                        raise SmtEncodingError("Assume condition must be Bool")
+                    cond_expr = cmd.condition
                     # If the previous command is a havoc with immediate refinement,
-                    # merge the remaining bv256-domain side(s) into this assume.
+                    # merge the remaining bv256-domain side(s) into this assume
+                    # at AST level so range normalization can produce chained
+                    # inequalities `(<= lo x hi)`.
                     if idx > 0:
                         prev = block.commands[idx - 1]
                         if isinstance(prev, AssignHavocCmd):
@@ -683,15 +685,26 @@ class SeaVcEncoder(SmtEncoder):
                                 raw = (raw_sorts.get(prev_sym) or raw_sorts.get(base) or "").lower()
                                 if raw == "bv256":
                                     has_lo, has_hi = lo_hi
-                                    extra: list[str] = []
-                                    t = symbol_term[prev_sym]
+                                    extra_preds: list[TacExpr] = []
                                     if not has_lo:
-                                        extra.append(f"(<= 0 {t})")
+                                        extra_preds.append(
+                                            ApplyExpr("Ge", (SymbolRef(prev_sym), ConstExpr("0")))
+                                        )
                                     if not has_hi:
-                                        extra.append(f"(<= {t} BV256_MAX)")
-                                    if extra:
-                                        cond = _and_terms([cond, *extra])
+                                        extra_preds.append(
+                                            ApplyExpr("Le", (SymbolRef(prev_sym), ConstExpr(str(_BV256_MAX))))
+                                        )
+                                    if extra_preds:
+                                        cond_expr = ApplyExpr("LAnd", (cond_expr, *extra_preds))
+
+                    cond, s = emit_expr(cond_expr, expected_sort="Bool")
+                    if s != "Bool":
+                        raise SmtEncodingError("Assume condition must be Bool")
                     add_constraint(_implies(guard, cond))
+            if has_assume_in_block:
+                remaining_blocks = program.blocks[program.blocks.index(block) + 1 :]
+                if any(any(isinstance(c, AssumeExpCmd) for c in b.commands) for b in remaining_blocks):
+                    constraints.append(_BLANK_LINE_MARKER)
         assume_end = len(constraints)
 
         # Dynamic assignment groups as compact ITEs.
@@ -796,7 +809,10 @@ class SeaVcEncoder(SmtEncoder):
         def emit_constraint_section(name: str, start: int, end: int) -> None:
             emit_banner(name)
             for c in constraints[start:end]:
-                out_lines.append(f"(assert {c})")
+                if c == _BLANK_LINE_MARKER:
+                    out_lines.append("")
+                else:
+                    out_lines.append(f"(assert {c})")
 
         emit_constraint_section("Static Assignments and Havoc Domain", 0, static_end)
         emit_constraint_section("Assumptions", static_end, assume_end)

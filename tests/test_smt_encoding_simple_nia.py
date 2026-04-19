@@ -241,6 +241,39 @@ Metas {
 """
 
 
+TAC_ASSUME_SPACING = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tc:bool
+\tok:bool
+}
+Program {
+\tBlock entry Succ [b1] {
+\t\tAssignExpCmd c true
+\t\tJumpCmd b1
+\t}
+\tBlock b1 Succ [b2] {
+\t\tAssumeExpCmd c
+\t\tJumpCmd b2
+\t}
+\tBlock b2 Succ [] {
+\t\tAssumeExpCmd Not(c)
+\t\tAssignExpCmd ok true
+\t\tAssertCmd ok "assume spacing"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
 def test_sea_vc_logic_and_named_constants() -> None:
     tac = parse_string(TAC_SEA, path="<string>")
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
@@ -286,8 +319,8 @@ def test_sea_vc_havoc_immediate_refine_skips_default_range() -> None:
     assert "(assert (<= 0 h1 BV256_MAX))" not in rendered
     assert "(assert (<= h2 BV256_MAX))" not in rendered
     assert "(assert (<= 0 h3))" not in rendered
-    assert "(assert (and (>= h2 1) (<= h2 BV256_MAX)))" in rendered
-    assert "(assert (and (<= h3 MASK_LOW_64) (<= 0 h3)))" in rendered
+    assert "(assert (<= 1 h2 BV256_MAX))" in rendered
+    assert "(assert (<= 0 h3 MASK_LOW_64))" in rendered
     assert "(assert (<= 0 h4 BV256_MAX))" in rendered
 
 
@@ -295,6 +328,12 @@ def test_sea_vc_havoc_or_guard_keeps_default_range() -> None:
     tac = parse_string(TAC_HAVOC_OR_GUARD, path="<string>")
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
     assert "(assert (<= 0 h BV256_MAX))" in rendered
+
+
+def test_sea_vc_blank_line_between_assume_blocks() -> None:
+    tac = parse_string(TAC_ASSUME_SPACING, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    assert "(assert (=> BLK_b1 c))\n\n(assert (=> BLK_b2 (not c)))" in rendered
 
 
 def test_sea_vc_shift_mask_rewrites_and_uf_fallback() -> None:
