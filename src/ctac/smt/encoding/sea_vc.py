@@ -26,8 +26,8 @@ from ctac.smt.encoding.path_skeleton import (
     sanitize_ident,
 )
 from ctac.smt.model import SmtDeclaration, SmtScript
-from ctac.tac_ast.parse_expr import parse_expr_safe
-from ctac.tac_ast.range_constraints import match_inclusive_range_constraint
+from ctac.ast.parse_expr import parse_expr_safe
+from ctac.ast.range_constraints import match_inclusive_range_constraint
 
 _SYMBOL_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*):([A-Za-z0-9_]+)\s*$")
 _BASE_SYMBOL = re.compile(r"^(.*):\d+$")

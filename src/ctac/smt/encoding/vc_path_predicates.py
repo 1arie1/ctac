@@ -16,7 +16,7 @@ from ctac.ast.nodes import (
 )
 from ctac.smt.encoding.base import EncoderContext, SmtEncodingError, SmtEncoder
 from ctac.smt.model import SmtDeclaration, SmtScript
-from ctac.tac_ast.parse_expr import parse_expr_safe
+from ctac.ast.parse_expr import parse_expr_safe
 
 _BV_SORT = re.compile(r"^\(_\s+BitVec\s+(\d+)\)$")
 _SYMBOL_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*):([A-Za-z0-9_]+)\s*$")

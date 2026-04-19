@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ctac.tac_ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
+from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 
 MAX_U256 = (1 << 256) - 1
 _TYPED_CONST = re.compile(
