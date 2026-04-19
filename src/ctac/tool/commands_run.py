@@ -19,7 +19,7 @@ from ctac.ast.run_format import (
     strip_meta_suffix,
     values_equal,
 )
-from ctac.eval import RunConfig, Value, parse_tac_model_path, run_program, value_to_text
+from ctac.eval import RunConfig, Value, parse_model_path, run_program, value_to_text
 from ctac.parse import ParseError, parse_path
 from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
 from ctac.tool.commands_cfg_pp_search import normalize_printer_name, parse_user_value
@@ -78,7 +78,7 @@ def run(
         Optional[Path],
         typer.Option(
             "--model",
-            help="Path to a report/model file containing a 'TAC model begin/end' section.",
+            help="Path to TAC-model text or SMT-LIB model output (optional sat/unknown prefix supported).",
         ),
     ] = None,
     fallback: Annotated[
@@ -177,7 +177,7 @@ def run(
     fallback_model_warnings: list[str] = []
     if model is not None:
         try:
-            model_res = parse_tac_model_path(model)
+            model_res = parse_model_path(model)
         except OSError as e:
             c.print(f"[red]model read error:[/red] {e}" if not plain else f"model read error: {e}")
             raise typer.Exit(1) from e
@@ -188,7 +188,7 @@ def run(
         model_warnings = model_res.warnings
     if fallback is not None:
         try:
-            fb_res = parse_tac_model_path(fallback)
+            fb_res = parse_model_path(fallback)
         except OSError as e:
             c.print(f"[red]fallback model read error:[/red] {e}" if not plain else f"fallback model read error: {e}")
             raise typer.Exit(1) from e

@@ -1,7 +1,8 @@
-"""Parser for TAC model sections embedded in Certora report files."""
+"""Parsers for runtime models consumed by `ctac run`."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -10,9 +11,15 @@ from ctac.eval.types import Value
 
 
 @dataclass(frozen=True)
-class ModelParseResult:
+class TacModel:
     values: dict[str, Value]
+    source_format: str = "unknown"
+    status: str | None = None
     warnings: list[str] = field(default_factory=list)
+
+
+# Backward-compatible alias used across existing code/tests.
+ModelParseResult = TacModel
 
 
 def _parse_bool_token(token: str) -> bool | None:
@@ -50,6 +57,19 @@ def _parse_number_token(token: str) -> int:
                 v -= int(delta, 10)
             return v
     return int(t, 10)
+
+
+def _parse_bv_token(token: str) -> int | None:
+    t = token.strip().replace("_", "")
+    if t.startswith("#x"):
+        return int(t[2:], 16)
+    if t.startswith("#b"):
+        return int(t[2:], 2)
+    if t.startswith(("0x", "0X", "-0x", "-0X")):
+        return int(t, 16)
+    if re.fullmatch(r"-?[0-9]+", t):
+        return int(t, 10)
+    return None
 
 
 def _split_pow_expr(rhs: str) -> tuple[str, str | None, str]:
@@ -115,7 +135,7 @@ def _extract_tac_model_section(text: str) -> str:
     return text[begin:end]
 
 
-def parse_tac_model_text(text: str) -> ModelParseResult:
+def parse_tac_model_text(text: str) -> TacModel:
     body = _extract_tac_model_section(text)
     values: dict[str, Value] = {}
     warnings: list[str] = []
@@ -127,9 +147,165 @@ def parse_tac_model_text(text: str) -> ModelParseResult:
         if symbol in values and values[symbol] != value:
             warnings.append(f"line {idx}: duplicate symbol {symbol!r}; keeping last value")
         values[symbol] = value
-    return ModelParseResult(values=values, warnings=warnings)
+    return TacModel(values=values, source_format="tac", warnings=warnings)
 
 
-def parse_tac_model_path(path: Path) -> ModelParseResult:
+_TOKEN_RE = re.compile(r"\(|\)|[^\s()]+")
+
+
+def _tokenize(s: str) -> list[str]:
+    return _TOKEN_RE.findall(s)
+
+
+def _parse_sexpr(tokens: list[str], idx: int = 0) -> tuple[object, int]:
+    if idx >= len(tokens):
+        raise ValueError("unexpected end of S-expression")
+    tok = tokens[idx]
+    if tok == "(":
+        out: list[object] = []
+        i = idx + 1
+        while i < len(tokens) and tokens[i] != ")":
+            node, i = _parse_sexpr(tokens, i)
+            out.append(node)
+        if i >= len(tokens) or tokens[i] != ")":
+            raise ValueError("missing closing paren")
+        return out, i + 1
+    if tok == ")":
+        raise ValueError("unexpected closing paren")
+    return tok, idx + 1
+
+
+def _parse_model_root(model_text: str) -> list[object]:
+    tokens = _tokenize(model_text)
+    if not tokens:
+        return []
+    node, i = _parse_sexpr(tokens, 0)
+    if i != len(tokens):
+        raise ValueError("trailing tokens after model")
+    if not isinstance(node, list):
+        raise ValueError("model root must be a list")
+    return node
+
+
+def _maybe_strip_solver_status_prefix(text: str) -> tuple[str | None, str]:
+    lines = text.splitlines()
+    idx = 0
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+    if idx >= len(lines):
+        return None, ""
+    first = lines[idx].strip().lower()
+    if first in {"sat", "unsat", "unknown", "timeout"}:
+        return first, "\n".join(lines[idx + 1 :]).strip()
+    return None, text.strip()
+
+
+def _sort_token_to_str(sort_tok: object) -> str:
+    if isinstance(sort_tok, str):
+        return sort_tok
+    if (
+        isinstance(sort_tok, list)
+        and len(sort_tok) == 3
+        and sort_tok[0] == "_"
+        and sort_tok[1] == "BitVec"
+        and isinstance(sort_tok[2], str)
+    ):
+        return f"bv{sort_tok[2]}"
+    return str(sort_tok)
+
+
+def _eval_int_term(term: object, env: dict[str, int]) -> int:
+    if isinstance(term, str):
+        n = _parse_bv_token(term)
+        if n is not None:
+            return n
+        if term in env:
+            return env[term]
+        raise ValueError(f"unsupported Int atom {term!r}")
+    if not isinstance(term, list) or not term:
+        raise ValueError("unsupported Int term")
+    op = term[0]
+    args = term[1:]
+    if op == "-" and len(args) == 1:
+        return -_eval_int_term(args[0], env)
+    if op == "+":
+        return sum(_eval_int_term(a, env) for a in args)
+    if op == "-" and len(args) == 2:
+        return _eval_int_term(args[0], env) - _eval_int_term(args[1], env)
+    if op == "*" and len(args) >= 2:
+        v = 1
+        for a in args:
+            v *= _eval_int_term(a, env)
+        return v
+    if op == "mod" and len(args) == 2:
+        return _eval_int_term(args[0], env) % _eval_int_term(args[1], env)
+    if op == "_" and len(args) == 2 and isinstance(args[0], str) and args[0].startswith("bv"):
+        return int(args[0][2:], 10)
+    raise ValueError(f"unsupported Int term op {op!r}")
+
+
+def _eval_bool_term(term: object) -> bool:
+    if term == "true":
+        return True
+    if term == "false":
+        return False
+    raise ValueError(f"unsupported Bool term {term!r}")
+
+
+def parse_smt_model_text(text: str) -> TacModel:
+    status, body = _maybe_strip_solver_status_prefix(text)
+    if status in {"unsat", "unknown", "timeout"} and not body:
+        return TacModel(values={}, source_format="smt", status=status, warnings=[])
+    root = _parse_model_root(body)
+    if not root:
+        raise ValueError("empty SMT model")
+    items = root[1:] if root and root[0] == "model" else root
+    defs: dict[str, tuple[str, object]] = {}
+    for item in items:
+        if not isinstance(item, list) or len(item) != 5:
+            continue
+        if item[0] != "define-fun":
+            continue
+        name, args, sort_tok, val_term = item[1], item[2], item[3], item[4]
+        if not isinstance(name, str) or not isinstance(args, list) or args:
+            continue
+        defs[name] = (_sort_token_to_str(sort_tok), val_term)
+
+    env: dict[str, int] = {}
+    for name, (sort, term) in defs.items():
+        if sort != "Int":
+            continue
+        try:
+            env[name] = _eval_int_term(term, env)
+        except ValueError:
+            continue
+
+    values: dict[str, Value] = {}
+    warnings: list[str] = []
+    for name, (sort, term) in defs.items():
+        sl = sort.lower()
+        try:
+            if sl == "bool":
+                values[name] = Value("bool", _eval_bool_term(term))
+            elif sl == "int":
+                values[name] = Value("int", _eval_int_term(term, env))
+            elif sl.startswith("bv"):
+                values[name] = Value("bv", _eval_int_term(term, env) % MOD_256)
+        except ValueError as e:
+            warnings.append(f"skip {name}: {e}")
+    return TacModel(values=values, source_format="smt", status=status, warnings=warnings)
+
+
+def parse_model_text(text: str) -> TacModel:
+    if "TAC model begin" in text:
+        return parse_tac_model_text(text)
+    return parse_smt_model_text(text)
+
+
+def parse_tac_model_path(path: Path) -> TacModel:
     return parse_tac_model_text(path.read_text(encoding="utf-8"))
+
+
+def parse_model_path(path: Path) -> TacModel:
+    return parse_model_text(path.read_text(encoding="utf-8"))
 
