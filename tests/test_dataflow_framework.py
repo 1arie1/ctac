@@ -649,14 +649,13 @@ def test_df_cli_liveness_plain_golden(tmp_path: Path) -> None:
     res = runner.invoke(app, ["df", str(p), "--plain", "--show", "liveness"])
     assert res.exit_code == 0
     lines = res.stdout.splitlines()
-    assert lines[0].startswith("# path: ")
-    assert lines[1:4] == [
-        "# show: liveness",
-        "# blocks: 2",
-        "liveness:",
-    ]
-    assert lines[4].startswith("  time: ")
-    assert lines[5] == "  blocks_with_live_in: 1, max_live_in_size: 1, max_live_out_size: 1"
+    assert any(ln.startswith("input.path: ") for ln in lines)
+    assert "input.show: liveness" in lines
+    assert "input.blocks: 2" in lines
+    assert "liveness.blocks_with_live_in: 1" in lines
+    assert "liveness.max_live_in_size: 1" in lines
+    assert "liveness.max_live_out_size: 1" in lines
+    assert any(ln.startswith("timings.liveness: ") for ln in lines)
 
 
 def test_df_cli_dce_plain_golden(tmp_path: Path) -> None:
@@ -665,14 +664,12 @@ def test_df_cli_dce_plain_golden(tmp_path: Path) -> None:
     res = runner.invoke(app, ["df", str(p), "--plain", "--show", "dce"])
     assert res.exit_code == 0
     lines = res.stdout.splitlines()
-    assert lines[0].startswith("# path: ")
-    assert lines[1:4] == [
-        "# show: dce",
-        "# blocks: 2",
-        "dce:",
-    ]
-    assert lines[4].startswith("  time: ")
-    assert lines[5] == "  removed_count: 1, remaining_commands: 4"
+    assert any(ln.startswith("input.path: ") for ln in lines)
+    assert "input.show: dce" in lines
+    assert "input.blocks: 2" in lines
+    assert "dce.removed_count: 1" in lines
+    assert "dce.remaining_commands: 4" in lines
+    assert any(ln.startswith("timings.dce: ") for ln in lines)
 
 
 def test_df_cli_dce_plain_details_lists_removed(tmp_path: Path) -> None:
@@ -763,13 +760,11 @@ def test_df_cli_uce_plain_reports_removed_assumes(tmp_path: Path) -> None:
     res = runner.invoke(app, ["df", str(p), "--plain", "--show", "uce"])
     assert res.exit_code == 0
     lines = res.stdout.splitlines()
-    assert lines[1:4] == [
-        "# show: uce",
-        "# blocks: 1",
-        "uce:",
-    ]
-    assert lines[4].startswith("  time: ")
-    assert lines[5] == "  removed_count: 1, remaining_commands: 1"
+    assert "input.show: uce" in lines
+    assert "input.blocks: 1" in lines
+    assert "uce.removed_count: 1" in lines
+    assert "uce.remaining_commands: 1" in lines
+    assert any(ln.startswith("timings.uce: ") for ln in lines)
 
 
 def test_df_cli_uce_plain_details_includes_reason(tmp_path: Path) -> None:

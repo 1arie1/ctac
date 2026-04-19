@@ -70,17 +70,25 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
+def _has_plain_stat(stdout: str, path: str, value: int) -> bool:
+    needle = f"{path}: {value}"
+    for line in stdout.splitlines():
+        if line.strip() == needle:
+            return True
+    return False
+
+
 def test_text_commands_accept_sbf_json(tmp_path: Path) -> None:
     left = _write(tmp_path / "left.sbf.json", SBF_LEFT)
     runner = CliRunner()
 
     parse_res = runner.invoke(app, ["parse", str(left), "--plain"])
     assert parse_res.exit_code == 0
-    assert "blocks: 2" in parse_res.stdout
+    assert _has_plain_stat(parse_res.stdout, "overview.blocks", 2)
 
     stats_res = runner.invoke(app, ["stats", str(left), "--plain"])
     assert stats_res.exit_code == 0
-    assert "commands: 4" in stats_res.stdout
+    assert _has_plain_stat(stats_res.stdout, "overview.commands", 4)
 
     search_res = runner.invoke(app, ["search", str(left), "havoc", "--plain", "--literal"])
     assert search_res.exit_code == 0

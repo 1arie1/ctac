@@ -5,71 +5,44 @@ from pathlib import Path
 from typing import Optional
 
 import typer
-from rich.table import Table
 
 from ctac.ast.nodes import ApplyExpr, AssignExpCmd, AssumeExpCmd, ConstExpr, TacExpr
 from ctac.ir.models import TacFile
 from ctac.parse import ParseError, parse_path
 from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
+from ctac.tool.stats_model import StatsCollection
+from ctac.tool.stats_render import render_plain_stats, render_rich_stats_tree
 
 
-def print_tac_stats(
+def collect_tac_stats(
     tac: TacFile,
     *,
-    plain: bool,
     by_cmd_kind: bool = False,
     top_blocks: int = 0,
-) -> None:
-    c = console(plain)
+) -> StatsCollection:
+    stats = StatsCollection()
     n_blocks = len(tac.program.blocks)
     n_cmds = sum(len(b.commands) for b in tac.program.blocks)
     n_meta_keys = len(tac.metas)
     sym_lines = tac.symbol_table_text.count("\n") + (1 if tac.symbol_table_text else 0)
-
-    if plain:
-        c.print(f"path: {tac.path}")
-        c.print(f"symbol_table_lines: {sym_lines}")
-        c.print(f"blocks: {n_blocks}")
-        c.print(f"commands: {n_cmds}")
-        c.print(f"metas_top_keys: {n_meta_keys}")
-    else:
-        c.print(f"[bold]path[/bold] {tac.path}")
-        c.print(f"[bold]symbol table[/bold] ~{sym_lines} lines")
-        c.print(f"[bold]blocks[/bold] {n_blocks}")
-        c.print(f"[bold]commands[/bold] {n_cmds}")
-        c.print(f"[bold]metas keys[/bold] {n_meta_keys}")
+    stats.add_str("overview.path", tac.path if tac.path is not None else "-")
+    stats.add_num("overview.symbol_table_lines", sym_lines)
+    stats.add_num("overview.blocks", n_blocks)
+    stats.add_num("overview.commands", n_cmds)
+    stats.add_num("overview.metas_top_keys", n_meta_keys)
 
     if by_cmd_kind:
         cmd_kinds = Counter(type(cmd).__name__ for b in tac.program.blocks for cmd in b.commands)
-        if plain:
-            c.print("command_kinds:")
-            for name, cnt in sorted(cmd_kinds.items(), key=lambda kv: (-kv[1], kv[0])):
-                c.print(f"  {name}: {cnt}")
-        else:
-            c.print("[bold]command kinds[/bold]")
-            t = Table(expand=False)
-            t.add_column("kind", no_wrap=True)
-            t.add_column("count", justify="right", no_wrap=True)
-            for name, cnt in sorted(cmd_kinds.items(), key=lambda kv: (-kv[1], kv[0])):
-                t.add_row(name, str(cnt))
-            c.print(t)
+        for name, cnt in sorted(cmd_kinds.items(), key=lambda kv: (-kv[1], kv[0])):
+            stats.add_num(f"command_kinds.{name}", cnt)
 
     if top_blocks > 0:
         ranked = sorted(tac.program.blocks, key=lambda b: len(b.commands), reverse=True)[:top_blocks]
-        if plain:
-            c.print("top_blocks_by_command_count:")
-            for b in ranked:
-                c.print(f"  {b.id}: commands={len(b.commands)} succ={len(b.successors)}")
-        else:
-            c.print(f"[bold]top {len(ranked)} blocks by command count[/bold]")
-            t = Table(expand=False)
-            t.add_column("block", no_wrap=True)
-            t.add_column("commands", justify="right", no_wrap=True)
-            t.add_column("successors", justify="right", no_wrap=True)
-            for b in ranked:
-                t.add_row(b.id, str(len(b.commands)), str(len(b.successors)))
-            c.print(t)
+        stats.add_num("top_blocks_by_command_count.count", len(ranked))
+        for b in ranked:
+            stats.add_num(f"top_blocks_by_command_count.{b.id}.commands", len(b.commands))
+            stats.add_num(f"top_blocks_by_command_count.{b.id}.successors", len(b.successors))
 
     expr_ops: Counter[str] = Counter()
     nonlinear_mul = 0
@@ -100,29 +73,32 @@ def print_tac_stats(
             elif isinstance(cmd, AssumeExpCmd):
                 _visit_expr(cmd.condition)
 
-    if plain:
-        c.print("expression_ops:")
-        for op, cnt in sorted(expr_ops.items(), key=lambda kv: (-kv[1], kv[0])):
-            c.print(f"  {op}: {cnt}")
-        c.print("nonlinear_ops:")
-        c.print(f"  multiplication: {nonlinear_mul}")
-        c.print(f"  division_or_mod: {nonlinear_div}")
-    else:
-        c.print("[bold]expression ops[/bold]")
-        t_ops = Table(expand=False)
-        t_ops.add_column("op", no_wrap=True)
-        t_ops.add_column("count", justify="right", no_wrap=True)
-        for op, cnt in sorted(expr_ops.items(), key=lambda kv: (-kv[1], kv[0])):
-            t_ops.add_row(op, str(cnt))
-        c.print(t_ops)
+    for op, cnt in sorted(expr_ops.items(), key=lambda kv: (-kv[1], kv[0])):
+        stats.add_num(f"expression_ops.{op}", cnt)
 
-        c.print("[bold]nonlinear arithmetic ops[/bold]")
-        t_nl = Table(expand=False)
-        t_nl.add_column("kind", no_wrap=True)
-        t_nl.add_column("count", justify="right", no_wrap=True)
-        t_nl.add_row("multiplication", str(nonlinear_mul))
-        t_nl.add_row("division_or_mod", str(nonlinear_div))
-        c.print(t_nl)
+    stats.add_num("nonlinear_ops.multiplication", nonlinear_mul)
+    stats.add_num("nonlinear_ops.division_or_mod", nonlinear_div)
+    return stats
+
+
+def print_tac_stats(
+    tac: TacFile,
+    *,
+    plain: bool,
+    by_cmd_kind: bool = False,
+    top_blocks: int = 0,
+) -> None:
+    c = console(plain)
+    stats = collect_tac_stats(
+        tac,
+        by_cmd_kind=by_cmd_kind,
+        top_blocks=top_blocks,
+    )
+    if plain:
+        for line in render_plain_stats(stats):
+            c.print(line, markup=False)
+        return
+    c.print(render_rich_stats_tree(stats))
 
 
 def run_stats(

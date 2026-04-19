@@ -27,6 +27,8 @@ from ctac.parse import ParseError, parse_path, render_tac_file
 from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
 from ctac.tool.filters import CfgFilterOptions, apply_cfg_filters
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
+from ctac.tool.stats_model import StatsCollection
+from ctac.tool.stats_render import render_plain_stats, render_rich_stats_tree
 
 
 def _program_point_key(block_id: str, cmd_index: int) -> str:
@@ -409,6 +411,78 @@ def dataflow_cmd(
         if not vals:
             return 0
         return max(len(v) for v in vals.values())
+
+    summary_stats = StatsCollection()
+    summary_stats.add_str("input.path", str(tac.path or "-"))
+    summary_stats.add_str("input.show", ", ".join(sorted(modes)))
+    summary_stats.add_num("input.blocks", len(filtered_program.blocks))
+    summary_stats.add_num("input.input_warnings", len(user_warnings) + len(input_warnings))
+    summary_stats.add_num("input.filter_warnings", len(filter_warnings))
+    for name in sorted(timings_sec):
+        summary_stats.add_time(f"timings.{name}", timings_sec[name], unit="s")
+
+    if "def-use" in modes:
+        defs = payload["def_use"]["defs_by_symbol"]  # type: ignore[index]
+        uses = payload["def_use"]["uses_by_symbol"]  # type: ignore[index]
+        weak_uses = payload["def_use"]["weak_uses_by_symbol"]  # type: ignore[index]
+        summary_stats.add_num("def_use.symbols_with_defs", len(defs))
+        summary_stats.add_num("def_use.symbols_with_uses", len(uses))
+        summary_stats.add_num("def_use.symbols_with_weak_uses", len(weak_uses))
+        summary_stats.add_num("def_use.total_defs", _total_counts(defs))
+        summary_stats.add_num("def_use.total_uses", _total_counts(uses))
+        summary_stats.add_num("def_use.total_weak_uses", _total_counts(weak_uses))
+
+    if "liveness" in modes:
+        assert lv is not None
+        blocks_with_live_in = sum(1 for x in lv.live_in_by_block.values() if x)
+        summary_stats.add_num("liveness.blocks_with_live_in", blocks_with_live_in)
+        summary_stats.add_num("liveness.max_live_in_size", _live_size(lv.live_in_by_block))
+        summary_stats.add_num("liveness.max_live_out_size", _live_size(lv.live_out_by_block))
+
+    if "dce" in modes:
+        dce_obj = payload["dce"]  # type: ignore[assignment]
+        summary_stats.add_num("dce.removed_count", dce_obj["removed_count"])
+        summary_stats.add_num("dce.remaining_commands", dce_obj["remaining_commands"])
+
+    if "uce" in modes or "useless-assume" in modes:
+        uce_obj = payload["uce"]  # type: ignore[assignment]
+        summary_stats.add_num("uce.removed_count", uce_obj["removed_count"])
+        summary_stats.add_num("uce.remaining_commands", uce_obj["remaining_commands"])
+
+    if "use-before-def" in modes:
+        ubd_obj = payload["use_before_def"]  # type: ignore[assignment]
+        issue_count = len(ubd_obj["issues"])
+        summary_stats.add_str("use_before_def.status", "ok" if issue_count == 0 else "issues")
+        summary_stats.add_num("use_before_def.issue_count", issue_count)
+
+    if "dsa" in modes:
+        dsa_obj = payload["dsa"]  # type: ignore[assignment]
+        issue_count = len(dsa_obj["issues"])
+        summary_stats.add_str("dsa.status", "valid" if dsa_obj["is_valid"] else "invalid")
+        summary_stats.add_num("dsa.issue_count", issue_count)
+
+    if "control-dependence" in modes:
+        cd_obj = payload["control_dependence"]  # type: ignore[assignment]
+        summary_stats.add_num("control_dependence.edge_count", len(cd_obj["edges"]))
+
+    if not details:
+        if plain:
+            for line in render_plain_stats(summary_stats):
+                c.print(line, markup=False)
+        else:
+            c.print(render_rich_stats_tree(summary_stats, root_label="dataflow_summary"))
+
+        if output_path is not None:
+            c.print(f"# wrote transformed output: {output_path}", markup=False)
+        if style is not None and output_path is None:
+            c.print("# transformed output:", markup=False)
+            if style == "raw":
+                for ln in (transformed_text or "").splitlines():
+                    c.print(ln, markup=False)
+            else:
+                for ln in transformed_lines or []:
+                    c.print(ln, markup=False)
+        return
 
     if plain:
         if tac.path:
