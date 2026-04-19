@@ -7,17 +7,19 @@ ctac pp ...
 ```
 
 Language ids: `htac`, `sbf`  
-Suggested file extensions: `.htac`, `.sbf`, `.sbf.json`
+Suggested file extensions: `.htac`, `.sbf`
 
 ## Features
 
-- Syntax highlighting tuned for `ctac pp` output.
+- Syntax highlighting for:
+  - `htac`: human TAC (`ctac pp` output)
+  - `sbf`: rendered SBF files (`.sbf`)
 - Go to Definition for:
   - block targets (jump target -> `block_id:` line in same file)
   - variables (`R*`, `B*`, `I*`, `F*`, `T*`, `S*`) to first assignment line in file
 - Find References for variables (all occurrences in same file).
 
-For `sbf`, the extension reuses the same highlighting and navigation logic.
+`sbf` and `htac` use separate grammar files.
 
 ## Use with `tac1.txt` / `tac2.txt` without renaming
 
@@ -28,7 +30,7 @@ Add this to VSCode `settings.json`:
   "files.associations": {
     "**/examples/tac1.txt": "htac",
     "**/examples/tac2.txt": "htac",
-    "**/*.sbf.json": "sbf"
+    "**/*.sbf": "sbf"
   }
 }
 ```

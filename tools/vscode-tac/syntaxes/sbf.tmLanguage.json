@@ -1,0 +1,133 @@
+{
+  "name": "SBF",
+  "scopeName": "source.sbf",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#control"
+    },
+    {
+      "include": "#blocks"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#symbols"
+    },
+    {
+      "include": "#functions"
+    }
+  ],
+  "repository": {
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.sbf",
+          "begin": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.sbf"
+            }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.sbf"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.sbf",
+              "match": "\\\\(?:[\"\\\\/bfnrt]|u[0-9a-fA-F]{4})"
+            }
+          ]
+        }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.number-sign.sbf",
+          "match": "#.*$"
+        },
+        {
+          "name": "comment.block.sbf",
+          "match": "/\\*.*?\\*/"
+        }
+      ]
+    },
+    "control": {
+      "patterns": [
+        {
+          "name": "keyword.control.sbf",
+          "match": "\\b(?:if|then|else|goto|stop|assume|assert|in|havoc|call|callx|exit)\\b"
+        }
+      ]
+    },
+    "blocks": {
+      "patterns": [
+        {
+          "name": "entity.name.label.block.sbf",
+          "match": "^[A-Za-z0-9_]+(?=:\\s*$)"
+        },
+        {
+          "name": "entity.name.label.block.sbf",
+          "match": "(?<=\\bgoto\\s)[A-Za-z0-9_]+"
+        },
+        {
+          "name": "entity.name.label.block.sbf",
+          "match": "(?<=\\belse\\s+goto\\s)[A-Za-z0-9_]+"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.sbf",
+          "match": "\\b-?0[xX][0-9a-fA-F_]+\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.sbf",
+          "match": "\\b-?\\d+\\b"
+        },
+        {
+          "name": "constant.language.boolean.sbf",
+          "match": "\\b(?:true|false)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.sbf",
+          "match": "==|!=|<=|>=|<|>|&&|\\|\\||<<|>>|\\+|-|\\*|/|%|=|\\b(?:ult|ule|ugt|uge|slt|sle|sgt|sge|or|and|xor|lsh|lrsh|arsh)\\b"
+        }
+      ]
+    },
+    "symbols": {
+      "patterns": [
+        {
+          "name": "variable.other.register.sbf",
+          "match": "\\b[rRbBiIfFtTsS][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_]*\\([^)]*\\))?\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.sbf",
+          "match": "\\b(?:select|be16|be32|be64|le16|le32|le64|neg)\\b"
+        }
+      ]
+    }
+  }
+}

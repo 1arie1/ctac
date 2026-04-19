@@ -5,6 +5,22 @@
   "version": "0.0.1",
   "publisher": "ctac-local",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/1arie1/ctac.git",
+    "directory": "tools/vscode-tac"
+  },
+  "homepage": "https://github.com/1arie1/ctac/tree/main/tools/vscode-tac",
+  "files": [
+    "extension.js",
+    "language-configuration.json",
+    "language-configuration-sbf.json",
+    "syntaxes/**/*.json",
+    "themes/**/*.json",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -36,10 +52,9 @@
           "sbf"
         ],
         "extensions": [
-          ".sbf",
-          ".sbf.json"
+          ".sbf"
         ],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration-sbf.json"
       }
     ],
     "grammars": [
@@ -51,7 +66,7 @@
       {
         "language": "sbf",
         "scopeName": "source.sbf",
-        "path": "./syntaxes/htac.tmLanguage.json"
+        "path": "./syntaxes/sbf.tmLanguage.json"
       }
     ],
     "themes": [

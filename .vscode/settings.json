@@ -1,0 +1,23 @@
+{
+    "files.associations": {
+        "*.sbf": "sbf"
+    },
+    "cSpell.words": [
+        "BWAND",
+        "BWOR",
+        "BWXOR",
+        "conds",
+        "ctac",
+        "ctpp",
+        "funs",
+        "hotspot",
+        "Jumpi",
+        "klass",
+        "lshr",
+        "preds",
+        "regs",
+        "UFNIA",
+        "unbracket",
+        "venv"
+    ]
+}

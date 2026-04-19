@@ -5,7 +5,8 @@
   "tokenColors": [
     {
       "scope": [
-        "keyword.control.htac"
+        "keyword.control.htac",
+        "keyword.control.sbf"
       ],
       "settings": {
         "foreground": "#4FC1FF",
@@ -14,7 +15,8 @@
     },
     {
       "scope": [
-        "entity.name.label.block.htac"
+        "entity.name.label.block.htac",
+        "entity.name.label.block.sbf"
       ],
       "settings": {
         "foreground": "#7EE787",
@@ -23,7 +25,8 @@
     },
     {
       "scope": [
-        "variable.other.register.htac"
+        "variable.other.register.htac",
+        "variable.other.register.sbf"
       ],
       "settings": {
         "foreground": "#79C0FF"
@@ -42,7 +45,10 @@
       "scope": [
         "constant.numeric.hex.htac",
         "constant.numeric.decimal.htac",
-        "constant.language.boolean.htac"
+        "constant.language.boolean.htac",
+        "constant.numeric.hex.sbf",
+        "constant.numeric.decimal.sbf",
+        "constant.language.boolean.sbf"
       ],
       "settings": {
         "foreground": "#F2CC60"
@@ -50,7 +56,8 @@
     },
     {
       "scope": [
-        "keyword.operator.htac"
+        "keyword.operator.htac",
+        "keyword.operator.sbf"
       ],
       "settings": {
         "foreground": "#C9D1D9"
@@ -58,7 +65,8 @@
     },
     {
       "scope": [
-        "string.quoted.double.htac"
+        "string.quoted.double.htac",
+        "string.quoted.double.sbf"
       ],
       "settings": {
         "foreground": "#FFD1DC"
@@ -67,7 +75,9 @@
     {
       "scope": [
         "punctuation.definition.string.begin.htac",
-        "punctuation.definition.string.end.htac"
+        "punctuation.definition.string.end.htac",
+        "punctuation.definition.string.begin.sbf",
+        "punctuation.definition.string.end.sbf"
       ],
       "settings": {
         "foreground": "#FF9BB0",
@@ -76,7 +86,9 @@
     },
     {
       "scope": [
-        "comment.line.number-sign.htac"
+        "comment.line.number-sign.htac",
+        "comment.line.number-sign.sbf",
+        "comment.block.sbf"
       ],
       "settings": {
         "foreground": "#8B949E",
