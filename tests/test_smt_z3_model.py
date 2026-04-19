@@ -9,6 +9,14 @@ def test_parse_z3_sat_output_status_and_model_body() -> None:
     )
     assert out.status == "sat"
     assert out.model_text.startswith("(model")
+    assert out.unsat_core_text == ""
+
+
+def test_parse_z3_sat_output_unsat_core_mode() -> None:
+    out = parse_z3_sat_output("unsat\n(TAC_1 TAC_2)\n", unsat_core=True)
+    assert out.status == "unsat"
+    assert out.model_text == ""
+    assert out.unsat_core_text == "(TAC_1 TAC_2)"
 
 
 def test_z3_model_to_tac_model_text_basic() -> None:

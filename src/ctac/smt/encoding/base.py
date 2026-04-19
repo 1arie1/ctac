@@ -16,6 +16,7 @@ class SmtEncodingError(ValueError):
 class EncoderContext:
     tac_file: TacFile
     assert_site: AssertSite
+    unsat_core: bool = False
 
 
 class SmtEncoder(Protocol):

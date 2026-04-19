@@ -832,19 +832,31 @@ class SeaVcEncoder(SmtEncoder):
             for args in sorted(uf_apps[uf]):
                 out_lines.append(f"(assert ({axiom_fun_name} {' '.join(args)}))")
 
-        def emit_constraint_section(name: str, start: int, end: int) -> None:
+        tac_named_i = 0
+
+        def emit_constraint_section(name: str, start: int, end: int, *, name_asserts: bool) -> None:
+            nonlocal tac_named_i
             emit_banner(name)
             for c in constraints[start:end]:
                 if c == _BLANK_LINE_MARKER:
                     out_lines.append("")
+                elif name_asserts and ctx.unsat_core:
+                    tac_named_i += 1
+                    out_lines.append(f"(assert (! {c} :named TAC_{tac_named_i}))")
                 else:
                     out_lines.append(f"(assert {c})")
 
-        emit_constraint_section("Static Assignments and Havoc Domain", 0, static_end)
-        emit_constraint_section("Assumptions", static_end, assume_end)
-        emit_constraint_section("Dynamic Assignments", assume_end, dynamic_end)
-        emit_constraint_section("CFG Reachability", dynamic_end, cfg_end)
-        emit_constraint_section("Exit and Assert-Failure Objective", cfg_end, exit_end)
+        emit_constraint_section(
+            "Static Assignments and Havoc Domain", 0, static_end, name_asserts=True
+        )
+        emit_constraint_section("Assumptions", static_end, assume_end, name_asserts=True)
+        emit_constraint_section(
+            "Dynamic Assignments", assume_end, dynamic_end, name_asserts=True
+        )
+        emit_constraint_section("CFG Reachability", dynamic_end, cfg_end, name_asserts=False)
+        emit_constraint_section(
+            "Exit and Assert-Failure Objective", cfg_end, exit_end, name_asserts=False
+        )
         logic = "QF_UFNIA" if uf_decl_lines else "QF_NIA"
 
         return SmtScript(
@@ -856,4 +868,5 @@ class SeaVcEncoder(SmtEncoder):
                 "SAT means reachable exit with failing assert and satisfied assumes.",
             ),
             check_sat=True,
+            unsat_core=ctx.unsat_core,
         )

@@ -25,10 +25,14 @@ register_encoder("vc-path-predicates", VCPathPredicatesEncoder)
 register_encoder("sea_vc", SeaVcEncoder)
 
 
-def build_vc(tac_file: TacFile, *, encoding: str = "vc-path-predicates") -> SmtScript:
+def build_vc(
+    tac_file: TacFile, *, encoding: str = "vc-path-predicates", unsat_core: bool = False
+) -> SmtScript:
     assert_site = validate_program_for_smt(tac_file.program)
     encoder = get_encoder(encoding)
-    return encoder.encode(EncoderContext(tac_file=tac_file, assert_site=assert_site))
+    return encoder.encode(
+        EncoderContext(tac_file=tac_file, assert_site=assert_site, unsat_core=unsat_core)
+    )
 
 
 __all__ = [

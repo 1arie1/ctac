@@ -81,6 +81,14 @@ def smt_cmd(
             help="Write TAC model output to this path when solver returns sat.",
         ),
     ] = None,
+    unsat_core: bool = typer.Option(
+        False,
+        "--unsat-core",
+        help=(
+            "Emit named TAC asserts and Z3 unsat-core options; with --run, print core on unsat. "
+            "Cannot be combined with --model."
+        ),
+    ),
     debug: bool = typer.Option(
         False,
         "--debug/--no-debug",
@@ -98,12 +106,16 @@ def smt_cmd(
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)
+    if unsat_core and model_output_path is not None:
+        msg = "cannot combine --unsat-core with --model"
+        c.print(f"input error: {msg}" if plain else f"[red]input error:[/red] {msg}")
+        raise typer.Exit(1)
     known_encodings = ", ".join(available_encodings())
     try:
         user_path, user_warnings = resolve_user_path(path)
         tac_path, input_warnings = resolve_tac_input_path(user_path)
         tac = parse_path(tac_path)
-        script = build_vc(tac, encoding=encoding)
+        script = build_vc(tac, encoding=encoding, unsat_core=unsat_core)
         smt_text = render_smt_script(script)
     except ParseError as e:
         c.print(f"parse error: {e}" if plain else f"[red]parse error:[/red] {e}")
@@ -133,7 +145,7 @@ def smt_cmd(
         c.print(smt_text, markup=False, end="")
         return
 
-    run_text = smt_text + "(get-model)\n"
+    run_text = smt_text if unsat_core else smt_text + "(get-model)\n"
     extra_args = parse_z3_args(z3_args)
     replay_script_path: Path | None = None
     if debug:
@@ -196,9 +208,11 @@ def smt_cmd(
         c.print("# debug z3 stdin begin", markup=False)
         c.print(run_text, markup=False, end="")
         c.print("# debug z3 stdin end", markup=False)
-    sat_out = parse_z3_sat_output(z3_res.stdout)
+    sat_out = parse_z3_sat_output(z3_res.stdout, unsat_core=unsat_core)
     status = "timeout" if z3_res.timed_out else sat_out.status
     c.print(status, markup=False)
+    if unsat_core and status == "unsat" and sat_out.unsat_core_text.strip():
+        c.print(sat_out.unsat_core_text.rstrip(), markup=False)
     if debug:
         c.print("# debug z3 stdout begin", markup=False)
         c.print(z3_res.stdout, markup=False, end="" if z3_res.stdout.endswith("\n") else "\n")

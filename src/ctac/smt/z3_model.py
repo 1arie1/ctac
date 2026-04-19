@@ -13,16 +13,19 @@ _NUM_RE = re.compile(r"^-?[0-9]+$")
 class Z3SatOutput:
     status: str
     model_text: str = ""
+    unsat_core_text: str = ""
     diagnostics: list[str] = field(default_factory=list)
 
 
-def parse_z3_sat_output(stdout: str) -> Z3SatOutput:
+def parse_z3_sat_output(stdout: str, *, unsat_core: bool = False) -> Z3SatOutput:
     lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
     if not lines:
         return Z3SatOutput(status="unknown", diagnostics=["empty solver stdout"])
     status = lines[0].lower()
-    model_text = "\n".join(lines[1:]) if len(lines) > 1 else ""
-    return Z3SatOutput(status=status, model_text=model_text)
+    rest = "\n".join(lines[1:]) if len(lines) > 1 else ""
+    if unsat_core and status == "unsat":
+        return Z3SatOutput(status=status, model_text="", unsat_core_text=rest)
+    return Z3SatOutput(status=status, model_text=rest)
 
 
 def _tokenize(s: str) -> list[str]:

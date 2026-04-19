@@ -93,6 +93,7 @@ Use for SMT-LIB VC generation from loop-free TAC.
 Preconditions: exactly one `AssertCmd`, and it must be last in its block.
 Current semantics: SAT iff a failing assertion is reachable.
 Solver mode: add `--run` to invoke z3, and `--model <path>` to write SAT model in TAC format.
+Unsat cores: `--unsat-core` names TAC asserts and appends `(get-unsat-core)`; with `--run`, prints the core on `unsat`. Do not combine with `--model`.
 Z3 knobs: `--timeout` (seconds), `--seed`, `--tactic`, `--z3-args`.
 Debugging: add `--debug` to print z3 stdin/stdout/stderr and a replayable shell command.
 Default encoding: `sea_vc`; set with `--encoding`.

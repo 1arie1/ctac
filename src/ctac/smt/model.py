@@ -20,3 +20,4 @@ class SmtScript:
     assertions: tuple[str, ...] = field(default_factory=tuple)
     comments: tuple[str, ...] = field(default_factory=tuple)
     check_sat: bool = True
+    unsat_core: bool = False

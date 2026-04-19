@@ -126,7 +126,8 @@ class VCPathPredicatesEncoder(SmtEncoder):
 
         decls: list[SmtDeclaration] = []
         decl_seen: set[str] = set()
-        assertions: list[str] = []
+        # (SMT Bool term for assert body, whether this assert is TAC-derived for :named)
+        vc_asserts: list[tuple[str, bool]] = []
 
         def declare(name: str, sort: str) -> None:
             if name in decl_seen:
@@ -188,8 +189,8 @@ class VCPathPredicatesEncoder(SmtEncoder):
                         raise SmtEncodingError(
                             f"assignment sort mismatch for {cmd.lhs}: {rhs_sort} != {symbol_sort[cmd.lhs]}"
                         )
-                    assertions.append(
-                        f"(=> {reach_var[block.id]} (= {next_var} {rhs_term}))"
+                    vc_asserts.append(
+                        (f"(=> {reach_var[block.id]} (= {next_var} {rhs_term}))", True)
                     )
                     env[cmd.lhs] = next_var
                     continue
@@ -206,13 +207,16 @@ class VCPathPredicatesEncoder(SmtEncoder):
                     )
                     if cond_sort != "Bool":
                         raise SmtEncodingError("AssumeExpCmd condition must lower to Bool")
-                    assertions.append(f"(=> {reach_var[block.id]} {cond_term})")
+                    vc_asserts.append((f"(=> {reach_var[block.id]} {cond_term})", True))
                     continue
 
             end_env_by_block[block.id] = dict(env)
             for sym in ordered_symbols:
-                assertions.append(
-                    f"(=> {reach_var[block.id]} (= {out_var[block.id][sym]} {env[sym]}))"
+                vc_asserts.append(
+                    (
+                        f"(=> {reach_var[block.id]} (= {out_var[block.id][sym]} {env[sym]}))",
+                        True,
+                    )
                 )
 
         for block in program.blocks:
@@ -231,39 +235,52 @@ class VCPathPredicatesEncoder(SmtEncoder):
                 edge_terms[(block.id, succ)] = term
 
         entry = block_order[0]
-        assertions.append(reach_var[entry])
+        vc_asserts.append((reach_var[entry], False))
         for bid in block_order[1:]:
             incoming = [edge_terms[(pred, bid)] for pred in pred_by_block[bid]]
             if not incoming:
-                assertions.append(f"(not {reach_var[bid]})")
+                vc_asserts.append((f"(not {reach_var[bid]})", False))
             elif len(incoming) == 1:
-                assertions.append(f"(= {reach_var[bid]} {incoming[0]})")
+                vc_asserts.append((f"(= {reach_var[bid]} {incoming[0]})", False))
             else:
-                assertions.append(
-                    f"(= {reach_var[bid]} (or {' '.join(incoming)}))"
+                vc_asserts.append(
+                    (f"(= {reach_var[bid]} (or {' '.join(incoming)}))", False)
                 )
             for pred in pred_by_block[bid]:
                 et = edge_terms[(pred, bid)]
                 for sym in ordered_symbols:
-                    assertions.append(
-                        f"(=> {et} (= {in_var[bid][sym]} {out_var[pred][sym]}))"
+                    vc_asserts.append(
+                        (f"(=> {et} (= {in_var[bid][sym]} {out_var[pred][sym]}))", False)
                     )
 
         if assert_predicate_term is None:
             raise SmtEncodingError("failed to derive assert predicate term")
-        assertions.append(
-            f"(and {reach_var[ctx.assert_site.block_id]} (not {assert_predicate_term}))"
+        vc_asserts.append(
+            (
+                f"(and {reach_var[ctx.assert_site.block_id]} (not {assert_predicate_term}))",
+                False,
+            )
         )
+
+        tac_named_i = 0
+        rendered_asserts: list[str] = []
+        for term, name_me in vc_asserts:
+            if name_me and ctx.unsat_core:
+                tac_named_i += 1
+                rendered_asserts.append(f"(assert (! {term} :named TAC_{tac_named_i}))")
+            else:
+                rendered_asserts.append(f"(assert {term})")
 
         return SmtScript(
             logic="QF_BV",
             declarations=tuple(decls),
-            assertions=tuple(f"(assert {a})" for a in assertions),
+            assertions=tuple(rendered_asserts),
             comments=(
                 "VC is SAT iff some execution reaches AssertCmd with false predicate.",
                 f"encoding: {self.name}",
             ),
             check_sat=True,
+            unsat_core=ctx.unsat_core,
         )
 
     def _collect_symbols(self, ctx: EncoderContext) -> tuple[set[str], set[str]]:

@@ -115,3 +115,30 @@ def test_vc_rejects_int_to_bv_narrow_in_qf_bv_encoder() -> None:
     tac = parse_string(TAC_INT_NARROW, path="<string>")
     with pytest.raises(SmtEncodingError, match="QF_BV encoding does not support Int-typed TAC symbols"):
         build_vc(tac)
+
+
+def test_render_unsat_core_preamble_and_get_unsat_core() -> None:
+    tac = parse_string(TAC_ASSERT_FAIL_VC, path="<string>")
+    rendered = render_smt_script(build_vc(tac, unsat_core=True))
+    assert rendered.startswith(
+        "(set-option :produce-unsat-cores true)\n(set-option :smt.core.minimize true)\n"
+    )
+    assert rendered.rstrip().endswith("(check-sat)\n(get-unsat-core)")
+
+
+def test_sea_vc_unsat_core_names_tac_asserts_not_cfg() -> None:
+    tac = parse_string(TAC_ASSERT_FAIL_VC, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc", unsat_core=True))
+    assert ":named TAC_1" in rendered
+    i_cfg = rendered.find("CFG Reachability")
+    i_exit = rendered.find("Exit and Assert-Failure Objective")
+    assert i_cfg != -1 and i_exit != -1
+    assert ":named" not in rendered[i_cfg:i_exit]
+
+
+def test_vc_path_predicates_unsat_core_objective_not_named() -> None:
+    tac = parse_string(TAC_ASSERT_FAIL_VC, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="vc-path-predicates", unsat_core=True))
+    assert ":named TAC_1" in rendered
+    assert "(assert (and reach__ok (not" in rendered
+    assert "(assert (! (and reach__ok (not" not in rendered

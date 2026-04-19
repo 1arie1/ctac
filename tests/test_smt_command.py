@@ -303,6 +303,35 @@ def test_smt_cli_run_nonzero_unknown_fails(tmp_path: Path, monkeypatch) -> None:
     assert "# solver stderr: boom" in res.stdout
 
 
+def test_smt_cli_rejects_unsat_core_with_model(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_OK, "ok-both.tac")
+    model_out = tmp_path / "m.txt"
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["smt", str(p), "--plain", "--unsat-core", "--model", str(model_out)],
+    )
+    assert res.exit_code == 1
+    assert "cannot combine" in res.stdout
+
+
+def test_smt_cli_run_unsat_core_uses_script_without_get_model(tmp_path: Path, monkeypatch) -> None:
+    p = _write_tac(tmp_path, TAC_OK, "ok-uc.tac")
+
+    def _fake_run_z3_solver(**kwargs):
+        smt = kwargs["smt_text"]
+        assert "(get-unsat-core)" in smt
+        assert "(get-model)" not in smt
+        return Z3RunResult(argv=("z3",), exit_code=0, stdout="unsat\n(TAC_42)\n", stderr="")
+
+    monkeypatch.setattr(commands_smt, "run_z3_solver", _fake_run_z3_solver)
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--run", "--unsat-core"])
+    assert res.exit_code == 0
+    assert "unsat" in res.stdout
+    assert "(TAC_42)" in res.stdout
+
+
 def test_smt_cli_run_debug_prints_interaction_and_replay_cmd(tmp_path: Path, monkeypatch) -> None:
     p = _write_tac(tmp_path, TAC_OK, "ok-debug.tac")
 
