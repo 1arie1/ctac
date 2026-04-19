@@ -772,7 +772,11 @@ class SeaVcEncoder(SmtEncoder):
                 pred_guard = block_guard(pe.pred_block_id, entry_block_id=entry_block_id)
                 edge_terms.append(_and_terms([pred_guard, pe.branch_cond]))
                 pred_block_terms.append(pred_guard)
+            # Edge-level predecessor feasibility (with branch conditions).
             add_constraint(_implies(lhs, _or_terms(edge_terms)))
+            # Block-level predecessor existence (without edge conditions), to pair
+            # with exclusivity over the same predecessor-block variables.
+            add_constraint(_implies(lhs, _or_terms(pred_block_terms)))
             # Exclusivity is over predecessor blocks, not edge predicates.
             for amo in _at_most_one_terms(pred_block_terms):
                 add_constraint(_implies(lhs, amo))
