@@ -93,6 +93,12 @@ ctac smt file.tac --encoding sea_vc
 ctac smt file.tac --encoding vc-path-predicates
 # write SMT-LIB to file
 ctac smt file.tac --output out.smt2
+# run z3 on the generated query and print sat/unsat/unknown/timeout
+ctac smt file.tac --run --timeout 30 --seed 0 --tactic default
+# pass extra z3 options and write SAT model in TAC format for ctac run --model
+ctac smt file.tac --run --z3-args "-st" --model out.model.txt
+# print z3 stdin/stdout/stderr and a replay command for debugging
+ctac smt file.tac --run --debug
 
 # coarse CFG matching (weighted structure + source/function/snippet signals) 🛰️
 ctac cfg-match a.tac b.tac

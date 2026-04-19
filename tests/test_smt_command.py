@@ -4,6 +4,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+import ctac.tool.commands_smt as commands_smt
+from ctac.smt.runner import Z3RunResult
 from ctac.tool.main import app
 
 TAC_OK = """TACSymbolTable {
@@ -201,3 +203,123 @@ def test_smt_cli_sea_vc_encoding_smoke(tmp_path: Path) -> None:
     assert res.exit_code == 0
     assert "(set-logic QF_NIA)" in res.stdout
     assert "BLK_EXIT" in res.stdout
+
+
+def test_smt_cli_run_sat_writes_model(tmp_path: Path, monkeypatch) -> None:
+    p = _write_tac(tmp_path, TAC_OK, "ok-run.tac")
+    model_out = tmp_path / "model.txt"
+
+    def _fake_run_z3_solver(**kwargs):
+        assert kwargs["timeout_seconds"] == 5
+        assert kwargs["seed"] == 7
+        assert kwargs["tactic"] == "qfnia"
+        assert kwargs["extra_args"] == ["-st"]
+        return Z3RunResult(
+            argv=("z3",),
+            exit_code=0,
+            stdout="sat\n(model\n  (define-fun b () Bool true)\n)\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(commands_smt, "run_z3_solver", _fake_run_z3_solver)
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "smt",
+            str(p),
+            "--plain",
+            "--run",
+            "--timeout",
+            "5",
+            "--seed",
+            "7",
+            "--tactic",
+            "qfnia",
+            "--z3-args",
+            "-st",
+            "--model",
+            str(model_out),
+        ],
+    )
+    assert res.exit_code == 0
+    assert "sat" in res.stdout
+    assert model_out.exists()
+    assert "TAC model begin" in model_out.read_text(encoding="utf-8")
+
+
+def test_smt_cli_run_unsat_does_not_write_model(tmp_path: Path, monkeypatch) -> None:
+    p = _write_tac(tmp_path, TAC_OK, "ok-unsat.tac")
+    model_out = tmp_path / "model-unsat.txt"
+
+    def _fake_run_z3_solver(**kwargs):
+        return Z3RunResult(argv=("z3",), exit_code=0, stdout="unsat\n", stderr="")
+
+    monkeypatch.setattr(commands_smt, "run_z3_solver", _fake_run_z3_solver)
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--run", "--model", str(model_out)])
+    assert res.exit_code == 0
+    assert "unsat" in res.stdout
+    assert not model_out.exists()
+
+
+def test_smt_cli_run_timeout_exits_2(tmp_path: Path, monkeypatch) -> None:
+    p = _write_tac(tmp_path, TAC_OK, "ok-timeout.tac")
+
+    def _fake_run_z3_solver(**kwargs):
+        return Z3RunResult(argv=("z3",), exit_code=0, stdout="", stderr="", timed_out=True)
+
+    monkeypatch.setattr(commands_smt, "run_z3_solver", _fake_run_z3_solver)
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--run"])
+    assert res.exit_code == 2
+    assert "timeout" in res.stdout
+
+
+def test_smt_cli_run_prints_solver_command_without_plain(tmp_path: Path, monkeypatch) -> None:
+    p = _write_tac(tmp_path, TAC_OK, "ok-run-rich.tac")
+
+    def _fake_run_z3_solver(**kwargs):
+        return Z3RunResult(argv=("z3", "smt.random_seed=0", "-in"), exit_code=0, stdout="unsat\n", stderr="")
+
+    monkeypatch.setattr(commands_smt, "run_z3_solver", _fake_run_z3_solver)
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--run"])
+    assert res.exit_code == 0
+    assert "solver: z3 smt.random_seed=0 -in" in res.stdout
+    assert "solver exit_code: 0" in res.stdout
+
+
+def test_smt_cli_run_nonzero_unknown_fails(tmp_path: Path, monkeypatch) -> None:
+    p = _write_tac(tmp_path, TAC_OK, "ok-fail.tac")
+
+    def _fake_run_z3_solver(**kwargs):
+        return Z3RunResult(argv=("z3",), exit_code=9, stdout="", stderr="boom")
+
+    monkeypatch.setattr(commands_smt, "run_z3_solver", _fake_run_z3_solver)
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--run"])
+    assert res.exit_code == 1
+    assert "# solver stderr: boom" in res.stdout
+
+
+def test_smt_cli_run_debug_prints_interaction_and_replay_cmd(tmp_path: Path, monkeypatch) -> None:
+    p = _write_tac(tmp_path, TAC_OK, "ok-debug.tac")
+
+    def _fake_run_z3_solver(**kwargs):
+        return Z3RunResult(
+            argv=("z3", "smt.random_seed=0", "tactic.default_tactic=default", "-in"),
+            exit_code=0,
+            stdout="sat\n(model\n  (define-fun b () Bool true)\n)\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(commands_smt, "run_z3_solver", _fake_run_z3_solver)
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--run", "--debug"])
+    assert res.exit_code == 0
+    assert "# debug replay smt:" in res.stdout
+    assert "# debug replay cmd: z3 smt.random_seed=0 tactic.default_tactic=default" in res.stdout
+    assert "# debug z3 stdin begin" in res.stdout
+    assert "# debug z3 stdout begin" in res.stdout
+    assert "# debug z3 stderr begin" in res.stdout

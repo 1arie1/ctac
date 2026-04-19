@@ -113,6 +113,10 @@ Prompt template:
   - Alternative encoding: `--encoding vc-path-predicates` (QF_BV path-predicate style).
   - Current preconditions: loop-free TAC, exactly one `AssertCmd`, and assert must be last in its block.
   - VC semantics: SAT iff assertion-failure state is reachable.
+  - Solver mode: `--run` invokes z3 and reports `sat|unsat|unknown|timeout`.
+  - SAT model export: `--model <path>` writes TAC model text compatible with `ctac run --model`.
+  - Z3 knobs: `--timeout` (seconds), `--seed`, `--tactic`, and passthrough `--z3-args`.
+  - Debug mode: `--debug` prints z3 stdin/stdout/stderr and a replay command.
 
 ## Repo Structure (Key Paths)
 
