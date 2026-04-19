@@ -181,6 +181,66 @@ Metas {
 """
 
 
+TAC_HAVOC_REFINED = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\th1:bv256
+\th2:bv256
+\th3:bv256
+\th4:bv256
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd h1
+\t\tAssumeExpCmd LAnd(Le(0x8 h1) Le(h1 0x800000))
+\t\tAssignHavocCmd h2
+\t\tAssumeExpCmd Ge(h2 0x1)
+\t\tAssignHavocCmd h3
+\t\tAssumeExpCmd Le(h3 0xffffffffffffffff)
+\t\tAssignHavocCmd h4
+\t\tAssignExpCmd ok true
+\t\tAssertCmd ok "havoc refine"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+TAC_HAVOC_OR_GUARD = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\th:bv256
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd h
+\t\tAssumeExpCmd LOr(Ge(h 0x1) Eq(h 0x0))
+\t\tAssignExpCmd ok true
+\t\tAssertCmd ok "havoc or guard"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
 def test_sea_vc_logic_and_named_constants() -> None:
     tac = parse_string(TAC_SEA, path="<string>")
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
@@ -211,6 +271,23 @@ def test_sea_vc_assume_and_exit_assert_failure() -> None:
 
 def test_sea_vc_havoc_range_assumptions() -> None:
     tac = parse_string(TAC_SEA, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    assert "(assert (<= 0 h BV256_MAX))" in rendered
+
+
+def test_sea_vc_havoc_immediate_refine_skips_default_range() -> None:
+    tac = parse_string(TAC_HAVOC_REFINED, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    assert "(assert (<= 0 h1 BV256_MAX))" not in rendered
+    assert "(assert (<= h2 BV256_MAX))" not in rendered
+    assert "(assert (<= 0 h3))" not in rendered
+    assert "(assert (and (>= h2 1) (<= h2 BV256_MAX)))" in rendered
+    assert "(assert (and (<= h3 MASK_LOW_64) (<= 0 h3)))" in rendered
+    assert "(assert (<= 0 h4 BV256_MAX))" in rendered
+
+
+def test_sea_vc_havoc_or_guard_keeps_default_range() -> None:
+    tac = parse_string(TAC_HAVOC_OR_GUARD, path="<string>")
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
     assert "(assert (<= 0 h BV256_MAX))" in rendered
 

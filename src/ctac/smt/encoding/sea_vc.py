@@ -251,6 +251,49 @@ def _expr_is_bool_like(expr: TacExpr) -> bool:
     return False
 
 
+def _expr_refine_bounds(expr: TacExpr, *, symbol: str) -> tuple[bool, bool]:
+    """
+    Return (has_lower_bound, has_upper_bound) for immediate refinement of symbol.
+    Conservative: only recognizes symbol-vs-constant comparisons and range conjunctions.
+    """
+    range_match = match_inclusive_range_constraint(expr, strip_var_suffixes=True)
+    if range_match is not None and range_match.symbol == symbol:
+        return True, True
+    if isinstance(expr, ApplyExpr):
+        op = expr.op
+        if op in {"Lt", "Le", "Gt", "Ge"} and len(expr.args) == 2:
+            a0, a1 = expr.args
+            # Keep this conservative: only treat direct symbol-vs-constant
+            # comparisons as an immediate range refinement.
+            if (
+                isinstance(a0, SymbolRef)
+                and isinstance(a1, ConstExpr)
+                and canonical_symbol(a0.name, strip_var_suffixes=True) == symbol
+            ):
+                if op in {"Gt", "Ge"}:
+                    return True, False
+                return False, True
+            if (
+                isinstance(a0, ConstExpr)
+                and isinstance(a1, SymbolRef)
+                and canonical_symbol(a1.name, strip_var_suffixes=True) == symbol
+            ):
+                if op in {"Lt", "Le"}:
+                    # const <sym / const <= sym -> lower bound on sym
+                    return True, False
+                # const > sym / const >= sym -> upper bound on sym
+                return False, True
+        if op == "LAnd":
+            has_lo = False
+            has_hi = False
+            for arg in expr.args:
+                lo, hi = _expr_refine_bounds(arg, symbol=symbol)
+                has_lo = has_lo or lo
+                has_hi = has_hi or hi
+            return has_lo, has_hi
+    return False, False
+
+
 @dataclass
 class SeaVcEncoder(SmtEncoder):
     name: str = "sea_vc"
@@ -332,6 +375,20 @@ class SeaVcEncoder(SmtEncoder):
         uf_apps: dict[str, set[tuple[str, ...]]] = defaultdict(set)
         constraints: list[str] = []
         block_pos = {b.id: i for i, b in enumerate(program.blocks)}
+        # If a havoc is immediately followed by a range-refining assume over the same
+        # symbol, elide only the already-implied side(s) of the default bv256 domain.
+        # map: (block_id, cmd_index) -> (has_lower, has_upper)
+        havoc_refine_bounds: dict[tuple[str, int], tuple[bool, bool]] = {}
+        for b in program.blocks:
+            for i in range(len(b.commands) - 1):
+                c0 = b.commands[i]
+                c1 = b.commands[i + 1]
+                if not isinstance(c0, AssignHavocCmd) or not isinstance(c1, AssumeExpCmd):
+                    continue
+                lhs = canonical_symbol(c0.lhs, strip_var_suffixes=True)
+                lo, hi = _expr_refine_bounds(c1.condition, symbol=lhs)
+                if lo or hi:
+                    havoc_refine_bounds[(b.id, i)] = (lo, hi)
         havoc_counter = 0
         const_defs: dict[str, str] = {}
         const_name_by_value: dict[int, str] = {
@@ -399,10 +456,20 @@ class SeaVcEncoder(SmtEncoder):
                 return
             constraints.append(expr)
 
-        def add_havoc_range_if_bv256(sym: str, term: str) -> None:
+        def add_havoc_range_if_bv256(
+            sym: str,
+            term: str,
+            *,
+            block_id: str | None = None,
+            cmd_index: int | None = None,
+        ) -> None:
             base = _BASE_SYMBOL.sub(r"\1", sym)
             raw = (raw_sorts.get(sym) or raw_sorts.get(base) or "").lower()
             if raw == "bv256":
+                if block_id is not None and cmd_index is not None and (block_id, cmd_index) in havoc_refine_bounds:
+                    # Refined sites merge any remaining domain side into the
+                    # immediately following assume instead of standalone asserts.
+                    return
                 add_constraint(f"(<= 0 {term} BV256_MAX)")
 
         def declare_havoc(sym: str, block_id: str, cmd_index: int) -> str:
@@ -412,7 +479,7 @@ class SeaVcEncoder(SmtEncoder):
             if nm not in decl_seen:
                 decl_seen.add(nm)
                 decls.append(SmtDeclaration(name=nm, sort=symbol_sort[sym]))
-            add_havoc_range_if_bv256(sym, nm)
+            add_havoc_range_if_bv256(sym, nm, block_id=block_id, cmd_index=cmd_index)
             return nm
 
         def emit_expr(expr: TacExpr, *, expected_sort: str | None = None) -> tuple[str, str]:
@@ -594,15 +661,35 @@ class SeaVcEncoder(SmtEncoder):
                 rhs, _ = emit_expr(cmd.rhs, expected_sort=symbol_sort[ds.symbol])
                 add_constraint(f"(= {lhs} {rhs})")
             elif isinstance(cmd, AssignHavocCmd):
-                add_havoc_range_if_bv256(ds.symbol, symbol_term[ds.symbol])
+                add_havoc_range_if_bv256(ds.symbol, symbol_term[ds.symbol], block_id=ds.block_id, cmd_index=ds.cmd_index)
 
         for block in program.blocks:
             guard = block_guard(block.id, entry_block_id=entry_block_id)
-            for cmd in block.commands:
+            for idx, cmd in enumerate(block.commands):
                 if isinstance(cmd, AssumeExpCmd):
                     cond, s = emit_expr(cmd.condition, expected_sort="Bool")
                     if s != "Bool":
                         raise SmtEncodingError("Assume condition must be Bool")
+                    # If the previous command is a havoc with immediate refinement,
+                    # merge the remaining bv256-domain side(s) into this assume.
+                    if idx > 0:
+                        prev = block.commands[idx - 1]
+                        if isinstance(prev, AssignHavocCmd):
+                            prev_sym = canonical_symbol(prev.lhs, strip_var_suffixes=True)
+                            lo_hi = havoc_refine_bounds.get((block.id, idx - 1))
+                            if lo_hi is not None and prev_sym in symbol_term:
+                                base = _BASE_SYMBOL.sub(r"\1", prev_sym)
+                                raw = (raw_sorts.get(prev_sym) or raw_sorts.get(base) or "").lower()
+                                if raw == "bv256":
+                                    has_lo, has_hi = lo_hi
+                                    extra: list[str] = []
+                                    t = symbol_term[prev_sym]
+                                    if not has_lo:
+                                        extra.append(f"(<= 0 {t})")
+                                    if not has_hi:
+                                        extra.append(f"(<= {t} BV256_MAX)")
+                                    if extra:
+                                        cond = _and_terms([cond, *extra])
                     add_constraint(_implies(guard, cond))
 
         # Dynamic assignment groups as compact ITEs.
