@@ -15,8 +15,8 @@ _AGENT_GUIDE_MAIN = """ctac agent guide (plain, terse)
 
 Use ctac when you need TAC-aware structure, not raw text scraping.
 Key use-cases:
-- Fast sanity: `ctac stats <file> --plain`
-- Slice/control-flow: `ctac cfg|pp <file> --from A --to B --plain`
+- Fast sanity: `ctac stats <file(.tac|.sbf.json)> --plain`
+- Slice/control-flow: `ctac cfg|pp <file(.tac|.sbf.json)> --from A --to B --plain`
 - Cross-build drift: `ctac cfg-match` then `ctac bb-diff`
 - Concrete replay/model checks: `ctac run --model ... --trace --plain`
 - Pattern mining in commands: `ctac search <file> <pattern> --plain`
@@ -58,7 +58,7 @@ If external text tooling is needed, use `ctac pp --plain` as the source.
 """,
     "search": """ctac search --agent
 
-Use to find command patterns in parsed TAC blocks.
+Use to find command patterns in parsed TAC/SBF blocks.
 Defaults to regex; use `--literal` for substring.
 Useful: `--blocks-only`, `--count`, `--max-matches`, and path filters.
 Alias: `ctac grep`.
@@ -70,13 +70,13 @@ Use exactly like `search`; defaults to regex.
 """,
     "cfg-match": """ctac cfg-match --agent
 
-Use for coarse block mapping between two TACs.
+Use for coarse block mapping between two TACs (or two `.sbf.json` files).
 Run before `bb-diff` to understand structural correspondence.
 Tune with `--const-weight` and `--min-score`.
 """,
     "bb-diff": """ctac bb-diff --agent
 
-Use for semantic deltas in matched basic blocks.
+Use for semantic deltas in matched basic blocks (TAC or `.sbf.json`).
 Typical: `--drop-empty --normalize-vars --max-diff-lines N --plain`.
 Run after `cfg-match`.
 """,

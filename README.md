@@ -1,6 +1,6 @@
 # ctac ✈️
 
-Python library and CLI for Certora **TAC** program dumps (`.tac` files).  
+Python library and CLI for Certora TAC-like program dumps (`.tac` and `.sbf.json` for text flows).  
 SeaTac vibes: taxiway maps for TAC CFGs. 🛫🛬
 
 ## Environment (recommended) 🧳
@@ -23,6 +23,7 @@ ctac --agent
 ctac stats --agent
 
 ctac stats path/to/file.tac
+ctac stats path/to/file.sbf.json
 # compact/legacy-style stats only:
 ctac stats path/to/file.tac --top-blocks 0 --no-by-cmd-kind
 # stats now also include expression-op counts and non-linear mul/div counters.
@@ -30,9 +31,11 @@ ctac stats path/to/file.tac --top-blocks 0 --no-by-cmd-kind
 ctac stats path/to/EvmOutput3-good --plain
 # parse command prints the same stats payload:
 ctac parse path/to/file.tac
+ctac parse path/to/file.sbf.json
 
 # control-flow graph (goto-style text, default) 🗺️
 ctac cfg path/to/file.tac
+ctac cfg path/to/file.sbf.json
 # one edge per line
 ctac cfg path/to/file.tac --style edges
 # first 50 blocks only
@@ -47,6 +50,7 @@ ctac cfg file.tac --id-regex '^[0-9]+_1_' --exclude 0_0_0_0_0_0
 
 # pretty-print TAC as a goto program 🛬
 ctac pp file.tac
+ctac pp file.sbf.json
 # choose backend printer (`human` skips AnnotationCmd/LabelCmd, `raw` keeps dump lines)
 ctac pp file.tac --printer human
 ctac pp file.tac --printer raw
@@ -55,6 +59,7 @@ ctac pp file.tac --from 0_0_0_0_0_0 --to 236_1_0_0_0_0
 
 # search command lines (alias: `ctac grep`)
 ctac search file.tac 'assume R[0-9]+ <= \\[2\\^64-1\\]'
+ctac search file.sbf.json 'havoc' --literal
 # literal substring mode
 ctac search file.tac 'assert' --literal
 # print only block ids that matched
@@ -102,6 +107,7 @@ ctac smt file.tac --run --debug
 
 # coarse CFG matching (weighted structure + source/function/snippet signals) 🛰️
 ctac cfg-match a.tac b.tac
+ctac cfg-match a.sbf.json b.sbf.json
 # tighten/relax accepted matches
 ctac cfg-match a.tac b.tac --min-score 0.60
 # tune how much literal constants influence matching
@@ -109,6 +115,7 @@ ctac cfg-match a.tac b.tac --const-weight 0.35
 
 # basic-block semantic comparison on top of CFG matches 🧭
 ctac bb-diff a.tac b.tac
+ctac bb-diff a.sbf.json b.sbf.json
 # include source lines and show more changed blocks
 ctac bb-diff a.tac b.tac --with-source --max-blocks 50
 # cap per-block diff verbosity for huge blocks
@@ -118,6 +125,7 @@ ctac bb-diff a.tac b.tac --max-diff-lines 80
 Directory input behavior:
 - For TAC path arguments, if a directory is passed, ctac scans `<dir>/outputs/*.tac`,
   ignores files containing `-rule_not_vacuous`, and picks one TAC deterministically.
+- For text commands (`parse`, `stats`, `search`, `cfg`, `pp`, `cfg-match`, `bb-diff`), direct file input can be either `.tac` or `.sbf.json`.
 - If multiple TAC files remain, ctac prints an input warning and continues.
 - For `run --model <dir>` (and `--fallback <dir>`), ctac resolves models from `<dir>/Reports/`
   using `ctpp_<rule>-Assertions.txt`, where `<rule>` comes from the selected TAC name.

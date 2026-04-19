@@ -42,18 +42,32 @@ def render_tac_file(tac: TacFile, *, program: TacProgram | None = None) -> str:
 def parse_path(
     path: str | Path, *, encoding: str = "utf-8", weak_is_strong: bool = False
 ) -> TacFile:
-    """Parse a `.tac` file from disk."""
+    """Parse a TAC-like input file (`.tac` or `.sbf.json`) from disk."""
     p = Path(path)
     text = p.read_text(encoding=encoding)
     return parse_string(text, path=str(p), weak_is_strong=weak_is_strong)
 
 
 def parse_string(text: str, path: str | None = None, *, weak_is_strong: bool = False) -> TacFile:
-    """Parse `.tac` content. Normalizes ``\\r\\n`` to ``\\n``."""
+    """Parse TAC-like content. Normalizes ``\\r\\n`` to ``\\n``."""
     if "\r\n" in text:
         text = text.replace("\r\n", "\n")
+    if _should_parse_as_sbf_json(text, path=path):
+        from ctac.parse.sbf_file import parse_sbf_string
+
+        return parse_sbf_string(text, path=path)
     lines = text.split("\n")
     return _parse_lines(lines, path=path, weak_is_strong=weak_is_strong)
+
+
+def _should_parse_as_sbf_json(text: str, *, path: str | None) -> bool:
+    if path is not None and path.endswith(".sbf.json"):
+        return True
+    stripped = text.lstrip()
+    if not stripped.startswith("{"):
+        return False
+    # Lightweight shape check to avoid accidental TAC mis-detection.
+    return all(tok in text for tok in ('"blocks"', '"instructions"', '"entry"', '"exit"'))
 
 
 def _parse_lines(lines: list[str], *, path: str | None, weak_is_strong: bool) -> TacFile:
