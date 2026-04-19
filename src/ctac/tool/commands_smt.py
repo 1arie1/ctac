@@ -4,6 +4,7 @@ import re
 import shlex
 import tempfile
 import os
+import time
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -140,28 +141,54 @@ def smt_cmd(
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(run_text)
         replay_script_path = Path(tmp_name)
+    started_at = time.monotonic()
     try:
-        z3_res = run_z3_solver(
-            smt_text=run_text,
-            z3_path=z3_path,
-            timeout_seconds=timeout,
-            seed=seed,
-            tactic=tactic,
-            extra_args=extra_args,
-        )
+        if plain:
+            z3_res = run_z3_solver(
+                smt_text=run_text,
+                z3_path=z3_path,
+                timeout_seconds=timeout,
+                seed=seed,
+                tactic=tactic,
+                extra_args=extra_args,
+            )
+        else:
+            last_bucket = -1
+
+            with c.status("[cyan]running z3... 0s[/cyan]", spinner="dots") as st:
+
+                def _progress(elapsed_s: float) -> None:
+                    nonlocal last_bucket
+                    bucket = int(elapsed_s // 5) * 5
+                    if bucket != last_bucket:
+                        last_bucket = bucket
+                        st.update(f"[cyan]running z3... {bucket}s[/cyan]")
+
+                z3_res = run_z3_solver(
+                    smt_text=run_text,
+                    z3_path=z3_path,
+                    timeout_seconds=timeout,
+                    seed=seed,
+                    tactic=tactic,
+                    extra_args=extra_args,
+                    progress_cb=_progress,
+                )
     except KeyboardInterrupt as e:
         c.print("interrupted: terminated z3 cleanly" if plain else "[yellow]interrupted[/yellow]: terminated z3 cleanly")
         raise typer.Exit(130) from e
     except OSError as e:
         c.print(f"z3 launch error: {e}" if plain else f"[red]z3 launch error:[/red] {e}")
         raise typer.Exit(1) from e
+    elapsed_s = time.monotonic() - started_at
 
     if plain:
         c.print(f"# solver: {' '.join(z3_res.argv)}", markup=False)
         c.print(f"# solver exit_code: {z3_res.exit_code}", markup=False)
+        c.print(f"# solver elapsed_sec: {elapsed_s:.2f}", markup=False)
     else:
         c.print(f"[cyan]solver[/cyan]: {' '.join(z3_res.argv)}")
         c.print(f"[cyan]solver exit_code[/cyan]: {z3_res.exit_code}")
+        c.print(f"[cyan]solver elapsed[/cyan]: {elapsed_s:.2f}s")
     if replay_script_path is not None:
         replay_argv = list(z3_res.argv[:-1]) + [str(replay_script_path)]
         c.print(f"# debug replay smt: {replay_script_path}", markup=False)
