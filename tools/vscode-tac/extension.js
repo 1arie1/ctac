@@ -66,6 +66,7 @@ function collectTokenReferences(document, token) {
 }
 
 function activate(context) {
+  const selectors = [{ language: "htac" }, { language: "sbf" }];
   const definitionProvider = {
     provideDefinition(document, position) {
       const range = document.getWordRangeAtPosition(position, TOKEN_RE);
@@ -105,8 +106,8 @@ function activate(context) {
   };
 
   context.subscriptions.push(
-    vscode.languages.registerDefinitionProvider({ language: "htac" }, definitionProvider),
-    vscode.languages.registerReferenceProvider({ language: "htac" }, referenceProvider)
+    vscode.languages.registerDefinitionProvider(selectors, definitionProvider),
+    vscode.languages.registerReferenceProvider(selectors, referenceProvider)
   );
 }
 

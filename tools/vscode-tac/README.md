@@ -1,4 +1,4 @@
-# ctac VSCode extension (htac)
+# ctac VSCode extension (htac + sbf)
 
 This extension targets **human TAC** output from:
 
@@ -6,8 +6,8 @@ This extension targets **human TAC** output from:
 ctac pp ...
 ```
 
-Language id: `htac`  
-Suggested file extension: `.htac`
+Language ids: `htac`, `sbf`  
+Suggested file extensions: `.htac`, `.sbf`, `.sbf.json`
 
 ## Features
 
@@ -17,6 +17,8 @@ Suggested file extension: `.htac`
   - variables (`R*`, `B*`, `I*`, `F*`, `T*`, `S*`) to first assignment line in file
 - Find References for variables (all occurrences in same file).
 
+For `sbf`, the extension reuses the same highlighting and navigation logic.
+
 ## Use with `tac1.txt` / `tac2.txt` without renaming
 
 Add this to VSCode `settings.json`:
@@ -25,7 +27,8 @@ Add this to VSCode `settings.json`:
 {
   "files.associations": {
     "**/examples/tac1.txt": "htac",
-    "**/examples/tac2.txt": "htac"
+    "**/examples/tac2.txt": "htac",
+    "**/*.sbf.json": "sbf"
   }
 }
 ```

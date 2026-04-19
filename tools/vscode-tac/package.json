@@ -12,7 +12,8 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:htac"
+    "onLanguage:htac",
+    "onLanguage:sbf"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -27,12 +28,29 @@
           ".htac"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "sbf",
+        "aliases": [
+          "SBF",
+          "sbf"
+        ],
+        "extensions": [
+          ".sbf",
+          ".sbf.json"
+        ],
+        "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
         "language": "htac",
         "scopeName": "source.htac",
+        "path": "./syntaxes/htac.tmLanguage.json"
+      },
+      {
+        "language": "sbf",
+        "scopeName": "source.sbf",
         "path": "./syntaxes/htac.tmLanguage.json"
       }
     ],
