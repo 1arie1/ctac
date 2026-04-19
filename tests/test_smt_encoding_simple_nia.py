@@ -274,6 +274,43 @@ Metas {
 """
 
 
+TAC_UF_JOIN = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tc:bool
+\tx:bv256
+\tw:bv256
+\tok:bool
+}
+Program {
+\tBlock entry Succ [left, right] {
+\t\tAssignExpCmd c true
+\t\tAssignExpCmd w BXor(x x)
+\t\tJumpiCmd left right c
+\t}
+\tBlock left Succ [join] {
+\t\tJumpCmd join
+\t}
+\tBlock right Succ [join] {
+\t\tJumpCmd join
+\t}
+\tBlock join Succ [] {
+\t\tAssignExpCmd ok true
+\t\tAssertCmd ok "uf join"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
 def test_sea_vc_logic_and_named_constants() -> None:
     tac = parse_string(TAC_SEA, path="<string>")
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
@@ -297,6 +334,15 @@ def test_sea_vc_static_dynamic_and_flow_shape() -> None:
     assert "(assert (=> BLK_left c))" in rendered
     assert "(assert (=> BLK_right (not c)))" in rendered
     assert "(assert (=> BLK_join (or BLK_left BLK_right)))" in rendered
+    assert "(assert (=> BLK_join (or (not BLK_left) (not BLK_right))))" in rendered
+
+
+def test_sea_vc_cfg_at_most_falls_back_with_ufs() -> None:
+    tac = parse_string(TAC_UF_JOIN, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    assert "(set-logic QF_UFNIA)" in rendered
+    assert "((_ at-most 1) BLK_left BLK_right)" not in rendered
+    assert "(assert (=> BLK_join (or (not BLK_left) (not BLK_right))))" in rendered
 
 
 def test_sea_vc_assume_and_exit_assert_failure() -> None:

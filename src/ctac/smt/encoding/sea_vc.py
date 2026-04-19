@@ -159,6 +159,23 @@ def _implies(lhs: str, rhs: str) -> str:
     return f"(=> {lhs} {rhs})"
 
 
+def _at_most_one_terms(terms: list[str]) -> list[str]:
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for t in terms:
+        if t == "false" or t in seen:
+            continue
+        seen.add(t)
+        uniq.append(t)
+    if len(uniq) <= 1:
+        return []
+    out: list[str] = []
+    for i in range(len(uniq)):
+        for j in range(i + 1, len(uniq)):
+            out.append(f"(or (not {uniq[i]}) (not {uniq[j]}))")
+    return out
+
+
 def _simplify_ite(cond: str, then_term: str, else_term: str, *, sort: str) -> str:
     if then_term == else_term:
         return then_term
@@ -749,11 +766,16 @@ class SeaVcEncoder(SmtEncoder):
             if block.id == entry_block_id:
                 continue
             lhs = blk_var_name(block.id)
-            terms: list[str] = []
+            edge_terms: list[str] = []
+            pred_block_terms: list[str] = []
             for pe in preds.get(block.id, []):
                 pred_guard = block_guard(pe.pred_block_id, entry_block_id=entry_block_id)
-                terms.append(_and_terms([pred_guard, pe.branch_cond]))
-            add_constraint(_implies(lhs, _or_terms(terms)))
+                edge_terms.append(_and_terms([pred_guard, pe.branch_cond]))
+                pred_block_terms.append(pred_guard)
+            add_constraint(_implies(lhs, _or_terms(edge_terms)))
+            # Exclusivity is over predecessor blocks, not edge predicates.
+            for amo in _at_most_one_terms(pred_block_terms):
+                add_constraint(_implies(lhs, amo))
         cfg_end = len(constraints)
 
         # Exit objective bound to assert block and failing assert predicate.
