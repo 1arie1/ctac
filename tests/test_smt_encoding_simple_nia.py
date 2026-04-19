@@ -252,6 +252,11 @@ def test_sea_vc_logic_and_named_constants() -> None:
 def test_sea_vc_static_dynamic_and_flow_shape() -> None:
     tac = parse_string(TAC_SEA, path="<string>")
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    assert "Static Assignments and Havoc Domain" in rendered
+    assert "Assumptions" in rendered
+    assert "Dynamic Assignments" in rendered
+    assert "CFG Reachability" in rendered
+    assert "Exit and Assert-Failure Objective" in rendered
     assert "(assert (= a 16))" in rendered
     # x is dynamic with same RHS in both branches; compacted to plain equality.
     assert "(assert (= x 5))" in rendered
@@ -301,6 +306,7 @@ def test_sea_vc_shift_mask_rewrites_and_uf_fallback() -> None:
     assert "(assert (= z (mod r 256)))" in rendered
     assert "(assert (= hm (* (div r 8) 8)))" in rendered
     assert "(declare-fun bv256_xor (Int Int) Int)" in rendered
+    assert "Axiom Instantiations" in rendered
     assert "(define-fun bv256_xor_axiom ((x Int) (y Int)) Bool" in rendered
     assert "; instantiate bv256_xor_axiom for each bv256_xor application" in rendered
     assert "(assert (bv256_xor_axiom z x))" in rendered

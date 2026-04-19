@@ -662,6 +662,7 @@ class SeaVcEncoder(SmtEncoder):
                 add_constraint(f"(= {lhs} {rhs})")
             elif isinstance(cmd, AssignHavocCmd):
                 add_havoc_range_if_bv256(ds.symbol, symbol_term[ds.symbol], block_id=ds.block_id, cmd_index=ds.cmd_index)
+        static_end = len(constraints)
 
         for block in program.blocks:
             guard = block_guard(block.id, entry_block_id=entry_block_id)
@@ -691,6 +692,7 @@ class SeaVcEncoder(SmtEncoder):
                                     if extra:
                                         cond = _and_terms([cond, *extra])
                     add_constraint(_implies(guard, cond))
+        assume_end = len(constraints)
 
         # Dynamic assignment groups as compact ITEs.
         dynamic_by_symbol: dict[str, list] = defaultdict(list)
@@ -726,6 +728,7 @@ class SeaVcEncoder(SmtEncoder):
             for cond, rhs in reversed(cases[:-1]):
                 value = _simplify_ite(cond, rhs, value, sort=symbol_sort[sym])
             add_constraint(f"(= {symbol_term[sym]} {value})")
+        dynamic_end = len(constraints)
 
         # CFG predecessor constraints.
         preds = predecessor_edges(program, symbol_term_by_name=symbol_term)
@@ -738,6 +741,7 @@ class SeaVcEncoder(SmtEncoder):
                 pred_guard = block_guard(pe.pred_block_id, entry_block_id=entry_block_id)
                 terms.append(_and_terms([pred_guard, pe.branch_cond]))
             add_constraint(_implies(lhs, _or_terms(terms)))
+        cfg_end = len(constraints)
 
         # Exit objective bound to assert block and failing assert predicate.
         assert_guard = block_guard(ctx.assert_site.block_id, entry_block_id=entry_block_id)
@@ -747,6 +751,7 @@ class SeaVcEncoder(SmtEncoder):
         exit_rhs = _and_terms([f"(not {assert_cond})", assert_guard])
         add_constraint(_implies("BLK_EXIT", exit_rhs))
         add_constraint("BLK_EXIT")
+        exit_end = len(constraints)
 
         # Render definitions + assertions.
         out_lines: list[str] = [
@@ -758,20 +763,46 @@ class SeaVcEncoder(SmtEncoder):
                 continue
             out_lines.append(f"(define-fun {name} () Int {const_defs[name]})")
         out_lines.extend(sorted(uf_decl_lines))
+
+        def emit_banner(title: str) -> None:
+            bar = "+" + ("=" * 78) + "+"
+            pad = " " * 2
+            out_lines.append("")
+            out_lines.append(f"; {bar}")
+            out_lines.append("; |                                                                              |")
+            out_lines.append(f"; |{pad}{title:<76}|")
+            out_lines.append("; |                                                                              |")
+            out_lines.append(f"; {bar}")
+            out_lines.append("")
+
         # Emit UF axiom definitions once, then instantiate per application.
         emitted_axiom_funs: set[str] = set()
+        printed_axiom_banner = False
         for uf in sorted(uf_apps):
             axiom_info = _UF_AXIOM_DEFINE_BY_UF.get(uf)
             if axiom_info is None:
                 continue
             axiom_fun_name, axiom_fun_builder = axiom_info
+            if not printed_axiom_banner:
+                emit_banner("Axiom Instantiations")
+                printed_axiom_banner = True
             if axiom_fun_name not in emitted_axiom_funs:
                 out_lines.append(axiom_fun_builder())
                 emitted_axiom_funs.add(axiom_fun_name)
             out_lines.append(f"; instantiate {axiom_fun_name} for each {uf} application")
             for args in sorted(uf_apps[uf]):
                 out_lines.append(f"(assert ({axiom_fun_name} {' '.join(args)}))")
-        out_lines.extend(f"(assert {c})" for c in constraints)
+
+        def emit_constraint_section(name: str, start: int, end: int) -> None:
+            emit_banner(name)
+            for c in constraints[start:end]:
+                out_lines.append(f"(assert {c})")
+
+        emit_constraint_section("Static Assignments and Havoc Domain", 0, static_end)
+        emit_constraint_section("Assumptions", static_end, assume_end)
+        emit_constraint_section("Dynamic Assignments", assume_end, dynamic_end)
+        emit_constraint_section("CFG Reachability", dynamic_end, cfg_end)
+        emit_constraint_section("Exit and Assert-Failure Objective", cfg_end, exit_end)
         logic = "QF_UFNIA" if uf_decl_lines else "QF_NIA"
 
         return SmtScript(
