@@ -235,7 +235,8 @@ class HumanPrettyPrinter(PrettyPrinter):
         if lo == 0:
             return None
         hi = lo + w - 1
-        return f"{self._fmt_symbol_token(sym.name)}[{hi}:{lo}]"
+        # Show extract (slice) then re-align: (x >> lo) & width mask, shifted back by 2^lo.
+        return f"{self._fmt_symbol_token(sym.name)}[{hi}:{lo}]*[2^{lo}]"
 
     def _bit_slice_shift_right(self, node: ApplyExpr) -> str | None:
         if node.op != "ShiftRightLogical" or len(node.args) != 2:
