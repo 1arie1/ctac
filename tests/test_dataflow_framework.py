@@ -528,6 +528,32 @@ def test_use_before_def_issue() -> None:
     assert result.issues[0].symbol == "w"
 
 
+TAC_ASSERT_FALSE_LITERAL = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssertCmd false "assertion failed"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_assert_false_literal_not_reported_as_use_before_def() -> None:
+    tac = parse_string(TAC_ASSERT_FALSE_LITERAL, path="<string>")
+    assert analyze_use_before_def(tac.program).issues == ()
+
+
 def test_dsa_valid_and_invalid() -> None:
     valid = parse_string(TAC_DSA_VALID, path="<string>")
     valid_res = analyze_dsa(valid.program)
