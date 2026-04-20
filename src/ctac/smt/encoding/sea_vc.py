@@ -26,6 +26,7 @@ from ctac.smt.encoding.path_skeleton import (
     sanitize_ident,
 )
 from ctac.smt.model import SmtDeclaration, SmtScript
+from ctac.ast.bit_mask import shifted_contiguous_mask
 from ctac.ast.parse_expr import parse_expr_safe
 from ctac.ast.range_constraints import match_inclusive_range_constraint
 
@@ -619,6 +620,7 @@ class SeaVcEncoder(SmtEncoder):
                     y_t, _ = emit_expr(right, expected_sort="Int")
                     k_low = None
                     k_high = None
+                    m: int | None = None
                     if isinstance(right, ConstExpr):
                         m = _parse_const(right.value)
                         k_low = _is_low_mask(m)
@@ -636,6 +638,14 @@ class SeaVcEncoder(SmtEncoder):
                     if k_high is not None:
                         p = _int_literal(1 << k_high)
                         return f"(* (div {target} {p}) {p})", "Int"
+                    if m is not None:
+                        sw = shifted_contiguous_mask(m)
+                        if sw is not None:
+                            lo, w = sw
+                            if lo > 0:
+                                pow_lo = _int_literal(1 << lo)
+                                pow_w = _int_literal(1 << w)
+                                return f"(* (mod (div {target} {pow_lo}) {pow_w}) {pow_lo})", "Int"
                     uf = "bv256_and"
                     uf_decl_lines.add(f"(declare-fun {uf} (Int Int) Int)")
                     uf_apps[uf].add((x_t, y_t))

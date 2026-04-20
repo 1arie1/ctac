@@ -101,6 +101,13 @@ def test_human_pretty_bit_slice_low_mask() -> None:
     assert lines == ["R1 = R349[..64]"]
 
 
+def test_human_pretty_bit_slice_shifted_contiguous_mask() -> None:
+    cmd = parse_command_line("AssignExpCmd R148 BWAnd(R147 70368744161280)")
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["R148 = R147[45:14]"]
+
+
 def test_human_pretty_bit_slice_shift_right() -> None:
     cmd = parse_command_line("AssignExpCmd R1 ShiftRightLogical(R349 0x40)")
     human = DEFAULT_PRINTERS.get("human")

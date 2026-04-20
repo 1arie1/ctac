@@ -4,6 +4,7 @@ Use `ctac` in plain mode unless color is required.
 
 ## Quick Rules
 
+- Run tests with the repo venv: `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"` once, then `.venv/bin/pytest` (see [README.md](README.md) setup).
 - Prefer `--plain` for deterministic output.
 - Use `--agent` for terse, plain-text command guidance (`ctac --agent`, `ctac <subcmd> --agent`).
 - First step on unknown file: `ctac stats <file> --plain`.

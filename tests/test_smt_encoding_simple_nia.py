@@ -78,6 +78,32 @@ Metas {
 }
 """
 
+TAC_SHIFTED_BWAND = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+\tsm:bv256
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignExpCmd x 0x1
+\t\tAssignExpCmd sm BWAnd(x 70368744161280)
+\t\tAssignExpCmd ok Ge(sm 0x0)
+\t\tAssertCmd ok "shifted"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
 TAC_MOD_OPS = """TACSymbolTable {
 \tUserDefined {
 \t}
@@ -425,6 +451,15 @@ def test_sea_vc_blank_line_between_assume_blocks() -> None:
     tac = parse_string(TAC_ASSUME_SPACING, path="<string>")
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
     assert "(assert (=> BLK_b1 c))\n\n(assert (=> BLK_b2 (not c)))" in rendered
+
+
+def test_sea_vc_bwand_shifted_contiguous_mask_rewrite() -> None:
+    tac = parse_string(TAC_SHIFTED_BWAND, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    assert "(assert (= sm (* (mod (div x" in rendered
+    assert "16384" in rendered
+    assert "4294967296" in rendered or "POW2_32" in rendered
+    assert "bv256_and" not in rendered
 
 
 def test_sea_vc_shift_mask_rewrites_and_uf_fallback() -> None:

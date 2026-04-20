@@ -26,6 +26,7 @@ from ctac.ast.nodes import (
     TacCmd,
     TacExpr,
 )
+from ctac.ast.bit_mask import shifted_contiguous_mask
 from ctac.ast.range_constraints import match_inclusive_range_constraint
 from ctac.ast.visitor import TacVisitor
 from ctac.builtins import pretty_builtin_name
@@ -213,6 +214,29 @@ class HumanPrettyPrinter(PrettyPrinter):
             return None
         return f"{self._fmt_symbol_token(sym.name)}[..{bit_width}]"
 
+    def _bit_slice_shifted_contiguous_mask(self, node: ApplyExpr) -> str | None:
+        if node.op != "BWAnd" or len(node.args) != 2:
+            return None
+        lhs, rhs = node.args
+        sym: SymExpr | None = None
+        mask: int | None = None
+        if isinstance(lhs, SymExpr):
+            sym = lhs
+            mask = self._const_to_int(rhs)
+        elif isinstance(rhs, SymExpr):
+            sym = rhs
+            mask = self._const_to_int(lhs)
+        if sym is None or mask is None or mask <= 0:
+            return None
+        sw = shifted_contiguous_mask(mask)
+        if sw is None:
+            return None
+        lo, w = sw
+        if lo == 0:
+            return None
+        hi = lo + w - 1
+        return f"{self._fmt_symbol_token(sym.name)}[{hi}:{lo}]"
+
     def _bit_slice_shift_right(self, node: ApplyExpr) -> str | None:
         if node.op != "ShiftRightLogical" or len(node.args) != 2:
             return None
@@ -251,6 +275,9 @@ class HumanPrettyPrinter(PrettyPrinter):
             masked = self._bit_slice_low_mask(node)
             if masked is not None:
                 return masked
+            shifted_mask = self._bit_slice_shifted_contiguous_mask(node)
+            if shifted_mask is not None:
+                return shifted_mask
             shifted = self._bit_slice_shift_right(node)
             if shifted is not None:
                 return shifted
