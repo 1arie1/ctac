@@ -71,20 +71,24 @@ def _rewrite_r4a(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     b_range = infer_expr_range(b, ctx)
     if b_range is None or b_range[0] <= 0:
         return None
-    a_use = ctx.lookthrough(a)
-    b_use = ctx.lookthrough(b)
-    if not (_all_refs_static(a_use, ctx) and _all_refs_static(b_use, ctx)):
+    # Emission-side forms: strip `safe_math_narrow` (pipeline identity) but do
+    # NOT inline SymbolRef definitions — keep named registers intact so the
+    # resulting monomials remain `<var> *int <var>` shaped instead of
+    # inlining complex def expressions (e.g. denominator as an Ite).
+    a_emit = ctx.peel_narrow(a)
+    b_emit = ctx.peel_narrow(b)
+    if not (_all_refs_static(a_emit, ctx) and _all_refs_static(b_emit, ctx)):
         return None
 
-    a_range = infer_expr_range(a_use, ctx)
+    a_range = infer_expr_range(a_emit, ctx)
     a_non_negative = a_range is not None and a_range[0] >= 0
 
     def build_assumes(t: SymbolRef) -> list[TacExpr]:
-        bx = ApplyExpr("IntMul", (b_use, t))
-        b_xplus1 = ApplyExpr("IntMul", (b_use, ApplyExpr("IntAdd", (t, _ONE_INT))))
+        bx = ApplyExpr("IntMul", (b_emit, t))
+        b_xplus1 = ApplyExpr("IntMul", (b_emit, ApplyExpr("IntAdd", (t, _ONE_INT))))
         conds: list[TacExpr] = [
-            ApplyExpr("Le", (bx, a_use)),
-            ApplyExpr("Lt", (a_use, b_xplus1)),
+            ApplyExpr("Le", (bx, a_emit)),
+            ApplyExpr("Lt", (a_emit, b_xplus1)),
         ]
         if a_non_negative:
             conds.append(ApplyExpr("Ge", (t, _ZERO_INT)))

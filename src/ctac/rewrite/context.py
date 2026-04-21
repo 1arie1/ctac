@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import networkx as nx
 
@@ -222,6 +222,13 @@ class RewriteCtx:
         Keeps unwrapping until neither applies, so a rule calling ``lookthrough``
         once on a ``SymbolRef`` whose definition is ``narrow(IntDiv(...))`` sees
         the ``IntDiv`` directly.
+
+        Use for *matching* — when a rule wants to see through aliases to
+        recognize a structural pattern. For *emission* use :meth:`peel_narrow`
+        instead: it strips the pipeline-identity narrow wrapper but keeps
+        :class:`SymbolRef` names intact, so emitted expressions preserve the
+        syntactic link to existing variables and avoid creating complex
+        monomials (e.g. ``Ite(...)``-shaped denominators) from inlining.
         """
         seen: set[TacExpr] = set()
         while expr not in seen:
@@ -236,6 +243,26 @@ class RewriteCtx:
                 expr = expr.args[1]
                 continue
             break
+        return expr
+
+    def peel_narrow(self, expr: TacExpr) -> TacExpr:
+        """Strip ``Apply(safe_math_narrow_bvN:bif, E)`` wrappers everywhere in ``expr``.
+
+        Does NOT expand ``SymbolRef`` definitions — callers keep the named
+        variable intact. Used by emission-side logic (R4a / R6 assume
+        construction) to preserve syntactic references to existing
+        registers while still treating narrow as an empty cast. Applies
+        recursively so inner narrow wrappers inside compound expressions
+        (e.g. ``IntMul(R53, narrow(I178))``) are also stripped.
+        """
+        # Peel any outer narrow first.
+        while _is_safe_narrow_apply(expr):
+            assert isinstance(expr, ApplyExpr)
+            expr = expr.args[1]
+        if isinstance(expr, ApplyExpr):
+            new_args = tuple(self.peel_narrow(a) for a in expr.args)
+            if new_args != expr.args:
+                return replace(expr, args=new_args)
         return expr
 
     def range(self, var_name: str) -> tuple[int | None, int | None] | None:

@@ -310,6 +310,65 @@ Metas {
     assert ge_zero_found
 
 
+def test_r4a_preserves_symbolref_names_in_emitted_assumes():
+    """Emitted assumes reference named vars directly — no inlining of definitions.
+
+    Even when the divisor is a ``SymbolRef`` whose static def is a complex
+    expression (e.g. an ``Ite``), R4a should keep the symbol in the assume
+    so monomials stay ``<var> * <var>`` shaped.
+    """
+    tac_src = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tA:bv256
+\tC:bool
+\tB:bv256
+\tR:bv256
+}
+Program {
+\tBlock e Succ [] {
+\t\tAssignHavocCmd A
+\t\tAssumeExpCmd LAnd(Ge(A 0x0 ) Le(A 0xffffffff ) )
+\t\tAssignHavocCmd C
+\t\tAssignExpCmd B Ite(C 0x1 0x5)
+\t\tAssumeExpCmd LAnd(Ge(B 0x1 ) Le(B 0xff ) )
+\t\tAssignExpCmd R Div(A B )
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    tac = parse_string(tac_src, path="<s>")
+    res = rewrite_program(tac.program, (R4A_DIV_PURIFY,))
+    assert res.hits_by_rule.get("R4a", 0) == 1
+    # Walk all assume conditions and assert no `Ite(...)` leaked in where
+    # the divisor `B` should appear.
+    for cmd in res.program.blocks[0].commands:
+        if not isinstance(cmd, AssumeExpCmd):
+            continue
+        cond = cmd.condition
+        if isinstance(cond, ApplyExpr) and cond.op in {"Le", "Lt"}:
+            # Each side should reference B as a plain SymbolRef somewhere, not an Ite.
+            def _contains_ite(e):
+                if isinstance(e, ApplyExpr):
+                    if e.op == "Ite":
+                        return True
+                    return any(_contains_ite(a) for a in e.args)
+                return False
+
+            if _contains_ite(cond):
+                raise AssertionError(
+                    f"emitted assume contains Ite (SymbolRef inlined?): {cmd.raw}"
+                )
+
+
 def test_r4a_handles_intdiv():
     """IntDiv (Int-typed) is also accepted."""
     tac_src = """TACSymbolTable {
