@@ -13,6 +13,7 @@ from ctac.rewrite.rules.bitfield import (
 )
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
 from ctac.rewrite.rules.copyprop import CP_ALIAS
+from ctac.rewrite.rules.cse import CSE
 from ctac.rewrite.rules.div import (
     R1_BITFIELD_STRIP,
     R2_DIV_FUSE,
@@ -20,6 +21,7 @@ from ctac.rewrite.rules.div import (
     R4_DIV_IN_CMP,
 )
 from ctac.rewrite.rules.div_purify import R4A_DIV_PURIFY
+from ctac.rewrite.rules.ite_purify import ITE_PURIFY
 from ctac.rewrite.rules.ite import (
     BOOL_ABSORB,
     DE_MORGAN,
@@ -55,6 +57,10 @@ simplify_pipeline: tuple[Rule, ...] = (
     ITE_BOOL,
     BOOL_ABSORB,
     DE_MORGAN,
+    # CSE before CP: fold duplicate static defs to aliases, then CP propagates
+    # and DCE removes. Runs inside the fixed-point so CP's output can in turn
+    # expose new CSE opportunities on the next iteration.
+    CSE,
     CP_ALIAS,
 )
 
@@ -68,6 +74,7 @@ default_pipeline: tuple[Rule, ...] = purify_pipeline
 __all__ = [
     "BOOL_ABSORB",
     "CP_ALIAS",
+    "CSE",
     "DE_MORGAN",
     "EQ_CONST_FOLD",
     "EQ_ITE_DIST",
@@ -80,6 +87,7 @@ __all__ = [
     "R1_BITFIELD_STRIP",
     "R2_DIV_FUSE",
     "R3_DIV_MUL_CANCEL",
+    "ITE_PURIFY",
     "R4_DIV_IN_CMP",
     "R4A_DIV_PURIFY",
     "R6_CEILDIV",

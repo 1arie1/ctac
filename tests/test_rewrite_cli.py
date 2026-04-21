@@ -78,3 +78,30 @@ def test_rw_no_purify_div_disables_r4a():
     # Other rules still fire in both runs.
     assert "N1:" in disabled.output
     assert "R1:" in disabled.output
+
+
+def test_rw_no_purify_ite_disables_tb_naming():
+    """`--no-purify-ite` prevents the post-DCE TB<N> naming of Ite conditions."""
+    runner = CliRunner()
+    src = _require_target(TARGET_TAC)
+    enabled = runner.invoke(app, ["rw", str(src), "--plain", "--report"])
+    disabled = runner.invoke(app, ["rw", str(src), "--plain", "--report", "--no-purify-ite"])
+    assert enabled.exit_code == 0 and disabled.exit_code == 0
+    # Default: ITE_PURIFY hits appear.
+    assert "ITE_PURIFY:" in enabled.output
+    # Disabled: no ITE_PURIFY hits reported.
+    assert "ITE_PURIFY:" not in disabled.output
+
+
+def test_rw_purify_ite_introduces_tb_symbols_in_output(tmp_path):
+    """Default `--purify-ite` run emits `TB<N>:bool` declarations in the written TAC."""
+    runner = CliRunner()
+    src = _require_target(TARGET_TAC)
+    out = tmp_path / "rw_ite.tac"
+    result = runner.invoke(app, ["rw", str(src), "-o", str(out), "--plain"])
+    assert result.exit_code == 0, result.output
+    text = out.read_text()
+    assert "TB0:bool" in text
+    # Re-parses cleanly (round-trip).
+    reparsed = parse_path(out)
+    assert reparsed.program.blocks

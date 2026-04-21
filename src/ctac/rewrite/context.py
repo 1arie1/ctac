@@ -368,6 +368,37 @@ class RewriteCtx:
             self._pending_symbols.append((name, sort))
         return t
 
+    def emit_fresh_assign(
+        self,
+        prefix: str,
+        rhs: TacExpr,
+        *,
+        sort: str,
+        placement: str = "current",
+    ) -> SymbolRef:
+        """Queue ``AssignExpCmd <name> <rhs>`` and register ``<name>:<sort>``.
+
+        Counterpart to :meth:`emit_fresh_var` for the straight-assignment
+        case: introduce a fresh variable whose value is exactly ``rhs``.
+        Returns ``SymbolRef(<name>)`` so the caller can substitute it in
+        place of ``rhs`` at the call site. ``placement`` semantics match
+        :meth:`emit_fresh_var`.
+        """
+        name = self._next_fresh_name(prefix)
+        cmd = AssignExpCmd(raw="", lhs=name, rhs=rhs)
+        if placement == "entry":
+            self._pending_entry_cmds.append(cmd)
+        elif placement == "current":
+            assert self._cur_block is not None and self._cur_cmd is not None, (
+                "emit_fresh_assign(placement='current') requires a set position"
+            )
+            key = (self._cur_block, self._cur_cmd)
+            self._pending_by_position.setdefault(key, []).append(cmd)
+        else:
+            raise ValueError(f"unknown placement: {placement!r}")
+        self._pending_symbols.append((name, sort))
+        return SymbolRef(name)
+
     def _next_fresh_name(self, prefix: str) -> str:
         """Pick a name not already present in the program's symbol table.
 

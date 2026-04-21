@@ -16,7 +16,7 @@ from collections import Counter
 
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.framework import RewriteResult, RuleHit
-from ctac.rewrite.rules import R4A_DIV_PURIFY, simplify_pipeline
+from ctac.rewrite.rules import CP_ALIAS, CSE, ITE_PURIFY, R4A_DIV_PURIFY, simplify_pipeline
 from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 
@@ -136,6 +136,15 @@ def rewrite_cmd(
             "for non-constant positive-range B). Default on."
         ),
     ),
+    purify_ite: bool = typer.Option(
+        True,
+        "--purify-ite/--no-purify-ite",
+        help=(
+            "Name non-trivial Ite conditions as fresh bool vars (TB<N>) so the "
+            "solver can split cases cleanly. Runs as a final phase after DCE. "
+            "Default on."
+        ),
+    ),
 ) -> None:
     """Run the TAC → TAC rewrite pipeline (div/bit-field simplifications + DCE).
 
@@ -192,6 +201,27 @@ def rewrite_cmd(
         if not dce.removed:
             break
         program = dce.program
+    # Phase 3 (optional): after all simplification + DCE, name every remaining
+    # non-trivial Ite condition as a fresh bool var. Pair with CSE + CP so
+    # that two Ites with identical conditions collapse to one TB<N> instead
+    # of producing two structurally-equal TB defs.
+    if purify_ite:
+        phase_ite = rewrite_program(
+            program,
+            (ITE_PURIFY, CSE, CP_ALIAS),
+            max_iterations=max_iterations,
+            ite_max_depth=ite_max_depth,
+        )
+        rw = _merge_phases(rw, phase_ite)
+        program = phase_ite.program
+        # One more DCE sweep — CSE turns duplicates into aliases; CP+DCE
+        # makes those aliases disappear.
+        while True:
+            dce = eliminate_dead_assignments(program)
+            total_removed += len(dce.removed)
+            if not dce.removed:
+                break
+            program = dce.program
     final_program = program
     after_count = _command_count(final_program)
 
