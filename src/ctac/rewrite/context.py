@@ -1,0 +1,219 @@
+"""Read-only context object that rules query to make rewriting decisions.
+
+Provides:
+    - ``is_static(var)``: ``var`` is DSA-static (has at least one definition and
+      is not in the DSA-dynamic set). Holds for both ``AssignExpCmd`` and
+      ``AssignHavocCmd`` unique defs.
+    - ``definition(var)``: the RHS of ``var``'s unique ``AssignExpCmd`` definition,
+      or ``None`` (havoc-defined or multiply-defined symbols return ``None``).
+    - ``lookthrough(expr)``: if ``expr`` is a :class:`SymbolRef` with a static
+      RHS-valued definition, replace with the definition.
+    - ``range(var)``: integer interval inferred from range-assume facts that
+      dominate the current position (set via :meth:`set_position`).
+
+Dominance is block-level; same-block assumes only apply if they appear
+strictly before the query's ``cmd_index``. Block-level dominance is computed
+from the CFG via :func:`networkx.immediate_dominators` walking the idom tree.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass, field
+
+import networkx as nx
+
+from ctac.analysis.defuse import extract_def_use
+from ctac.analysis.model import DefUseResult, DsaResult
+from ctac.analysis.passes import analyze_dsa
+from ctac.analysis.symbols import canonical_symbol
+from ctac.ast.nodes import ApplyExpr, AssignExpCmd, AssumeExpCmd, SymbolRef, TacExpr
+from ctac.ast.range_constraints import (
+    SymbolIntervalConstraint,
+    match_symbol_interval_constraint,
+)
+from ctac.graph import Cfg
+from ctac.ir.models import TacProgram
+
+_STRIP_SUFFIXES = True
+_NARROW_PREFIX = "safe_math_narrow_bv"
+
+
+def _is_safe_narrow_apply(expr: TacExpr) -> bool:
+    """``Apply(safe_math_narrow_bvN:bif, E)`` — pipeline-guaranteed empty cast.
+
+    Semantically a range-checked Int -> bvN coercion; in this pipeline the
+    runtime check is guaranteed to pass, so rules treat it as identity.
+    """
+    if not isinstance(expr, ApplyExpr) or expr.op != "Apply" or len(expr.args) != 2:
+        return False
+    fn = expr.args[0]
+    if not isinstance(fn, SymbolRef):
+        return False
+    core = fn.name[:-4] if fn.name.endswith(":bif") else fn.name
+    return core.startswith(_NARROW_PREFIX)
+
+
+def _compute_dominators(program: TacProgram) -> dict[str, frozenset[str]]:
+    """Block-level dominator sets, derived from networkx immediate dominators.
+
+    Assumes a single entry block (first block in file order); TAC programs from
+    the Certora pipeline conform to this.
+    """
+    if not program.blocks:
+        return {}
+    entry = program.blocks[0].id
+    digraph = Cfg(program).to_digraph()
+    idom = nx.immediate_dominators(digraph, entry)
+    # Walk the idom tree to materialize full dominator sets.
+    dom: dict[str, frozenset[str]] = {}
+
+    def dominators_of(node: str) -> frozenset[str]:
+        if node in dom:
+            return dom[node]
+        parent = idom.get(node, node)
+        if parent == node:
+            result = frozenset({node})
+        else:
+            result = frozenset({node}) | dominators_of(parent)
+        dom[node] = result
+        return result
+
+    for node in digraph.nodes:
+        dominators_of(node)
+    return dom
+
+
+@dataclass(frozen=True)
+class _AssumeFact:
+    block_id: str
+    cmd_index: int
+    interval: SymbolIntervalConstraint
+
+
+@dataclass
+class RewriteCtx:
+    """Per-program view of def-use, DSA, dominance and range facts."""
+
+    program: TacProgram
+    ite_max_depth: int = 4
+    du: DefUseResult = field(init=False)
+    dsa: DsaResult = field(init=False)
+    static_symbols: frozenset[str] = field(init=False)
+    static_defs: dict[str, TacExpr] = field(init=False)
+    assumes_by_symbol: dict[str, list[_AssumeFact]] = field(init=False)
+    dominators: dict[str, frozenset[str]] = field(init=False)
+    _cur_block: str | None = field(default=None, init=False)
+    _cur_cmd: int | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        self.du = extract_def_use(self.program, strip_var_suffixes=_STRIP_SUFFIXES)
+        self.dsa = analyze_dsa(
+            self.program, strip_var_suffixes=_STRIP_SUFFIXES, def_use=self.du
+        )
+        dynamic_symbols = {a.symbol for a in self.dsa.dynamic_assignments}
+        # DSA-static = has at least one definition and is not dynamic. This
+        # covers both AssignExpCmd and AssignHavocCmd single-def cases.
+        self.static_symbols = frozenset(
+            sym for sym in self.du.definitions_by_symbol if sym not in dynamic_symbols
+        )
+
+        static_defs: dict[str, TacExpr] = {}
+        by_id = self.program.block_by_id()
+        for sym in self.static_symbols:
+            defs = self.du.definitions_by_symbol[sym]
+            if len(defs) != 1:
+                continue
+            ds = defs[0]
+            block = by_id.get(ds.block_id)
+            if block is None:
+                continue
+            cmd = block.commands[ds.cmd_index]
+            if isinstance(cmd, AssignExpCmd):
+                static_defs[sym] = cmd.rhs
+        self.static_defs = static_defs
+
+        assumes: dict[str, list[_AssumeFact]] = defaultdict(list)
+        for block in self.program.blocks:
+            for idx, cmd in enumerate(block.commands):
+                if not isinstance(cmd, AssumeExpCmd):
+                    continue
+                interval = match_symbol_interval_constraint(
+                    cmd.condition, strip_var_suffixes=_STRIP_SUFFIXES,
+                )
+                if interval is None:
+                    continue
+                assumes[interval.symbol].append(
+                    _AssumeFact(block_id=block.id, cmd_index=idx, interval=interval)
+                )
+        self.assumes_by_symbol = assumes
+        self.dominators = _compute_dominators(self.program)
+
+    def set_position(self, block_id: str | None, cmd_index: int | None) -> None:
+        """Mark the program point the driver is currently rewriting under."""
+        self._cur_block = block_id
+        self._cur_cmd = cmd_index
+
+    def is_static(self, var_name: str) -> bool:
+        """True iff ``var_name`` is DSA-static (incl. havoc-only definitions)."""
+        return canonical_symbol(var_name, strip_var_suffixes=_STRIP_SUFFIXES) in self.static_symbols
+
+    def definition(self, var_name: str) -> TacExpr | None:
+        """RHS expression of ``var_name``'s unique AssignExpCmd definition, if any.
+
+        Havoc-defined statics return ``None`` (no RHS to expand).
+        """
+        return self.static_defs.get(canonical_symbol(var_name, strip_var_suffixes=_STRIP_SUFFIXES))
+
+    def lookthrough(self, expr: TacExpr) -> TacExpr:
+        """Transitively peel away static defs and ``safe_math_narrow`` wrappers.
+
+        Keeps unwrapping until neither applies, so a rule calling ``lookthrough``
+        once on a ``SymbolRef`` whose definition is ``narrow(IntDiv(...))`` sees
+        the ``IntDiv`` directly.
+        """
+        seen: set[TacExpr] = set()
+        while expr not in seen:
+            seen.add(expr)
+            if isinstance(expr, SymbolRef):
+                d = self.definition(expr.name)
+                if d is not None:
+                    expr = d
+                    continue
+            if _is_safe_narrow_apply(expr):
+                assert isinstance(expr, ApplyExpr)
+                expr = expr.args[1]
+                continue
+            break
+        return expr
+
+    def range(self, var_name: str) -> tuple[int | None, int | None] | None:
+        """Return ``(lo, hi)`` interval inferred from dominating range-assume facts."""
+        sym = canonical_symbol(var_name, strip_var_suffixes=_STRIP_SUFFIXES)
+        facts = self.assumes_by_symbol.get(sym)
+        if not facts:
+            return None
+        lo: int | None = None
+        hi: int | None = None
+        cur_block = self._cur_block
+        cur_cmd = self._cur_cmd
+        for fact in facts:
+            if cur_block is not None and not self._fact_dominates(fact, cur_block, cur_cmd):
+                continue
+            if fact.interval.lower is not None:
+                lo = fact.interval.lower if lo is None else max(lo, fact.interval.lower)
+            if fact.interval.upper is not None:
+                hi = fact.interval.upper if hi is None else min(hi, fact.interval.upper)
+        if lo is None and hi is None:
+            return None
+        return (lo, hi)
+
+    def _fact_dominates(
+        self,
+        fact: _AssumeFact,
+        query_block: str,
+        query_cmd: int | None,
+    ) -> bool:
+        if fact.block_id == query_block:
+            return query_cmd is None or fact.cmd_index < query_cmd
+        return fact.block_id in self.dominators.get(query_block, frozenset())

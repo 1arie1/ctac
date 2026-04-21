@@ -1,0 +1,344 @@
+"""Unit tests for N1, R1, R2, R3, CP rules."""
+
+from __future__ import annotations
+
+from ctac.ast.nodes import AssignExpCmd, ApplyExpr, ConstExpr, SymbolRef
+from ctac.parse import parse_string
+from ctac.rewrite import default_pipeline, rewrite_program
+from ctac.rewrite.rules import (
+    CP_ALIAS,
+    N1_SHIFTED_BWAND,
+    R2_DIV_FUSE,
+    R3_DIV_MUL_CANCEL,
+)
+
+
+def _tac(body: str, *, syms: str = "R0:bv256\n\tR1:bv256\n\tR2:bv256") -> str:
+    return f"""TACSymbolTable {{
+\tUserDefined {{
+\t}}
+\tBuiltinFunctions {{
+\t\tsafe_math_narrow_bv256:JSON{{"x":1}}
+\t}}
+\tUninterpretedFunctions {{
+\t}}
+\t{syms}
+}}
+Program {{
+\tBlock e Succ [] {{
+{body}
+\t}}
+}}
+Axioms {{
+}}
+Metas {{
+  "0": []
+}}
+"""
+
+
+def _rhs(res_program, lhs: str):
+    for b in res_program.blocks:
+        for cmd in b.commands:
+            if isinstance(cmd, AssignExpCmd) and cmd.lhs == lhs:
+                return cmd.rhs
+    raise AssertionError(f"no assignment for {lhs}")
+
+
+def test_r2_fuses_nested_const_div():
+    tac = parse_string(
+        _tac(
+            "\t\tAssignExpCmd R1 Div(R0 0x4)\n\t\tAssignExpCmd R2 Div(R1 0x8)",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R2_DIV_FUSE,))
+    assert res.hits_by_rule == {"R2": 1}
+    rhs = _rhs(res.program, "R2")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Div"
+    assert isinstance(rhs.args[0], SymbolRef) and rhs.args[0].name == "R0"
+    assert isinstance(rhs.args[1], ConstExpr) and rhs.args[1].value == "0x20"
+
+
+def test_r2_respects_op_kind():
+    # Outer Div, inner IntDiv -> should not fuse (different semantic domains).
+    tac = parse_string(
+        _tac(
+            "\t\tAssignExpCmd R1 IntDiv(R0 0x4)\n\t\tAssignExpCmd R2 Div(R1 0x8)",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R2_DIV_FUSE,))
+    assert res.hits_by_rule == {}
+
+
+def test_r3_cancels_common_factor():
+    tac = parse_string(
+        _tac(
+            "\t\tAssignExpCmd R1 Mul(0x4 R0)\n\t\tAssignExpCmd R2 Div(R1 0x4)",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R3_DIV_MUL_CANCEL,))
+    assert res.hits_by_rule == {"R3": 1}
+    assert _rhs(res.program, "R2") == SymbolRef("R0")
+
+
+def test_r3_cancels_when_const_on_right():
+    tac = parse_string(
+        _tac(
+            "\t\tAssignExpCmd R1 Mul(R0 0x4)\n\t\tAssignExpCmd R2 Div(R1 0x4)",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R3_DIV_MUL_CANCEL,))
+    assert res.hits_by_rule == {"R3": 1}
+    assert _rhs(res.program, "R2") == SymbolRef("R0")
+
+
+def test_r3_does_not_cancel_mismatched_constant():
+    tac = parse_string(
+        _tac(
+            "\t\tAssignExpCmd R1 Mul(0x4 R0)\n\t\tAssignExpCmd R2 Div(R1 0x8)",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R3_DIV_MUL_CANCEL,))
+    assert res.hits_by_rule == {}
+
+
+def test_n1_expands_shifted_bwand():
+    tac = parse_string(
+        _tac(
+            "\t\tAssignExpCmd R1 BWAnd(R0 0x3fffffffc000)",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (N1_SHIFTED_BWAND,))
+    assert res.hits_by_rule == {"N1": 1}
+    rhs = _rhs(res.program, "R1")
+    # Mul(Mod(Div(R0, 0x4000), 0x100000000), 0x4000)
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Mul"
+    inner_mod = rhs.args[0]
+    assert isinstance(inner_mod, ApplyExpr) and inner_mod.op == "Mod"
+    inner_div = inner_mod.args[0]
+    assert isinstance(inner_div, ApplyExpr) and inner_div.op == "Div"
+    assert isinstance(inner_div.args[0], SymbolRef) and inner_div.args[0].name == "R0"
+
+
+def test_n1_skips_lo_zero_mask():
+    # Mask 0xff has lo=0 — unshifted low mask. Rule intentionally skips.
+    tac = parse_string(
+        _tac(
+            "\t\tAssignExpCmd R1 BWAnd(R0 0xff)",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (N1_SHIFTED_BWAND,))
+    assert res.hits_by_rule == {}
+
+
+def test_r1_collapses_bitfield_with_dominating_range():
+    tac_src = _tac(
+        """\t\tAssignHavocCmd R0
+\t\tAssumeExpCmd Le(R0 0xffffffff)
+\t\tAssignExpCmd R1 IntMul(0x4000(int) R0)
+\t\tAssignExpCmd R2 Apply(safe_math_narrow_bv256:bif R1)
+\t\tAssignExpCmd R3 BWAnd(R2 0x3fffffffc000)""",
+        syms="R0:bv256\n\tR1:bv256\n\tR2:bv256\n\tR3:bv256",
+    )
+    tac = parse_string(tac_src, path="<s>")
+    res = rewrite_program(tac.program, default_pipeline)
+    # N1 + R1 + CP should fire at least once each; DCE happens outside rewrite.
+    assert res.hits_by_rule.get("N1", 0) == 1
+    assert res.hits_by_rule.get("R1", 0) == 1
+    # R3 RHS is now SymbolRef(R2) via R1; CP may further rewrite uses elsewhere.
+    assert _rhs(res.program, "R3") == SymbolRef("R2")
+
+
+def test_r1_requires_range_to_fit():
+    # R0 <= 0xffffffffffff (2^48-1) does not fit in 2^46 window; R1 must not fire.
+    tac_src = _tac(
+        """\t\tAssignHavocCmd R0
+\t\tAssumeExpCmd Le(R0 0xffffffffffff)
+\t\tAssignExpCmd R1 IntMul(0x4000(int) R0)
+\t\tAssignExpCmd R2 Apply(safe_math_narrow_bv256:bif R1)
+\t\tAssignExpCmd R3 BWAnd(R2 0x3fffffffc000)""",
+        syms="R0:bv256\n\tR1:bv256\n\tR2:bv256\n\tR3:bv256",
+    )
+    tac = parse_string(tac_src, path="<s>")
+    res = rewrite_program(tac.program, default_pipeline)
+    assert res.hits_by_rule.get("N1", 0) == 1
+    assert res.hits_by_rule.get("R1", 0) == 0
+
+
+def test_cp_propagates_through_alias():
+    tac_src = _tac(
+        """\t\tAssignHavocCmd R0
+\t\tAssignExpCmd R1 R0
+\t\tAssignExpCmd R2 Add(R1 R1)""",
+        syms="R0:bv256\n\tR1:bv256\n\tR2:bv256",
+    )
+    tac = parse_string(tac_src, path="<s>")
+    res = rewrite_program(tac.program, (CP_ALIAS,))
+    assert res.hits_by_rule.get("CP", 0) >= 2
+    rhs = _rhs(res.program, "R2")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Add"
+    assert rhs.args == (SymbolRef("R0"), SymbolRef("R0"))
+
+
+def test_assume_range_only_visible_in_dominating_branch():
+    """CP should not inline facts across non-dominating branches."""
+    tac_src = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR0:bv256
+\tR1:bv256
+\tc:bool
+}
+Program {
+\tBlock entry Succ [L, R] {
+\t\tAssignHavocCmd c
+\t\tJumpiCmd L R c
+\t}
+\tBlock L Succ [J] {
+\t\tAssumeExpCmd Le(R0 0xff)
+\t\tJumpCmd J
+\t}
+\tBlock R Succ [J] {
+\t\tJumpCmd J
+\t}
+\tBlock J Succ [] {
+\t\tAssignExpCmd R1 Mul(Mod(Div(R0 0x4000) 0x100000000) 0x4000)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    tac = parse_string(tac_src, path="<s>")
+    res = rewrite_program(tac.program, default_pipeline)
+    # The Le(R0, 0xff) assume in L does not dominate use in J -> R1 must not fire.
+    assert res.hits_by_rule.get("R1", 0) == 0
+
+
+def test_ite_depth_cap_blocks_deep_range_inference():
+    """``ite_max_depth=0`` disables Ite range unioning entirely."""
+    tac_src = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t\tsafe_math_narrow_bv256:JSON{"x":1}
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR0:bv256
+\tR1:bv256
+\tR2:bv256
+\tR3:bv256
+\tR4:bv256
+\tc:bool
+}
+Program {
+\tBlock e Succ [] {
+\t\tAssignHavocCmd R0
+\t\tAssumeExpCmd Le(R0 0xffffffff)
+\t\tAssignHavocCmd c
+\t\tAssignExpCmd R1 Ite(c 0x0 R0)
+\t\tAssignExpCmd R2 IntMul(0x4000(int) R1)
+\t\tAssignExpCmd R3 Apply(safe_math_narrow_bv256:bif R2)
+\t\tAssignExpCmd R4 BWAnd(R3 0x3fffffffc000)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    tac = parse_string(tac_src, path="<s>")
+    # depth=4 (default): R1 fires. depth=0: bails at the Ite, so R1 doesn't fire.
+    deep = rewrite_program(tac.program, default_pipeline)
+    shallow = rewrite_program(tac.program, default_pipeline, ite_max_depth=0)
+    assert deep.hits_by_rule.get("R1", 0) == 1
+    assert shallow.hits_by_rule.get("R1", 0) == 0
+    # N1 still fires regardless (no range reasoning).
+    assert shallow.hits_by_rule.get("N1", 0) == 1
+
+
+def test_r1_fires_through_ite_branches():
+    """Range inference unions Ite branch ranges; R1 can then collapse bitfield."""
+    tac_src = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t\tsafe_math_narrow_bv256:JSON{"x":1}
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR0:bv256
+\tR1:bv256
+\tR2:bv256
+\tR3:bv256
+\tR4:bv256
+\tc:bool
+}
+Program {
+\tBlock e Succ [] {
+\t\tAssignHavocCmd R0
+\t\tAssumeExpCmd Le(R0 0xffffffff)
+\t\tAssignHavocCmd c
+\t\tAssignExpCmd R1 Ite(c 0x0 R0)
+\t\tAssignExpCmd R2 IntMul(0x4000(int) R1)
+\t\tAssignExpCmd R3 Apply(safe_math_narrow_bv256:bif R2)
+\t\tAssignExpCmd R4 BWAnd(R3 0x3fffffffc000)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    tac = parse_string(tac_src, path="<s>")
+    res = rewrite_program(tac.program, default_pipeline)
+    assert res.hits_by_rule.get("N1", 0) == 1
+    assert res.hits_by_rule.get("R1", 0) == 1, res.hits_by_rule
+
+
+def test_dominating_assume_allows_r1():
+    """Same assume in the dominating entry block should enable R1."""
+    tac_src = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR0:bv256
+\tR1:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd R0
+\t\tAssumeExpCmd Le(R0 0xffffffff)
+\t\tAssignExpCmd R1 Mul(Mod(Div(R0 0x4000) 0x100000000) 0x4000)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    tac = parse_string(tac_src, path="<s>")
+    res = rewrite_program(tac.program, default_pipeline)
+    assert res.hits_by_rule.get("R1", 0) == 1
+    # After R1 + CP, R1's RHS should reduce to R0.
+    assert _rhs(res.program, "R1") == SymbolRef("R0")
