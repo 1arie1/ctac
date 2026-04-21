@@ -4,6 +4,8 @@ R2 - nested constant ``Div`` fusion.
 R3 - common-factor cancellation ``Div(Mul(c, A), c) -> A``.
 R1 - bit-field strip ``Mul(Mod(Div(X, 2^k), 2^n), 2^k) -> X`` when
      ``X`` is provably in ``[0, 2^(k+n) - 1]``.
+R4 - eliminate ``Div`` from comparisons when the divisor is a positive
+     integer constant.
 """
 
 from __future__ import annotations
@@ -15,11 +17,15 @@ from ctac.rewrite.range_infer import infer_expr_range
 from ctac.rewrite.rules.common import (
     DIV_OPS,
     MUL_OPS,
+    as_int_const,
     const_to_int,
     is_apply_in,
     log2_if_pow2,
     reformat_const,
 )
+
+_CMP_OPS = frozenset({"Lt", "Le", "Gt", "Ge", "Eq"})
+_CMP_FLIP_OPERANDS = {"Lt": "Gt", "Le": "Ge", "Gt": "Lt", "Ge": "Le", "Eq": "Eq"}
 
 
 def _matching_mul_op(div_op: str) -> str:
@@ -140,6 +146,79 @@ def _rewrite_r1(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     return x_expr
 
 
+def _rewrite_r4(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    """Eliminate Div from comparisons with a positive-constant divisor.
+
+    For B > 0 (Euclidean division):
+      Lt(Div(A, B), C) -> Lt(A, B*C)
+      Le(Div(A, B), C) -> Lt(A, B*(C+1))
+      Gt(Div(A, B), C) -> Ge(A, B*(C+1))
+      Ge(Div(A, B), C) -> Ge(A, B*C)
+      Eq(Div(A, B), C) -> LAnd(Ge(A, B*C), Lt(A, B*(C+1)))
+
+    The rewrite always emits ``IntMul``/``IntAdd`` and tags the divisor /
+    ``1`` constants as ``(int)`` so the resulting arithmetic is exact
+    (no bv-modular overflow). This is sound because Div on integers and
+    Euclidean Div on unsigned bv agree when the value fits.
+
+    When Div is on the right-hand side we first flip the comparison so
+    Div ends up on the left, then apply the appropriate form.
+    """
+    if not (isinstance(expr, ApplyExpr) and expr.op in _CMP_OPS and len(expr.args) == 2):
+        return None
+    a, b = expr.args
+    a_lt = ctx.lookthrough(a)
+    b_lt = ctx.lookthrough(b)
+    a_is_div = isinstance(a_lt, ApplyExpr) and a_lt.op in DIV_OPS and len(a_lt.args) == 2
+    b_is_div = isinstance(b_lt, ApplyExpr) and b_lt.op in DIV_OPS and len(b_lt.args) == 2
+    # Fire only when exactly one side is a Div (avoid the both-div / neither case).
+    if a_is_div == b_is_div:
+        return None
+
+    op = expr.op
+    if a_is_div:
+        div_expr = a_lt
+        other = b
+    else:
+        div_expr = b_lt
+        other = a
+        op = _CMP_FLIP_OPERANDS[op]
+
+    assert isinstance(div_expr, ApplyExpr)
+    num, den = div_expr.args
+    den_val = const_to_int(den)
+    if den_val is None or den_val <= 0:
+        return None
+
+    assert isinstance(den, ConstExpr)
+    den_int = as_int_const(den, den_val)
+    one_int = as_int_const(den, 1)
+
+    def scale(x: TacExpr) -> TacExpr:
+        return ApplyExpr("IntMul", (den_int, x))
+
+    def plus_one(x: TacExpr) -> TacExpr:
+        return ApplyExpr("IntAdd", (x, one_int))
+
+    if op == "Lt":
+        return ApplyExpr("Lt", (num, scale(other)))
+    if op == "Le":
+        return ApplyExpr("Lt", (num, scale(plus_one(other))))
+    if op == "Gt":
+        return ApplyExpr("Ge", (num, scale(plus_one(other))))
+    if op == "Ge":
+        return ApplyExpr("Ge", (num, scale(other)))
+    if op == "Eq":
+        return ApplyExpr(
+            "LAnd",
+            (
+                ApplyExpr("Ge", (num, scale(other))),
+                ApplyExpr("Lt", (num, scale(plus_one(other)))),
+            ),
+        )
+    return None
+
+
 R2_DIV_FUSE = Rule(
     name="R2",
     fn=_rewrite_r2,
@@ -156,4 +235,10 @@ R1_BITFIELD_STRIP = Rule(
     name="R1",
     fn=_rewrite_r1,
     description="Bit-field strip: Mul(Mod(Div(X, 2^k), 2^n), 2^k) -> X when X fits.",
+)
+
+R4_DIV_IN_CMP = Rule(
+    name="R4",
+    fn=_rewrite_r4,
+    description="Eliminate Div from comparison: Lt(Div(A, B), C) -> Lt(A, B*C) etc.",
 )

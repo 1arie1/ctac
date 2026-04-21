@@ -7,7 +7,12 @@ Exported: :data:`default_pipeline` — the ordered tuple of rules used by
 from ctac.rewrite.framework import Rule
 from ctac.rewrite.rules.bitfield import N1_SHIFTED_BWAND
 from ctac.rewrite.rules.copyprop import CP_ALIAS
-from ctac.rewrite.rules.div import R1_BITFIELD_STRIP, R2_DIV_FUSE, R3_DIV_MUL_CANCEL
+from ctac.rewrite.rules.div import (
+    R1_BITFIELD_STRIP,
+    R2_DIV_FUSE,
+    R3_DIV_MUL_CANCEL,
+    R4_DIV_IN_CMP,
+)
 from ctac.rewrite.rules.ite import (
     BOOL_ABSORB,
     DE_MORGAN,
@@ -21,6 +26,7 @@ default_pipeline: tuple[Rule, ...] = (
     N1_SHIFTED_BWAND,
     R2_DIV_FUSE,
     R3_DIV_MUL_CANCEL,
+    R4_DIV_IN_CMP,
     R1_BITFIELD_STRIP,
     EQ_CONST_FOLD,
     EQ_ITE_DIST,
@@ -43,5 +49,6 @@ __all__ = [
     "R1_BITFIELD_STRIP",
     "R2_DIV_FUSE",
     "R3_DIV_MUL_CANCEL",
+    "R4_DIV_IN_CMP",
     "default_pipeline",
 ]

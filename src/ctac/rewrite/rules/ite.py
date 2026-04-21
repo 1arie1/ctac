@@ -111,8 +111,11 @@ def _rewrite_ite_bool(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
     return None
 
 
+_LNOT_CMP_FLIP = {"Lt": "Ge", "Le": "Gt", "Gt": "Le", "Ge": "Lt"}
+
+
 def _rewrite_bool_absorb(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
-    """``LOr``/``LAnd``/``LNot`` simplifications with ``true``/``false``."""
+    """``LOr``/``LAnd``/``LNot`` simplifications with ``true``/``false`` and negated comparisons."""
     if not isinstance(expr, ApplyExpr):
         return None
     if expr.op == "LOr" and len(expr.args) == 2:
@@ -139,6 +142,12 @@ def _rewrite_bool_absorb(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
             return _TRUE
         if isinstance(inner, ApplyExpr) and inner.op == "LNot" and len(inner.args) == 1:
             return inner.args[0]
+        if (
+            isinstance(inner, ApplyExpr)
+            and inner.op in _LNOT_CMP_FLIP
+            and len(inner.args) == 2
+        ):
+            return ApplyExpr(_LNOT_CMP_FLIP[inner.op], inner.args)
     return None
 
 

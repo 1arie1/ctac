@@ -10,6 +10,7 @@ from ctac.rewrite.rules import (
     N1_SHIFTED_BWAND,
     R2_DIV_FUSE,
     R3_DIV_MUL_CANCEL,
+    R4_DIV_IN_CMP,
 )
 
 
@@ -170,6 +171,140 @@ def test_r1_requires_range_to_fit():
     res = rewrite_program(tac.program, default_pipeline)
     assert res.hits_by_rule.get("N1", 0) == 1
     assert res.hits_by_rule.get("R1", 0) == 0
+
+
+def test_r4_lt_div_left():
+    """Lt(Div(A, c), C) -> Lt(A, IntMul(c, C)) for c > 0.
+
+    Arithmetic is emitted in the Int domain (IntMul + (int)-tagged
+    constant) regardless of the source Div op, to avoid bv overflow.
+    """
+    tac = parse_string(
+        _tac("\t\tAssignExpCmd R1 Div(R0 0x4)\n\t\tAssumeExpCmd Lt(R1 R2)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R4_DIV_IN_CMP,))
+    assert res.hits_by_rule.get("R4", 0) == 1
+    for b in res.program.blocks:
+        for cmd in b.commands:
+            if type(cmd).__name__ == "AssumeExpCmd":
+                got = cmd.condition
+                assert isinstance(got, ApplyExpr) and got.op == "Lt"
+                rhs = got.args[1]
+                assert isinstance(rhs, ApplyExpr) and rhs.op == "IntMul"
+                # Divisor is retyped to (int).
+                from ctac.ast.nodes import ConstExpr as CE
+                assert isinstance(rhs.args[0], CE) and rhs.args[0].value == "0x4(int)"
+
+
+def test_r4_le_right_flips_to_ge():
+    """Le(C, Div(A, c)) flips to Ge(Div(A, c), C) then applies Ge rule."""
+    tac = parse_string(
+        _tac("\t\tAssignExpCmd R1 Div(R0 0x4)\n\t\tAssumeExpCmd Le(R2 R1)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R4_DIV_IN_CMP,))
+    assert res.hits_by_rule.get("R4", 0) == 1
+    for b in res.program.blocks:
+        for cmd in b.commands:
+            if type(cmd).__name__ == "AssumeExpCmd":
+                got = cmd.condition
+                # Le(R2, Div(...)) -> Ge(Div(...), R2) -> Ge(R0, Mul(0x4, R2))
+                assert isinstance(got, ApplyExpr) and got.op == "Ge"
+                assert got.args[0] == SymbolRef("R0")
+
+
+def test_r4_eq_produces_two_sided_bound():
+    """Eq(Div(A, c), C) -> LAnd(Ge(A, c*C), Lt(A, c*(C+1)))."""
+    tac = parse_string(
+        _tac("\t\tAssignExpCmd R1 Div(R0 0x4)\n\t\tAssumeExpCmd Eq(R1 R2)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R4_DIV_IN_CMP,))
+    assert res.hits_by_rule.get("R4", 0) == 1
+    for b in res.program.blocks:
+        for cmd in b.commands:
+            if type(cmd).__name__ == "AssumeExpCmd":
+                got = cmd.condition
+                assert isinstance(got, ApplyExpr) and got.op == "LAnd"
+                assert isinstance(got.args[0], ApplyExpr) and got.args[0].op == "Ge"
+                assert isinstance(got.args[1], ApplyExpr) and got.args[1].op == "Lt"
+
+
+def test_r4_skips_non_positive_const_divisor():
+    """Non-positive divisor skips R4 (safety: Euclidean div requires B > 0)."""
+    tac = parse_string(
+        _tac("\t\tAssignExpCmd R1 Div(R0 R3)\n\t\tAssumeExpCmd Lt(R1 R2)",
+             syms="R0:bv256\n\tR1:bv256\n\tR2:bv256\n\tR3:bv256"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R4_DIV_IN_CMP,))
+    assert res.hits_by_rule.get("R4", 0) == 0  # R3 isn't a constant
+
+
+def test_r4_skips_both_sides_div():
+    """Both-sides Div: R4 skips to avoid non-obvious rewrite choice."""
+    tac = parse_string(
+        _tac("""\t\tAssignExpCmd R1 Div(R0 0x4)
+\t\tAssignExpCmd R3 Div(R2 0x8)
+\t\tAssumeExpCmd Lt(R1 R3)""",
+             syms="R0:bv256\n\tR1:bv256\n\tR2:bv256\n\tR3:bv256"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R4_DIV_IN_CMP,))
+    assert res.hits_by_rule.get("R4", 0) == 0
+
+
+def test_r4_intdiv_uses_intmul():
+    """IntDiv selects IntMul / IntAdd for the rewrite."""
+    tac = parse_string(
+        _tac("\t\tAssignExpCmd R1 IntDiv(R0 0x4)\n\t\tAssumeExpCmd Lt(R1 R2)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R4_DIV_IN_CMP,))
+    for b in res.program.blocks:
+        for cmd in b.commands:
+            if type(cmd).__name__ == "AssumeExpCmd":
+                got = cmd.condition
+                rhs = got.args[1]
+                assert isinstance(rhs, ApplyExpr) and rhs.op == "IntMul"
+
+
+def test_r4_peels_narrow_via_lookthrough():
+    """R4 sees through narrow(IntDiv(...)) thanks to transitive lookthrough."""
+    tac_src = _tac(
+        """\t\tAssignHavocCmd R0
+\t\tAssignExpCmd I1 IntMul(R3 R4)
+\t\tAssignExpCmd R1 Apply(safe_math_narrow_bv256:bif IntDiv(I1 0x4000))
+\t\tAssumeExpCmd Lt(R1 R2)""",
+        syms="R0:bv256\n\tI1:bv256\n\tR1:bv256\n\tR2:bv256\n\tR3:bv256\n\tR4:bv256",
+    )
+    tac = parse_string(tac_src, path="<s>")
+    res = rewrite_program(tac.program, (R4_DIV_IN_CMP,))
+    assert res.hits_by_rule.get("R4", 0) == 1
+    for b in res.program.blocks:
+        for cmd in b.commands:
+            if type(cmd).__name__ == "AssumeExpCmd":
+                got = cmd.condition
+                # RHS should be the post-Div numerator I1 (no Div remains).
+                assert isinstance(got, ApplyExpr) and got.op == "Lt"
+                assert got.args[0] == SymbolRef("I1")
+
+
+def test_lnot_cmp_flip_le_to_gt():
+    """LNot(Le(X, Y)) simplifies to Gt(X, Y) via BoolAbsorb."""
+    from ctac.rewrite.rules import BOOL_ABSORB
+
+    tac = parse_string(
+        _tac("\t\tAssumeExpCmd LNot(Le(R0 R1))"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (BOOL_ABSORB,))
+    for b in res.program.blocks:
+        for cmd in b.commands:
+            if type(cmd).__name__ == "AssumeExpCmd":
+                got = cmd.condition
+                assert isinstance(got, ApplyExpr) and got.op == "Gt"
 
 
 def test_cp_propagates_through_alias():

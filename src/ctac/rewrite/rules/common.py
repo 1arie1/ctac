@@ -54,6 +54,23 @@ def reformat_const(template: ConstExpr, new_value: int) -> ConstExpr:
     return ConstExpr(str(new_value))
 
 
+def as_int_const(template: ConstExpr, new_value: int) -> ConstExpr:
+    """Emit ``new_value`` as an ``(int)``-tagged :class:`ConstExpr`.
+
+    Preserves hex/decimal style from ``template`` but always applies the
+    ``(int)`` type tag — used when rewrites need Int-domain arithmetic
+    regardless of the template's original sort.
+    """
+    text = template.value.strip().replace("_", "")
+    m = _TYPED_CONST.fullmatch(text)
+    if m is not None and m.group("tag") == "int":
+        # Already int-tagged — just reformat to the new value while keeping style.
+        return reformat_const(template, new_value)
+    is_hex = ("x" in (m.group("num") if m is not None else text).lower())
+    num_str = _fmt_int(new_value, hex_style=is_hex)
+    return ConstExpr(f"{num_str}(int)")
+
+
 def is_apply_of(expr: TacExpr, op: str, arity: int | None = None) -> bool:
     if not isinstance(expr, ApplyExpr) or expr.op != op:
         return False
