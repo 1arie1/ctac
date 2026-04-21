@@ -89,6 +89,15 @@ def smt_cmd(
             "Cannot be combined with --model."
         ),
     ),
+    tight_logic: bool = typer.Option(
+        False,
+        "--tight-logic",
+        help=(
+            "Pick the tightest SMT-LIB logic the VC fits into (e.g. QF_NIA when "
+            "no uninterpreted functions are needed). Default is the broader "
+            "QF_UFNIA so solver tactics stay uniform across outputs."
+        ),
+    ),
     debug: bool = typer.Option(
         False,
         "--debug/--no-debug",
@@ -115,7 +124,9 @@ def smt_cmd(
         user_path, user_warnings = resolve_user_path(path)
         tac_path, input_warnings = resolve_tac_input_path(user_path)
         tac = parse_path(tac_path)
-        script = build_vc(tac, encoding=encoding, unsat_core=unsat_core)
+        script = build_vc(
+            tac, encoding=encoding, unsat_core=unsat_core, tight_logic=tight_logic
+        )
         smt_text = render_smt_script(script)
     except ParseError as e:
         c.print(f"parse error: {e}" if plain else f"[red]parse error:[/red] {e}")

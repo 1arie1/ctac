@@ -17,6 +17,11 @@ class EncoderContext:
     tac_file: TacFile
     assert_site: AssertSite
     unsat_core: bool = False
+    tight_logic: bool = False
+    """If True, pick the tightest SMT-LIB logic the encoded VC fits into
+    (e.g. ``QF_NIA`` when no uninterpreted functions are declared). When
+    False (the default), encoders emit a broader logic by default
+    (``QF_UFNIA`` for sea_vc) regardless of whether UF is actually used."""
 
 
 class SmtEncoder(Protocol):

@@ -377,9 +377,24 @@ Metas {
 def test_sea_vc_logic_and_named_constants() -> None:
     tac = parse_string(TAC_SEA, path="<string>")
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
-    assert "(set-logic QF_NIA)" in rendered
+    # Default is QF_UFNIA regardless of whether this VC actually uses UF.
+    assert "(set-logic QF_UFNIA)" in rendered
     assert "(define-fun BV256_MOD () Int " in rendered
     assert "(define-fun BV256_MAX () Int (- BV256_MOD 1))" in rendered
+
+
+def test_sea_vc_tight_logic_narrows_to_qf_nia_when_no_uf() -> None:
+    tac = parse_string(TAC_SEA, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc", tight_logic=True))
+    # With `tight_logic=True` and no UF declarations emitted, narrow to QF_NIA.
+    assert "(set-logic QF_NIA)" in rendered
+
+
+def test_sea_vc_tight_logic_still_uses_qf_ufnia_when_uf_needed() -> None:
+    tac = parse_string(TAC_UF_JOIN, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc", tight_logic=True))
+    # Even with `tight_logic=True`, UF-requiring VCs keep QF_UFNIA.
+    assert "(set-logic QF_UFNIA)" in rendered
 
 
 def test_sea_vc_static_dynamic_and_flow_shape() -> None:

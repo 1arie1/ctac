@@ -148,9 +148,18 @@ def test_smt_cli_emits_smtlib_and_check_sat(tmp_path: Path) -> None:
     res = runner.invoke(app, ["smt", str(p), "--plain"])
     assert res.exit_code == 0
     assert "# encoding: sea_vc" in res.stdout
-    assert "(set-logic QF_NIA)" in res.stdout
+    # Default is QF_UFNIA; with --tight-logic, the NIA-only case narrows to QF_NIA.
+    assert "(set-logic QF_UFNIA)" in res.stdout
     assert "(check-sat)" in res.stdout
     assert "(assert (=> BLK_EXIT (and (not b) BLK_ok)))" in res.stdout
+
+
+def test_smt_cli_tight_logic_narrows_to_qf_nia(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_OK, "tight.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--tight-logic"])
+    assert res.exit_code == 0
+    assert "(set-logic QF_NIA)" in res.stdout
 
 
 def test_smt_cli_rejects_missing_assert(tmp_path: Path) -> None:
@@ -201,7 +210,8 @@ def test_smt_cli_sea_vc_encoding_smoke(tmp_path: Path) -> None:
     runner = CliRunner()
     res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea_vc"])
     assert res.exit_code == 0
-    assert "(set-logic QF_NIA)" in res.stdout
+    # Default logic is QF_UFNIA regardless of whether UF was actually needed.
+    assert "(set-logic QF_UFNIA)" in res.stdout
     assert "BLK_EXIT" in res.stdout
 
 

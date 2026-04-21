@@ -848,7 +848,16 @@ class SeaVcEncoder(SmtEncoder):
         emit_constraint_section(
             "Exit and Assert-Failure Objective", cfg_end, exit_end, name_asserts=False
         )
-        logic = "QF_UFNIA" if uf_decl_lines else "QF_NIA"
+        # Default to QF_UFNIA so the logic set is consistent across outputs and
+        # solver tactics don't have to branch on what this specific VC needed.
+        # With ``tight_logic=True`` we narrow to QF_NIA when no uninterpreted
+        # functions were actually declared for this VC.
+        if uf_decl_lines:
+            logic = "QF_UFNIA"
+        elif ctx.tight_logic:
+            logic = "QF_NIA"
+        else:
+            logic = "QF_UFNIA"
 
         return SmtScript(
             logic=logic,
