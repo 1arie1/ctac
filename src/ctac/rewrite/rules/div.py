@@ -32,6 +32,45 @@ def _matching_mul_op(div_op: str) -> str:
     return "IntMul" if div_op == "IntDiv" else "Mul"
 
 
+_FACTOR_CONSUMED = object()  # sentinel: extraction reduces expression to 1
+
+
+def _extract_const_factor(
+    expr: TacExpr, factor: int, ctx: RewriteCtx
+) -> TacExpr | object | None:
+    """Try to peel a positive integer ``factor`` from ``expr``.
+
+    Descends through ``ctx.lookthrough`` (static defs + ``safe_math_narrow``)
+    and nested ``Mul``/``IntMul`` nodes. Returns ``None`` if ``factor`` does
+    not evenly divide ``expr``, :data:`_FACTOR_CONSUMED` if the whole
+    expression *is* the factor, or the reduced expression otherwise.
+    """
+    e = ctx.lookthrough(expr)
+    if isinstance(e, ConstExpr):
+        v = const_to_int(e)
+        if v is None or v <= 0 or v % factor != 0:
+            return None
+        q = v // factor
+        if q == 1:
+            return _FACTOR_CONSUMED
+        return reformat_const(e, q)
+    if isinstance(e, ApplyExpr) and e.op in MUL_OPS and len(e.args) == 2:
+        a, b = e.args
+        new_a = _extract_const_factor(a, factor, ctx)
+        if new_a is _FACTOR_CONSUMED:
+            return b
+        if new_a is not None:
+            assert isinstance(new_a, (ConstExpr, ApplyExpr)) or hasattr(new_a, "name")
+            return ApplyExpr(e.op, (new_a, b))
+        new_b = _extract_const_factor(b, factor, ctx)
+        if new_b is _FACTOR_CONSUMED:
+            return a
+        if new_b is not None:
+            assert isinstance(new_b, (ConstExpr, ApplyExpr)) or hasattr(new_b, "name")
+            return ApplyExpr(e.op, (a, new_b))
+    return None
+
+
 def _rewrite_r2(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     """``Div(Div(A, c1), c2) -> Div(A, c1*c2)`` for ``c1, c2 > 0``."""
     if not is_apply_in(expr, DIV_OPS, 2):
@@ -56,28 +95,29 @@ def _rewrite_r2(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
 
 
 def _rewrite_r3(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
-    """``Div(Mul(c, A), c) -> A`` and ``Div(Mul(A, c), c) -> A`` for ``c > 0``."""
+    """``Div(X, c)`` -> ``X / c`` when ``c`` is a positive integer constant and
+    ``c`` can be peeled from ``X``'s multiplicative structure.
+
+    Generalizes the simple ``Div(Mul(c, A), c) -> A`` case: the factor may be
+    buried in nested ``Mul``/``IntMul`` or reachable through static defs and
+    ``safe_math_narrow`` wrappers (via :meth:`RewriteCtx.lookthrough`).
+    Example: ``Div(Mul(R53, narrow(Mul(c, R13))), c) -> Mul(R53, R13)``.
+    """
     if not is_apply_in(expr, DIV_OPS, 2):
         return None
     assert isinstance(expr, ApplyExpr)
     num, den = expr.args
-    c_den = const_to_int(den)
-    if c_den is None or c_den <= 0:
+    c = const_to_int(den)
+    if c is None or c <= 0:
         return None
-    num_expanded = ctx.lookthrough(num)
-    if not is_apply_in(num_expanded, MUL_OPS, 2):
+    result = _extract_const_factor(num, c, ctx)
+    if result is None:
         return None
-    assert isinstance(num_expanded, ApplyExpr)
-    if num_expanded.op != _matching_mul_op(expr.op):
-        return None
-    a, b = num_expanded.args
-    c_a = const_to_int(a)
-    c_b = const_to_int(b)
-    if c_a is not None and c_a == c_den and c_a > 0:
-        return b
-    if c_b is not None and c_b == c_den and c_b > 0:
-        return a
-    return None
+    if result is _FACTOR_CONSUMED:
+        # Numerator was exactly the factor; Div(c, c) = 1.
+        return reformat_const(den, 1)
+    assert isinstance(result, (ConstExpr, ApplyExpr)) or hasattr(result, "name")
+    return result  # type: ignore[return-value]
 
 
 def _match_div_pow2(expr: TacExpr, ctx: RewriteCtx) -> tuple[TacExpr, int] | None:

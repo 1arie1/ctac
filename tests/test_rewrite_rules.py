@@ -97,6 +97,70 @@ def test_r3_cancels_when_const_on_right():
     assert _rhs(res.program, "R2") == SymbolRef("R0")
 
 
+def test_r3_cancels_factor_in_nested_mul():
+    """Div(Mul(A, Mul(c, B)), c) -> Mul(A, B)."""
+    tac = parse_string(
+        _tac(
+            "\t\tAssignExpCmd R1 Mul(R0 Mul(0x4 R2))\n\t\tAssignExpCmd R3 Div(R1 0x4)",
+            syms="R0:bv256\n\tR1:bv256\n\tR2:bv256\n\tR3:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R3_DIV_MUL_CANCEL,))
+    assert res.hits_by_rule.get("R3", 0) == 1
+    rhs = _rhs(res.program, "R3")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Mul"
+    assert rhs.args == (SymbolRef("R0"), SymbolRef("R2"))
+
+
+def test_r3_cancels_factor_through_static_def_and_narrow():
+    """Factor peels across SymbolRef defs and safe_math_narrow wrappers."""
+    tac_src = _tac(
+        """\t\tAssignHavocCmd R13
+\t\tAssignHavocCmd R53
+\t\tAssignExpCmd I66 IntMul(0x4000(int) R13)
+\t\tAssignExpCmd R67 Apply(safe_math_narrow_bv256:bif I66)
+\t\tAssignExpCmd I73 IntMul(R53 R67)
+\t\tAssignExpCmd R76 IntDiv(I73 0x4000)""",
+        syms="R13:bv256\n\tR53:bv256\n\tI66:bv256\n\tR67:bv256\n\tI73:bv256\n\tR76:bv256",
+    )
+    tac = parse_string(tac_src, path="<s>")
+    res = rewrite_program(tac.program, (R3_DIV_MUL_CANCEL,))
+    assert res.hits_by_rule.get("R3", 0) == 1
+    rhs = _rhs(res.program, "R76")
+    # 2^14 factor peels out of R67 -> R13; R76 RHS is IntMul(R53, R13).
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "IntMul"
+    assert rhs.args == (SymbolRef("R53"), SymbolRef("R13"))
+
+
+def test_r3_full_numerator_is_factor():
+    """Div(c, c) collapses to 1 when the entire numerator equals the factor."""
+    tac = parse_string(
+        _tac("\t\tAssignExpCmd R1 Div(0x4 0x4)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R3_DIV_MUL_CANCEL,))
+    assert res.hits_by_rule.get("R3", 0) == 1
+    rhs = _rhs(res.program, "R1")
+    assert isinstance(rhs, ConstExpr)
+    assert int(rhs.value, 0) == 1
+
+
+def test_r3_partial_const_factor():
+    """Div(Mul(2c, A), c) -> Mul(2, A); the constant factor is only partially consumed."""
+    tac = parse_string(
+        _tac("\t\tAssignExpCmd R1 Mul(0x8 R0)\n\t\tAssignExpCmd R2 Div(R1 0x4)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (R3_DIV_MUL_CANCEL,))
+    assert res.hits_by_rule.get("R3", 0) == 1
+    rhs = _rhs(res.program, "R2")
+    # 0x8 / 0x4 = 0x2 -> Mul(0x2, R0)
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Mul"
+    assert isinstance(rhs.args[0], ConstExpr)
+    assert int(rhs.args[0].value, 0) == 2
+
+
 def test_r3_does_not_cancel_mismatched_constant():
     tac = parse_string(
         _tac(
