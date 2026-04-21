@@ -26,7 +26,11 @@ from ctac.smt.encoding.path_skeleton import (
     sanitize_ident,
 )
 from ctac.smt.model import SmtDeclaration, SmtScript
-from ctac.ast.bit_mask import shifted_contiguous_mask
+from ctac.ast.bit_mask import (
+    high_mask_clear_low_k as _is_high_mask_clear_low_k,
+    low_mask_width as _is_low_mask,
+    shifted_contiguous_mask,
+)
 from ctac.ast.parse_expr import parse_expr_safe
 from ctac.ast.range_constraints import match_inclusive_range_constraint
 
@@ -85,29 +89,6 @@ def _is_pow2(n: int) -> int | None:
     if n & (n - 1) != 0:
         return None
     return n.bit_length() - 1
-
-
-def _is_low_mask(n: int) -> int | None:
-    if n < 0:
-        return None
-    x = n + 1
-    if x <= 0:
-        return None
-    if x & (x - 1) != 0:
-        return None
-    return x.bit_length() - 1
-
-
-def _is_high_mask_clear_low_k(n: int) -> int | None:
-    """Match masks of the form (2^256 - 2^k), i.e. clear low k bits."""
-    if n < 0 or n >= _BV256_MOD:
-        return None
-    diff = _BV256_MOD - n
-    if diff <= 0:
-        return None
-    if diff & (diff - 1) != 0:
-        return None
-    return diff.bit_length() - 1
 
 
 def _or_terms(terms: list[str]) -> str:

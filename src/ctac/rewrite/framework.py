@@ -20,6 +20,8 @@ from ctac.ast.nodes import (
     ApplyExpr,
     AssignExpCmd,
     AssumeExpCmd,
+    JumpCmd,
+    JumpiCmd,
     TacCmd,
     TacExpr,
 )
@@ -56,6 +58,7 @@ class RewriteResult:
     hits: tuple[RuleHit, ...] = field(default=())
     hits_by_rule: dict[str, int] = field(default_factory=dict)
     iterations: int = 0
+    extra_symbols: tuple[tuple[str, str], ...] = field(default=())
 
     @property
     def total_hits(self) -> int:
@@ -71,10 +74,16 @@ def _apply_rules_at(
     rules: tuple[Rule, ...],
     ctx: RewriteCtx,
     hit_sink: list[str],
+    *,
+    at_top: bool,
 ) -> TacExpr:
     """Try each rule at the top until none fires. Does not descend into children."""
     while True:
         fired = False
+        # ctx.at_cmd_top() reflects whether this call site is the outermost
+        # expression of the host cmd — used by rules that want to replace the
+        # whole command (R4a/R6 reuse the host LHS as the havoc name).
+        ctx._at_cmd_top = at_top
         for rule in rules:
             new_expr = rule.apply(expr, ctx)
             if new_expr is None:
@@ -84,6 +93,9 @@ def _apply_rules_at(
             hit_sink.append(rule.name)
             expr = new_expr
             fired = True
+            # After a rule fires, the expression we hold is fresh — ensure the
+            # next attempt re-evaluates at the same "top" position.
+            ctx._at_cmd_top = at_top
             break
         if not fired:
             return expr
@@ -94,19 +106,84 @@ def _rewrite_expr(
     rules: tuple[Rule, ...],
     ctx: RewriteCtx,
     hit_sink: list[str],
+    *,
+    at_top: bool = True,
 ) -> TacExpr:
-    """Bottom-up: rewrite children, then try rules at the top."""
+    """Bottom-up: rewrite children, then try rules at the top.
+
+    ``at_top`` marks the outermost call (the expression passed by the driver
+    for an :class:`AssignExpCmd` RHS or :class:`AssumeExpCmd` condition).
+    Recursive calls into children pass ``at_top=False``.
+    """
     if isinstance(expr, ApplyExpr):
         new_args: list[TacExpr] = []
         any_changed = False
         for arg in expr.args:
-            new_arg = _rewrite_expr(arg, rules, ctx, hit_sink)
+            new_arg = _rewrite_expr(arg, rules, ctx, hit_sink, at_top=False)
             new_args.append(new_arg)
             if new_arg is not arg:
                 any_changed = True
         if any_changed:
             expr = replace(expr, args=tuple(new_args))
-    return _apply_rules_at(expr, rules, ctx, hit_sink)
+    return _apply_rules_at(expr, rules, ctx, hit_sink, at_top=at_top)
+
+
+def _splice_into_entry_block(
+    program: TacProgram, new_cmds: list[TacCmd]
+) -> TacProgram:
+    """Insert ``new_cmds`` into the entry block, just before its terminator.
+
+    If the entry block has no terminator, appends at the end. Each inserted
+    command passes through :func:`canonicalize_cmd` so ``raw`` is populated.
+    """
+    if not program.blocks or not new_cmds:
+        return program
+    entry = program.blocks[0]
+    prepared = [canonicalize_cmd(c) for c in new_cmds]
+    term_idx = next(
+        (i for i, c in enumerate(entry.commands) if isinstance(c, (JumpCmd, JumpiCmd))),
+        len(entry.commands),
+    )
+    merged = list(entry.commands[:term_idx]) + prepared + list(entry.commands[term_idx:])
+    new_entry = replace(entry, commands=merged)
+    return TacProgram(blocks=[new_entry, *program.blocks[1:]])
+
+
+def _apply_per_position_edits(
+    program: TacProgram,
+    insertions: dict[tuple[str, int], list[TacCmd]],
+    skips: set[tuple[str, int]],
+) -> TacProgram:
+    """Insert before-positions and drop skip-positions in a single pass.
+
+    Both the insertion dict and the skip set reference pre-edit indices;
+    combining them into one walk avoids the index-shift pitfall that would
+    arise from applying them separately.
+    """
+    if not insertions and not skips:
+        return program
+    inserts_by_block: dict[str, dict[int, list[TacCmd]]] = {}
+    for (bid, idx), cmds in insertions.items():
+        inserts_by_block.setdefault(bid, {})[idx] = [canonicalize_cmd(c) for c in cmds]
+    skips_by_block: dict[str, set[int]] = {}
+    for bid, idx in skips:
+        skips_by_block.setdefault(bid, set()).add(idx)
+    new_blocks: list[TacBlock] = []
+    for block in program.blocks:
+        ins = inserts_by_block.get(block.id)
+        drop = skips_by_block.get(block.id)
+        if not ins and not drop:
+            new_blocks.append(block)
+            continue
+        cmds: list[TacCmd] = []
+        for idx, cmd in enumerate(block.commands):
+            if ins and idx in ins:
+                cmds.extend(ins[idx])
+            if drop and idx in drop:
+                continue
+            cmds.append(cmd)
+        new_blocks.append(replace(block, commands=cmds))
+    return TacProgram(blocks=new_blocks)
 
 
 def rewrite_program(
@@ -119,7 +196,9 @@ def rewrite_program(
     """Run ``rules`` over ``program`` to fixed point.
 
     Only RHS of :class:`AssignExpCmd` and condition of :class:`AssumeExpCmd` are
-    considered. All other commands pass through unchanged.
+    considered for expression rewrites. Rules may additionally request
+    fresh havoc-and-assume pairs via :meth:`RewriteCtx.emit_fresh_var`; those
+    are spliced into the entry block at the end of each outer iteration.
 
     ``ite_max_depth`` caps how many nested Ite unions the range inferrer
     explores; beyond the cap it reports "unknown" and dependent rules bail.
@@ -129,12 +208,20 @@ def rewrite_program(
     counts: Counter[str] = Counter()
     current = program
     iteration = 0
+    extra_symbols: list[tuple[str, str]] = []
+    fresh_counter = 0
 
     while iteration < max_iterations:
         iteration += 1
-        ctx = RewriteCtx(current, ite_max_depth=ite_max_depth)
+        ctx = RewriteCtx(
+            current,
+            ite_max_depth=ite_max_depth,
+            fresh_counter_start=fresh_counter,
+        )
         changed_this_iter = False
         new_blocks: list[TacBlock] = []
+        # We need the skip-set available while assembling per-block output, so
+        # snapshot it now (rules may add to it during this iteration's walk).
         for block in current.blocks:
             new_cmds: list[TacCmd] = []
             for idx, cmd in enumerate(block.commands):
@@ -142,13 +229,17 @@ def rewrite_program(
                 cmd_hits: list[str] = []
                 new_cmd: TacCmd = cmd
                 if isinstance(cmd, AssignExpCmd):
+                    ctx.set_host_cmd(cmd, at_top=True)
                     new_rhs = _rewrite_expr(cmd.rhs, rules_tuple, ctx, cmd_hits)
                     if new_rhs is not cmd.rhs:
                         new_cmd = replace(cmd, rhs=new_rhs)
                 elif isinstance(cmd, AssumeExpCmd):
+                    ctx.set_host_cmd(cmd, at_top=True)
                     new_cond = _rewrite_expr(cmd.condition, rules_tuple, ctx, cmd_hits)
                     if new_cond is not cmd.condition:
                         new_cmd = replace(cmd, condition=new_cond)
+                else:
+                    ctx.set_host_cmd(None, at_top=False)
                 if new_cmd is not cmd:
                     new_cmd = canonicalize_cmd(new_cmd)
                     changed_this_iter = True
@@ -165,6 +256,19 @@ def rewrite_program(
                 new_cmds.append(new_cmd)
             new_blocks.append(replace(block, commands=new_cmds))
         current = TacProgram(blocks=new_blocks)
+
+        entry_pending, pos_pending, pending_syms, pending_skips, fresh_counter = (
+            ctx.drain_pending()
+        )
+        if entry_pending:
+            current = _splice_into_entry_block(current, entry_pending)
+            changed_this_iter = True
+        if pos_pending or pending_skips:
+            current = _apply_per_position_edits(current, pos_pending, pending_skips)
+            changed_this_iter = True
+        if pending_syms:
+            extra_symbols.extend(pending_syms)
+
         if not changed_this_iter:
             break
 
@@ -173,4 +277,5 @@ def rewrite_program(
         hits=tuple(all_hits),
         hits_by_rule=dict(counts),
         iterations=iteration,
+        extra_symbols=tuple(extra_symbols),
     )

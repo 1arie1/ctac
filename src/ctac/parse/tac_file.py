@@ -30,13 +30,43 @@ def render_program(program: TacProgram) -> str:
     return "\n".join(lines)
 
 
-def render_tac_file(tac: TacFile, *, program: TacProgram | None = None) -> str:
-    """Serialize a `TacFile`, optionally replacing only the Program section."""
+def render_tac_file(
+    tac: TacFile,
+    *,
+    program: TacProgram | None = None,
+    extra_symbols: "tuple[tuple[str, str], ...] | list[tuple[str, str]]" = (),
+) -> str:
+    """Serialize a `TacFile`, optionally replacing only the Program section.
+
+    ``extra_symbols`` injects ``name:sort`` lines into ``TACSymbolTable { ... }``
+    before its closing ``}`` — used by rewrite passes that introduce fresh
+    variables (e.g. ``ctac rw`` purification rules).
+    """
     prog_text = render_program(program if program is not None else tac.program)
     sym_text = tac.symbol_table_text.rstrip("\n")
+    if extra_symbols:
+        sym_text = _inject_symbol_entries(sym_text, extra_symbols)
     axioms_text = tac.axioms_text.rstrip("\n")
     metas_text = "Metas " + json.dumps(tac.metas, indent=2, sort_keys=True)
     return "\n".join([sym_text, prog_text, axioms_text, metas_text]) + "\n"
+
+
+def _inject_symbol_entries(
+    sym_text: str,
+    extras: "tuple[tuple[str, str], ...] | list[tuple[str, str]]",
+) -> str:
+    """Insert ``name:sort`` lines before the closing ``}`` of the symbol table."""
+    lines = sym_text.split("\n")
+    close_idx = -1
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip() == "}":
+            close_idx = i
+            break
+    if close_idx < 0:
+        # No closing brace found — append at the end as a fallback.
+        return sym_text + "\n" + "\n".join(f"\t{n}:{s}" for n, s in extras)
+    extra_lines = [f"\t{name}:{sort}" for name, sort in extras]
+    return "\n".join(lines[:close_idx] + extra_lines + lines[close_idx:])
 
 
 def parse_path(

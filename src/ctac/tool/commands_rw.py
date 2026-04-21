@@ -12,8 +12,11 @@ from ctac.ast.run_format import pp_terminator_line
 from ctac.graph import Cfg
 from ctac.ir.models import TacProgram
 from ctac.parse import ParseError, parse_path, render_tac_file
-from ctac.rewrite import default_pipeline, rewrite_program
-from ctac.rewrite.framework import RewriteResult
+from collections import Counter
+
+from ctac.rewrite import rewrite_program
+from ctac.rewrite.framework import RewriteResult, RuleHit
+from ctac.rewrite.rules import R4A_DIV_PURIFY, simplify_pipeline
 from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 
@@ -77,6 +80,33 @@ def _command_count(program: TacProgram) -> int:
     return sum(len(b.commands) for b in program.blocks)
 
 
+def _merge_phases(*phases: RewriteResult) -> RewriteResult:
+    """Combine the outputs of sequential :func:`rewrite_program` invocations.
+
+    Hits, per-rule counts, and extra symbols accumulate; the final program is
+    the output of the last phase. Iterations sum across phases.
+    """
+    if not phases:
+        raise ValueError("need at least one phase")
+    all_hits: list[RuleHit] = []
+    all_counts: Counter[str] = Counter()
+    all_extras: list[tuple[str, str]] = []
+    iterations = 0
+    for p in phases:
+        all_hits.extend(p.hits)
+        for name, n in p.hits_by_rule.items():
+            all_counts[name] += n
+        all_extras.extend(p.extra_symbols)
+        iterations += p.iterations
+    return RewriteResult(
+        program=phases[-1].program,
+        hits=tuple(all_hits),
+        hits_by_rule=dict(all_counts),
+        iterations=iterations,
+        extra_symbols=tuple(all_extras),
+    )
+
+
 @app.command("rw")
 def rewrite_cmd(
     path: Annotated[Optional[Path], typer.Argument()] = None,
@@ -97,6 +127,14 @@ def rewrite_cmd(
         "--max-ite-depth",
         min=0,
         help="Max nested Ite levels the range inferrer will union (deeper -> unknown).",
+    ),
+    purify_div: bool = typer.Option(
+        True,
+        "--purify-div/--no-purify-div",
+        help=(
+            "Enable R4a (replace `X = Div(A, B)` with `havoc X; B*X <= A < B*(X+1)` "
+            "for non-constant positive-range B). Default on."
+        ),
     ),
 ) -> None:
     """Run the TAC → TAC rewrite pipeline (div/bit-field simplifications + DCE).
@@ -123,14 +161,39 @@ def rewrite_cmd(
         c.print(f"# input warning: {w}", markup=False)
 
     before_count = _command_count(tac.program)
-    rw = rewrite_program(
+    # Phase 1: simplification (bit-ops, const-divisor div rules, R6, boolean/Ite).
+    # Phase 2 (optional): add R4a (div purification for non-constant divisors).
+    # Splitting ensures R6 and peephole rules get first crack at the ceiling
+    # chain before R4a replaces any `Div` with a fresh symbol.
+    phase1 = rewrite_program(
         tac.program,
-        default_pipeline,
+        simplify_pipeline,
         max_iterations=max_iterations,
         ite_max_depth=ite_max_depth,
     )
-    dce = eliminate_dead_assignments(rw.program)
-    after_count = _command_count(dce.program)
+    if purify_div:
+        phase2 = rewrite_program(
+            phase1.program,
+            simplify_pipeline + (R4A_DIV_PURIFY,),
+            max_iterations=max_iterations,
+            ite_max_depth=ite_max_depth,
+        )
+        rw = _merge_phases(phase1, phase2)
+    else:
+        rw = phase1
+    # Iterate DCE to fixed point: a chain of dead defs needs multiple sweeps
+    # because liveness is computed once per pass and each pass only removes
+    # the directly-dead leaves.
+    program = rw.program
+    total_removed = 0
+    while True:
+        dce = eliminate_dead_assignments(program)
+        total_removed += len(dce.removed)
+        if not dce.removed:
+            break
+        program = dce.program
+    final_program = program
+    after_count = _command_count(final_program)
 
     kind = _output_kind(output_path)
 
@@ -139,20 +202,20 @@ def rewrite_cmd(
             c,
             plain=plain,
             rewrite=rw,
-            dce_removed=len(dce.removed),
+            dce_removed=total_removed,
             total_cmds_before=before_count,
             total_cmds_after=after_count,
         )
 
     if kind == "tac":
         assert output_path is not None
-        text = render_tac_file(tac, program=dce.program)
+        text = render_tac_file(tac, program=final_program, extra_symbols=rw.extra_symbols)
         output_path.write_text(text, encoding="utf-8")
         if not report:
             c.print(f"# wrote {output_path}", markup=False)
         return
 
-    lines = _render_pp_lines(dce.program)
+    lines = _render_pp_lines(final_program)
     if kind == "pp":
         assert output_path is not None
         output_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")

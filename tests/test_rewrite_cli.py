@@ -63,3 +63,18 @@ def test_rw_htac_output_written(tmp_path):
     assert "0_0_0_0_0_0:" in text
     # pp format uses `=` for assignments.
     assert " = " in text
+
+
+def test_rw_no_purify_div_disables_r4a():
+    """`--no-purify-div` turns off R4a while keeping the rest of the pipeline."""
+    runner = CliRunner()
+    src = _require_target(TARGET_TAC)
+    enabled = runner.invoke(app, ["rw", str(src), "--plain", "--report"])
+    disabled = runner.invoke(app, ["rw", str(src), "--plain", "--report", "--no-purify-div"])
+    assert enabled.exit_code == 0 and disabled.exit_code == 0
+    # R4a appears only in the default run.
+    assert "R4a:" in enabled.output or "t_div_" in enabled.output
+    assert "R4a:" not in disabled.output
+    # Other rules still fire in both runs.
+    assert "N1:" in disabled.output
+    assert "R1:" in disabled.output
