@@ -1,0 +1,31 @@
+set shell := ["zsh", "-cu"]
+
+name := `node -p "require('./package.json').name"`
+version := `node -p "require('./package.json').version"`
+vsix := name + "-" + version + ".vsix"
+vsce := "npx --yes @vscode/vsce"
+
+default:
+    @just --list
+
+metadata:
+    @echo "name={{name}}"
+    @echo "version={{version}}"
+    @echo "vsix={{vsix}}"
+
+package *args="":
+    {{vsce}} package {{args}}
+
+package-out output="" *args="":
+    outfile="${1:-{{vsix}}}"
+    {{vsce}} package --out "$outfile" {{args}}
+
+install:
+    code --install-extension {{vsix}}
+
+reinstall:
+    code --force --install-extension {{vsix}}
+
+package-install *args="":
+    just package {{args}}
+    just reinstall
