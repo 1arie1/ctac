@@ -9,6 +9,7 @@ from ctac.analysis.defuse import extract_def_use
 from ctac.analysis.expr_walk import command_uses, iter_expr_symbols
 from ctac.analysis.framework import run_backward, run_forward
 from ctac.analysis.model import (
+    BytemapCapability,
     ControlDependenceResult,
     DceResult,
     DeadAssignment,
@@ -26,7 +27,7 @@ from ctac.analysis.model import (
     UseBeforeDefIssue,
     UseBeforeDefResult,
 )
-from ctac.analysis.symbols import canonical_symbol
+from ctac.analysis.symbols import SymbolKind, canonical_symbol, classify_sort
 from ctac.ast.nodes import (
     ApplyExpr,
     AssertCmd,
@@ -279,6 +280,48 @@ def analyze_liveness(
 
 def _is_const_true(expr) -> bool:
     return isinstance(expr, ConstExpr) and expr.value == "true"
+
+
+def _expr_has_op(expr, op: str) -> bool:
+    if not isinstance(expr, ApplyExpr):
+        return False
+    if expr.op == op:
+        return True
+    return any(_expr_has_op(a, op) for a in expr.args)
+
+
+def classify_bytemap_usage(
+    program: TacProgram, symbol_sorts: dict[str, str]
+) -> BytemapCapability:
+    """Classify how ``program`` uses bytemap/ghostmap symbols.
+
+    See :class:`BytemapCapability` for the three-way split. The check is
+    cheap (one linear sweep) and independent of DSA/liveness — callers
+    (the ``ctac smt`` gate, stats reporting) invoke it directly.
+    """
+    memory_symbols = {
+        name
+        for name, sort in symbol_sorts.items()
+        if classify_sort(sort) is SymbolKind.MEMORY
+    }
+    if not memory_symbols:
+        return BytemapCapability.BYTEMAP_FREE
+
+    for block in program.blocks:
+        for cmd in block.commands:
+            if isinstance(cmd, AssignExpCmd):
+                lhs = canonical_symbol(cmd.lhs, strip_var_suffixes=True)
+                if lhs in memory_symbols:
+                    return BytemapCapability.BYTEMAP_RW
+                if _expr_has_op(cmd.rhs, "Store"):
+                    return BytemapCapability.BYTEMAP_RW
+            elif isinstance(cmd, AssumeExpCmd):
+                if _expr_has_op(cmd.condition, "Store"):
+                    return BytemapCapability.BYTEMAP_RW
+            elif isinstance(cmd, AssertCmd):
+                if _expr_has_op(cmd.predicate, "Store"):
+                    return BytemapCapability.BYTEMAP_RW
+    return BytemapCapability.BYTEMAP_RO
 
 
 def _drop_true_asserts(program: TacProgram) -> tuple[TacProgram, tuple[RemovedAssert, ...]]:

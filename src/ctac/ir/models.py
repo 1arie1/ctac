@@ -43,3 +43,4 @@ class TacFile:
     axioms_text: str
     metas: dict[str, Any]
     path: str | None = None
+    symbol_sorts: dict[str, str] = field(default_factory=dict)

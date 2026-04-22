@@ -3,9 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Literal
 
 from ctac.ir.models import TacProgram
+
+
+class BytemapCapability(str, Enum):
+    """How the program uses bytemap-sorted (memory) symbols.
+
+    - ``BYTEMAP_FREE``: no memory symbols in the program at all.
+    - ``BYTEMAP_RO``: memory symbols exist but are only havoced and read
+      (via ``Select``). No ``Store`` and no ``AssignExpCmd`` targeting a
+      memory-sorted LHS. This is the shape the upcoming sea_vc memory
+      support will accept first.
+    - ``BYTEMAP_RW``: memory is updated — either a ``Store`` expression
+      appears somewhere, or some ``AssignExpCmd`` writes to a
+      memory-sorted symbol (direct aliasing).
+    """
+
+    BYTEMAP_FREE = "bytemap-free"
+    BYTEMAP_RO = "bytemap-ro"
+    BYTEMAP_RW = "bytemap-rw"
 
 
 @dataclass(frozen=True)

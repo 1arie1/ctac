@@ -5,8 +5,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ctac.ir.models import NBId, TacBlock, TacFile, TacProgram
+from ctac.analysis.symbols import parse_symbol_sorts
 from ctac.ast import parse_command_line
+from ctac.ir.models import NBId, TacBlock, TacFile, TacProgram
 
 _BLOCK_HEADER = re.compile(
     r"^Block\s+(?P<id>\S+)\s+Succ\s+\[(?P<succ>[^\]]*)\]\s*\{\s*$"
@@ -140,6 +141,7 @@ def _parse_lines(lines: list[str], *, path: str | None, weak_is_strong: bool) ->
         axioms_text=axioms_text,
         metas=metas,
         path=path,
+        symbol_sorts=parse_symbol_sorts(symbol_table_text),
     )
 
 
