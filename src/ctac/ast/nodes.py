@@ -113,7 +113,7 @@ class JumpiCmd(TacCmd):
 
 @dataclass(frozen=True)
 class AssertCmd(TacCmd):
-    predicate: str
+    predicate: TacExpr
     message: str | None
 
 

@@ -490,7 +490,7 @@ def run_program(
                 continue
 
             if isinstance(cmd, AssertCmd):
-                pred = ev.get_symbol(cmd.predicate)
+                pred = ev.eval_expr(cmd.predicate)
                 ok = _as_bool(pred)
                 if ok:
                     assert_ok += 1

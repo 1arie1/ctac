@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from ctac.ast.nodes import AssertCmd
+from ctac.ast.nodes import AssertCmd, SymbolRef
 from ctac.tool.main import _source_prefix_for_cmd
 
 
 def test_source_prefix_uses_cvl_range() -> None:
-    cmd = AssertCmd(raw='AssertCmd B1 "x"', predicate="B1", message="x", meta_index=42)
+    cmd = AssertCmd(
+        raw='AssertCmd B1 "x"',
+        predicate=SymbolRef("B1"),
+        message="x",
+        meta_index=42,
+    )
     metas = {
         "42": [
             {

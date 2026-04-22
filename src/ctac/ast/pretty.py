@@ -117,7 +117,7 @@ class PrettyPrinter(TacVisitor):
         return f"if {cond} goto {node.then_target} else {node.else_target}"
 
     def visit_AssertCmd(self, node: AssertCmd) -> str:
-        pred = self._fmt_symbol_token(node.predicate)
+        pred = self._strip_outer_parens_once(self.print_expr(node.predicate))
         if node.message:
             return f"assert {pred}  # {node.message}"
         return f"assert {pred}"

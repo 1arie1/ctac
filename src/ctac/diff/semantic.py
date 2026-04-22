@@ -116,9 +116,9 @@ def _cmd_defs_uses(cmd: TacCmd) -> tuple[set[str], set[str], list[str]]:
         uses.update(xs)
         _add(xs)
     elif isinstance(cmd, AssertCmd):
-        p = _strip_meta_suffix(cmd.predicate)
-        uses.add(p)
-        ordered.append(p)
+        xs = _expr_symbols(cmd.predicate)
+        uses.update(xs)
+        _add(xs)
     elif isinstance(cmd, JumpiCmd):
         c = _strip_meta_suffix(cmd.condition)
         uses.add(c)

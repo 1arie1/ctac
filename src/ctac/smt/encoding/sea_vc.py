@@ -31,7 +31,6 @@ from ctac.ast.bit_mask import (
     low_mask_width as _is_low_mask,
     shifted_contiguous_mask,
 )
-from ctac.ast.parse_expr import parse_expr_safe
 from ctac.ast.range_constraints import match_inclusive_range_constraint
 
 _SYMBOL_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*):([A-Za-z0-9_]+)\s*$")
@@ -329,16 +328,15 @@ class SeaVcEncoder(SmtEncoder):
                     if isinstance(cmd.condition, SymbolRef):
                         bool_hints.add(canonical_symbol(cmd.condition.name, strip_var_suffixes=True))
                 elif isinstance(cmd, AssertCmd):
-                    pred = parse_expr_safe(cmd.predicate)
-                    symbols.update(_iter_expr_symbols(pred))
-                    if isinstance(pred, SymbolRef):
-                        bool_hints.add(canonical_symbol(pred.name, strip_var_suffixes=True))
+                    symbols.update(_iter_expr_symbols(cmd.predicate))
+                    if isinstance(cmd.predicate, SymbolRef):
+                        bool_hints.add(canonical_symbol(cmd.predicate.name, strip_var_suffixes=True))
                 elif hasattr(cmd, "condition") and isinstance(getattr(cmd, "condition"), str):
                     # Jumpi-style symbol condition.
                     cond_name = canonical_symbol(getattr(cmd, "condition"), strip_var_suffixes=True)
                     symbols.add(cond_name)
                     bool_hints.add(cond_name)
-        assert_expr = parse_expr_safe(ctx.assert_site.command.predicate)
+        assert_expr = ctx.assert_site.command.predicate
         symbols.update(_iter_expr_symbols(assert_expr))
         ordered_symbols = sorted(symbols)
 

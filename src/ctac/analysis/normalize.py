@@ -58,7 +58,7 @@ def _normalize_cmd(cmd: TacCmd, *, strip_var_suffixes: bool) -> TacCmd:
             return cmd
         return replace(cmd, condition=cond)
     if isinstance(cmd, AssertCmd):
-        pred = canonical_symbol(cmd.predicate, strip_var_suffixes=strip_var_suffixes)
+        pred = _normalize_expr(cmd.predicate, strip_var_suffixes=strip_var_suffixes)
         if pred == cmd.predicate:
             return cmd
         return replace(cmd, predicate=pred)

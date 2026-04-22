@@ -67,9 +67,10 @@ def unparse_cmd(cmd: TacCmd) -> str:
             f"{cmd.then_target} {cmd.else_target} {cmd.condition}"
         )
     if isinstance(cmd, AssertCmd):
+        pred_text = unparse_expr(cmd.predicate)
         if cmd.message is None:
-            return f"{_head('AssertCmd', cmd.meta_index)} {cmd.predicate}"
-        return f'{_head("AssertCmd", cmd.meta_index)} {cmd.predicate} "{cmd.message}"'
+            return f"{_head('AssertCmd', cmd.meta_index)} {pred_text}"
+        return f'{_head("AssertCmd", cmd.meta_index)} {pred_text} "{cmd.message}"'
     if isinstance(cmd, RawCmd):
         return cmd.raw
     raise TypeError(f"cannot unparse command: {cmd!r}")

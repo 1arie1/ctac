@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
 
 from ctac.ast.nodes import (
     ApplyExpr,
@@ -162,8 +161,12 @@ def _parse_inst_line(raw: str, *, meta_index: object) -> TacCmd:
 
     m = _ASSERT_RE.match(core)
     if m:
-        # Keep full condition text in predicate so this still renders in text flows.
-        return AssertCmd(raw=raw, meta_index=mi, predicate=m.group("cond").strip(), message=None)
+        return AssertCmd(
+            raw=raw,
+            meta_index=mi,
+            predicate=_parse_condition_expr(m.group("cond")),
+            message=None,
+        )
 
     # Calls/exits are currently text-only
     if core == "exit":

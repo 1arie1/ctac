@@ -16,7 +16,6 @@ from ctac.ast.nodes import (
 )
 from ctac.smt.encoding.base import EncoderContext, SmtEncodingError, SmtEncoder
 from ctac.smt.model import SmtDeclaration, SmtScript
-from ctac.ast.parse_expr import parse_expr_safe
 
 _BV_SORT = re.compile(r"^\(_\s+BitVec\s+(\d+)\)$")
 _SYMBOL_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*):([A-Za-z0-9_]+)\s*$")
@@ -167,7 +166,7 @@ class VCPathPredicatesEncoder(SmtEncoder):
                     and idx == ctx.assert_site.cmd_index
                     and isinstance(cmd, AssertCmd)
                 ):
-                    pred_expr = parse_expr_safe(cmd.predicate)
+                    pred_expr = cmd.predicate
                     pred_term, pred_sort = self._emit_expr(
                         pred_expr, env, symbol_sort=symbol_sort, expected_sort="Bool"
                     )
@@ -301,10 +300,9 @@ class VCPathPredicatesEncoder(SmtEncoder):
                     symbols.add(cmd.condition)
                     bool_hints.add(cmd.condition)
                 elif isinstance(cmd, AssertCmd):
-                    pred_expr = parse_expr_safe(cmd.predicate)
-                    symbols.update(_iter_expr_symbols(pred_expr))
-                    if isinstance(pred_expr, SymbolRef):
-                        bool_hints.add(pred_expr.name)
+                    symbols.update(_iter_expr_symbols(cmd.predicate))
+                    if isinstance(cmd.predicate, SymbolRef):
+                        bool_hints.add(cmd.predicate.name)
         return symbols, bool_hints
 
     def _resolve_sort(

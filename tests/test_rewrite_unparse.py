@@ -94,7 +94,9 @@ def test_unparse_havoc_jump_label_assert():
     )
     assert unparse_cmd(LabelCmd(raw="_", text="hi")) == 'LabelCmd "hi"'
     assert (
-        unparse_cmd(AssertCmd(raw="_", predicate="false", message="assertion failed"))
+        unparse_cmd(
+            AssertCmd(raw="_", predicate=ConstExpr("false"), message="assertion failed")
+        )
         == 'AssertCmd false "assertion failed"'
     )
 

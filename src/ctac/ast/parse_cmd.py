@@ -26,6 +26,10 @@ _CMD_HEAD = re.compile(
 )
 _LABEL = re.compile(r'^LabelCmd\s+"(.*)"\s*$', re.DOTALL)
 _QUOTED_MSG = re.compile(r'^(".*")\s*$', re.DOTALL)
+# Matches a trailing `"..."` message after whitespace at the end of a line.
+# Used to split an AssertCmd's expression-typed predicate from its optional
+# human-readable message (TAC has no `"` tokens in ordinary expressions).
+_TRAILING_MSG = re.compile(r'\s+"((?:[^"\\]|\\.)*)"\s*$')
 _SYMBOL_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?::\d+)?$")
 
 
@@ -153,13 +157,16 @@ def parse_command_line(line: str, *, weak_is_strong: bool = False) -> TacCmd:
         )
 
     if base == "AssertCmd":
-        parts = rest.split(None, 1)
-        pred = parts[0] if parts else ""
-        msg = parts[1].strip() if len(parts) > 1 else None
-        if msg and msg.startswith('"'):
-            qm = _QUOTED_MSG.match(parts[1].strip())
-            if qm:
-                msg = qm.group(1)[1:-1]
-        return AssertCmd(raw=raw, meta_index=meta, predicate=pred, message=msg)
+        # Split off the trailing `"message"` (if any), then parse what remains
+        # as the predicate expression. TAC expressions never contain `"`, so
+        # the trailing-quoted-string regex is unambiguous.
+        msg: str | None = None
+        pred_text = rest.strip()
+        tm = _TRAILING_MSG.search(pred_text)
+        if tm is not None:
+            msg = tm.group(1)
+            pred_text = pred_text[: tm.start()].rstrip()
+        pred_expr = parse_expr_safe(pred_text) if pred_text else SymbolRef("")
+        return AssertCmd(raw=raw, meta_index=meta, predicate=pred_expr, message=msg)
 
     return RawCmd(raw=raw, head=base, tail=rest, meta_index=meta)

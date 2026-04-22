@@ -16,7 +16,6 @@ from ctac.ast.nodes import (
     TacCmd,
     TacExpr,
 )
-from ctac.ast.parse_expr import parse_expr_safe
 from ctac.builtins import is_known_builtin_function_symbol
 
 
@@ -56,10 +55,7 @@ def command_uses(cmd: TacCmd, *, strip_var_suffixes: bool = True) -> tuple[str, 
         for s in iter_expr_symbols(cmd.condition, strip_var_suffixes=strip_var_suffixes):
             _add(s)
     elif isinstance(cmd, AssertCmd):
-        # Predicate is stored as raw text; parse like Assume/RHS so literals (e.g. `false`)
-        # are not mistaken for register names (avoids spurious use-before-def on `assert false`).
-        pred = parse_expr_safe(cmd.predicate)
-        for s in iter_expr_symbols(pred, strip_var_suffixes=strip_var_suffixes):
+        for s in iter_expr_symbols(cmd.predicate, strip_var_suffixes=strip_var_suffixes):
             _add(s)
     elif isinstance(cmd, JumpiCmd):
         _add(canonical_symbol(cmd.condition, strip_var_suffixes=strip_var_suffixes))
