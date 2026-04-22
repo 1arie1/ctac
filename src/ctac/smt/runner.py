@@ -30,12 +30,17 @@ def build_z3_argv(
     seed: int,
     tactic: str,
     extra_args: list[str],
+    want_model: bool = False,
 ) -> list[str]:
     argv = [z3_path]
     if timeout_seconds is not None:
         argv.append(f"-T:{timeout_seconds}")
     argv.append(f"smt.random_seed={seed}")
     argv.append(f"tactic.default_tactic={tactic}")
+    if want_model:
+        # Ask z3 to print the model on `sat` without polluting the
+        # script with a trailing `(get-model)`.
+        argv.append("-model")
     argv.extend(extra_args)
     argv.append("-in")
     return argv
@@ -78,6 +83,7 @@ def run_z3_solver(
     tactic: str,
     extra_args: list[str],
     progress_cb: Callable[[float], None] | None = None,
+    want_model: bool = False,
 ) -> Z3RunResult:
     argv = build_z3_argv(
         z3_path=z3_path,
@@ -85,6 +91,7 @@ def run_z3_solver(
         seed=seed,
         tactic=tactic,
         extra_args=extra_args,
+        want_model=want_model,
     )
     popen_kwargs: dict[str, object] = {}
     if os.name == "posix":

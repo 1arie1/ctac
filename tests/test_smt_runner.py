@@ -23,6 +23,20 @@ def test_build_z3_argv_includes_timeout_seed_tactic() -> None:
     assert "tactic.default_tactic=default" in argv
     assert "-smt2" in argv
     assert argv[-1] == "-in"
+    # Without want_model, the `-model` flag is absent.
+    assert "-model" not in argv
+
+
+def test_build_z3_argv_want_model_appends_model_flag() -> None:
+    argv = build_z3_argv(
+        z3_path="z3",
+        timeout_seconds=None,
+        seed=0,
+        tactic="default",
+        extra_args=[],
+        want_model=True,
+    )
+    assert "-model" in argv
 
 
 def test_parse_z3_args_shell_splitting() -> None:

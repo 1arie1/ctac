@@ -167,7 +167,10 @@ def smt_cmd(
         c.print(smt_text, markup=False, end="")
         return
 
-    run_text = smt_text if unsat_core else smt_text + "(get-model)\n"
+    # z3's `-model` flag handles model printing cleanly — no trailing
+    # `(get-model)` needed in the script text.
+    run_text = smt_text
+    want_model = not unsat_core
     extra_args = parse_z3_args(z3_args)
     replay_script_path: Path | None = None
     if debug:
@@ -185,6 +188,7 @@ def smt_cmd(
                 seed=seed,
                 tactic=tactic,
                 extra_args=extra_args,
+                want_model=want_model,
             )
         else:
             last_bucket = -1
@@ -206,6 +210,7 @@ def smt_cmd(
                     tactic=tactic,
                     extra_args=extra_args,
                     progress_cb=_progress,
+                    want_model=want_model,
                 )
     except KeyboardInterrupt as e:
         c.print("interrupted: terminated z3 cleanly" if plain else "[yellow]interrupted[/yellow]: terminated z3 cleanly")
