@@ -16,7 +16,15 @@ from collections import Counter
 
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.framework import RewriteResult, RuleHit
-from ctac.rewrite.rules import CP_ALIAS, CSE, ITE_PURIFY, R4A_DIV_PURIFY, simplify_pipeline
+from ctac.rewrite.rules import (
+    CP_ALIAS,
+    CSE,
+    ITE_PURIFY,
+    PURIFY_ASSERT,
+    PURIFY_ASSUME,
+    R4A_DIV_PURIFY,
+    simplify_pipeline,
+)
 from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 
@@ -145,6 +153,22 @@ def rewrite_cmd(
             "Default on."
         ),
     ),
+    purify_assert: bool = typer.Option(
+        True,
+        "--purify-assert/--no-purify-assert",
+        help=(
+            "Name every non-trivial AssertCmd predicate as a fresh bool var "
+            "(TA<N>). Runs in the post-DCE phase. Default on."
+        ),
+    ),
+    purify_assume: bool = typer.Option(
+        False,
+        "--purify-assume/--no-purify-assume",
+        help=(
+            "Name every non-trivial AssumeExpCmd condition as a fresh bool var "
+            "(TA<N>). Runs in the post-DCE phase. Default off."
+        ),
+    ),
 ) -> None:
     """Run the TAC → TAC rewrite pipeline (div/bit-field simplifications + DCE).
 
@@ -202,13 +226,22 @@ def rewrite_cmd(
             break
         program = dce.program
     # Phase 3 (optional): after all simplification + DCE, name every remaining
-    # non-trivial Ite condition as a fresh bool var. Pair with CSE + CP so
-    # that two Ites with identical conditions collapse to one TB<N> instead
-    # of producing two structurally-equal TB defs.
+    # non-trivial Ite condition as a fresh bool var, then do the same for
+    # assert predicates and (optionally) assume conditions. Pair with CSE +
+    # CP so that two expressions with identical structure collapse to one
+    # T<N> instead of producing structurally-equal defs.
+    phase_rules: list = []
     if purify_ite:
+        phase_rules.append(ITE_PURIFY)
+    if purify_assert:
+        phase_rules.append(PURIFY_ASSERT)
+    if purify_assume:
+        phase_rules.append(PURIFY_ASSUME)
+    if phase_rules:
+        phase_rules.extend((CSE, CP_ALIAS))
         phase_ite = rewrite_program(
             program,
-            (ITE_PURIFY, CSE, CP_ALIAS),
+            tuple(phase_rules),
             max_iterations=max_iterations,
             ite_max_depth=ite_max_depth,
         )

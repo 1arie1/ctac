@@ -10,6 +10,7 @@ from ctac.analysis.passes import (
     analyze_use_before_def,
     eliminate_dead_assignments,
     eliminate_useless_assumes,
+    remove_true_asserts,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "eliminate_useless_assumes",
     "extract_def_use",
     "normalize_program_symbols",
+    "remove_true_asserts",
 ]

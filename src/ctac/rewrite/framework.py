@@ -18,6 +18,7 @@ from dataclasses import dataclass, field, replace
 
 from ctac.ast.nodes import (
     ApplyExpr,
+    AssertCmd,
     AssignExpCmd,
     AssumeExpCmd,
     JumpCmd,
@@ -238,6 +239,11 @@ def rewrite_program(
                     new_cond = _rewrite_expr(cmd.condition, rules_tuple, ctx, cmd_hits)
                     if new_cond is not cmd.condition:
                         new_cmd = replace(cmd, condition=new_cond)
+                elif isinstance(cmd, AssertCmd):
+                    ctx.set_host_cmd(cmd, at_top=True)
+                    new_pred = _rewrite_expr(cmd.predicate, rules_tuple, ctx, cmd_hits)
+                    if new_pred is not cmd.predicate:
+                        new_cmd = replace(cmd, predicate=new_pred)
                 else:
                     ctx.set_host_cmd(None, at_top=False)
                 if new_cmd is not cmd:

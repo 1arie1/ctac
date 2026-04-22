@@ -22,6 +22,8 @@ from ctac.rewrite.rules.div import (
 )
 from ctac.rewrite.rules.div_purify import R4A_DIV_PURIFY
 from ctac.rewrite.rules.ite_purify import ITE_PURIFY
+from ctac.rewrite.rules.purify_assert import PURIFY_ASSERT
+from ctac.rewrite.rules.purify_assume import PURIFY_ASSUME
 from ctac.rewrite.rules.ite import (
     BOOL_ABSORB,
     DE_MORGAN,
@@ -79,15 +81,17 @@ __all__ = [
     "EQ_CONST_FOLD",
     "EQ_ITE_DIST",
     "ITE_BOOL",
+    "ITE_PURIFY",
     "ITE_SAME",
     "N1_SHIFTED_BWAND",
     "N2_LOW_MASK",
     "N3_HIGH_MASK",
     "N4_SHR_CONST",
+    "PURIFY_ASSERT",
+    "PURIFY_ASSUME",
     "R1_BITFIELD_STRIP",
     "R2_DIV_FUSE",
     "R3_DIV_MUL_CANCEL",
-    "ITE_PURIFY",
     "R4_DIV_IN_CMP",
     "R4A_DIV_PURIFY",
     "R6_CEILDIV",

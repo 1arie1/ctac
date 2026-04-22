@@ -105,3 +105,34 @@ def test_rw_purify_ite_introduces_tb_symbols_in_output(tmp_path):
     # Re-parses cleanly (round-trip).
     reparsed = parse_path(out)
     assert reparsed.program.blocks
+
+
+def test_rw_purify_assert_and_assume_flags_accepted():
+    """Both flags parse cleanly and don't break the pipeline on the target TAC."""
+    runner = CliRunner()
+    src = _require_target(TARGET_TAC)
+    for args in (
+        ["rw", str(src), "--plain", "--report", "--no-purify-assert"],
+        ["rw", str(src), "--plain", "--report", "--purify-assume"],
+        ["rw", str(src), "--plain", "--report", "--no-purify-assert", "--purify-assume"],
+    ):
+        result = runner.invoke(app, args)
+        assert result.exit_code == 0, (args, result.output)
+
+
+def test_rw_no_purify_assert_disables_ta_naming():
+    runner = CliRunner()
+    src = _require_target(TARGET_TAC)
+    result = runner.invoke(
+        app, ["rw", str(src), "--plain", "--report", "--no-purify-assert"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "PURIFY_ASSERT:" not in result.output
+
+
+def test_rw_purify_assume_off_by_default():
+    runner = CliRunner()
+    src = _require_target(TARGET_TAC)
+    result = runner.invoke(app, ["rw", str(src), "--plain", "--report"])
+    assert result.exit_code == 0, result.output
+    assert "PURIFY_ASSUME:" not in result.output

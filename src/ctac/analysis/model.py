@@ -136,9 +136,17 @@ class DeadAssignment:
 
 
 @dataclass(frozen=True)
+class RemovedAssert:
+    block_id: str
+    cmd_index: int
+    raw: str
+
+
+@dataclass(frozen=True)
 class DceResult:
     removed: tuple[DeadAssignment, ...]
     program: TacProgram
+    removed_asserts: tuple[RemovedAssert, ...] = ()
 
 
 @dataclass(frozen=True)

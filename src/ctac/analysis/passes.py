@@ -20,13 +20,22 @@ from ctac.analysis.model import (
     LivenessResult,
     ProgramPoint,
     ReachingDefinitionsResult,
+    RemovedAssert,
     RemovedAssume,
     UceResult,
     UseBeforeDefIssue,
     UseBeforeDefResult,
 )
 from ctac.analysis.symbols import canonical_symbol
-from ctac.ast.nodes import ApplyExpr, AssignExpCmd, AssignHavocCmd, AssumeExpCmd, SymbolRef
+from ctac.ast.nodes import (
+    ApplyExpr,
+    AssertCmd,
+    AssignExpCmd,
+    AssignHavocCmd,
+    AssumeExpCmd,
+    ConstExpr,
+    SymbolRef,
+)
 from ctac.ir.models import TacBlock, TacProgram
 from ctac.ast.range_constraints import (
     MAX_U256,
@@ -268,12 +277,49 @@ def analyze_liveness(
     )
 
 
+def _is_const_true(expr) -> bool:
+    return isinstance(expr, ConstExpr) and expr.value == "true"
+
+
+def _drop_true_asserts(program: TacProgram) -> tuple[TacProgram, tuple[RemovedAssert, ...]]:
+    removed: list[RemovedAssert] = []
+    new_blocks: list[TacBlock] = []
+    for block in program.blocks:
+        kept = []
+        for idx, cmd in enumerate(block.commands):
+            if isinstance(cmd, AssertCmd) and _is_const_true(cmd.predicate):
+                removed.append(RemovedAssert(block_id=block.id, cmd_index=idx, raw=cmd.raw))
+                continue
+            kept.append(cmd)
+        new_blocks.append(replace(block, commands=kept))
+    return TacProgram(blocks=new_blocks), tuple(removed)
+
+
+def remove_true_asserts(program: TacProgram) -> tuple[TacProgram, tuple[RemovedAssert, ...]]:
+    """Drop every ``AssertCmd`` whose predicate is the constant ``true``.
+
+    Independent of liveness. Exposed as a standalone pass so callers (e.g.
+    ``ctac ua``) can strip trivially-true asserts before running assertion-
+    merging strategies.
+    """
+    return _drop_true_asserts(program)
+
+
 def eliminate_dead_assignments(
     program: TacProgram,
     *,
     strip_var_suffixes: bool = True,
     liveness: LivenessResult | None = None,
+    drop_true_asserts: bool = False,
 ) -> DceResult:
+    """Eliminate assignments whose LHS is dead on exit.
+
+    When ``drop_true_asserts`` is set, also remove every ``AssertCmd`` whose
+    predicate is the constant ``true`` (reported separately in
+    :attr:`DceResult.removed_asserts`). Default off to preserve existing
+    caller behavior; opt in explicitly from callers that want the combined
+    sweep.
+    """
     lv = liveness if liveness is not None else analyze_liveness(program, strip_var_suffixes=strip_var_suffixes)
     removed: list[DeadAssignment] = []
     new_blocks: list[TacBlock] = []
@@ -298,7 +344,16 @@ def eliminate_dead_assignments(
             kept_cmds.append(cmd)
         new_blocks.append(replace(block, commands=kept_cmds))
 
-    return DceResult(removed=tuple(removed), program=TacProgram(blocks=new_blocks))
+    out_program = TacProgram(blocks=new_blocks)
+    removed_asserts: tuple[RemovedAssert, ...] = ()
+    if drop_true_asserts:
+        out_program, removed_asserts = _drop_true_asserts(out_program)
+
+    return DceResult(
+        removed=tuple(removed),
+        program=out_program,
+        removed_asserts=removed_asserts,
+    )
 
 
 def _is_havoc_only_symbol(
