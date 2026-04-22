@@ -12,6 +12,7 @@ from ctac.rewrite.rules.bitfield import (
     N4_SHR_CONST,
 )
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
+from ctac.rewrite.rules.ceildiv_validation import R6_CASES
 from ctac.rewrite.rules.copyprop import CP_ALIAS
 from ctac.rewrite.rules.cse import CSE
 from ctac.rewrite.rules.div import (
@@ -21,6 +22,9 @@ from ctac.rewrite.rules.div import (
     R4_DIV_IN_CMP,
 )
 from ctac.rewrite.rules.div_purify import R4A_DIV_PURIFY
+from ctac.rewrite.rules.div_purify_validation import R4A_CASES
+from ctac.rewrite.rules.div_validation import R4_CASES
+from ctac.rewrite.validation import ValidationCase
 from ctac.rewrite.rules.ite_purify import ITE_PURIFY
 from ctac.rewrite.rules.purify_assert import PURIFY_ASSERT
 from ctac.rewrite.rules.purify_assume import PURIFY_ASSUME
@@ -73,6 +77,38 @@ purify_pipeline: tuple[Rule, ...] = simplify_pipeline + (R4A_DIV_PURIFY,)
 
 default_pipeline: tuple[Rule, ...] = purify_pipeline
 
+
+# Validation cases collected from per-rule sibling files. Single source of
+# truth for `ctac rw-valid`. Rules without an entry here have no soundness
+# spec yet — the CLI reports them as "missing" so coverage gaps are visible.
+validation_cases: tuple[ValidationCase, ...] = R4_CASES + R4A_CASES + R6_CASES
+
+# Every rule name the rewriter exports, so `ctac rw-valid` can list the
+# ones that don't yet have a spec.
+all_rule_names: tuple[str, ...] = (
+    N1_SHIFTED_BWAND.name,
+    N2_LOW_MASK.name,
+    N3_HIGH_MASK.name,
+    N4_SHR_CONST.name,
+    R1_BITFIELD_STRIP.name,
+    R2_DIV_FUSE.name,
+    R3_DIV_MUL_CANCEL.name,
+    R4_DIV_IN_CMP.name,
+    R4A_DIV_PURIFY.name,
+    R6_CEILDIV.name,
+    EQ_CONST_FOLD.name,
+    EQ_ITE_DIST.name,
+    ITE_SAME.name,
+    ITE_BOOL.name,
+    BOOL_ABSORB.name,
+    DE_MORGAN.name,
+    CSE.name,
+    CP_ALIAS.name,
+    ITE_PURIFY.name,
+    PURIFY_ASSERT.name,
+    PURIFY_ASSUME.name,
+)
+
 __all__ = [
     "BOOL_ABSORB",
     "CP_ALIAS",
@@ -95,7 +131,10 @@ __all__ = [
     "R4_DIV_IN_CMP",
     "R4A_DIV_PURIFY",
     "R6_CEILDIV",
+    "ValidationCase",
+    "all_rule_names",
     "default_pipeline",
     "purify_pipeline",
     "simplify_pipeline",
+    "validation_cases",
 ]
