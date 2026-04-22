@@ -13,6 +13,7 @@ import_module("ctac.tool.commands_run")
 import_module("ctac.tool.commands_rw")
 import_module("ctac.tool.commands_smt")
 import_module("ctac.tool.commands_stats")
+import_module("ctac.tool.commands_ua")
 
 __all__ = [
     "main",
