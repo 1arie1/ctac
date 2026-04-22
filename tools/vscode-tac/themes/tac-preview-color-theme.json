@@ -34,6 +34,15 @@
     },
     {
       "scope": [
+        "variable.other.memory.htac"
+      ],
+      "settings": {
+        "foreground": "#D2A8FF",
+        "fontStyle": "italic"
+      }
+    },
+    {
+      "scope": [
         "constant.numeric.power.htac"
       ],
       "settings": {

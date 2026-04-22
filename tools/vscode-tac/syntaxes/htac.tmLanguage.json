@@ -127,6 +127,10 @@
     "symbols": {
       "patterns": [
         {
+          "name": "variable.other.memory.htac",
+          "match": "\\bM[_0-9][A-Za-z0-9_]*(?::\\d+)?\\b"
+        },
+        {
           "name": "variable.other.register.htac",
           "match": "\\b[RBIFTS][A-Za-z0-9_]*(?::\\d+)?\\b"
         }
