@@ -94,6 +94,45 @@ def test_parse_smt_model_reads_uf_ite_chain():
     assert m.default == 0
 
 
+def test_parse_smt_model_kev_style_uf_with_negative_and_default_zero():
+    """Shape taken directly from the Kev target's z3 output.
+
+    Seven hot indices with mixed values (one negative via unary minus)
+    and an innermost ``0`` serving as the default.
+    """
+    txt = (
+        "sat\n"
+        "((define-fun M16 ((x!0 Int)) Int\n"
+        "  (ite (= x!0 12884911680) 393216\n"
+        "  (ite (= x!0 12884911568) 393216\n"
+        "  (ite (= x!0 12884911960) (- 1125899906842624)\n"
+        "  (ite (= x!0 12884911464) 6442450944\n"
+        "  (ite (= x!0 12884911216) 393216\n"
+        "  (ite (= x!0 12884911584) 393216\n"
+        "  (ite (= x!0 12884911224) 6442450944\n"
+        "    0)))))))))\n"
+    )
+    model = parse_model_text(txt)
+    m = model.memory["M16"]
+    assert m.default == 0
+    assert m.entries[12884911960] == -1125899906842624
+    assert m.entries[12884911680] == 393216
+    assert len(m.entries) == 7
+
+    # Select with an index not in the table returns the default.
+    mem = {"M16": m}
+    ev = Evaluator({}, normalize_symbol=lambda s: s.split(":", 1)[0], memory_store=mem)
+    v_default = ev.eval_expr(
+        ApplyExpr("Select", (SymbolRef("M16"), ConstExpr("99999")))
+    )
+    assert v_default.data == 0
+    # And a known index returns the stored value.
+    v_hit = ev.eval_expr(
+        ApplyExpr("Select", (SymbolRef("M16"), ConstExpr("12884911680")))
+    )
+    assert v_hit.data == 393216
+
+
 def test_interpreter_consumes_model_memory_via_runconfig():
     src = _wrap(
         "\tBlock e Succ [] {\n"
