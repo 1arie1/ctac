@@ -590,7 +590,7 @@ class SeaVcEncoder(SmtEncoder):
                         "IntMod": "mod",
                     }[op]
                     return f"({smt} {a1} {a2})", "Int"
-                if op in {"Shl", "BvShl", "BVShl", "LShift"}:
+                if op in {"Shl", "BvShl", "BVShl", "LShift", "ShiftLeft"}:
                     if len(expr.args) != 2:
                         raise SmtEncodingError(f"{op} expects two args")
                     x, _ = emit_expr(expr.args[0], expected_sort="Int")
