@@ -366,6 +366,14 @@ def pp(
     path: Optional[Path] = typer.Argument(None),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
+    output_path: Annotated[
+        Optional[Path],
+        typer.Option(
+            "-o",
+            "--output",
+            help="Write pretty-printed output to this file (plain text) instead of stdout.",
+        ),
+    ] = None,
     printer: Annotated[
         str,
         typer.Option(
@@ -448,34 +456,55 @@ def pp(
 
     from ctac.ast.highlight import highlight_tac_line
 
+    # When writing to a file, accumulate plain-text lines; otherwise stream
+    # highlighted output through the console.
+    to_file = output_path is not None
+    file_lines: list[str] = []
+
+    def _emit(text: str, *, highlight: bool = False) -> None:
+        if to_file:
+            file_lines.append(text)
+        elif highlight:
+            c.print(highlight_tac_line(text))
+        else:
+            c.print(text)
+
     if tac.path:
-        c.print(f"# path: {tac.path}")
+        _emit(f"# path: {tac.path}")
     for w in (user_warnings + input_warnings):
-        c.print(f"# input warning: {w}")
-    c.print(f"# printer: {printer_name}")
+        _emit(f"# input warning: {w}")
+    _emit(f"# printer: {printer_name}")
     for w in warnings:
-        c.print(f"# {w}")
+        _emit(f"# {w}")
     if flt.any_active():
-        c.print(f"# filter: {len(filtered_cfg.blocks)} of {len(tac.program.blocks)} block(s)")
+        _emit(f"# filter: {len(filtered_cfg.blocks)} of {len(tac.program.blocks)} block(s)")
 
     shown = 0
     for b in filtered_cfg.ordered_blocks():
         if max_blocks is not None and shown >= max_blocks:
             rest = len(filtered_cfg.blocks) - shown
-            c.print(f"# ... truncated: {rest} more block(s) not listed (--max-blocks {max_blocks})")
+            _emit(f"# ... truncated: {rest} more block(s) not listed (--max-blocks {max_blocks})")
             break
-        c.print(highlight_tac_line(f"{b.id}:"))
+        _emit(f"{b.id}:", highlight=True)
         for cmd_line in pretty_lines(b.commands, printer=pp_backend):
-            c.print(highlight_tac_line(f"  {cmd_line}"))
+            _emit(f"  {cmd_line}", highlight=True)
         term_line = pp_terminator_line(b, strip_var_suffixes=strip_var_suffixes)
         if term_line is not None:
-            c.print(highlight_tac_line(f"  {term_line}"))
+            _emit(f"  {term_line}", highlight=True)
         elif b.successors:
-            c.print(highlight_tac_line(f"  goto {', '.join(b.successors)}"))
+            _emit(f"  goto {', '.join(b.successors)}", highlight=True)
         else:
-            c.print(highlight_tac_line("  stop"))
-        c.print("")
+            _emit("  stop", highlight=True)
+        _emit("")
         shown += 1
+
+    if to_file:
+        assert output_path is not None
+        output_path.write_text("\n".join(file_lines) + ("\n" if file_lines else ""), encoding="utf-8")
+        if plain:
+            c.print(f"# wrote {output_path}", markup=False)
+        else:
+            c.print(f"[cyan]wrote[/cyan]: [bold]{output_path}[/bold]")
 
 
 @app.command("grep")
