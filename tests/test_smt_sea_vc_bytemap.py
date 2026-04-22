@@ -117,6 +117,25 @@ def test_multi_havoc_bytemap_is_rejected():
         build_vc(tac, encoding="sea_vc")
 
 
+def test_select_emits_bv256_range_axiom_per_application():
+    """Bytemap cells are bv256-valued; without a per-application range
+    axiom, z3 can pick negative or >BV256_MAX values that satisfy the
+    Int-level VC but break model replay through ``ctac run``."""
+    src = _wrap(
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd M16\n"
+        "\t\tAssignExpCmd R0 Select(M16 0x10)\n"
+        "\t\tAssignExpCmd R1 Select(M16 0x20)\n"
+        "\t\tAssertCmd false \"boom\"\n"
+        "\t}",
+        "R0:bv256\n\tR1:bv256\n\tM16:bytemap",
+    )
+    out = _render(src)
+    # One range axiom per unique application.
+    assert "(assert (<= 0 (M16 16) BV256_MAX))" in out
+    assert "(assert (<= 0 (M16 32) BV256_MAX))" in out
+
+
 def test_two_separate_bytemaps_each_declared():
     src = _wrap(
         "\tBlock e Succ [] {\n"

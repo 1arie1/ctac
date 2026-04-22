@@ -398,6 +398,7 @@ class SeaVcEncoder(SmtEncoder):
             raise SmtEncodingError(f"DSA partition violated for symbol(s): {bad}")
 
         uf_apps: dict[str, set[tuple[str, ...]]] = defaultdict(set)
+        memory_apps: set[tuple[str, str]] = set()
         constraints: list[str] = []
         block_pos = {b.id: i for i, b in enumerate(program.blocks)}
         # If a havoc is immediately followed by a range-refining assume over the same
@@ -694,6 +695,13 @@ class SeaVcEncoder(SmtEncoder):
                             f"Select on non-memory symbol: {mem_name!r}"
                         )
                     idx_term, _ = emit_expr(idx, expected_sort="Int")
+                    # Bytemap cells are bv256-valued in TAC, but the SMT UF
+                    # has sort ``Int -> Int`` with no domain constraint —
+                    # z3 is free to pick negative or >BV256_MAX values that
+                    # satisfy the Int-level VC but can't replay through a
+                    # bv256 register. Track each application so we can emit
+                    # a per-app range axiom below.
+                    memory_apps.add((symbol_term[mem_name], idx_term))
                     return f"({symbol_term[mem_name]} {idx_term})", "Int"
 
                 raise SmtEncodingError(f"unsupported operator in sea_vc: {op}")
@@ -862,6 +870,21 @@ class SeaVcEncoder(SmtEncoder):
             out_lines.append(f"; instantiate {axiom_fun_name} for each {uf} application")
             for args in sorted(uf_apps[uf]):
                 out_lines.append(f"(assert ({axiom_fun_name} {' '.join(args)}))")
+
+        # Memory cells are bv256-valued. Without a per-application range
+        # axiom, z3 can pick negative or >BV256_MAX values that satisfy the
+        # Int-level VC but can't be loaded back into a bv256 register, which
+        # breaks model replay through ``ctac run``. One ``0 <= M(idx) <=
+        # BV256_MAX`` per unique application is enough.
+        if memory_apps:
+            if not printed_axiom_banner:
+                emit_banner("Axiom Instantiations")
+                printed_axiom_banner = True
+            out_lines.append("; memory bv256-range axioms (one per Select application)")
+            for mem_name, idx_term in sorted(memory_apps):
+                out_lines.append(
+                    f"(assert (<= 0 ({mem_name} {idx_term}) BV256_MAX))"
+                )
 
         tac_named_i = 0
 
