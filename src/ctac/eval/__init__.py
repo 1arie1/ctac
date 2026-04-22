@@ -9,6 +9,7 @@ from ctac.eval.interpreter import (
     value_to_text,
 )
 from ctac.eval.model import (
+    MemoryModel,
     ModelParseResult,
     TacModel,
     parse_model_path,
@@ -19,6 +20,7 @@ from ctac.eval.model import (
 
 __all__ = [
     "HavocMode",
+    "MemoryModel",
     "RunConfig",
     "RunEvent",
     "RunResult",

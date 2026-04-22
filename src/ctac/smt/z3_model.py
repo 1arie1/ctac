@@ -108,6 +108,42 @@ def _sort_tag(sort: str) -> str:
     return sort
 
 
+def _parse_memory_body(
+    body: object, arg_name: str, env: dict[str, int]
+) -> tuple[dict[int, int], int]:
+    """Peel an ``(ite (= arg idx) val ...)`` chain into entries + default.
+
+    Mirrors :func:`ctac.eval.model.parse_uf_body_as_memory` but lives here
+    too so the SMT-side emitter doesn't pull the eval module in.
+    """
+    entries: dict[int, int] = {}
+    term = body
+    while (
+        isinstance(term, list)
+        and len(term) == 4
+        and term[0] == "ite"
+        and isinstance(term[1], list)
+        and len(term[1]) == 3
+        and term[1][0] == "="
+        and term[1][1] == arg_name
+    ):
+        cond_rhs = term[1][2]
+        then_term = term[2]
+        else_term = term[3]
+        try:
+            idx = _eval_int(cond_rhs, env)
+            val = _eval_int(then_term, env)
+        except ValueError:
+            break
+        entries[idx] = val
+        term = else_term
+    try:
+        default = _eval_int(term, env)
+    except ValueError:
+        default = 0
+    return entries, default
+
+
 def z3_model_to_tac_model_text(
     model_text: str,
     *,
@@ -128,17 +164,30 @@ def z3_model_to_tac_model_text(
         items = root
 
     defs: dict[str, tuple[str, object]] = {}
+    uf_defs: dict[str, tuple[str, object]] = {}  # name -> (arg_name, body)
     for item in items:
         if not isinstance(item, list) or len(item) != 5:
             continue
         if item[0] != "define-fun":
             continue
         name, args, sort, body = item[1], item[2], item[3], item[4]
-        if not isinstance(name, str) or not isinstance(args, list) or args:
+        if not isinstance(name, str) or not isinstance(args, list):
             continue
         if not isinstance(sort, str):
             continue
-        defs[name] = (sort, body)
+        if not args:
+            defs[name] = (sort, body)
+            continue
+        # Memory UF: single Int argument returning Int.
+        if (
+            len(args) == 1
+            and sort == "Int"
+            and isinstance(args[0], list)
+            and len(args[0]) == 2
+            and isinstance(args[0][0], str)
+            and args[0][1] == "Int"
+        ):
+            uf_defs[name] = (args[0][0], body)
 
     env: dict[str, int] = {}
     for name, (sort, body) in defs.items():
@@ -153,6 +202,21 @@ def z3_model_to_tac_model_text(
     for sym in sorted(symbol_sort):
         sort = symbol_sort[sym]
         sort_l = sort.lower()
+        if sort_l in ("bytemap", "ghostmap"):
+            uf = uf_defs.get(sym)
+            if uf is None:
+                continue
+            arg_name, body = uf
+            try:
+                entries, default = _parse_memory_body(body, arg_name, env)
+            except ValueError as e:
+                warnings.append(f"skip memory {sym}: {e}")
+                continue
+            tag = _sort_tag(sort)
+            out_lines.append(f"{sym}:{tag} --> default {default}")
+            for idx in sorted(entries):
+                out_lines.append(f"{sym}:{tag} --> {idx} {entries[idx]}")
+            continue
         model_def = defs.get(sym)
         if model_def is None:
             continue

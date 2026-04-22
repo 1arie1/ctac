@@ -19,7 +19,8 @@ from ctac.ast.run_format import (
     strip_meta_suffix,
     values_equal,
 )
-from ctac.eval import RunConfig, Value, parse_model_path, run_program, value_to_text
+from ctac.analysis import BytemapCapability, classify_bytemap_usage
+from ctac.eval import MemoryModel, RunConfig, Value, parse_model_path, run_program, value_to_text
 from ctac.parse import ParseError, parse_path
 from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
 from ctac.tool.commands_cfg_pp_search import normalize_printer_name, parse_user_value
@@ -115,6 +116,16 @@ def run(
             c.print(f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
 
+    capability = classify_bytemap_usage(tac.program, tac.symbol_sorts)
+    if capability is BytemapCapability.BYTEMAP_RW:
+        msg = (
+            f"executing bytemap writes (Store) is not yet supported; "
+            f"input classified as {capability.value}. "
+            f"bytemap-free and bytemap-ro are supported."
+        )
+        c.print(f"input error: {msg}" if plain else f"[red]input error:[/red] {msg}")
+        raise typer.Exit(1)
+
     hm = havoc_mode.strip().lower()
     if hm not in ("zero", "random", "ask"):
         raise typer.BadParameter("use one of: zero, random, ask", param_hint="--havoc-mode")
@@ -173,6 +184,7 @@ def run(
     )
     model_values: dict[str, Value] = {}
     model_warnings: list[str] = []
+    model_memory: dict[str, MemoryModel] = {}
     fallback_model_values: dict[str, Value] = {}
     fallback_model_warnings: list[str] = []
     if model is not None:
@@ -186,6 +198,7 @@ def run(
             raise typer.Exit(1) from e
         model_values = model_res.values
         model_warnings = model_res.warnings
+        model_memory = model_res.memory
     if fallback is not None:
         try:
             fb_res = parse_model_path(fallback)
@@ -244,6 +257,7 @@ def run(
         havoc_mode=run_havoc_mode,  # type: ignore[arg-type]
         ask_value=ask_cb,
         strip_var_suffixes=strip_var_suffixes,
+        memory_store=dict(model_memory),
     )
     res = run_program(tac.program, config=rcfg, pretty_cmd=pp_backend.print_cmd)
 
@@ -294,6 +308,9 @@ def run(
     if model is not None:
         c.print(f"# model: {model}")
         c.print(f"# model values: {len(model_values)}")
+        if model_memory:
+            total_entries = sum(len(m.entries) for m in model_memory.values())
+            c.print(f"# model memory: {len(model_memory)} bytemap(s), {total_entries} entry(ies)")
         for w in model_warnings:
             c.print(f"# model warning: {w}")
         if fallback is not None:

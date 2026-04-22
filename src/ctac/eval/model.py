@@ -11,11 +11,26 @@ from ctac.eval.types import Value
 
 
 @dataclass(frozen=True)
+class MemoryModel:
+    """Model value for a bytemap/ghostmap symbol.
+
+    ``entries`` maps index -> stored value. Reads at indices not in
+    ``entries`` return ``default``. Bytemap values are integer words (the
+    encoder and SMT solver both represent bytemaps as ``Int -> Int``);
+    callers that want a ``bv256`` read apply ``% MOD_256`` themselves.
+    """
+
+    entries: dict[int, int]
+    default: int = 0
+
+
+@dataclass(frozen=True)
 class TacModel:
     values: dict[str, Value]
     source_format: str = "unknown"
     status: str | None = None
     warnings: list[str] = field(default_factory=list)
+    memory: dict[str, MemoryModel] = field(default_factory=dict)
 
 
 # Backward-compatible alias used across existing code/tests.
@@ -123,6 +138,43 @@ def _parse_model_line(line: str) -> tuple[str, Value] | None:
     return symbol, Value("bv", n % MOD_256)
 
 
+def _parse_memory_line(line: str) -> tuple[str, object, int] | None:
+    """Parse a bytemap/ghostmap entry line.
+
+    Format: ``<name>:bytemap --> <index-or-"default"> <value>``.
+
+    Returns ``(name, index_or_default_marker, value)`` where the index
+    marker is the string ``"default"`` for default-case entries and an
+    ``int`` otherwise.
+    """
+    if "-->" not in line:
+        return None
+    left, right = line.split("-->", 1)
+    lhs = left.strip()
+    rhs = right.strip()
+    if not lhs or not rhs or ":" not in lhs:
+        return None
+    name, type_token = lhs.rsplit(":", 1)
+    symbol = name.strip()
+    kind = type_token.strip().lower()
+    if not symbol or kind not in ("bytemap", "ghostmap"):
+        return None
+    parts = rhs.split()
+    if len(parts) != 2:
+        return None
+    idx_tok, val_tok = parts
+    try:
+        val = _parse_number_token(val_tok)
+    except ValueError:
+        return None
+    if idx_tok == "default":
+        return symbol, "default", val
+    try:
+        return symbol, _parse_number_token(idx_tok), val
+    except ValueError:
+        return None
+
+
 def _extract_tac_model_section(text: str) -> str:
     begin_mark = "TAC model begin"
     end_mark = "TAC model end"
@@ -139,7 +191,13 @@ def parse_tac_model_text(text: str) -> TacModel:
     body = _extract_tac_model_section(text)
     values: dict[str, Value] = {}
     warnings: list[str] = []
+    mem_acc: dict[str, dict[object, int]] = {}
     for idx, line in enumerate(body.splitlines(), start=1):
+        mem = _parse_memory_line(line)
+        if mem is not None:
+            sym, idx_tok, val = mem
+            mem_acc.setdefault(sym, {})[idx_tok] = val
+            continue
         parsed = _parse_model_line(line)
         if parsed is None:
             continue
@@ -147,7 +205,15 @@ def parse_tac_model_text(text: str) -> TacModel:
         if symbol in values and values[symbol] != value:
             warnings.append(f"line {idx}: duplicate symbol {symbol!r}; keeping last value")
         values[symbol] = value
-    return TacModel(values=values, source_format="tac", warnings=warnings)
+
+    memory: dict[str, MemoryModel] = {}
+    for sym, slots in mem_acc.items():
+        default = slots.pop("default", 0) if isinstance(slots.get("default"), int) else 0
+        # After popping the default marker, every remaining key is an int.
+        entries = {k: v for k, v in slots.items() if isinstance(k, int)}
+        memory[sym] = MemoryModel(entries=entries, default=default)
+
+    return TacModel(values=values, source_format="tac", warnings=warnings, memory=memory)
 
 
 _TOKEN_RE = re.compile(r"\(|\)|[^\s()]+")
@@ -252,6 +318,43 @@ def _eval_bool_term(term: object) -> bool:
     raise ValueError(f"unsupported Bool term {term!r}")
 
 
+def parse_uf_body_as_memory(
+    body: object, arg_name: str, env: dict[str, int]
+) -> tuple[dict[int, int], int]:
+    """Parse an ``(ite (= arg idx) val (ite ... default))`` chain.
+
+    Returns ``(entries, default)``. Non-ite or unrecognized bodies fold
+    into an empty ``entries`` with the body's constant value as the
+    default (falling back to 0 when the term is unparseable).
+    """
+    entries: dict[int, int] = {}
+    term = body
+    while (
+        isinstance(term, list)
+        and len(term) == 4
+        and term[0] == "ite"
+        and isinstance(term[1], list)
+        and len(term[1]) == 3
+        and term[1][0] == "="
+        and term[1][1] == arg_name
+    ):
+        cond_rhs = term[1][2]
+        then_term = term[2]
+        else_term = term[3]
+        try:
+            idx = _eval_int_term(cond_rhs, env)
+            val = _eval_int_term(then_term, env)
+        except ValueError:
+            break
+        entries[idx] = val
+        term = else_term
+    try:
+        default = _eval_int_term(term, env)
+    except ValueError:
+        default = 0
+    return entries, default
+
+
 def parse_smt_model_text(text: str) -> TacModel:
     status, body = _maybe_strip_solver_status_prefix(text)
     if status in {"unsat", "unknown", "timeout"} and not body:
@@ -261,15 +364,29 @@ def parse_smt_model_text(text: str) -> TacModel:
         raise ValueError("empty SMT model")
     items = root[1:] if root and root[0] == "model" else root
     defs: dict[str, tuple[str, object]] = {}
+    uf_defs: dict[str, tuple[str, object]] = {}  # name -> (arg_name, body)
     for item in items:
         if not isinstance(item, list) or len(item) != 5:
             continue
         if item[0] != "define-fun":
             continue
         name, args, sort_tok, val_term = item[1], item[2], item[3], item[4]
-        if not isinstance(name, str) or not isinstance(args, list) or args:
+        if not isinstance(name, str) or not isinstance(args, list):
             continue
-        defs[name] = (_sort_token_to_str(sort_tok), val_term)
+        sort_str = _sort_token_to_str(sort_tok)
+        if not args:
+            defs[name] = (sort_str, val_term)
+            continue
+        # Memory-shaped UF: single Int-domain argument returning Int.
+        if (
+            len(args) == 1
+            and sort_str == "Int"
+            and isinstance(args[0], list)
+            and len(args[0]) == 2
+            and isinstance(args[0][0], str)
+            and _sort_token_to_str(args[0][1]) == "Int"
+        ):
+            uf_defs[name] = (args[0][0], val_term)
 
     env: dict[str, int] = {}
     for name, (sort, term) in defs.items():
@@ -293,7 +410,23 @@ def parse_smt_model_text(text: str) -> TacModel:
                 values[name] = Value("bv", _eval_int_term(term, env) % MOD_256)
         except ValueError as e:
             warnings.append(f"skip {name}: {e}")
-    return TacModel(values=values, source_format="smt", status=status, warnings=warnings)
+
+    memory: dict[str, MemoryModel] = {}
+    for name, (arg_name, body_term) in uf_defs.items():
+        try:
+            entries, default = parse_uf_body_as_memory(body_term, arg_name, env)
+        except ValueError as e:
+            warnings.append(f"skip memory {name}: {e}")
+            continue
+        memory[name] = MemoryModel(entries=entries, default=default)
+
+    return TacModel(
+        values=values,
+        source_format="smt",
+        status=status,
+        warnings=warnings,
+        memory=memory,
+    )
 
 
 def parse_model_text(text: str) -> TacModel:

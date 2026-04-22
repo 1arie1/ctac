@@ -42,6 +42,10 @@ class RunConfig:
     initial_store: dict[str, Value] = field(default_factory=dict)
     ask_value: Callable[[str, ValueKind], Value] | None = None
     strip_var_suffixes: bool = True
+    # Per-bytemap read map, keyed by canonical symbol name. Each entry
+    # has ``.entries`` (index -> value) and ``.default``. ``Select(M,
+    # idx)`` looks up ``entries[idx]``, falling back to ``default``.
+    memory_store: dict[str, "object"] = field(default_factory=dict)
 
 
 @dataclass
@@ -260,9 +264,16 @@ def _havoc_value(symbol: str, mode: HavocMode, ask_value: Callable[[str, ValueKi
 
 
 class Evaluator:
-    def __init__(self, store: dict[str, Value], *, normalize_symbol: Callable[[str], str]):
+    def __init__(
+        self,
+        store: dict[str, Value],
+        *,
+        normalize_symbol: Callable[[str], str],
+        memory_store: dict[str, object] | None = None,
+    ):
         self.store = store
         self._normalize_symbol = normalize_symbol
+        self.memory_store = memory_store if memory_store is not None else {}
 
     def get_symbol(self, name: str) -> Value:
         key = self._normalize_symbol(name)
@@ -275,12 +286,30 @@ class Evaluator:
         key = self._normalize_symbol(name)
         return self.store.get(key)
 
+    def _eval_select(self, expr: ApplyExpr) -> Value:
+        if len(expr.args) != 2 or not isinstance(expr.args[0], SymExpr):
+            raise ValueError("Select expects (memory_symbol, index)")
+        mem_name = self._normalize_symbol(expr.args[0].name)
+        idx = _as_int(self.eval_expr(expr.args[1]))
+        mem = self.memory_store.get(mem_name)
+        if mem is None:
+            # No model / unhavoced bytemap: return the zero default.
+            return _mk_bv(0)
+        default = getattr(mem, "default", 0)
+        entries = getattr(mem, "entries", None) or {}
+        val = entries.get(idx, default)
+        return _mk_bv(val % MOD_256)
+
     def eval_expr(self, expr: TacExpr) -> Value:
         if isinstance(expr, ConstExpr):
             return _parse_const(expr.value)
         if isinstance(expr, SymExpr):
             return self.get_symbol(expr.name)
         if isinstance(expr, ApplyExpr):
+            # Select memory reads don't go through the generic _eval_apply
+            # fallback — the memory arg is a SymbolRef, not a Value.
+            if expr.op == "Select":
+                return self._eval_select(expr)
             return self._eval_apply(expr.op, [self.eval_expr(a) for a in expr.args], expr)
         raise TypeError(f"unsupported expr node: {type(expr).__name__}")
 
@@ -399,7 +428,8 @@ def run_program(
         return canonical_symbol(s, strip_var_suffixes=cfg.strip_var_suffixes)
 
     store = {normalize_symbol(k): v for k, v in cfg.initial_store.items()}
-    ev = Evaluator(store, normalize_symbol=normalize_symbol)
+    memory_store = {normalize_symbol(k): v for k, v in cfg.memory_store.items()}
+    ev = Evaluator(store, normalize_symbol=normalize_symbol, memory_store=memory_store)
     blocks_by_id = program.block_by_id()
     entry = cfg.entry_block or _default_entry(program)
     if entry is None:
