@@ -15,6 +15,15 @@
     },
     {
       "scope": [
+        "keyword.control.assert.htac"
+      ],
+      "settings": {
+        "foreground": "#FF7B72",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "scope": [
         "entity.name.label.block.htac",
         "entity.name.label.block.sbf"
       ],

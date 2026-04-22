@@ -67,8 +67,12 @@
     "control": {
       "patterns": [
         {
+          "name": "keyword.control.assert.htac",
+          "match": "\\bassert\\b"
+        },
+        {
           "name": "keyword.control.htac",
-          "match": "\\b(?:assume|assert|goto|stop|if|else|in|havoc)\\b"
+          "match": "\\b(?:assume|goto|stop|if|else|in|havoc)\\b"
         }
       ]
     },
