@@ -1,9 +1,8 @@
 """Tests for the ``ctac smt`` bytemap gate.
 
-The gate rejects any input that isn't ``BYTEMAP_FREE``. This is the
-interim behavior until ``sea_vc`` learns to encode bytemap ``Select``
-reads, at which point the gate will relax to also accept
-``BYTEMAP_RO``.
+The gate accepts ``BYTEMAP_FREE`` and ``BYTEMAP_RO`` and rejects
+``BYTEMAP_RW``. Store-based updates are the remaining unsupported
+case; lifting that gate is future work.
 """
 
 from __future__ import annotations
@@ -69,14 +68,41 @@ Metas {
 """
 
 
-def test_smt_rejects_bytemap_ro_input(tmp_path):
+_BYTEMAP_RW_SRC = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR0:bv256
+\tM16:bytemap
+}
+Program {
+\tBlock e Succ [] {
+\t\tAssignHavocCmd M16
+\t\tAssignExpCmd M16 Store(M16 0x10 0x42)
+\t\tAssignExpCmd R0 Select(M16 0x10)
+\t\tAssertCmd false "assertion failed"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_smt_accepts_bytemap_ro_input(tmp_path):
     src = tmp_path / "ro.tac"
     src.write_text(_BYTEMAP_RO_SRC)
     runner = CliRunner()
     result = runner.invoke(app, ["smt", str(src), "--plain"])
-    assert result.exit_code == 2, result.output
-    assert "bytemap" in result.output.lower()
-    assert "bytemap-ro" in result.output
+    assert result.exit_code == 0, result.output
+    # SMT-LIB output should be present; memory symbol declared as a UF.
+    assert "(check-sat)" in result.output
+    assert "(declare-fun M16 (Int) Int)" in result.output
 
 
 def test_smt_accepts_bytemap_free_input(tmp_path):
@@ -87,3 +113,12 @@ def test_smt_accepts_bytemap_free_input(tmp_path):
     assert result.exit_code == 0, result.output
     # SMT-LIB output should be present.
     assert "(check-sat)" in result.output
+
+
+def test_smt_rejects_bytemap_rw_input(tmp_path):
+    src = tmp_path / "rw.tac"
+    src.write_text(_BYTEMAP_RW_SRC)
+    runner = CliRunner()
+    result = runner.invoke(app, ["smt", str(src), "--plain"])
+    assert result.exit_code == 2, result.output
+    assert "bytemap-rw" in result.output

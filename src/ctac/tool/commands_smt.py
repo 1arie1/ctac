@@ -126,10 +126,11 @@ def smt_cmd(
         tac_path, input_warnings = resolve_tac_input_path(user_path)
         tac = parse_path(tac_path)
         capability = classify_bytemap_usage(tac.program, tac.symbol_sorts)
-        if capability is not BytemapCapability.BYTEMAP_FREE:
+        if capability is BytemapCapability.BYTEMAP_RW:
             msg = (
-                f"SMT encoding of memory (bytemap) is not yet supported; "
+                f"SMT encoding of bytemap writes (Store) is not yet supported; "
                 f"input classified as {capability.value}. "
+                f"bytemap-free and bytemap-ro are supported. "
                 f"See `ctac stats --plain` for details."
             )
             c.print(f"input error: {msg}" if plain else f"[red]input error:[/red] {msg}")

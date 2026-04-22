@@ -341,18 +341,46 @@ class SeaVcEncoder(SmtEncoder):
         ordered_symbols = sorted(symbols)
 
         symbol_term: dict[str, str] = {s: sanitize_ident(s) for s in ordered_symbols}
+        memory_symbols: set[str] = set()
         symbol_sort: dict[str, str] = {}
         for s in ordered_symbols:
             base = _BASE_SYMBOL.sub(r"\1", s)
             raw = raw_sorts.get(s) or raw_sorts.get(base) or "bv256"
-            symbol_sort[s] = "Bool" if (raw.lower() == "bool" or s in bool_hints) else "Int"
+            raw_lc = raw.lower()
+            if raw_lc in {"bytemap", "ghostmap"}:
+                memory_symbols.add(s)
+                # Placeholder — memory symbols are encoded as UFs, not SMT
+                # values; this entry exists so the few sites that still
+                # look up symbol_sort[sym] don't need a second special case.
+                symbol_sort[s] = "Int"
+            else:
+                symbol_sort[s] = "Bool" if (raw_lc == "bool" or s in bool_hints) else "Int"
+
+        # Reject multi-def bytemaps early: sea_vc models each memory symbol
+        # as a single uninterpreted function, so multiple havocs (or any
+        # mix of defs) for the same bytemap aren't representable today.
+        multi_def_memory = sorted(
+            sym
+            for sym in memory_symbols
+            if len(du.definitions_by_symbol.get(sym, ())) > 1
+        )
+        if multi_def_memory:
+            bad = ", ".join(multi_def_memory)
+            raise SmtEncodingError(
+                f"bytemap with multiple definitions is not supported in sea_vc: {bad}"
+            )
 
         decls: list[SmtDeclaration] = []
         decl_seen: set[str] = set()
+        uf_decl_lines: set[str] = set()
         for s in ordered_symbols:
             nm = symbol_term[s]
-            if nm not in decl_seen:
-                decl_seen.add(nm)
+            if nm in decl_seen:
+                continue
+            decl_seen.add(nm)
+            if s in memory_symbols:
+                uf_decl_lines.add(f"(declare-fun {nm} (Int) Int)")
+            else:
                 decls.append(SmtDeclaration(name=nm, sort=symbol_sort[s]))
         for b in program.blocks:
             if b.id == entry_block_id:
@@ -369,7 +397,6 @@ class SeaVcEncoder(SmtEncoder):
             bad = ", ".join(sorted(static_symbols & dynamic_symbols))
             raise SmtEncodingError(f"DSA partition violated for symbol(s): {bad}")
 
-        uf_decl_lines: set[str] = set()
         uf_apps: dict[str, set[tuple[str, ...]]] = defaultdict(set)
         constraints: list[str] = []
         block_pos = {b.id: i for i, b in enumerate(program.blocks)}
@@ -653,6 +680,21 @@ class SeaVcEncoder(SmtEncoder):
                     if ts != es:
                         raise SmtEncodingError("Ite branch sort mismatch")
                     return _simplify_ite(c, t, e, sort=ts), ts
+                if op == "Select":
+                    if len(expr.args) != 2:
+                        raise SmtEncodingError("Select expects (memory, index)")
+                    mem, idx = expr.args
+                    if not isinstance(mem, SymbolRef):
+                        raise SmtEncodingError(
+                            "Select memory argument must be a SymbolRef"
+                        )
+                    mem_name = canonical_symbol(mem.name, strip_var_suffixes=True)
+                    if mem_name not in memory_symbols:
+                        raise SmtEncodingError(
+                            f"Select on non-memory symbol: {mem_name!r}"
+                        )
+                    idx_term, _ = emit_expr(idx, expected_sort="Int")
+                    return f"({symbol_term[mem_name]} {idx_term})", "Int"
 
                 raise SmtEncodingError(f"unsupported operator in sea_vc: {op}")
             raise SmtEncodingError(f"unsupported expression node: {expr!r}")
