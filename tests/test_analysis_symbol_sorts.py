@@ -94,6 +94,27 @@ def test_classify_bytemap_usage_free():
     )
 
 
+def test_classify_bytemap_usage_declared_but_unused_is_free():
+    """Bytemap declared in the symbol table but never referenced: FREE.
+
+    Matches what an SMT encoder actually sees — classification is about
+    reachable memory usage, not stale symbol-table entries.
+    """
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd R0\n"
+            "\t}",
+            "R0:bv256\n\tM16:bytemap",
+        ),
+        path="<s>",
+    )
+    assert (
+        classify_bytemap_usage(tac.program, tac.symbol_sorts)
+        is BytemapCapability.BYTEMAP_FREE
+    )
+
+
 def test_classify_bytemap_usage_read_only():
     tac = parse_string(
         _wrap(

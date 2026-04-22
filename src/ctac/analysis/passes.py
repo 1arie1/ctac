@@ -295,6 +295,12 @@ def classify_bytemap_usage(
 ) -> BytemapCapability:
     """Classify how ``program`` uses bytemap/ghostmap symbols.
 
+    Classification is **use-based**, not declaration-based: a memory
+    symbol that appears in the symbol table but is never referenced by
+    any command counts as FREE. This matches what an SMT encoder
+    actually sees, and keeps programs with stale/unused memory
+    declarations usable by tools that don't yet support memory.
+
     See :class:`BytemapCapability` for the three-way split. The check is
     cheap (one linear sweep) and independent of DSA/liveness — callers
     (the ``ctac smt`` gate, stats reporting) invoke it directly.
@@ -307,6 +313,7 @@ def classify_bytemap_usage(
     if not memory_symbols:
         return BytemapCapability.BYTEMAP_FREE
 
+    any_use = False
     for block in program.blocks:
         for cmd in block.commands:
             if isinstance(cmd, AssignExpCmd):
@@ -315,13 +322,30 @@ def classify_bytemap_usage(
                     return BytemapCapability.BYTEMAP_RW
                 if _expr_has_op(cmd.rhs, "Store"):
                     return BytemapCapability.BYTEMAP_RW
+                if not any_use and _expr_uses_memory(cmd.rhs, memory_symbols):
+                    any_use = True
+            elif isinstance(cmd, AssignHavocCmd):
+                lhs = canonical_symbol(cmd.lhs, strip_var_suffixes=True)
+                if lhs in memory_symbols:
+                    any_use = True
             elif isinstance(cmd, AssumeExpCmd):
                 if _expr_has_op(cmd.condition, "Store"):
                     return BytemapCapability.BYTEMAP_RW
+                if not any_use and _expr_uses_memory(cmd.condition, memory_symbols):
+                    any_use = True
             elif isinstance(cmd, AssertCmd):
                 if _expr_has_op(cmd.predicate, "Store"):
                     return BytemapCapability.BYTEMAP_RW
-    return BytemapCapability.BYTEMAP_RO
+                if not any_use and _expr_uses_memory(cmd.predicate, memory_symbols):
+                    any_use = True
+    return BytemapCapability.BYTEMAP_RO if any_use else BytemapCapability.BYTEMAP_FREE
+
+
+def _expr_uses_memory(expr, memory_symbols: set[str]) -> bool:
+    for sym in iter_expr_symbols(expr, strip_var_suffixes=True):
+        if sym in memory_symbols:
+            return True
+    return False
 
 
 def _drop_true_asserts(program: TacProgram) -> tuple[TacProgram, tuple[RemovedAssert, ...]]:
