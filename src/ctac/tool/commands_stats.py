@@ -6,7 +6,21 @@ from typing import Optional
 
 import typer
 
-from ctac.ast.nodes import ApplyExpr, AssignExpCmd, AssumeExpCmd, ConstExpr, TacExpr
+from ctac.analysis import (
+    SymbolKind,
+    classify_bytemap_usage,
+    classify_sort,
+)
+from ctac.ast.nodes import (
+    ApplyExpr,
+    AssertCmd,
+    AssignExpCmd,
+    AssignHavocCmd,
+    AssumeExpCmd,
+    ConstExpr,
+    SymbolRef,
+    TacExpr,
+)
 from ctac.ir.models import TacFile
 from ctac.parse import ParseError, parse_path
 from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
@@ -78,7 +92,66 @@ def collect_tac_stats(
 
     stats.add_num("nonlinear_ops.multiplication", nonlinear_mul)
     stats.add_num("nonlinear_ops.division_or_mod", nonlinear_div)
+
+    _collect_memory_stats(stats, tac)
     return stats
+
+
+def _collect_memory_stats(stats: StatsCollection, tac: TacFile) -> None:
+    """Emit ``memory.*`` stats driven by the declared symbol sorts."""
+    memory_symbols = {
+        name
+        for name, sort in tac.symbol_sorts.items()
+        if classify_sort(sort) is SymbolKind.MEMORY
+    }
+    stats.add_num("memory.bytemap_symbols", len(memory_symbols))
+    capability = classify_bytemap_usage(tac.program, tac.symbol_sorts)
+    stats.add_str("memory.capability", capability.value)
+    if not memory_symbols:
+        return
+
+    havocs = Counter()
+    selects = Counter()
+    stores = 0
+
+    def _visit(expr: TacExpr) -> None:
+        nonlocal stores
+        if not isinstance(expr, ApplyExpr):
+            return
+        if expr.op == "Select" and expr.args and isinstance(expr.args[0], SymbolRef):
+            base = expr.args[0].name
+            # Strip DSA suffix: ``M16:3`` -> ``M16``.
+            base = base.split(":", 1)[0]
+            if base in memory_symbols:
+                selects[base] += 1
+        elif expr.op == "Store":
+            stores += 1
+        for a in expr.args:
+            _visit(a)
+
+    for b in tac.program.blocks:
+        for cmd in b.commands:
+            if isinstance(cmd, AssignHavocCmd):
+                lhs = cmd.lhs.split(":", 1)[0]
+                if lhs in memory_symbols:
+                    havocs[lhs] += 1
+            elif isinstance(cmd, AssignExpCmd):
+                _visit(cmd.rhs)
+            elif isinstance(cmd, AssumeExpCmd):
+                _visit(cmd.condition)
+            elif isinstance(cmd, AssertCmd):
+                _visit(cmd.predicate)
+
+    stats.add_num("memory.havocs", sum(havocs.values()))
+    stats.add_num("memory.select_reads", sum(selects.values()))
+    stats.add_num("memory.store_writes", stores)
+    # Per-bytemap Select count for debugging hot spots — ranked by reads,
+    # tie-break alphabetically for determinism.
+    for name in sorted(memory_symbols, key=lambda n: (-selects[n], n)):
+        if selects[name] == 0 and havocs[name] == 0:
+            continue
+        stats.add_num(f"memory.by_symbol.{name}.selects", selects[name])
+        stats.add_num(f"memory.by_symbol.{name}.havocs", havocs[name])
 
 
 def print_tac_stats(
