@@ -133,6 +133,54 @@ def test_parse_smt_model_kev_style_uf_with_negative_and_default_zero():
     assert v_hit.data == 393216
 
 
+def test_select_negative_value_wraps_to_twos_complement_bv256():
+    """Memory values from z3 can be negative (Int sort). TAC registers are
+    bv256, so ``Select`` wraps via ``% MOD_256``."""
+    from ctac.eval.constants import MOD_256
+
+    neg = -1125899906842624
+    mem = {"M16": MemoryModel(entries={12884911960: neg}, default=-5)}
+    ev = Evaluator({}, normalize_symbol=lambda s: s.split(":", 1)[0], memory_store=mem)
+
+    v_hit = ev.eval_expr(
+        ApplyExpr("Select", (SymbolRef("M16"), ConstExpr("12884911960")))
+    )
+    assert v_hit.kind == "bv"
+    assert v_hit.data == neg % MOD_256
+    assert 0 <= v_hit.data < MOD_256
+
+    # Default path (miss) also wraps — a negative default becomes its
+    # 2's-complement bv256 representation.
+    v_miss = ev.eval_expr(
+        ApplyExpr("Select", (SymbolRef("M16"), ConstExpr("0x999")))
+    )
+    assert v_miss.data == (-5) % MOD_256
+
+
+def test_negative_memory_entries_round_trip_through_tac_text():
+    """TAC model text preserves negatives verbatim; Select re-wraps at read."""
+    from ctac.eval import parse_model_text
+    from ctac.eval.constants import MOD_256
+
+    txt = (
+        "TAC model begin\n"
+        "M16:bytemap --> default -5\n"
+        "M16:bytemap --> 12884911960 -1125899906842624\n"
+        "TAC model end\n"
+    )
+    m = parse_model_text(txt)
+    mm = m.memory["M16"]
+    # Raw Int values are kept as-is in the MemoryModel.
+    assert mm.default == -5
+    assert mm.entries[12884911960] == -1125899906842624
+    # At read time, Select wraps to bv256.
+    ev = Evaluator({}, normalize_symbol=lambda s: s.split(":", 1)[0], memory_store=m.memory)
+    v = ev.eval_expr(
+        ApplyExpr("Select", (SymbolRef("M16"), ConstExpr("12884911960")))
+    )
+    assert v.data == (-1125899906842624) % MOD_256
+
+
 def test_interpreter_consumes_model_memory_via_runconfig():
     src = _wrap(
         "\tBlock e Succ [] {\n"
