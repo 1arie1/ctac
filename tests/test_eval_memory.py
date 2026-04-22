@@ -218,3 +218,93 @@ def test_ctac_run_rejects_bytemap_rw(tmp_path):
     result = runner.invoke(app, ["run", str(p), "--plain"])
     assert result.exit_code == 1, result.output
     assert "bytemap-rw" in result.output
+
+
+_CLI_BM_TAC = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR0:bv256
+\tR1:bv256
+\tB0:bool
+\tM16:bytemap
+}
+Program {
+\tBlock e Succ [] {
+\t\tAssignHavocCmd M16
+\t\tAssignExpCmd R0 Select(M16 0x10)
+\t\tAssignExpCmd R1 Select(M16 0x20)
+\t\tAssignExpCmd B0 Eq(R0 R1)
+\t\tAssertCmd B0 "eq"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_ctac_run_loads_bytemap_from_tac_format_model(tmp_path):
+    """The ``ctac run --model`` CLI handles bytemap entries in TAC text
+    format (produced by ``ctac smt --model <path>``)."""
+    from typer.testing import CliRunner
+
+    from ctac.tool.main import app
+
+    tac_path = tmp_path / "bm.tac"
+    tac_path.write_text(_CLI_BM_TAC)
+
+    model_path = tmp_path / "bm.tacmodel"
+    model_path.write_text(
+        "TAC model begin\n"
+        "M16:bytemap --> default 0\n"
+        "M16:bytemap --> 16 42\n"
+        "M16:bytemap --> 32 7\n"
+        "R0:bv256 --> 42\n"
+        "R1:bv256 --> 7\n"
+        "B0:bool --> false\n"
+        "TAC model end\n"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["run", str(tac_path), "--model", str(model_path), "--plain"]
+    )
+    assert result.exit_code in (0, 2, 3), result.output
+    assert "# model memory: 1 bytemap(s), 2 entry(ies)" in result.output
+
+
+def test_ctac_run_loads_bytemap_from_smt_format_model(tmp_path):
+    """Same as above but the model is raw SMT-LIB (``z3 -model`` stdout)."""
+    from typer.testing import CliRunner
+
+    from ctac.tool.main import app
+
+    tac_path = tmp_path / "bm.tac"
+    tac_path.write_text(_CLI_BM_TAC)
+
+    model_path = tmp_path / "bm.z3model"
+    model_path.write_text(
+        "sat\n"
+        "(\n"
+        "  (define-fun R0 () Int 42)\n"
+        "  (define-fun R1 () Int 7)\n"
+        "  (define-fun B0 () Bool false)\n"
+        "  (define-fun M16 ((x!0 Int)) Int\n"
+        "    (ite (= x!0 16) 42\n"
+        "    (ite (= x!0 32) 7\n"
+        "      0)))\n"
+        ")\n"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["run", str(tac_path), "--model", str(model_path), "--plain"]
+    )
+    assert result.exit_code in (0, 2, 3), result.output
+    assert "# model memory: 1 bytemap(s), 2 entry(ies)" in result.output
