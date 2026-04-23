@@ -110,8 +110,8 @@ Prompt template:
     - Non-`Assertions` suffix models are ignored with an input warning.
 
 - `ctac smt <file> --plain`
-  - Emit SMT-LIB VC (default encoding: `sea_vc`).
-  - Alternative encoding: `--encoding vc-path-predicates` (QF_BV path-predicate style).
+  - Emit SMT-LIB VC. Encoder: `sea_vc` (currently the only supported one;
+    QF_BV path-predicate style was removed, would need a rebuild from scratch).
   - Current preconditions: loop-free TAC, exactly one `AssertCmd`, and assert must be last in its block.
   - VC semantics: SAT iff assertion-failure state is reachable.
   - Solver mode: `--run` invokes z3 and reports `sat|unsat|unknown|timeout`.

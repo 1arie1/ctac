@@ -44,10 +44,11 @@ def _model_symbol_sorts(symbol_table_text: str) -> dict[str, str]:
 
 _SMT_EPILOG = (
     "[bold green]What it does[/bold green]  Emit an SMT-LIB VC from "
-    "loop-free, single-assert TAC. Default encoding [cyan]sea_vc[/cyan] "
-    "(QF_UFNIA): DSA + block-reachability, sound bv256 domain constraints, "
-    "bytemap-as-UF + range-axiom support. Alternative: "
-    "[cyan]--encoding vc-path-predicates[/cyan] (QF_BV path-predicate style).\n\n"
+    "loop-free, single-assert TAC. Encoding [cyan]sea_vc[/cyan] (QF_UFNIA): "
+    "DSA + block-reachability, sound bv256 domain constraints, bytemap-as-UF "
+    "+ range-axiom support. It is currently the only supported encoder — "
+    "the historical QF_BV path-predicate encoder was removed and would need "
+    "to be rebuilt from scratch if BV semantics become necessary.\n\n"
     "[bold green]Query semantics[/bold green]  [cyan]SAT[/cyan] iff the "
     "assertion-failure state is reachable. [cyan]UNSAT[/cyan] means the "
     "assertion holds.\n\n"

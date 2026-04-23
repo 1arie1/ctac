@@ -9,7 +9,6 @@ from ctac.smt.encoding import (
     register_encoder,
 )
 from ctac.smt.encoding.sea_vc import SeaVcEncoder
-from ctac.smt.encoding.vc_path_predicates import VCPathPredicatesEncoder
 from ctac.smt.model import SmtDeclaration, SmtScript
 from ctac.smt.render import render_smt_script
 from ctac.smt.validate import (
@@ -21,14 +20,13 @@ from ctac.smt.validate import (
     validate_program_for_smt,
 )
 
-register_encoder("vc-path-predicates", VCPathPredicatesEncoder)
 register_encoder("sea_vc", SeaVcEncoder)
 
 
 def build_vc(
     tac_file: TacFile,
     *,
-    encoding: str = "vc-path-predicates",
+    encoding: str = "sea_vc",
     unsat_core: bool = False,
     tight_logic: bool = False,
 ) -> SmtScript:

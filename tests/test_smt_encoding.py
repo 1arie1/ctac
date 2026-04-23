@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import pytest
 
 from ctac.parse import parse_string
 from ctac.smt import build_vc, render_smt_script
-from ctac.smt.encoding.base import SmtEncodingError
 
 TAC_ASSERT_FAIL_VC = """TACSymbolTable {
 \tUserDefined {
@@ -93,7 +91,11 @@ def test_vc_assertion_is_reachability_and_negated_predicate() -> None:
     tac = parse_string(TAC_ASSERT_FAIL_VC, path="<string>")
     script = build_vc(tac)
     rendered = render_smt_script(script)
-    assert "(assert (and reach__ok (not" in rendered
+    # sea_vc models "failing assert is reachable" as BLK_EXIT →
+    # (not <pred>) ∧ <assert-block guard>, plus a standalone
+    # `(assert BLK_EXIT)` kickoff. Verify both pieces.
+    assert "BLK_EXIT" in rendered
+    assert "(not " in rendered
     assert "(check-sat)" in rendered
 
 
@@ -107,14 +109,12 @@ def test_vc_rendering_is_deterministic() -> None:
 def test_vc_smoke_contains_expected_op_lowering() -> None:
     tac = parse_string(TAC_SMOKE_OPS, path="<string>")
     rendered = render_smt_script(build_vc(tac))
-    assert "bvadd" in rendered
-    assert "bvuge" in rendered
-
-
-def test_vc_rejects_int_to_bv_narrow_in_qf_bv_encoder() -> None:
-    tac = parse_string(TAC_INT_NARROW, path="<string>")
-    with pytest.raises(SmtEncodingError, match="QF_BV encoding does not support Int-typed TAC symbols"):
-        build_vc(tac)
+    # sea_vc lowers arithmetic into the Int theory, modding back into
+    # the bv256 domain: Add(X, Y) → `(mod (+ X Y) BV256_MOD)`.
+    # Comparisons are plain Int operators: Ge → `(>= X Y)`.
+    assert "(+ " in rendered
+    assert "BV256_MOD" in rendered
+    assert "(>= " in rendered
 
 
 def test_render_unsat_core_preamble_and_get_unsat_core() -> None:
@@ -136,9 +136,3 @@ def test_sea_vc_unsat_core_names_tac_asserts_not_cfg() -> None:
     assert ":named" not in rendered[i_cfg:i_exit]
 
 
-def test_vc_path_predicates_unsat_core_objective_not_named() -> None:
-    tac = parse_string(TAC_ASSERT_FAIL_VC, path="<string>")
-    rendered = render_smt_script(build_vc(tac, encoding="vc-path-predicates", unsat_core=True))
-    assert ":named TAC_1" in rendered
-    assert "(assert (and reach__ok (not" in rendered
-    assert "(assert (! (and reach__ok (not" not in rendered
