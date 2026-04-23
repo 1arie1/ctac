@@ -1,11 +1,27 @@
 # ctac ✈️
 
-Python library and CLI for Certora TAC-like program dumps (`.tac` and `.sbf.json` for text flows).  
-SeaTac vibes: taxiway maps for TAC CFGs. 🛫🛬
+Python library and CLI for Certora TAC program dumps (`.tac` and
+`.sbf.json`). SeaTac vibes: taxiway maps for TAC CFGs. 🛫🛬
 
-## Environment (recommended) 🧳
+A quick map of what `ctac` gives you beyond `grep`:
 
-Use Python **3.13+** (3.14 is fine). From the repo root:
+| Purpose | Commands |
+|---|---|
+| **Inspect** a TAC file | `stats`, `parse`, `pp`, `cfg`, `search` (alias: `grep`) |
+| **Compare** two builds | `op-diff`, `cfg-match`, `bb-diff` |
+| **Analyze** data-flow | `df` |
+| **Transform** TAC | `rw` (rewrites + DCE), `ua` (uniquify asserts) |
+| **Verify** | `run` (concrete interpreter), `smt` (SMT-LIB VC + z3) |
+| **Validate** the rewriter | `rw-valid` |
+
+Every command has its own `--help` (full flags + examples in the
+epilog) and `--agent` (terse agent-oriented guidance with
+"why beat manual" framing). The rest of this README is a map, not a
+manual — drill into `--help` for flag-level detail.
+
+## Environment 🧳
+
+Python **3.13+** (3.14 is fine). From the repo root:
 
 ```bash
 python3.14 -m venv .venv
@@ -13,135 +29,217 @@ python3.14 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
 
-Then run tools with `.venv/bin/ctac` or `source .venv/bin/activate`.
+Run tools with `.venv/bin/ctac` or `source .venv/bin/activate`.
 
-## Usage 🛫
+**Shell completion** (one-time setup; tab-completes commands,
+subcommands, flag values — and `ctac search`'s pattern against the
+TAC operator name set):
 
 ```bash
-# agent-focused guidance (plain text, terse)
-ctac --agent
-ctac stats --agent
-
-ctac stats path/to/file.tac
-ctac stats path/to/file.sbf.json
-# compact/legacy-style stats only:
-ctac stats path/to/file.tac --top-blocks 0 --no-by-cmd-kind
-# stats now also include expression-op counts and non-linear mul/div counters.
-# directory input is allowed (Certora Prover output dir); ctac auto-picks a non-vacuity TAC from outputs/
-ctac stats path/to/EvmOutput3-good --plain
-# parse command prints the same stats payload:
-ctac parse path/to/file.tac
-ctac parse path/to/file.sbf.json
-
-# control-flow graph (goto-style text, default) 🗺️
-ctac cfg path/to/file.tac
-ctac cfg path/to/file.sbf.json
-# one edge per line
-ctac cfg path/to/file.tac --style edges
-# first 50 blocks only
-ctac cfg path/to/file.tac --max-blocks 50
-
-# filters (combine with AND): path to a block, between two blocks, allow-list, …
-ctac cfg file.tac --to 236_1_0_0_0_0
-ctac cfg file.tac --from 0_0_0_0_0_0 --to 236_1_0_0_0_0
-ctac cfg file.tac --only 0_0_0_0_0_0,236_1_0_0_0_0
-ctac cfg file.tac --id-contains 236_1 --cmd-contains AssumeExpCmd
-ctac cfg file.tac --id-regex '^[0-9]+_1_' --exclude 0_0_0_0_0_0
-
-# pretty-print TAC as a goto program 🛬
-ctac pp file.tac
-ctac pp file.sbf.json
-# choose backend printer (`human` skips AnnotationCmd/LabelCmd, `raw` keeps dump lines)
-ctac pp file.tac --printer human
-ctac pp file.tac --printer raw
-# pp supports the same filters as cfg
-ctac pp file.tac --from 0_0_0_0_0_0 --to 236_1_0_0_0_0
-
-# search command lines (alias: `ctac grep`)
-ctac search file.tac 'assume R[0-9]+ <= \\[2\\^64-1\\]'
-ctac search file.sbf.json 'havoc' --literal
-# literal substring mode
-ctac search file.tac 'assert' --literal
-# print only block ids that matched
-ctac grep file.tac 'if .* < .*' --blocks-only
-# optimization hunt: detect self-compare candidates like A < A
-ctac search file.tac 'if (R[0-9]+) < \\1' --regex
-# optimization hunt: bool-temp equality checks constrained true (candidate: inline into assume)
-ctac search file.tac 'if .* == .* \\{ 1 \\} else \\{ 0 \\}' --regex
-# hotspot triage: where many repeated u64 guards appear (count + constrained path slice)
-ctac search file.tac 'assume R[0-9]+ <= \\[2\\^64-1\\]' --count --from A --to B
-
-# interpret TAC program (assume-fail stops, assert-fail continues) 🧪
-ctac run file.tac
-# trace execution with per-instruction values and taken branches
-ctac run file.tac --trace
-# havoc strategy: zero (default), random, ask
-ctac run file.tac --havoc-mode random
-# use TAC model values for havoc; missing values use sentinel fallback
-ctac run file.tac --model path/to/Assertions.txt
-# if PATH is a prover-output directory, ctac run auto-attempts model resolution from the same directory
-ctac run path/to/EvmOutput3-bad --plain
-# directory model input is allowed; ctac resolves Reports/ctpp_<rule>-Assertions.txt
-ctac run path/to/EvmOutput3-bad --model path/to/EvmOutput3-bad --trace --plain
-# optional second model for havoc fallback (when --model has no value)
-ctac run file.tac --model primary.txt --fallback secondary.txt
-# validate computed assignments against the model
-ctac run file.tac --model path/to/Assertions.txt --validate
-
-# SMT VC dump (requires loop-free TAC with exactly one AssertCmd, last in its block)
-# semantics: SAT iff failing assertion is reachable
-ctac smt file.tac --plain
-# default encoding is sea_vc (simplified DSA+reachability, QF_NIA/QF_UFNIA)
-# semantics: static assignments as top-level equalities, dynamic defs as ITEs
-ctac smt file.tac --encoding sea_vc
-# alternative path-predicate encoding (QF_BV)
-ctac smt file.tac --encoding vc-path-predicates
-# write SMT-LIB to file
-ctac smt file.tac --output out.smt2
-# run z3 on the generated query and print sat/unsat/unknown/timeout
-ctac smt file.tac --run --timeout 30 --seed 0 --tactic default
-# pass extra z3 options and write SAT model in TAC format for ctac run --model
-ctac smt file.tac --run --z3-args "-st" --model out.model.txt
-# print z3 stdin/stdout/stderr and a replay command for debugging
-ctac smt file.tac --run --debug
-
-# coarse CFG matching (weighted structure + source/function/snippet signals) 🛰️
-ctac cfg-match a.tac b.tac
-ctac cfg-match a.sbf.json b.sbf.json
-# tighten/relax accepted matches
-ctac cfg-match a.tac b.tac --min-score 0.60
-# tune how much literal constants influence matching
-ctac cfg-match a.tac b.tac --const-weight 0.35
-
-# basic-block semantic comparison on top of CFG matches 🧭
-ctac bb-diff a.tac b.tac
-ctac bb-diff a.sbf.json b.sbf.json
-# include source lines and show more changed blocks
-ctac bb-diff a.tac b.tac --with-source --max-blocks 50
-# cap per-block diff verbosity for huge blocks
-ctac bb-diff a.tac b.tac --max-diff-lines 80
+ctac --install-completion       # auto-detects zsh / bash / fish / powershell
+# restart shell
 ```
 
-Directory input behavior:
-- For TAC path arguments, if a directory is passed, ctac scans `<dir>/outputs/*.tac`,
-  ignores files containing `-rule_not_vacuous`, and picks one TAC deterministically.
-- For text commands (`parse`, `stats`, `search`, `cfg`, `pp`, `cfg-match`, `bb-diff`), direct file input can be either `.tac` or `.sbf.json`.
-- If multiple TAC files remain, ctac prints an input warning and continues.
-- For `run --model <dir>` (and `--fallback <dir>`), ctac resolves models from `<dir>/Reports/`
-  using `ctpp_<rule>-Assertions.txt`, where `<rule>` comes from the selected TAC name.
-- Non-`Assertions` model suffixes are ignored; ctac prints an input warning.
+## Typical pipelines 🛫
+
+**Solve an assertion end-to-end:**
+
+```bash
+ctac stats f.tac --plain                              # first look (memory capability, block/cmd counts)
+ctac rw f.tac -o opt.tac --plain                      # simplify (div/bitfield/Ite rewrites + DCE)
+ctac ua opt.tac -o sa.tac --plain                     # fold all asserts into one __UA_ERROR block
+ctac smt sa.tac --plain --run --model m.txt           # generate VC, invoke z3, write SAT model
+ctac run sa.tac --plain --model m.txt --trace         # replay the model concretely
+```
+
+**Compare two builds (did the encoder drift?):**
+
+```bash
+ctac op-diff a.tac b.tac --plain                      # per-stat frequency delta, grouped by section
+ctac cfg-match a.tac b.tac --plain                    # block correspondence (for bb-diff)
+ctac bb-diff a.tac b.tac --plain --drop-empty         # per-block semantic delta
+```
+
+**Validate the rewriter itself:**
+
+```bash
+ctac rw-valid -o /tmp/rwv --plain                     # emit per-rule SMT soundness scripts
+for f in /tmp/rwv/*.smt2; do echo -n "$(basename $f): "; z3 "$f" -T:5; done
+# expected `unsat` on every script
+```
+
+## Commands 🗺️
+
+### Inspect
+
+```bash
+ctac stats f.tac --plain                              # blocks/cmds/metas/ops + memory capability
+ctac stats path/to/output-dir --plain                 # auto-resolves outputs/*.tac
+
+ctac pp f.tac --plain                                 # humanized TAC (slices, ceil-div, etc.)
+ctac pp f.tac --plain --from A --to B                 # slice on a CFG path
+ctac pp f.tac -o out.htac                             # write pretty-printed text
+
+ctac cfg f.tac --plain                                # goto-style CFG text (default)
+ctac cfg f.tac --plain --style edges                  # one `src -> dst` per line — grep-friendly
+ctac cfg f.tac --plain --style dot | dot -Tpng -o cfg.png
+ctac cfg f.tac --plain --style blocks                 # one block id per line — for shell loops
+
+ctac search f.tac 'BWAnd' --plain --count             # count op usage (pattern tab-completes)
+ctac search f.tac 'BWAnd' --plain -C 2                # grep-style context (-B / -A / -C)
+ctac search f.tac '0x[0-9a-f]+' --plain --count-by-match  # frequency table of distinct matches
+ctac search f.tac 'BWAnd' --plain -q --count          # pipeable; `awk '/^matches:/ {print $2}'`
+```
+
+`cfg`, `pp`, `search`, and `df` all share the same filter grammar —
+`--from`, `--to`, `--only`, `--id-contains`, `--id-regex`,
+`--cmd-contains`, `--exclude` — combining with AND.
+
+### Compare two builds
+
+```bash
+ctac op-diff a.tac b.tac --plain                      # per-stat delta, headline finding in one shot
+ctac op-diff a.tac b.tac --plain --show expression_ops
+ctac op-diff a.tac b.tac --json                       # machine-readable
+
+ctac cfg-match a.tac b.tac --plain --const-weight 0.2
+ctac bb-diff  a.tac b.tac --plain --drop-empty --max-diff-lines 120
+```
+
+`op-diff` is the fastest way to spot encoder-level drift between two
+Prover versions (it's built on top of `ctac stats`). Reach for
+`cfg-match` + `bb-diff` for block-level structural / semantic diffs.
+
+### Analyze data-flow
+
+```bash
+ctac df f.tac --plain                                 # all analyses, summary
+ctac df f.tac --plain --show dsa                      # validate DSA form (rejecter for sea_vc)
+ctac df f.tac --plain --show dce --details            # per-item dead-code listing
+ctac df f.tac --plain --json                          # machine-readable
+```
+
+Available analyses: `def-use`, `liveness`, `dce`, `use-before-def`,
+`dsa`, `control-dependence`, `uce` (useless-assume elimination).
+
+### Transform TAC
+
+```bash
+ctac rw f.tac --plain --report                        # simplify + print per-rule hit counts
+ctac rw f.tac -o small.tac --plain                    # write a round-trippable .tac
+ctac rw f.tac -o small.htac --plain                   # write pretty-printed .htac
+ctac rw f.tac --no-purify-div --plain                 # disable R4a; other rules still run
+
+ctac ua f.tac -o f_ua.tac --plain                     # fold every assert into one __UA_ERROR block
+ctac ua f.tac -o f_ua.tac --plain --report            # + counts
+```
+
+`rw` runs the iterated simplification pipeline (N1–N4 bit-op
+canonicalization, R1–R4 div rules, R6 ceil-div collapse, boolean/Ite
+cleanup, CSE, copy-prop). `--purify-div` / `--purify-ite` /
+`--purify-assert` / `--purify-assume` control post-DCE naming phases.
+Soundness of every rule is documented by `ctac rw-valid`.
+
+`ua` is the prerequisite for `ctac smt` on multi-assert TAC: it
+emits `if (P) goto GOOD else goto __UA_ERROR` for each assert, with
+`assume P` opening the GOOD continuation — Floyd-Hoare style, no
+inversion.
+
+### Verify
+
+```bash
+ctac run f.tac --plain                                # concrete interpreter, zero-havoc
+ctac run f.tac --plain --model m.txt --trace          # replay a z3 model (TAC or SMT-LIB format)
+ctac run f.tac --plain --model m.txt --validate       # compare computed values vs model
+
+ctac smt f.tac --plain                                # emit SMT-LIB VC to stdout
+ctac smt f.tac --plain -o out.smt2                    # write .smt2
+ctac smt f.tac --plain --run                          # invoke z3
+ctac smt f.tac --plain --run --model out.model.txt    # write SAT model in TAC format
+ctac smt f.tac --plain --run --unsat-core             # name asserts, print core on unsat
+```
+
+`ctac smt` requires loop-free, single-assert TAC (run `ua` first),
+and bytemap-free / bytemap-ro memory capability (check with
+`ctac stats`). The sole encoder is `sea_vc` — QF_UFNIA, DSA +
+block-reachability, sound bv256 domain constraints, bytemap-as-UF
+with a per-application range axiom.
+
+`ctac run` interprets the program concretely — `assume` failures stop
+the run silently (infeasible path), `assert` failures continue and
+count toward `assert_fail`. Bytemap symbols load from model entries
+(both TAC and raw z3 formats) and feed `Select` lookups.
+
+### Validate the rewriter
+
+```bash
+ctac rw-valid -o /tmp/rwv --plain                     # emit all per-rule SMT specs
+ctac rw-valid -o /tmp/rwv --plain --rule R4a          # one rule only
+```
+
+Emits a self-contained `.smt2` per rule (plus `manifest.json`) whose
+expected outcome is `unsat`. Currently covers R4 (5 operator variants),
+R4a (base + signed), R6 (base + signed). Other rules are listed in
+`manifest.json:missing`.
+
+## Directory input conventions
+
+- **TAC inputs**: a directory argument is scanned as
+  `<dir>/outputs/*.tac`, ignoring `-rule_not_vacuous` files. If
+  multiple candidates remain, ctac warns and picks deterministically.
+- **Model inputs** (`run --model <dir>`, `--fallback <dir>`): resolved
+  from `<dir>/Reports/ctpp_<rule>-Assertions.txt` for the selected
+  TAC's rule. Non-`Assertions` suffixes emit a warning and are
+  skipped.
+- **Text commands** (`parse`, `stats`, `search`, `cfg`, `pp`,
+  `cfg-match`, `bb-diff`) accept either `.tac` or `.sbf.json`
+  directly.
 
 ## Library 🏗️
+
+The Python API mirrors the CLI surface. Major modules:
+
+```python
+from ctac.parse     import parse_path          # .tac / .sbf.json -> TacFile
+from ctac.graph     import Cfg, CfgFilter      # CFG with filtering + rendering
+from ctac.analysis  import (                   # data-flow passes + classifiers
+    analyze_dsa, analyze_liveness, eliminate_dead_assignments,
+    classify_bytemap_usage, BytemapCapability,
+)
+from ctac.rewrite   import rewrite_program     # rewrite driver
+from ctac.rewrite.rules import simplify_pipeline, purify_pipeline
+from ctac.ua        import uniquify_asserts, merge_asserts
+from ctac.eval      import RunConfig, run_program, parse_model_path, MemoryModel
+from ctac.smt       import build_vc, render_smt_script
+```
+
+One worked example — slice a CFG between two blocks:
 
 ```python
 from ctac.parse import parse_path
 from ctac.graph import Cfg, CfgFilter
 
-tac = parse_path("file.tac")
-print(len(tac.program.blocks))
+tac = parse_path("f.tac")
 cfg = Cfg(tac.program)
-only_path, _ = cfg.filtered(CfgFilter(from_id="entry", to_id="exit"))
-print(len(only_path.blocks))
+sliced, warnings = cfg.filtered(CfgFilter(from_id="entry", to_id="exit"))
+print(f"{len(sliced.blocks)} blocks on some path from entry to exit")
+```
+
+End-to-end — rewrite, uniquify, build VC:
+
+```python
+import dataclasses
+from ctac.parse import parse_path
+from ctac.rewrite import rewrite_program
+from ctac.rewrite.rules import default_pipeline
+from ctac.ua import uniquify_asserts
+from ctac.smt import build_vc, render_smt_script
+
+tac = parse_path("f.tac")
+rw  = rewrite_program(tac.program, default_pipeline)
+ua  = uniquify_asserts(rw.program)
+vc  = build_vc(dataclasses.replace(tac, program=ua.program))
+print(render_smt_script(vc))
 ```
 
 ## Authors
