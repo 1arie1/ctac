@@ -253,9 +253,20 @@ coding tools. Design decisions, scope control, and final review rest
 with the human authors above; AI agents contributed implementation,
 tests, and documentation under direction.
 
+- **Cursor** (premium model, likely OpenAI Codex) — initial
+  scaffolding and first ~three days of development. Visible in
+  per-commit `Made-with: Cursor` trailers spanning the first 43
+  commits (the initial TAC toolkit, ctac CLI structure, stats,
+  search, cfg, pp, run, cfg-match, bb-diff, df, and the sea_vc
+  foundations).
 - **Claude Code** (Anthropic Claude Opus 4.x) — primary coding
-  collaborator across the session. Agent-level use is visible in
-  per-commit `Co-Authored-By:` trailers.
+  collaborator from mid-April 2026 onward. Visible in per-commit
+  `Co-Authored-By: Claude Opus 4.x ...` trailers. Delivered the
+  rewrite pipeline validation (`rw-valid`), bytemap-ro SMT + run
+  support, `ua` uniquify-asserts, `op-diff`, the search sub-features
+  (`-C`, `--count-by-match`, `-q`, `--printer auto`,
+  pattern tab-completion), shell completion wiring, and the
+  README / `--help` / `--agent` overhaul.
 - Occasional use of other assistants (editor-integrated
   autocompletion, model-backed search) that do not appear in commit
   trailers.
