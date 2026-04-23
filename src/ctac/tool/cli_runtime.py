@@ -487,6 +487,22 @@ def complete_smt_encodings():
 
     return _complete
 
+
+def complete_search_tokens():
+    """Tab-complete TAC operator / command names for ``ctac search`` patterns.
+
+    An agent typing ``ctac search f.tac <TAB>`` sees every token that
+    will match something real: expression ops (``BWAnd``, ``Mod``,
+    ``Select``, ...), command kinds (``AssignExpCmd``, ``AssertCmd``,
+    ...), builtin-function symbols (``safe_math_narrow_bv256:bif``),
+    and humanized keywords. Source of truth: ``ctac.ast.ops``.
+    """
+    def _complete(incomplete: str):
+        from ctac.ast.ops import all_search_tokens
+        return [t for t in all_search_tokens() if t.startswith(incomplete)]
+
+    return _complete
+
 # CFG slicing filter help strings. Reused across cfg / pp / search / df.
 FILTER_FROM_HELP = (
     "Keep only blocks reachable from NBID (successor cone). Combines with "

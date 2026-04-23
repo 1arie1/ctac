@@ -26,6 +26,7 @@ from ctac.tool.cli_runtime import (
     agent_option,
     app,
     complete_choices,
+    complete_search_tokens,
     console,
     plain_requested,
 )
@@ -733,7 +734,11 @@ def search_cmd(
     path: Optional[Path] = typer.Argument(
         None, help="Path to .tac / .sbf.json file, or a Certora output directory."
     ),
-    pattern: str = typer.Argument(..., help="Pattern to search in rendered command lines."),
+    pattern: str = typer.Argument(
+        ...,
+        help="Pattern to search in rendered command lines.",
+        autocompletion=complete_search_tokens(),
+    ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
     printer: Annotated[
