@@ -174,6 +174,12 @@ picks `raw` so TAC operator names (`BWAnd`, `Mod`, `Select`,
 printer would rewrite them into slice/mod syntax and silently return
 0 matches. Without `--plain`, it picks `human` for readable output.
 
+DESIGN: search matches against exactly the text it shows you — no
+hidden discrepancy between "what's searched" and "what's displayed".
+Under `--plain`, both are raw TAC, so `grep` and `ctac search` stay
+interchangeable (you can mix them in one pipeline). Without `--plain`,
+both are humanized so interactive "find" and "read" line up.
+
 TYPICAL:
   ctac search f.tac 'BWAnd' --plain --count              # count op usage
   ctac search f.tac 'if \\(R[0-9]+\\) < \\\\1' --plain   # tautological self-compare
