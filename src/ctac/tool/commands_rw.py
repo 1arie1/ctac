@@ -172,9 +172,33 @@ def rewrite_cmd(
 ) -> None:
     """Run the TAC → TAC rewrite pipeline (div/bit-field simplifications + DCE).
 
-    Default output: pretty-printed TAC to stdout. With ``-o FILE.tac`` emits a
-    round-trippable ``.tac`` file; with ``-o FILE.htac`` emits pretty-printed
-    text to a file.
+    Pipeline phases:
+    1. ``simplify_pipeline`` — bit-op canonicalization (N1-N4), div/ceildiv
+       simplifications (R1-R4, R6), boolean/Ite cleanup, CSE, copy-prop —
+       all iterated to a fixed point.
+    2. (optional) R4a div purification — replaces ``X = Div(A, B)`` with
+       ``havoc X + euclidean bounds`` when ``B`` has a non-constant positive
+       range. Controlled by ``--purify-div`` (default on).
+    3. Iterated DCE to remove the residual dead defs.
+    4. (optional) Post-DCE naming phase: ``--purify-ite`` (default on),
+       ``--purify-assert`` (default on), ``--purify-assume`` (default off),
+       plus CSE + CP + another DCE sweep.
+
+    Default output: pretty-printed TAC to stdout. With ``-o FILE.tac`` emits
+    a round-trippable ``.tac`` file; with ``-o FILE.htac`` emits
+    pretty-printed text to a file. Use ``--report`` to see per-rule hit
+    counts and DCE stats.
+
+    Examples:
+      ctac rw f.tac --plain                              # pp to stdout
+      ctac rw f.tac --plain --report                     # + rule hit counts
+      ctac rw f.tac -o small.tac --plain                 # write round-trippable .tac
+      ctac rw f.tac -o small.htac --plain                # write pretty-printed .htac
+      ctac rw f.tac --no-purify-div --plain              # disable R4a
+      ctac rw f.tac --purify-assume --plain              # also purify assumes
+
+    Soundness of the rules is documented by ``ctac rw-valid`` (emits one
+    .smt2 per rule; expected ``unsat`` under z3).
     """
     _ = agent
     plain = plain_requested(plain)

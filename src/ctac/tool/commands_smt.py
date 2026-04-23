@@ -107,11 +107,27 @@ def smt_cmd(
 ) -> None:
     """Emit an SMT-LIB VC for a TAC program.
 
-    Preconditions: loop-free TAC, exactly one AssertCmd, and the AssertCmd is
-    the last command in its block.
+    Default encoding ``sea_vc`` (QF_UFNIA): DSA + block-reachability
+    encoding with sound bv256 domain constraints and bytemap-as-UF +
+    range-axiom support. Alternative: ``--encoding vc-path-predicates``
+    (QF_BV path-predicate style).
 
     Query semantics: SAT iff the assertion-failure state is reachable.
-    Use `--run` to execute z3 and `--model` to write SAT model in TAC format.
+    UNSAT means the assertion holds.
+
+    Preconditions: loop-free TAC; exactly one ``AssertCmd`` (run
+    ``ctac ua`` to merge multi-assert inputs); ``AssertCmd`` must be the
+    last command in its block; bytemap usage must be ``bytemap-free`` or
+    ``bytemap-ro`` (check with ``ctac stats --plain``).
+
+    Examples:
+      ctac smt f.tac --plain                             # print VC to stdout
+      ctac smt f.tac --plain -o out.smt2                 # write .smt2 file
+      ctac smt f.tac --plain --run                       # invoke z3
+      ctac smt f.tac --plain --run --model m.txt         # write SAT model (TAC format)
+      ctac smt f.tac --plain --run --unsat-core          # name asserts, print core
+      ctac smt f.tac --plain --run --timeout 60 --z3-args "smt.random_seed=7"
+      ctac smt f.tac --plain --run --debug               # print z3 stdin/stdout + replay cmd
     """
     _ = agent
     plain = plain_requested(plain)

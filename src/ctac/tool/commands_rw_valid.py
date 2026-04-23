@@ -42,9 +42,28 @@ def rw_valid_cmd(
 ) -> None:
     """Emit SMT-LIB soundness scripts for rewrite rules with declared specs.
 
-    Each script is a self-contained SMT-LIB 2 instance whose expected
-    outcome is ``unsat`` (the rule is sound). Run any SMT-LIB 2 solver
-    on the output files — ``ctac`` does not run z3 automatically.
+    For each registered validation case, writes ``<rule>[_<case>].smt2``
+    and a ``manifest.json`` summarizing coverage. Each script is a
+    self-contained SMT-LIB 2 instance whose expected outcome is ``unsat``
+    (the rule is sound). ``ctac`` does not run z3 automatically — users
+    drive the solver so they can iterate with custom tactics or Lean.
+
+    The spec is **trusted**: a human-written claim about what the rule
+    does, placed next to the rule source for easy side-by-side review.
+    Currently covers R4 (5 cases), R4a (base + signed), R6 (base +
+    signed). Other rules are listed under ``manifest.json``'s ``missing``
+    array.
+
+    Examples:
+      ctac rw-valid -o /tmp/rwv --plain                  # emit all specs
+      ctac rw-valid -o /tmp/rwv --rule R4a --plain       # one rule only
+      ctac rw-valid -o /tmp/rwv --rule R4 --rule R6 --plain
+
+    Then run the solver:
+      for f in /tmp/rwv/*.smt2; do echo -n "$(basename $f): "; z3 $f; done
+
+    Expected: ``unsat`` on every script. ``sat`` is a counterexample
+    (rule bug). ``unknown`` means escalate (tactics, Lean).
     """
     _ = agent
     plain = plain_requested(plain)

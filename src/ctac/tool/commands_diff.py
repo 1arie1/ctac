@@ -54,7 +54,20 @@ def match_cfg_cmd(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
-    """Coarse CFG block matching with weighted structural/meta features."""
+    """Coarse CFG block matching with weighted structural/meta features.
+
+    Scores pairs of blocks from two TAC (or .sbf.json) files by
+    command + constant signature. Run before ``bb-diff`` to see
+    which blocks moved vs. really changed. Constants are often strong
+    anchors — raise ``--const-weight`` when the two builds should share
+    many literals.
+
+    Examples:
+      ctac cfg-match a.tac b.tac --plain
+      ctac cfg-match a.tac b.tac --plain --const-weight 0.2
+      ctac cfg-match a.tac b.tac --plain --min-score 0.6   # strong pairs only
+      ctac cfg-match a.tac b.tac --plain --max-rows 20
+    """
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)
@@ -188,7 +201,19 @@ def bb_diff_cmd(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
-    """Compare matched basic blocks and print per-block semantic deltas."""
+    """Compare matched basic blocks and print per-block semantic deltas.
+
+    Runs ``cfg-match`` internally to build a block correspondence, then
+    normalizes DSA-renamed variable names (so trivial ``R51 -> R62``
+    renames don't light up as diffs) and reports per-block deltas.
+    Equal blocks can be hidden with ``--drop-empty``.
+
+    Examples:
+      ctac bb-diff a.tac b.tac --plain --drop-empty --max-diff-lines 120
+      ctac bb-diff a.tac b.tac --plain --const-weight 0.2 --normalize-vars
+      ctac bb-diff a.tac b.tac --plain --context 3 --keep-empty
+      ctac bb-diff a.tac b.tac --plain --with-source        # also print origins
+    """
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)

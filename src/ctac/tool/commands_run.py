@@ -95,7 +95,25 @@ def run(
         help="Compare computed assignments against model values and report mismatches.",
     ),
 ) -> None:
-    """Execute TAC with a concrete interpreter (assume-fail stops, assert-fail continues)."""
+    """Execute TAC with a concrete interpreter.
+
+    Semantics: ``assume`` failures stop the run silently (no counterexample
+    — the path is infeasible); ``assert`` failures continue and accumulate
+    as ``assert_fail`` counts. Havoc behavior is controlled by
+    ``--havoc-mode zero|random|ask`` (default ``zero``), or replayed from
+    a model via ``--model``. Bytemap symbols load from memory entries in
+    the model and feed ``Select`` lookups.
+
+    Examples:
+      ctac run f.tac --plain                             # zero-havoc run
+      ctac run dir/ --plain                              # auto-resolve .tac + model
+      ctac run f.tac --plain --trace                     # per-instruction trace
+      ctac run f.tac --plain --model m.txt --trace       # replay a z3 model
+      ctac run f.tac --plain --model m.txt --validate    # compare computed vs model
+      ctac run f.tac --plain --havoc-mode random --entry B1
+
+    Status codes: 0 ok, 2 stopped (assume failed), 3 error/max_steps.
+    """
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)

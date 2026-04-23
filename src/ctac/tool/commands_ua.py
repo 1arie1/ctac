@@ -71,6 +71,10 @@ def ua_cmd(
 ) -> None:
     """Uniquify assertions: fold every AssertCmd into a single __UA_ERROR block.
 
+    Use this as preprocessing for ``ctac smt``, which requires a single
+    assertion. The predicate of each assertion is used verbatim — never
+    inverted — so the rewrite preserves the original semantics.
+
     Pipeline (all steps are optional flags; defaults mirror the typical use case):
 
     1. ``remove_true_asserts`` — strip every ``assert true``.
@@ -78,7 +82,18 @@ def ua_cmd(
        fresh ``TA<N>:bool``.
     3. Apply ``--strategy`` (``merge`` redirects every remaining assert to
        ``__UA_ERROR`` via ``if (P) goto GOOD else goto __UA_ERROR``, with
-       ``assume P`` starting each continuation).
+       ``assume P`` starting each continuation so later asserts can assume
+       earlier ones held).
+
+    Examples:
+      ctac ua f.tac -o f_ua.tac --plain                  # merge asserts
+      ctac ua f.tac -o f_ua.tac --plain --report         # + counts
+      ctac ua f.tac -o f_ua.tac --plain --no-purify-assert    # skip purification
+      ctac ua f.tac -o f_ua.tac --plain --keep-true-asserts   # keep assert true
+
+    Followup: ``ctac smt f_ua.tac --plain --run`` to solve the VC.
+    Single-assert input is a no-op (``was_noop: true``); zero-assert
+    input emits a warning.
     """
     _ = agent
     if strategy != "merge":

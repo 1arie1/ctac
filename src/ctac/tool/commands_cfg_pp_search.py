@@ -286,8 +286,19 @@ def cfg(
 ) -> None:
     """Print the control-flow graph structure as text (goto view by default).
 
-    Filters use **intersection** (AND): e.g. ``--to X --id-contains foo`` keeps ancestors of ``X``
-    whose ids contain ``foo``. ``--from A --to B`` keeps blocks on some path from ``A`` to ``B``.
+    Three styles: ``goto`` (block labels + goto targets, the default),
+    ``edges`` (one ``src -> dst`` line per edge, grep-friendly), and
+    ``dot`` (Graphviz digraph; pipe to ``dot -Tpng`` for a picture).
+
+    Filters use intersection (AND). ``--from A --to B`` keeps blocks on
+    some path from ``A`` to ``B``. ``--id-contains``/``--id-regex``/
+    ``--cmd-contains``/``--only``/``--exclude`` combine with that.
+
+    Examples:
+      ctac cfg f.tac --plain
+      ctac cfg f.tac --plain --style edges --from entry --to 42_0_0
+      ctac cfg f.tac --plain --id-regex '^assert_'
+      ctac cfg f.tac --plain --style dot | dot -Tpng -o cfg.png
     """
     _ = agent
     plain = plain_requested(plain)
@@ -408,7 +419,23 @@ def pp(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
-    """Pretty-print TAC as a goto program, using a selectable printer backend."""
+    """Pretty-print TAC as a goto program with humanized expressions.
+
+    Default ``human`` printer rewrites bit-field ops into slice notation
+    (e.g. ``Mul(Mod(Div(X 0x400) 0x100) 0x400)`` becomes ``X[10..17]``),
+    normalizes shifted masks, and collapses common idioms. ``--printer
+    raw`` disables the rewrites.
+
+    Accepts the same filters as ``ctac cfg`` (``--from/--to/--only/
+    --id-contains/--id-regex/--cmd-contains/--exclude``), all combining
+    with AND. Output goes to stdout unless ``-o`` is given.
+
+    Examples:
+      ctac pp f.tac --plain
+      ctac pp f.tac --plain --from A --to B              # slice on a path
+      ctac pp f.tac --plain --cmd-contains 'Select(M16'  # pin bytemap reads
+      ctac pp f.tac -o f.htac                            # write pretty-printed .htac
+    """
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)
@@ -570,7 +597,22 @@ def search_cmd(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
-    """Search TAC command lines using regex or literal pattern matching."""
+    """Search TAC command lines using regex or literal pattern matching.
+
+    Matches are anchored to a single command (no cross-command false
+    positives) and respect block structure. Defaults to regex; use
+    ``--literal`` for substring. Accepts the same ``--from/--to/--only/
+    ...`` filters as ``ctac pp`` / ``ctac cfg``, combined with AND.
+
+    Aliased as ``ctac grep`` for muscle memory.
+
+    Examples:
+      ctac search f.tac 'assume.*\\[2\\^64' --plain --count
+      ctac search f.tac Eq --plain --literal                # substring match
+      ctac search f.tac 'if \\(R[0-9]+\\) < \\1' --plain     # self-compare
+      ctac search f.tac 'Select\\(M16' --plain --blocks-only # blocks-only
+      ctac grep f.tac havoc --plain --literal               # alias
+    """
     _ = agent
     run_search(
         path=path,

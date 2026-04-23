@@ -186,7 +186,24 @@ def dataflow_cmd(
     cmd_contains: Annotated[Optional[str], typer.Option("--cmd-contains")] = None,
     exclude: Annotated[Optional[str], typer.Option("--exclude")] = None,
 ) -> None:
-    """Run TAC data-flow analyses and report summaries or detailed diagnostics."""
+    """Run TAC data-flow analyses and report summaries or detailed diagnostics.
+
+    Available analyses (``--show`` is comma-separated, default ``all``):
+    ``def-use``, ``liveness``, ``dce`` (dead-code elimination),
+    ``use-before-def``, ``dsa`` (DSA-form validation),
+    ``control-dependence``, ``uce`` (useless-assume elimination).
+
+    Default prints compact summary stats per analysis; ``--details``
+    switches to per-item listings (bounded by ``--max-items``). Use
+    ``--json`` for machine-readable output.
+
+    Examples:
+      ctac df f.tac --plain                               # all analyses, summary
+      ctac df f.tac --plain --show dce --details          # only DCE, detailed
+      ctac df f.tac --plain --show dsa                    # validate DSA form
+      ctac df f.tac --plain --show dce --transformed -o opt.tac
+      ctac df f.tac --plain --json                        # JSON output
+    """
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)

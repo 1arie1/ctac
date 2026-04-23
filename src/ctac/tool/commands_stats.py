@@ -232,7 +232,19 @@ def stats(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
-    """Print summary statistics for a .tac file (blocks, commands, metas, symbol table size)."""
+    """Print summary statistics for a .tac file.
+
+    Reports block/command/meta counts, symbol-table size, command-kind
+    counts, top-N dense blocks, expression-op frequencies,
+    non-linear mul/div counters, and the bytemap memory capability.
+    Cheap sanity check to start with on any unknown TAC or SBF file.
+
+    Examples:
+      ctac stats f.tac --plain
+      ctac stats dir/ --plain                         # resolve dir/outputs/*.tac
+      ctac stats f.tac --plain --top-blocks 0 --no-by-cmd-kind   # compact
+      ctac stats f.tac --plain --top-blocks 5          # top 5 dense blocks
+    """
     _ = agent
     run_stats(
         path,
@@ -265,7 +277,16 @@ def parse(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
-    """Parse a .tac file and print basic statistics (same output as ``ctac stats``)."""
+    """Parse a .tac file and print basic statistics.
+
+    Identical output to ``ctac stats``; the name emphasizes that a
+    successful run means the file round-trips through the TAC parser.
+    Use it as a first-pass syntactic check before doing anything else.
+
+    Examples:
+      ctac parse f.tac --plain
+      ctac parse dir/ --plain
+    """
     _ = agent
     run_stats(
         path,
