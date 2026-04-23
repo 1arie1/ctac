@@ -168,7 +168,14 @@ time (no cross-command false positives), respect block structure, and
 honor the same `--from/--to/--only` filters as `pp`/`cfg`. `--count`
 and `--blocks-only` keep output compact.
 
+PRINTER DEFAULT: `--printer auto` is the default. Under `--plain` it
+picks `raw` so TAC operator names (`BWAnd`, `Mod`, `Select`,
+`safe_math_narrow_bv256:bif`, ...) match as typed — the `human`
+printer would rewrite them into slice/mod syntax and silently return
+0 matches. Without `--plain`, it picks `human` for readable output.
+
 TYPICAL:
+  ctac search f.tac 'BWAnd' --plain --count              # count op usage
   ctac search f.tac 'if \\(R[0-9]+\\) < \\\\1' --plain   # tautological self-compare
   ctac search f.tac 'assume.*\\[2\\^64' --plain --count  # range-guard hits
   ctac search f.tac Eq --plain --literal                 # substring

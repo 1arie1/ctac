@@ -559,7 +559,16 @@ _SEARCH_EPILOG = (
     "[cyan]--from/--to/--only/...[/cyan] filters as [cyan]ctac pp[/cyan] / "
     "[cyan]ctac cfg[/cyan], combined with AND.\n\n"
     "Aliased as [cyan]ctac grep[/cyan] for muscle memory.\n\n"
+    "[bold green]Printer choice[/bold green]  Default [cyan]--printer auto[/cyan] "
+    "resolves to [cyan]raw[/cyan] under [cyan]--plain[/cyan] (so TAC operator "
+    "names — [cyan]BWAnd[/cyan], [cyan]Mod[/cyan], [cyan]Select[/cyan], "
+    "[cyan]safe_math_narrow_bv256:bif[/cyan], ... — match as typed) and to "
+    "[cyan]human[/cyan] in interactive mode (humanized slice/mod syntax is "
+    "easier to read). Pass [cyan]--printer human[/cyan] explicitly to force "
+    "humanization even under [cyan]--plain[/cyan].\n\n"
     "[bold green]Examples[/bold green]\n\n"
+    "[cyan]ctac search f.tac 'BWAnd' --plain --count[/cyan]"
+    "  [dim]# count BWAnd ops — raw form via auto[/dim]\n\n"
     "[cyan]ctac search f.tac 'assume.*\\[2\\^64' --plain --count[/cyan]"
     "  [dim]# count range guards[/dim]\n\n"
     "[cyan]ctac search f.tac Eq --plain --literal[/cyan]"
@@ -586,10 +595,16 @@ def search_cmd(
         str,
         typer.Option(
             "--printer",
-            help="Pretty-printer backend name. Built-ins: human (default), raw.",
-            autocompletion=complete_choices(["human", "raw"]),
+            help=(
+                "Pretty-printer backend: auto (default — raw under --plain, human "
+                "otherwise), human, or raw. Use raw to match on TAC operator "
+                "names (BWAnd, Mod, Select, safe_math_narrow_bv256:bif, ...) — "
+                "the human printer rewrites those into slice/mod syntax and "
+                "hides them from pattern matching."
+            ),
+            autocompletion=complete_choices(["auto", "human", "raw"]),
         ),
-    ] = "human",
+    ] = "auto",
     strip_var_suffixes: bool = typer.Option(
         True,
         "--strip-var-suffix/--keep-var-suffix",
@@ -653,11 +668,17 @@ def search_cmd(
 ) -> None:
     """Regex / literal search over TAC commands (alias: `grep`)."""
     _ = agent
+    # "auto" resolves to raw under --plain (agents / scripts want operator
+    # names to match) and human otherwise (humans want readable expressions).
+    # Explicit "--printer human"/"--printer raw" still wins.
+    resolved_printer = printer
+    if printer == "auto":
+        resolved_printer = "raw" if plain_requested(plain) else "human"
     run_search(
         path=path,
         pattern=pattern,
         plain=plain,
-        printer=printer,
+        printer=resolved_printer,
         strip_var_suffixes=strip_var_suffixes,
         human=human,
         regex=regex,
