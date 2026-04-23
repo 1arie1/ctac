@@ -143,7 +143,7 @@ from A to B (intersection with other filters via AND).
 STYLES:
   --style goto     # block label + `goto <succ>` — default, block-oriented
   --style edges    # one `src -> dst` line per edge — grep-friendly
-  --style dot      # Graphviz digraph — pipe to `dot -Tpng` for a picture
+  --style dot      # Graphviz digraph — pipe to `dot -Tsvg` for a picture
   --style blocks   # one block id per line, no preamble — for shell loops
 
 TYPICAL:

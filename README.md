@@ -82,7 +82,7 @@ ctac pp f.tac -o out.htac                             # write pretty-printed tex
 
 ctac cfg f.tac --plain                                # goto-style CFG text (default)
 ctac cfg f.tac --plain --style edges                  # one `src -> dst` per line — grep-friendly
-ctac cfg f.tac --plain --style dot | dot -Tpng -o cfg.png
+ctac cfg f.tac --plain --style dot | dot -Tsvg -o cfg.svg
 ctac cfg f.tac --plain --style blocks                 # one block id per line — for shell loops
 
 ctac search f.tac 'BWAnd' --plain --count             # count op usage (pattern tab-completes)
