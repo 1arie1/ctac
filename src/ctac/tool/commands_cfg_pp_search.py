@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -167,6 +168,11 @@ def run_search(
             c.print(f"[red]search filter error:[/red] {e}")
         raise typer.Exit(2) from e
 
+    # `--max-matches 0` means unlimited; compile to sys.maxsize so the
+    # existing `total > max_matches` / `min(total, max_matches)` checks
+    # keep working without a special case at each call site.
+    if max_matches == 0:
+        max_matches = sys.maxsize
     printer_name = normalize_printer_name(printer)
     pp_backend = configured_printer(
         printer_name,
@@ -635,8 +641,11 @@ def search_cmd(
     max_matches: int = typer.Option(
         200,
         "--max-matches",
-        min=1,
-        help="Maximum number of matches to print/count before truncation.",
+        min=0,
+        help=(
+            "Maximum number of matches to print/count before truncation. "
+            "Use 0 for unlimited."
+        ),
     ),
     count_only: bool = typer.Option(
         False,
