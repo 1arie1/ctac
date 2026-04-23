@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections import deque
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -122,6 +123,9 @@ def run_search(
     max_matches: int,
     count_only: bool,
     blocks_only: bool,
+    before: int | None = None,
+    after: int | None = None,
+    context: int = 0,
     to_block: str | None,
     from_block: str | None,
     only: str | None,
@@ -194,25 +198,71 @@ def run_search(
     if flt.any_active():
         c.print(f"# filter: {len(filtered_cfg.blocks)} of {len(tac.program.blocks)} block(s)")
 
+    # Resolve grep-style context flags. Explicit --before/--after (including
+    # 0) win over --context; None means "fall back to --context".
+    eff_before = before if before is not None else context
+    eff_after = after if after is not None else context
+    want_context = (eff_before > 0 or eff_after > 0) and not (count_only or blocks_only)
+
+    def _fmt_match(bid: str, i: int, cmd, text: str) -> str:
+        return f"{bid}:{i}: [{type(cmd).__name__}] {text}"
+
+    def _fmt_ctx(bid: str, i: int, cmd, text: str) -> str:
+        # grep convention: `-` separator for context rows.
+        return f"{bid}:{i}- [{type(cmd).__name__}] {text}"
+
     total = 0
     blocks_hit: set[str] = set()
     for b in filtered_cfg.ordered_blocks():
+        # Ring buffer of the last eff_before non-empty commands (for the
+        # "before" view of the next match). Reset per block so context
+        # never crosses block boundaries.
+        before_buf: deque[tuple[int, object, str]] = deque(maxlen=max(eff_before, 1))
+        last_emitted_idx = -1  # highest cmd index we've printed in this block
+        after_remaining = 0    # countdown of trailing-context rows owed
         for idx, cmd in enumerate(b.commands):
             line = pp_backend.print_cmd(cmd)
             if line is None or line == "":
                 continue
-            if not matches(line):
-                continue
-            total += 1
-            blocks_hit.add(b.id)
+            if matches(line):
+                total += 1
+                blocks_hit.add(b.id)
 
-            if total > max_matches:
-                break
-            if count_only:
-                continue
-            if blocks_only:
-                continue
-            c.print(f"{b.id}:{idx}: [{type(cmd).__name__}] {line}")
+                if total > max_matches:
+                    break
+                if count_only or blocks_only:
+                    continue
+
+                # Gap separator: if there was printed content in this block
+                # earlier but the upcoming rows don't touch it, emit `--`
+                # like grep does between non-adjacent hit groups.
+                if want_context and last_emitted_idx >= 0:
+                    first_print_idx = (
+                        before_buf[0][0] if (eff_before > 0 and before_buf) else idx
+                    )
+                    if first_print_idx > last_emitted_idx + 1:
+                        c.print("--")
+
+                # Flush before-context; skip rows already emitted as
+                # after-context for the previous match.
+                if eff_before > 0:
+                    for bidx, bcmd, bline in before_buf:
+                        if bidx > last_emitted_idx:
+                            c.print(_fmt_ctx(b.id, bidx, bcmd, bline))
+                            last_emitted_idx = bidx
+                    before_buf.clear()
+
+                c.print(_fmt_match(b.id, idx, cmd, line))
+                last_emitted_idx = idx
+                after_remaining = eff_after
+            else:
+                # Trailing-context emission for the previous match.
+                if after_remaining > 0 and not (count_only or blocks_only):
+                    c.print(_fmt_ctx(b.id, idx, cmd, line))
+                    last_emitted_idx = idx
+                    after_remaining -= 1
+                if eff_before > 0:
+                    before_buf.append((idx, cmd, line))
         if total > max_matches:
             break
 
@@ -582,6 +632,8 @@ _SEARCH_EPILOG = (
     "  [dim]# count BWAnd ops — raw form via auto[/dim]\n\n"
     "[cyan]ctac search f.tac 'Mod\\(|BWAnd' --plain --count[/cyan]"
     "  [dim]# alternation, single-quoted[/dim]\n\n"
+    "[cyan]ctac search f.tac 'BWAnd' --plain -C 2[/cyan]"
+    "  [dim]# 2 commands of context on each side[/dim]\n\n"
     "[cyan]ctac search f.tac 'assume.*\\[2\\^64' --plain --count[/cyan]"
     "  [dim]# count range guards[/dim]\n\n"
     "[cyan]ctac search f.tac Eq --plain --literal[/cyan]"
@@ -657,6 +709,37 @@ def search_cmd(
         "--blocks-only",
         help="Print only block ids that contain at least one match.",
     ),
+    before: Optional[int] = typer.Option(
+        None,
+        "-B",
+        "--before",
+        min=0,
+        help=(
+            "Print N commands before each match within the same block "
+            "(0 silences that side; default follows --context). Context "
+            "never crosses block boundaries."
+        ),
+    ),
+    after: Optional[int] = typer.Option(
+        None,
+        "-A",
+        "--after",
+        min=0,
+        help=(
+            "Print N commands after each match within the same block "
+            "(0 silences that side; default follows --context)."
+        ),
+    ),
+    context: int = typer.Option(
+        0,
+        "-C",
+        "--context",
+        min=0,
+        help=(
+            "Shorthand for --before N --after N. Explicit --before / --after "
+            "override this on their side, even when set to 0."
+        ),
+    ),
     to_block: Annotated[
         Optional[str], typer.Option("--to", metavar="NBID", help=FILTER_TO_HELP)
     ] = None,
@@ -695,6 +778,9 @@ def search_cmd(
         pattern=pattern,
         plain=plain,
         printer=resolved_printer,
+        before=before,
+        after=after,
+        context=context,
         strip_var_suffixes=strip_var_suffixes,
         human=human,
         regex=regex,
