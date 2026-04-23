@@ -182,6 +182,9 @@ both are humanized so interactive "find" and "read" line up.
 
 TYPICAL:
   ctac search f.tac 'BWAnd' --plain --count              # count op usage
+  ctac search f.tac 'BWAnd' --plain --count -q           # pipeable, no `#` header
+  ctac search f.tac 'BWAnd' --plain -C 2                 # grep-style context lines
+  ctac search f.tac '0x[0-9a-f]+' --plain --count-by-match  # frequency table
   ctac search f.tac 'if \\(R[0-9]+\\) < \\\\1' --plain   # tautological self-compare
   ctac search f.tac 'assume.*\\[2\\^64' --plain --count  # range-guard hits
   ctac search f.tac Eq --plain --literal                 # substring

@@ -172,6 +172,7 @@ def run_search(
     after: int | None = None,
     context: int = 0,
     count_by_match: bool = False,
+    quiet: bool = False,
     to_block: str | None,
     from_block: str | None,
     only: str | None,
@@ -236,18 +237,24 @@ def run_search(
         else None
     )
 
+    def _comment(text: str) -> None:
+        """Print a ``#``-prefixed line unless --quiet is set."""
+        if quiet:
+            return
+        c.print(f"# {text}")
+
     if tac.path:
-        c.print(f"# path: {tac.path}")
+        _comment(f"path: {tac.path}")
     for w in (user_warnings + input_warnings):
-        c.print(f"# input warning: {w}")
-    c.print(f"# printer: {printer_name}")
-    c.print(f"# mode: {'regex' if regex else 'literal'}")
-    c.print(f"# case_sensitive: {case_sensitive}")
-    c.print(f"# pattern: {pattern!r}")
+        _comment(f"input warning: {w}")
+    _comment(f"printer: {printer_name}")
+    _comment(f"mode: {'regex' if regex else 'literal'}")
+    _comment(f"case_sensitive: {case_sensitive}")
+    _comment(f"pattern: {pattern!r}")
     for w in warnings:
-        c.print(f"# {w}")
+        _comment(w)
     if flt.any_active():
-        c.print(f"# filter: {len(filtered_cfg.blocks)} of {len(tac.program.blocks)} block(s)")
+        _comment(f"filter: {len(filtered_cfg.blocks)} of {len(tac.program.blocks)} block(s)")
 
     # Resolve grep-style context flags. Explicit --before/--after (including
     # 0) win over --context; None means "fall back to --context".
@@ -323,16 +330,14 @@ def run_search(
 
     shown_total = min(total, max_matches)
     if count_by_match:
-        c.print("# count-by-match:")
+        _comment("count-by-match:")
         # Sort by count desc, then lexicographically asc.
         for key, cnt in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])):
             c.print(f"{cnt:>6}  {key}")
-        c.print(
-            f"# total: {sum(counter.values())} across {len(blocks_hit)} block(s)"
-        )
+        _comment(f"total: {sum(counter.values())} across {len(blocks_hit)} block(s)")
         if total > max_matches:
-            c.print(
-                f"# truncated after {max_matches} matches; raise --max-matches to see more"
+            _comment(
+                f"truncated after {max_matches} matches; raise --max-matches to see more"
             )
         return
 
@@ -343,7 +348,9 @@ def run_search(
     c.print(f"matches: {shown_total}")
     c.print(f"blocks_with_matches: {len(blocks_hit)}")
     if total > max_matches:
-        c.print(f"# truncated after {max_matches} matches; raise --max-matches to see more")
+        _comment(
+            f"truncated after {max_matches} matches; raise --max-matches to see more"
+        )
 
 
 _CFG_EPILOG = (
@@ -705,6 +712,8 @@ _SEARCH_EPILOG = (
     "  [dim]# 2 commands of context on each side[/dim]\n\n"
     "[cyan]ctac search f.tac '0x[0-9a-f]+' --plain --count-by-match[/cyan]"
     "  [dim]# hex constants by frequency[/dim]\n\n"
+    "[cyan]ctac search f.tac 'BWAnd' --plain --count -q[/cyan]"
+    "  [dim]# pipeable; awk '/^matches:/ {print $2}'[/dim]\n\n"
     "[cyan]ctac search f.tac 'assume.*\\[2\\^64' --plain --count[/cyan]"
     "  [dim]# count range guards[/dim]\n\n"
     "[cyan]ctac search f.tac Eq --plain --literal[/cyan]"
@@ -791,6 +800,16 @@ def search_cmd(
             "--count and --blocks-only."
         ),
     ),
+    quiet: bool = typer.Option(
+        False,
+        "-q",
+        "--quiet",
+        help=(
+            "Suppress the `#`-prefixed preamble and footer so the output "
+            "is just numeric results / tally rows / block ids. Pair with "
+            "--count for a two-line result that `awk` can parse directly."
+        ),
+    ),
     before: Optional[int] = typer.Option(
         None,
         "-B",
@@ -869,6 +888,7 @@ def search_cmd(
         after=after,
         context=context,
         count_by_match=count_by_match,
+        quiet=quiet,
         strip_var_suffixes=strip_var_suffixes,
         human=human,
         regex=regex,
