@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -110,6 +110,51 @@ def search_matcher(
     return _match_literal
 
 
+def search_match_iter(
+    *,
+    pattern: str,
+    regex: bool,
+    case_sensitive: bool,
+):
+    """Return ``text -> list[str]`` yielding a tally key per match.
+
+    For regex patterns with a capture group, the first captured group is
+    used (so ``BWAnd\\(R\\d+ (0x[0-9a-f]+)`` tallies mask constants).
+    Otherwise the whole matched substring is used (``grep -o`` style).
+    Literal patterns tally the pattern string once per substring hit.
+    """
+    if regex:
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            rx = re.compile(pattern, flags=flags)
+        except re.error as e:
+            raise typer.BadParameter(
+                f"invalid --pattern regex: {e}", param_hint="pattern"
+            ) from e
+
+        def _iter_regex(text: str) -> list[str]:
+            out: list[str] = []
+            for m in rx.finditer(text):
+                if m.groups():
+                    g1 = m.group(1)
+                    out.append(g1 if g1 is not None else m.group(0))
+                else:
+                    out.append(m.group(0))
+            return out
+
+        return _iter_regex
+
+    needle = pattern if case_sensitive else pattern.casefold()
+
+    def _iter_literal(text: str) -> list[str]:
+        hay = text if case_sensitive else text.casefold()
+        # Count non-overlapping occurrences of the literal.
+        n = hay.count(needle)
+        return [pattern] * n
+
+    return _iter_literal
+
+
 def run_search(
     *,
     path: Path | None,
@@ -126,6 +171,7 @@ def run_search(
     before: int | None = None,
     after: int | None = None,
     context: int = 0,
+    count_by_match: bool = False,
     to_block: str | None,
     from_block: str | None,
     only: str | None,
@@ -184,6 +230,11 @@ def run_search(
         human_patterns=human,
     )
     matches = search_matcher(pattern=pattern, regex=regex, case_sensitive=case_sensitive)
+    match_iter = (
+        search_match_iter(pattern=pattern, regex=regex, case_sensitive=case_sensitive)
+        if count_by_match
+        else None
+    )
 
     if tac.path:
         c.print(f"# path: {tac.path}")
@@ -213,6 +264,7 @@ def run_search(
 
     total = 0
     blocks_hit: set[str] = set()
+    counter: Counter[str] = Counter()
     for b in filtered_cfg.ordered_blocks():
         # Ring buffer of the last eff_before non-empty commands (for the
         # "before" view of the next match). Reset per block so context
@@ -227,10 +279,13 @@ def run_search(
             if matches(line):
                 total += 1
                 blocks_hit.add(b.id)
+                if count_by_match and match_iter is not None:
+                    for key in match_iter(line):
+                        counter[key] += 1
 
                 if total > max_matches:
                     break
-                if count_only or blocks_only:
+                if count_only or blocks_only or count_by_match:
                     continue
 
                 # Gap separator: if there was printed content in this block
@@ -267,6 +322,20 @@ def run_search(
             break
 
     shown_total = min(total, max_matches)
+    if count_by_match:
+        c.print("# count-by-match:")
+        # Sort by count desc, then lexicographically asc.
+        for key, cnt in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])):
+            c.print(f"{cnt:>6}  {key}")
+        c.print(
+            f"# total: {sum(counter.values())} across {len(blocks_hit)} block(s)"
+        )
+        if total > max_matches:
+            c.print(
+                f"# truncated after {max_matches} matches; raise --max-matches to see more"
+            )
+        return
+
     if blocks_only and not count_only:
         for bid in sorted(blocks_hit):
             c.print(bid)
@@ -634,6 +703,8 @@ _SEARCH_EPILOG = (
     "  [dim]# alternation, single-quoted[/dim]\n\n"
     "[cyan]ctac search f.tac 'BWAnd' --plain -C 2[/cyan]"
     "  [dim]# 2 commands of context on each side[/dim]\n\n"
+    "[cyan]ctac search f.tac '0x[0-9a-f]+' --plain --count-by-match[/cyan]"
+    "  [dim]# hex constants by frequency[/dim]\n\n"
     "[cyan]ctac search f.tac 'assume.*\\[2\\^64' --plain --count[/cyan]"
     "  [dim]# count range guards[/dim]\n\n"
     "[cyan]ctac search f.tac Eq --plain --literal[/cyan]"
@@ -709,6 +780,17 @@ def search_cmd(
         "--blocks-only",
         help="Print only block ids that contain at least one match.",
     ),
+    count_by_match: bool = typer.Option(
+        False,
+        "--count-by-match",
+        help=(
+            "Tally distinct match values and print a frequency table "
+            "(desc by count, then alphabetic). If the pattern has a "
+            "capture group, the first group is used as the tally key; "
+            "otherwise the whole match is used. Mutually exclusive with "
+            "--count and --blocks-only."
+        ),
+    ),
     before: Optional[int] = typer.Option(
         None,
         "-B",
@@ -767,6 +849,11 @@ def search_cmd(
 ) -> None:
     """Regex / literal search over TAC commands (alias: `grep`)."""
     _ = agent
+    if count_by_match and (count_only or blocks_only):
+        raise typer.BadParameter(
+            "--count-by-match is mutually exclusive with --count and --blocks-only",
+            param_hint="--count-by-match",
+        )
     # "auto" resolves to raw under --plain (agents / scripts want operator
     # names to match) and human otherwise (humans want readable expressions).
     # Explicit "--printer human"/"--printer raw" still wins.
@@ -781,6 +868,7 @@ def search_cmd(
         before=before,
         after=after,
         context=context,
+        count_by_match=count_by_match,
         strip_var_suffixes=strip_var_suffixes,
         human=human,
         regex=regex,
