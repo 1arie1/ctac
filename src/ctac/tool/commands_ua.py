@@ -37,7 +37,22 @@ def _count_asserts(program: TacProgram) -> int:
 
 
 _UA_EPILOG = (
-    "[bold]Examples:[/bold]\n\n"
+    "[bold green]What it does[/bold green]  Use as preprocessing for "
+    "[cyan]ctac smt[/cyan], which requires a single assertion. Each "
+    "assertion's predicate is used verbatim — never inverted — so the "
+    "rewrite preserves the original semantics. Single-assert input is a "
+    "no-op ([cyan]was_noop: true[/cyan]); zero-assert input emits a warning.\n\n"
+    "[bold green]Pipeline[/bold green]\n\n"
+    "[bold]1.[/bold] [cyan]remove_true_asserts[/cyan] — strip every "
+    "[cyan]assert true[/cyan].\n\n"
+    "[bold]2.[/bold] [cyan]PURIFY_ASSERT[/cyan] rewrite — name each "
+    "non-trivial predicate as a fresh [cyan]TA<N>:bool[/cyan].\n\n"
+    "[bold]3.[/bold] Apply [cyan]--strategy[/cyan] ([cyan]merge[/cyan] "
+    "redirects every remaining assert to [cyan]__UA_ERROR[/cyan] via "
+    "[cyan]if (P) goto GOOD else goto __UA_ERROR[/cyan], with "
+    "[cyan]assume P[/cyan] starting each continuation so later asserts can "
+    "assume earlier ones held).\n\n"
+    "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac ua f.tac -o f_ua.tac --plain[/cyan]"
     "  [dim]# merge asserts[/dim]\n\n"
     "[cyan]ctac ua f.tac -o f_ua.tac --plain --report[/cyan]"
@@ -95,25 +110,7 @@ def ua_cmd(
         ),
     ),
 ) -> None:
-    """Uniquify assertions: fold every AssertCmd into a single __UA_ERROR block.
-
-    Use this as preprocessing for ``ctac smt``, which requires a single
-    assertion. The predicate of each assertion is used verbatim — never
-    inverted — so the rewrite preserves the original semantics.
-
-    Pipeline (all steps are optional flags; defaults mirror the typical use case):
-
-    1. ``remove_true_asserts`` — strip every ``assert true``.
-    2. ``PURIFY_ASSERT`` rewrite — name each non-trivial predicate as a
-       fresh ``TA<N>:bool``.
-    3. Apply ``--strategy`` (``merge`` redirects every remaining assert to
-       ``__UA_ERROR`` via ``if (P) goto GOOD else goto __UA_ERROR``, with
-       ``assume P`` starting each continuation so later asserts can assume
-       earlier ones held).
-
-    Single-assert input is a no-op (``was_noop: true``); zero-assert input
-    emits a warning.
-    """
+    """Uniquify assertions (fold into a single __UA_ERROR block)."""
     _ = agent
     if strategy != "merge":
         raise typer.BadParameter(

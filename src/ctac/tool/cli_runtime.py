@@ -9,43 +9,32 @@ from rich.console import Console
 
 from ctac.ast.highlight import TAC_THEME
 
+_MAIN_EPILOG = (
+    "[bold green]What is TAC?[/bold green]  Three-address code — the "
+    "intermediate form Certora produces on the way to SMT. [bold]ctac[/bold] "
+    "parses it and exposes structural, semantic, and solver-backed views, "
+    "saving you from grepping raw dumps.\n\n"
+    "[bold green]Typical pipeline[/bold green]  [cyan]ctac stats f.tac[/cyan] → "
+    "[cyan]ctac rw f.tac -o opt.tac[/cyan] → "
+    "[cyan]ctac ua opt.tac -o sa.tac[/cyan] → "
+    "[cyan]ctac smt sa.tac --run[/cyan]\n\n"
+    "[bold green]Accepted inputs[/bold green]  [bold].tac[/bold], "
+    "[bold].sbf.json[/bold], or a Certora output directory (auto-resolves "
+    "to [cyan]<dir>/outputs/*.tac[/cyan]).\n\n"
+    "[bold green]Drill down[/bold green]  Run [cyan]ctac <command> --help[/cyan] "
+    "for per-command examples and full flag reference, or "
+    "[cyan]ctac [--agent|<command> --agent][/cyan] for terse agent-oriented guidance."
+)
+
+
 app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode="rich",
     help=(
-        "[bold]ctac[/bold] — inspect, analyze, transform, and verify Certora TAC.\n\n"
-        "TAC (three-address code) is the intermediate form Certora produces "
-        "before SMT. ctac parses it and exposes structural, semantic, and "
-        "solver-backed views — saving you from grepping raw dumps.\n\n"
-        "[bold]These are the common ctac commands, grouped by purpose:[/bold]\n\n"
-        "[bold cyan]inspect[/bold cyan] a TAC file (what's in it?)\n"
-        "   [cyan]stats[/cyan]       Summary counts + memory capability [dim](first look)[/dim]\n"
-        "   [cyan]parse[/cyan]       Alias of [cyan]stats[/cyan] emphasizing parse success\n"
-        "   [cyan]pp[/cyan]          Pretty-print TAC with humanized expressions\n"
-        "   [cyan]cfg[/cyan]         Control-flow graph as text ([dim]goto/edges/dot[/dim])\n"
-        "   [cyan]search[/cyan]      Regex/literal search inside TAC commands [dim](alias: grep)[/dim]\n\n"
-        "[bold cyan]compare[/bold cyan] two builds (what changed?)\n"
-        "   [cyan]cfg-match[/cyan]   Match blocks across two TACs by structural signature\n"
-        "   [cyan]bb-diff[/cyan]     Semantic per-block diff after [cyan]cfg-match[/cyan]\n\n"
-        "[bold cyan]analyze[/bold cyan] data-flow (is the TAC well-formed?)\n"
-        "   [cyan]df[/cyan]          Def-use, liveness, DCE, DSA validation, ...\n\n"
-        "[bold cyan]transform[/bold cyan] TAC → TAC (simplify for solving)\n"
-        "   [cyan]rw[/cyan]          Run the rewrite pipeline [dim](div/bitfield/Ite + DCE)[/dim]\n"
-        "   [cyan]ua[/cyan]          Uniquify assertions into a single __UA_ERROR block\n\n"
-        "[bold cyan]verify[/bold cyan] (check a property holds)\n"
-        "   [cyan]run[/cyan]         Concrete interpreter [dim](trace, model replay)[/dim]\n"
-        "   [cyan]smt[/cyan]         Emit SMT-LIB VC, optionally invoke z3\n\n"
-        "[bold cyan]validate[/bold cyan] the rewriter itself\n"
-        "   [cyan]rw-valid[/cyan]    Emit per-rule SMT soundness specs\n\n"
-        "[bold]Typical pipeline:[/bold]\n"
-        "   [cyan]ctac stats f.tac[/cyan] → [cyan]ctac rw f.tac -o opt.tac[/cyan] → "
-        "[cyan]ctac ua opt.tac -o sa.tac[/cyan] → [cyan]ctac smt sa.tac --run[/cyan]\n\n"
-        "Accepted inputs: [bold].tac[/bold], [bold].sbf.json[/bold], or a Certora "
-        "output directory (auto-resolves to [dim]<dir>/outputs/*.tac[/dim]).\n\n"
-        "Run [cyan]ctac <command> --help[/cyan] for full flags and examples, "
-        "or [cyan]ctac [--agent|<command> --agent][/cyan] for terse agent-oriented guidance."
+        "[bold]ctac[/bold] — inspect, analyze, transform, and verify Certora TAC."
     ),
+    epilog=_MAIN_EPILOG,
 )
 
 

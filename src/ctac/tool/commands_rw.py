@@ -123,7 +123,25 @@ def _merge_phases(*phases: RewriteResult) -> RewriteResult:
 
 
 _RW_EPILOG = (
-    "[bold]Examples:[/bold]\n\n"
+    "[bold green]Pipeline[/bold green]\n\n"
+    "[bold]1.[/bold] [bold]simplify_pipeline[/bold] — bit-op canonicalization "
+    "(N1-N4), div/ceildiv simplifications (R1-R4, R6), boolean/Ite cleanup, "
+    "CSE, copy-prop — all iterated to a fixed point.\n\n"
+    "[bold]2.[/bold] (optional) [bold]R4a div purification[/bold] — replaces "
+    "[cyan]X = Div(A, B)[/cyan] with [cyan]havoc X + euclidean bounds[/cyan] "
+    "when [cyan]B[/cyan] has a non-constant positive range. Controlled by "
+    "[cyan]--purify-div[/cyan] (default on).\n\n"
+    "[bold]3.[/bold] Iterated [bold]DCE[/bold] to remove the residual dead defs.\n\n"
+    "[bold]4.[/bold] (optional) [bold]Post-DCE naming phase[/bold]: "
+    "[cyan]--purify-ite[/cyan] (default on), "
+    "[cyan]--purify-assert[/cyan] (default on), "
+    "[cyan]--purify-assume[/cyan] (default off), plus CSE + CP + another DCE sweep.\n\n"
+    "Default output: pretty-printed TAC to stdout. With [cyan]-o FILE.tac[/cyan] "
+    "emits a round-trippable [cyan].tac[/cyan] file; with "
+    "[cyan]-o FILE.htac[/cyan] emits pretty-printed text to a file. Use "
+    "[cyan]--report[/cyan] to see per-rule hit counts and DCE stats.\n\n"
+    "Soundness is documented by [cyan]ctac rw-valid[/cyan] (per-rule SMT specs).\n\n"
+    "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac rw f.tac --plain[/cyan]"
     "  [dim]# pp to stdout[/dim]\n\n"
     "[cyan]ctac rw f.tac --plain --report[/cyan]"
@@ -135,8 +153,7 @@ _RW_EPILOG = (
     "[cyan]ctac rw f.tac --no-purify-div --plain[/cyan]"
     "  [dim]# disable R4a[/dim]\n\n"
     "[cyan]ctac rw f.tac --purify-assume --plain[/cyan]"
-    "  [dim]# also purify assumes[/dim]\n\n"
-    "Soundness is documented by [cyan]ctac rw-valid[/cyan] (per-rule SMT specs)."
+    "  [dim]# also purify assumes[/dim]"
 )
 
 
@@ -200,25 +217,7 @@ def rewrite_cmd(
         ),
     ),
 ) -> None:
-    """Run the TAC → TAC rewrite pipeline (div/bit-field simplifications + DCE).
-
-    Pipeline phases:
-    1. ``simplify_pipeline`` — bit-op canonicalization (N1-N4), div/ceildiv
-       simplifications (R1-R4, R6), boolean/Ite cleanup, CSE, copy-prop —
-       all iterated to a fixed point.
-    2. (optional) R4a div purification — replaces ``X = Div(A, B)`` with
-       ``havoc X + euclidean bounds`` when ``B`` has a non-constant positive
-       range. Controlled by ``--purify-div`` (default on).
-    3. Iterated DCE to remove the residual dead defs.
-    4. (optional) Post-DCE naming phase: ``--purify-ite`` (default on),
-       ``--purify-assert`` (default on), ``--purify-assume`` (default off),
-       plus CSE + CP + another DCE sweep.
-
-    Default output: pretty-printed TAC to stdout. With ``-o FILE.tac`` emits
-    a round-trippable ``.tac`` file; with ``-o FILE.htac`` emits
-    pretty-printed text to a file. Use ``--report`` to see per-rule hit
-    counts and DCE stats.
-    """
+    """Simplify TAC via the rewrite pipeline (div/bit-field rewrites + DCE)."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)

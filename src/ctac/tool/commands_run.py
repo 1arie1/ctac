@@ -36,7 +36,16 @@ from ctac.ast.pretty import configured_printer
 
 
 _RUN_EPILOG = (
-    "[bold]Examples:[/bold]\n\n"
+    "[bold green]Semantics[/bold green]  [cyan]assume[/cyan] failures stop the "
+    "run silently (the path is infeasible); [cyan]assert[/cyan] failures "
+    "continue and accumulate as [cyan]assert_fail[/cyan] counts. Havoc "
+    "behavior is controlled by "
+    "[cyan]--havoc-mode zero|random|ask[/cyan] (default [cyan]zero[/cyan]), "
+    "or replayed from a model via [cyan]--model[/cyan]. Bytemap symbols load "
+    "from memory entries in the model and feed [cyan]Select[/cyan] lookups.\n\n"
+    "[bold green]Exit codes[/bold green]  [cyan]0[/cyan] ok, [cyan]2[/cyan] "
+    "stopped (assume failed), [cyan]3[/cyan] error/max_steps.\n\n"
+    "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac run f.tac --plain[/cyan]"
     "  [dim]# zero-havoc run[/dim]\n\n"
     "[cyan]ctac run dir/ --plain[/cyan]"
@@ -48,8 +57,7 @@ _RUN_EPILOG = (
     "[cyan]ctac run f.tac --plain --model m.txt --validate[/cyan]"
     "  [dim]# compare vs model[/dim]\n\n"
     "[cyan]ctac run f.tac --plain --havoc-mode random --entry B1[/cyan]"
-    "  [dim]# random havocs from block B1[/dim]\n\n"
-    "[bold]Exit codes:[/bold] 0 ok, 2 stopped (assume failed), 3 error/max_steps."
+    "  [dim]# random havocs from block B1[/dim]"
 )
 
 
@@ -122,15 +130,7 @@ def run(
         help="Compare computed assignments against model values and report mismatches.",
     ),
 ) -> None:
-    """Execute TAC with a concrete interpreter.
-
-    Semantics: ``assume`` failures stop the run silently (no counterexample
-    — the path is infeasible); ``assert`` failures continue and accumulate
-    as ``assert_fail`` counts. Havoc behavior is controlled by
-    ``--havoc-mode zero|random|ask`` (default ``zero``), or replayed from
-    a model via ``--model``. Bytemap symbols load from memory entries in
-    the model and feed ``Select`` lookups.
-    """
+    """Concrete interpreter (trace, model replay)."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)

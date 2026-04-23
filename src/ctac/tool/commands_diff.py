@@ -30,7 +30,12 @@ def truncate_diff_lines(lines: list[str], max_lines: int) -> tuple[list[str], in
 
 
 _CFG_MATCH_EPILOG = (
-    "[bold]Examples:[/bold]\n\n"
+    "[bold green]What it does[/bold green]  Scores pairs of blocks from two "
+    "TAC (or .sbf.json) files by command + constant signature. Run before "
+    "[cyan]bb-diff[/cyan] to see which blocks moved vs. really changed. "
+    "Constants are often strong anchors — raise [cyan]--const-weight[/cyan] "
+    "when the two builds should share many literals.\n\n"
+    "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac cfg-match a.tac b.tac --plain[/cyan]\n\n"
     "[cyan]ctac cfg-match a.tac b.tac --plain --const-weight 0.2[/cyan]"
     "  [dim]# constants strong[/dim]\n\n"
@@ -79,14 +84,7 @@ def match_cfg_cmd(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
-    """Coarse CFG block matching with weighted structural/meta features.
-
-    Scores pairs of blocks from two TAC (or .sbf.json) files by
-    command + constant signature. Run before ``bb-diff`` to see
-    which blocks moved vs. really changed. Constants are often strong
-    anchors — raise ``--const-weight`` when the two builds should share
-    many literals.
-    """
+    """Match blocks across two TACs by structural + constant signature."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)
@@ -161,7 +159,12 @@ def match_cfg_cmd(
 
 
 _BB_DIFF_EPILOG = (
-    "[bold]Examples:[/bold]\n\n"
+    "[bold green]What it does[/bold green]  Runs [cyan]cfg-match[/cyan] "
+    "internally to build a block correspondence, then normalizes DSA-renamed "
+    "variable names (so trivial [cyan]R51 -> R62[/cyan] renames don't light "
+    "up as diffs) and reports per-block deltas. Equal blocks can be hidden "
+    "with [cyan]--drop-empty[/cyan].\n\n"
+    "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac bb-diff a.tac b.tac --plain --drop-empty --max-diff-lines 120[/cyan]\n\n"
     "[cyan]ctac bb-diff a.tac b.tac --plain --const-weight 0.2 --normalize-vars[/cyan]\n\n"
     "[cyan]ctac bb-diff a.tac b.tac --plain --context 3 --keep-empty[/cyan]\n\n"
@@ -236,13 +239,7 @@ def bb_diff_cmd(
         help="Parse snippet weak refs as strong refs.",
     ),
 ) -> None:
-    """Compare matched basic blocks and print per-block semantic deltas.
-
-    Runs ``cfg-match`` internally to build a block correspondence, then
-    normalizes DSA-renamed variable names (so trivial ``R51 -> R62``
-    renames don't light up as diffs) and reports per-block deltas.
-    Equal blocks can be hidden with ``--drop-empty``.
-    """
+    """Semantic per-block diff after `cfg-match` (DSA-normalized)."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)

@@ -42,7 +42,20 @@ def _model_symbol_sorts(symbol_table_text: str) -> dict[str, str]:
 
 
 _SMT_EPILOG = (
-    "[bold]Examples:[/bold]\n\n"
+    "[bold green]What it does[/bold green]  Emit an SMT-LIB VC from "
+    "loop-free, single-assert TAC. Default encoding [cyan]sea_vc[/cyan] "
+    "(QF_UFNIA): DSA + block-reachability, sound bv256 domain constraints, "
+    "bytemap-as-UF + range-axiom support. Alternative: "
+    "[cyan]--encoding vc-path-predicates[/cyan] (QF_BV path-predicate style).\n\n"
+    "[bold green]Query semantics[/bold green]  [cyan]SAT[/cyan] iff the "
+    "assertion-failure state is reachable. [cyan]UNSAT[/cyan] means the "
+    "assertion holds.\n\n"
+    "[bold green]Preconditions[/bold green]  Loop-free TAC; exactly one "
+    "[cyan]AssertCmd[/cyan] (run [cyan]ctac ua[/cyan] to merge multi-assert "
+    "inputs); [cyan]AssertCmd[/cyan] must be the last command in its block; "
+    "bytemap usage must be [cyan]bytemap-free[/cyan] or [cyan]bytemap-ro[/cyan] "
+    "(check with [cyan]ctac stats --plain[/cyan]).\n\n"
+    "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac smt f.tac --plain[/cyan]"
     "  [dim]# print VC to stdout[/dim]\n\n"
     "[cyan]ctac smt f.tac --plain -o out.smt2[/cyan]"
@@ -132,21 +145,7 @@ def smt_cmd(
         help="Print solver interaction details for debugging.",
     ),
 ) -> None:
-    """Emit an SMT-LIB VC for a TAC program.
-
-    Default encoding ``sea_vc`` (QF_UFNIA): DSA + block-reachability
-    encoding with sound bv256 domain constraints and bytemap-as-UF +
-    range-axiom support. Alternative: ``--encoding vc-path-predicates``
-    (QF_BV path-predicate style).
-
-    Query semantics: SAT iff the assertion-failure state is reachable.
-    UNSAT means the assertion holds.
-
-    Preconditions: loop-free TAC; exactly one ``AssertCmd`` (run
-    ``ctac ua`` to merge multi-assert inputs); ``AssertCmd`` must be the
-    last command in its block; bytemap usage must be ``bytemap-free`` or
-    ``bytemap-ro`` (check with ``ctac stats --plain``).
-    """
+    """Emit an SMT-LIB VC; optionally invoke z3."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)

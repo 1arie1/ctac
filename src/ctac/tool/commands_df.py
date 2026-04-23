@@ -143,7 +143,17 @@ def _program_topologically_ordered(program):
 
 
 _DF_EPILOG = (
-    "[bold]Examples:[/bold]\n\n"
+    "[bold green]Analyses[/bold green]  [cyan]--show[/cyan] is comma-separated, "
+    "default [cyan]all[/cyan]:\n\n"
+    "[cyan]def-use[/cyan], [cyan]liveness[/cyan], [cyan]dce[/cyan] "
+    "(dead-code elimination), [cyan]use-before-def[/cyan], [cyan]dsa[/cyan] "
+    "(DSA-form validation), [cyan]control-dependence[/cyan], [cyan]uce[/cyan] "
+    "(useless-assume elimination).\n\n"
+    "Default prints compact summary stats per analysis; "
+    "[cyan]--details[/cyan] switches to per-item listings (bounded by "
+    "[cyan]--max-items[/cyan]). Use [cyan]--json[/cyan] for machine-readable "
+    "output.\n\n"
+    "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac df f.tac --plain[/cyan]"
     "  [dim]# all analyses, summary[/dim]\n\n"
     "[cyan]ctac df f.tac --plain --show dce --details[/cyan]"
@@ -229,17 +239,7 @@ def dataflow_cmd(
         Optional[str], typer.Option("--exclude", help=FILTER_EXCLUDE_HELP)
     ] = None,
 ) -> None:
-    """Run TAC data-flow analyses and report summaries or detailed diagnostics.
-
-    Available analyses (``--show`` is comma-separated, default ``all``):
-    ``def-use``, ``liveness``, ``dce`` (dead-code elimination),
-    ``use-before-def``, ``dsa`` (DSA-form validation),
-    ``control-dependence``, ``uce`` (useless-assume elimination).
-
-    Default prints compact summary stats per analysis; ``--details``
-    switches to per-item listings (bounded by ``--max-items``). Use
-    ``--json`` for machine-readable output.
-    """
+    """Data-flow analyses (def-use, liveness, DCE, DSA, ...)."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)

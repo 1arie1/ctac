@@ -218,7 +218,12 @@ def run_stats(
 
 
 _STATS_EPILOG = (
-    "[bold]Examples:[/bold]\n\n"
+    "[bold green]What it does[/bold green]  Reports block/command/meta counts, "
+    "symbol-table size, command-kind counts, top-N dense blocks, expression-op "
+    "frequencies, non-linear mul/div counters, and the bytemap memory "
+    "capability. Cheap sanity check to start with on any unknown TAC or SBF "
+    "file.\n\n"
+    "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac stats f.tac --plain[/cyan]\n\n"
     "[cyan]ctac stats dir/ --plain[/cyan]  [dim]# resolve dir/outputs/*.tac[/dim]\n\n"
     "[cyan]ctac stats f.tac --plain --top-blocks 0 --no-by-cmd-kind[/cyan]"
@@ -251,13 +256,7 @@ def stats(
         help="Parse snippet weak refs as strong refs (annotations use strong deref).",
     ),
 ) -> None:
-    """Print summary statistics for a .tac file.
-
-    Reports block/command/meta counts, symbol-table size, command-kind
-    counts, top-N dense blocks, expression-op frequencies, non-linear
-    mul/div counters, and the bytemap memory capability. Cheap sanity
-    check to start with on any unknown TAC or SBF file.
-    """
+    """Summary stats for a .tac / .sbf.json file (first look)."""
     _ = agent
     run_stats(
         path,
@@ -269,7 +268,10 @@ def stats(
 
 
 _PARSE_EPILOG = (
-    "[bold]Examples:[/bold]\n\n"
+    "Same output as [cyan]ctac stats[/cyan]; the name emphasizes that a "
+    "successful run means the file round-trips through the TAC parser. "
+    "Use it as a first-pass syntactic check before doing anything else.\n\n"
+    "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac parse f.tac --plain[/cyan]\n\n"
     "[cyan]ctac parse dir/ --plain[/cyan]  [dim]# auto-resolves dir/outputs/*.tac[/dim]"
 )
@@ -299,12 +301,7 @@ def parse(
         help="Parse snippet weak refs as strong refs (annotations use strong deref).",
     ),
 ) -> None:
-    """Parse a .tac file and print basic statistics.
-
-    Identical output to ``ctac stats``; the name emphasizes that a
-    successful run means the file round-trips through the TAC parser.
-    Use it as a first-pass syntactic check before doing anything else.
-    """
+    """Parse a .tac file and print stats (alias of `ctac stats`)."""
     _ = agent
     run_stats(
         path,

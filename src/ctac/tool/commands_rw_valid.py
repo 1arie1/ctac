@@ -28,15 +28,27 @@ from ctac.tool.cli_runtime import (
 
 
 _RW_VALID_EPILOG = (
-    "[bold]Examples:[/bold]\n\n"
+    "[bold green]What it does[/bold green]  For each registered validation "
+    "case, writes [cyan]<rule>[_<case>].smt2[/cyan] and a "
+    "[cyan]manifest.json[/cyan] summarizing coverage. Each script is a "
+    "self-contained SMT-LIB 2 instance whose expected outcome is "
+    "[cyan]unsat[/cyan] (the rule is sound). [cyan]ctac[/cyan] does not run "
+    "z3 automatically — users drive the solver so they can iterate with "
+    "custom tactics or Lean.\n\n"
+    "The spec is [bold]trusted[/bold]: a human-written claim about what the "
+    "rule does, placed next to the rule source for easy side-by-side review. "
+    "Currently covers R4 (5 cases), R4a (base + signed), R6 (base + signed). "
+    "Other rules are listed under [cyan]manifest.json[/cyan]'s "
+    "[cyan]missing[/cyan] array.\n\n"
+    "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac rw-valid -o /tmp/rwv --plain[/cyan]"
     "  [dim]# emit all specs[/dim]\n\n"
     "[cyan]ctac rw-valid -o /tmp/rwv --rule R4a --plain[/cyan]"
     "  [dim]# one rule only[/dim]\n\n"
     "[cyan]ctac rw-valid -o /tmp/rwv --rule R4 --rule R6 --plain[/cyan]\n\n"
-    "[bold]Then run the solver yourself:[/bold]\n\n"
+    "Then run the solver yourself:\n\n"
     "[cyan]for f in /tmp/rwv/*.smt2; do echo -n \"$(basename $f): \"; z3 $f -T:5; done[/cyan]\n\n"
-    "Expected: [cyan]unsat[/cyan] on every script (rule sound). "
+    "Expected [cyan]unsat[/cyan] on every script (rule sound). "
     "[cyan]sat[/cyan] is a counterexample (bug). [cyan]unknown[/cyan] means escalate."
 )
 
@@ -61,20 +73,7 @@ def rw_valid_cmd(
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
 ) -> None:
-    """Emit SMT-LIB soundness scripts for rewrite rules with declared specs.
-
-    For each registered validation case, writes ``<rule>[_<case>].smt2``
-    and a ``manifest.json`` summarizing coverage. Each script is a
-    self-contained SMT-LIB 2 instance whose expected outcome is ``unsat``
-    (the rule is sound). ``ctac`` does not run z3 automatically — users
-    drive the solver so they can iterate with custom tactics or Lean.
-
-    The spec is **trusted**: a human-written claim about what the rule
-    does, placed next to the rule source for easy side-by-side review.
-    Currently covers R4 (5 cases), R4a (base + signed), R6 (base +
-    signed). Other rules are listed under ``manifest.json``'s ``missing``
-    array.
-    """
+    """Emit per-rule SMT soundness specs (run z3 yourself)."""
     _ = agent
     plain = plain_requested(plain)
     c = console(plain)
