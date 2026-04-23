@@ -9,6 +9,7 @@ from ctac.tool.commands_diff import truncate_diff_lines as _truncate_diff_lines
 import_module("ctac.tool.commands_cfg_pp_search")
 import_module("ctac.tool.commands_df")
 import_module("ctac.tool.commands_diff")
+import_module("ctac.tool.commands_op_diff")
 import_module("ctac.tool.commands_run")
 import_module("ctac.tool.commands_rw")
 import_module("ctac.tool.commands_rw_valid")

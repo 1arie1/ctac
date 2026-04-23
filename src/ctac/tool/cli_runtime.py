@@ -18,6 +18,11 @@ _MAIN_EPILOG = (
     "[cyan]ctac rw f.tac -o opt.tac[/cyan] → "
     "[cyan]ctac ua opt.tac -o sa.tac[/cyan] → "
     "[cyan]ctac smt sa.tac --run[/cyan]\n\n"
+    "[bold green]Compare two builds[/bold green]  "
+    "[cyan]ctac op-diff a.tac b.tac[/cyan] for a per-stat frequency delta "
+    "(fastest way to spot encoder drift between Prover versions); "
+    "[cyan]ctac cfg-match[/cyan] + [cyan]ctac bb-diff[/cyan] for block-level "
+    "structural / semantic diffs.\n\n"
     "[bold green]Accepted inputs[/bold green]  [bold].tac[/bold], "
     "[bold].sbf.json[/bold], or a Certora output directory (auto-resolves "
     "to [cyan]<dir>/outputs/*.tac[/cyan]).\n\n"
@@ -75,7 +80,8 @@ CANONICAL WORKFLOWS:
 - CFG reasoning: `ctac cfg <path> --style edges --from A --to B --plain`.
 - Find patterns: `ctac search <path> <regex> --plain` (alias: `grep`).
 - Data-flow triage: `ctac df <path> --plain`.
-- Compare two builds: `ctac cfg-match` then `ctac bb-diff`.
+- Compare two builds: `ctac op-diff a.tac b.tac` for per-stat frequency
+  delta; `ctac cfg-match` then `ctac bb-diff` for block-level diffs.
 - Replay a z3 model: `ctac run <path> --model M --trace --plain`.
 - Simplify TAC: `ctac rw <path> --plain`.
 - Multi-assert to single-assert: `ctac ua <path> -o out.tac`.
@@ -229,6 +235,28 @@ TYPICAL:
 KEY FLAGS: `--drop-empty` hides blocks that are identical, `--context N`
 shows N lines of unchanged context, `--normalize-vars` (default) maps
 DSA-renamed regs to canonical names before diffing.
+""",
+    "op-diff": """ctac op-diff --agent
+
+Per-stat frequency delta between two TAC files. Parses each side,
+runs the `ctac stats` collector, and prints the differences grouped
+by section (`expression_ops`, `command_kinds`, `memory`, etc.).
+
+WHY BEAT MANUAL: `diff <(ctac stats a.tac) <(ctac stats b.tac)` is
+possible but noisy — block-id renumbering and file-path lines dominate
+the output. op-diff filters to only the stats that actually changed.
+Dedicated command so you never have to reach for the shell pipeline
+again.
+
+TYPICAL:
+  ctac op-diff a.tac b.tac --plain
+  ctac op-diff a.tac b.tac --plain --show expression_ops
+  ctac op-diff a.tac b.tac --json
+
+WHEN TO USE: a user reports that verification got slower between two
+Prover versions; `op-diff` surfaces the encoder-level differences in
+one shot (fewer Mods, more BWAnds, extra commands, symbol-table
+growth). Much faster than hand-comparing `ctac stats` outputs.
 """,
     "df": """ctac df --agent
 
