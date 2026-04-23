@@ -27,6 +27,7 @@ from ctac.tool.cli_runtime import (
     VERIFY_PANEL,
     agent_option,
     app,
+    complete_choices,
     console,
     plain_requested,
 )
@@ -86,6 +87,7 @@ def run(
         typer.Option(
             "--havoc-mode",
             help="How AssignHavocCmd gets a value: zero (default), random, ask.",
+            autocompletion=complete_choices(["zero", "random", "ask"]),
         ),
     ] = "zero",
     printer: Annotated[
@@ -93,6 +95,7 @@ def run(
         typer.Option(
             "--printer",
             help="Pretty-printer for trace lines. Built-ins: human (default), raw.",
+            autocompletion=complete_choices(["human", "raw"]),
         ),
     ] = "human",
     strip_var_suffixes: bool = typer.Option(

@@ -23,6 +23,7 @@ from ctac.tool.cli_runtime import (
     TRANSFORM_PANEL,
     agent_option,
     app,
+    complete_choices,
     console,
     plain_requested,
 )
@@ -85,6 +86,7 @@ def ua_cmd(
         "merge",
         "--strategy",
         help="Uniquify-asserts strategy. Currently only 'merge' is supported.",
+        autocompletion=complete_choices(["merge"]),
     ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),

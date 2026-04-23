@@ -21,6 +21,12 @@ _MAIN_EPILOG = (
     "[bold green]Accepted inputs[/bold green]  [bold].tac[/bold], "
     "[bold].sbf.json[/bold], or a Certora output directory (auto-resolves "
     "to [cyan]<dir>/outputs/*.tac[/cyan]).\n\n"
+    "[bold green]Shell completion[/bold green]  One-time setup for tab "
+    "completion of commands, subcommands, and flag values:\n\n"
+    "[cyan]ctac --install-completion[/cyan]"
+    "  [dim]# auto-detects zsh / bash / fish / powershell; restart shell after[/dim]\n\n"
+    "[cyan]ctac --show-completion[/cyan]"
+    "  [dim]# print the script without installing (inspect / source manually)[/dim]\n\n"
     "[bold green]Drill down[/bold green]  Run [cyan]ctac <command> --help[/cyan] "
     "for per-command examples and full flag reference, or "
     "[cyan]ctac [--agent|<command> --agent][/cyan] for terse agent-oriented guidance."
@@ -29,7 +35,10 @@ _MAIN_EPILOG = (
 
 app = typer.Typer(
     no_args_is_help=True,
-    add_completion=False,
+    # Typer auto-registers ``--install-completion`` and ``--show-completion``
+    # so users can wire shell completion with a single one-time command
+    # (see the epilog for instructions).
+    add_completion=True,
     rich_markup_mode="rich",
     help=(
         "[bold]ctac[/bold] — inspect, analyze, transform, and verify Certora TAC."
@@ -397,6 +406,42 @@ def plain_requested(plain: bool) -> bool:
 
 PATH_KW = dict(exists=True, dir_okay=True, readable=True)
 PLAIN_HELP = "Plain text only (no Rich styling); also set CTAC_PLAIN=1 or NO_COLOR."
+
+
+# --- shell-completion helpers -------------------------------------------------
+# Typer calls these during tab-completion; they return a list of candidate
+# values (optionally ``(value, help)`` tuples). Each helper is a tiny factory
+# so the command definition only needs ``autocompletion=complete_*()``.
+
+def complete_choices(values: list[str]):
+    """Return a Typer autocompletion function that yields a fixed list."""
+    vals = list(values)
+
+    def _complete(incomplete: str):
+        return [v for v in vals if v.startswith(incomplete)]
+
+    return _complete
+
+
+def complete_rule_names():
+    """Tab-complete rule names for ``ctac rw-valid --rule``."""
+    def _complete(incomplete: str):
+        # Local import to avoid a cycle during module init.
+        from ctac.rewrite.rules import validation_cases
+        names = sorted({vc.name for vc in validation_cases})
+        return [n for n in names if n.startswith(incomplete)]
+
+    return _complete
+
+
+def complete_smt_encodings():
+    """Tab-complete encoding names for ``ctac smt --encoding``."""
+    def _complete(incomplete: str):
+        from ctac.smt.encoding import available_encodings
+        names = sorted(available_encodings())
+        return [n for n in names if n.startswith(incomplete)]
+
+    return _complete
 
 # CFG slicing filter help strings. Reused across cfg / pp / search / df.
 FILTER_FROM_HELP = (

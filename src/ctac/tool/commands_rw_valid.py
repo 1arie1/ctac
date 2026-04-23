@@ -22,6 +22,7 @@ from ctac.tool.cli_runtime import (
     VALIDATE_PANEL,
     agent_option,
     app,
+    complete_rule_names,
     console,
     plain_requested,
 )
@@ -68,6 +69,7 @@ def rw_valid_cmd(
         typer.Option(
             "--rule",
             help="Only emit scripts for this rule (repeatable).",
+            autocompletion=complete_rule_names(),
         ),
     ] = None,
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),

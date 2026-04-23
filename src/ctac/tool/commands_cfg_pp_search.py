@@ -23,6 +23,7 @@ from ctac.tool.cli_runtime import (
     PLAIN_HELP,
     agent_option,
     app,
+    complete_choices,
     console,
     plain_requested,
 )
@@ -256,6 +257,7 @@ def cfg(
                 "goto: block label + goto targets (default). edges: one 'src -> dst' line per edge. "
                 "dot: Graphviz digraph (block id labels; asserts red, clog pastel, source tooltips)."
             ),
+            autocompletion=complete_choices(["goto", "edges", "dot"]),
         ),
     ] = "goto",
     max_blocks: Annotated[
@@ -408,6 +410,7 @@ def pp(
         typer.Option(
             "--printer",
             help="Pretty-printer backend name. Built-ins: human (default), raw.",
+            autocompletion=complete_choices(["human", "raw"]),
         ),
     ] = "human",
     strip_var_suffixes: bool = typer.Option(
@@ -584,6 +587,7 @@ def search_cmd(
         typer.Option(
             "--printer",
             help="Pretty-printer backend name. Built-ins: human (default), raw.",
+            autocompletion=complete_choices(["human", "raw"]),
         ),
     ] = "human",
     strip_var_suffixes: bool = typer.Option(

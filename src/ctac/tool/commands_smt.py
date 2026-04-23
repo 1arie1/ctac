@@ -22,6 +22,7 @@ from ctac.tool.cli_runtime import (
     VERIFY_PANEL,
     agent_option,
     app,
+    complete_smt_encodings,
     console,
     plain_requested,
 )
@@ -84,6 +85,7 @@ def smt_cmd(
         typer.Option(
             "--encoding",
             help="SMT VC encoding strategy (default: sea_vc).",
+            autocompletion=complete_smt_encodings(),
         ),
     ] = "sea_vc",
     output_path: Annotated[
