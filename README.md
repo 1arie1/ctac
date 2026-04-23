@@ -248,30 +248,20 @@ print(render_smt_script(vc))
 
 ### AI collaborators
 
-This project was built in close collaboration with generative-AI
-coding tools. Design decisions, scope control, and final review rest
-with the human authors above; AI agents contributed implementation,
-tests, and documentation under direction.
+Generative-AI coding tools contributed implementation, tests, and
+documentation under direction. Design decisions, scope control, and
+final review rest with the human authors above; all AI contributions
+were reviewed and committed by a human.
 
-- **Cursor** (premium model, likely OpenAI Codex) — initial
-  scaffolding and first ~three days of development. Visible in
-  per-commit `Made-with: Cursor` trailers spanning the first 43
-  commits (the initial TAC toolkit, ctac CLI structure, stats,
-  search, cfg, pp, run, cfg-match, bb-diff, df, and the sea_vc
-  foundations).
-- **Claude Code** (Anthropic Claude Opus 4.x) — primary coding
-  collaborator from mid-April 2026 onward. Visible in per-commit
-  `Co-Authored-By: Claude Opus 4.x ...` trailers. Delivered the
-  rewrite pipeline validation (`rw-valid`), bytemap-ro SMT + run
-  support, `ua` uniquify-asserts, `op-diff`, the search sub-features
-  (`-C`, `--count-by-match`, `-q`, `--printer auto`,
-  pattern tab-completion), shell completion wiring, and the
-  README / `--help` / `--agent` overhaul.
-- Occasional use of other assistants (editor-integrated
-  autocompletion, model-backed search) that do not appear in commit
+- **Cursor** (OpenAI-backed models, e.g. Codex) — `Made-with: Cursor`
+  commit trailers.
+- **Claude Code** (Anthropic Claude Opus 4.x) — `Co-Authored-By:
+  Claude ...` commit trailers.
+- Occasional use of editor-integrated assistants that do not emit
   trailers.
 
-All AI contributions were reviewed and committed by the human authors.
+Per-change attribution is in git history (`git log --grep='Made-with'`,
+`git log --grep='Co-Authored-By: Claude'`).
 
 ## License
 
