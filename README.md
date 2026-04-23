@@ -268,6 +268,24 @@ See [`tools/vscode-tac/README.md`](tools/vscode-tac/README.md) for
 file-association tips (e.g. treating `tac1.txt` / `tac2.txt` as
 `htac` without renaming).
 
+## Claude Code integration 🤖
+
+[`ctac-fly`](https://github.com/1arie1/ctac-fly) is a Claude Code
+skill that recognizes TAC-investigation intent in a Claude session
+and routes to the right ctac command — instead of letting the
+agent fall back to ad-hoc `grep` on raw `.tac` files. It ships as
+a marketplace-of-one; install inside any Claude Code session:
+
+```bash
+/plugin marketplace add https://github.com/1arie1/ctac-fly.git
+/plugin install ctac-fly@ctac-fly
+```
+
+The skill assumes `ctac` is already on PATH (set up per
+[Environment](#environment-)). When a command needs z3, the skill
+instructs the agent to use `ctac smt --run --z3-path <path>`
+rather than mutating the user's PATH.
+
 ## Authors
 
 - Arie Gurfinkel <arie@certora.com>
