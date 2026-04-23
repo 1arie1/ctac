@@ -18,7 +18,14 @@ from ctac.ir.models import TacProgram
 from ctac.parse import ParseError, parse_path, render_tac_file
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.rules import PURIFY_ASSERT
-from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
+from ctac.tool.cli_runtime import (
+    PLAIN_HELP,
+    TRANSFORM_PANEL,
+    agent_option,
+    app,
+    console,
+    plain_requested,
+)
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 from ctac.ua import merge_asserts
 
@@ -29,9 +36,28 @@ def _count_asserts(program: TacProgram) -> int:
     )
 
 
-@app.command("ua")
+_UA_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac ua f.tac -o f_ua.tac --plain[/cyan]"
+    "  [dim]# merge asserts[/dim]\n\n"
+    "[cyan]ctac ua f.tac -o f_ua.tac --plain --report[/cyan]"
+    "  [dim]# + counts[/dim]\n\n"
+    "[cyan]ctac ua f.tac -o f_ua.tac --plain --no-purify-assert[/cyan]"
+    "  [dim]# skip purification[/dim]\n\n"
+    "[cyan]ctac ua f.tac -o f_ua.tac --plain --keep-true-asserts[/cyan]"
+    "  [dim]# keep assert true[/dim]\n\n"
+    "Followup: [cyan]ctac smt f_ua.tac --plain --run[/cyan] to solve the VC."
+)
+
+
+@app.command("ua", rich_help_panel=TRANSFORM_PANEL, epilog=_UA_EPILOG)
 def ua_cmd(
-    path: Annotated[Optional[Path], typer.Argument()] = None,
+    path: Annotated[
+        Optional[Path],
+        typer.Argument(
+            help="Path to .tac / .sbf.json file, or a Certora output directory.",
+        ),
+    ] = None,
     output_path: Annotated[
         Optional[Path],
         typer.Option(
@@ -85,15 +111,8 @@ def ua_cmd(
        ``assume P`` starting each continuation so later asserts can assume
        earlier ones held).
 
-    Examples:
-      ctac ua f.tac -o f_ua.tac --plain                  # merge asserts
-      ctac ua f.tac -o f_ua.tac --plain --report         # + counts
-      ctac ua f.tac -o f_ua.tac --plain --no-purify-assert    # skip purification
-      ctac ua f.tac -o f_ua.tac --plain --keep-true-asserts   # keep assert true
-
-    Followup: ``ctac smt f_ua.tac --plain --run`` to solve the VC.
-    Single-assert input is a no-op (``was_noop: true``); zero-assert
-    input emits a warning.
+    Single-assert input is a no-op (``was_noop: true``); zero-assert input
+    emits a warning.
     """
     _ = agent
     if strategy != "merge":

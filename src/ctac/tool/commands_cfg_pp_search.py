@@ -11,7 +11,21 @@ from ctac.ast.run_format import pp_terminator_line
 from ctac.eval import Value
 from ctac.graph import Cfg, CfgFilter, CfgStyle
 from ctac.parse import ParseError, parse_path
-from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
+from ctac.tool.cli_runtime import (
+    FILTER_CMD_CONTAINS_HELP,
+    FILTER_EXCLUDE_HELP,
+    FILTER_FROM_HELP,
+    FILTER_ID_CONTAINS_HELP,
+    FILTER_ID_REGEX_HELP,
+    FILTER_ONLY_HELP,
+    FILTER_TO_HELP,
+    INSPECT_PANEL,
+    PLAIN_HELP,
+    agent_option,
+    app,
+    console,
+    plain_requested,
+)
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 
 
@@ -206,9 +220,23 @@ def run_search(
         c.print(f"# truncated after {max_matches} matches; raise --max-matches to see more")
 
 
-@app.command()
+_CFG_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac cfg f.tac --plain[/cyan]\n\n"
+    "[cyan]ctac cfg f.tac --plain --style edges --from entry --to 42_0_0[/cyan]"
+    "  [dim]# slice on a CFG path[/dim]\n\n"
+    "[cyan]ctac cfg f.tac --plain --id-regex '^assert_'[/cyan]"
+    "  [dim]# blocks by id pattern[/dim]\n\n"
+    "[cyan]ctac cfg f.tac --plain --style dot | dot -Tpng -o cfg.png[/cyan]"
+    "  [dim]# render CFG[/dim]"
+)
+
+
+@app.command(rich_help_panel=INSPECT_PANEL, epilog=_CFG_EPILOG)
 def cfg(
-    path: Optional[Path] = typer.Argument(None),
+    path: Optional[Path] = typer.Argument(
+        None, help="Path to .tac / .sbf.json file, or a Certora output directory."
+    ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
     style: Annotated[
@@ -234,54 +262,28 @@ def cfg(
         help="Append a warning when some successor id is not a defined block.",
     ),
     to_block: Annotated[
-        Optional[str],
-        typer.Option(
-            "--to",
-            metavar="NBID",
-            help="Keep only blocks on some path ending here (NBId ∪ ancestors). Combine with --from for 'between'.",
-        ),
+        Optional[str], typer.Option("--to", metavar="NBID", help=FILTER_TO_HELP)
     ] = None,
     from_block: Annotated[
-        Optional[str],
-        typer.Option(
-            "--from",
-            metavar="NBID",
-            help="Keep only blocks reachable from here (NBId ∪ descendants). Combine with --to for 'between'.",
-        ),
+        Optional[str], typer.Option("--from", metavar="NBID", help=FILTER_FROM_HELP)
     ] = None,
-    only: Annotated[
-        Optional[str],
-        typer.Option(
-            "--only",
-            help="Comma-separated NBIds; AND-ed with other structural filters if given.",
-        ),
-    ] = None,
+    only: Annotated[Optional[str], typer.Option("--only", help=FILTER_ONLY_HELP)] = None,
     id_contains: Annotated[
-        Optional[str],
-        typer.Option("--id-contains", help="Keep blocks whose id contains this substring."),
+        Optional[str], typer.Option("--id-contains", help=FILTER_ID_CONTAINS_HELP)
     ] = None,
     id_regex: Annotated[
-        Optional[str],
-        typer.Option("--id-regex", help="Keep blocks whose id matches this Python regex (search)."),
+        Optional[str], typer.Option("--id-regex", help=FILTER_ID_REGEX_HELP)
     ] = None,
     cmd_contains: Annotated[
-        Optional[str],
-        typer.Option(
-            "--cmd-contains",
-            help="Keep blocks where at least one raw command line contains this substring.",
-        ),
+        Optional[str], typer.Option("--cmd-contains", help=FILTER_CMD_CONTAINS_HELP)
     ] = None,
     exclude: Annotated[
-        Optional[str],
-        typer.Option(
-            "--exclude",
-            help="Comma-separated NBIds to remove after other filters.",
-        ),
+        Optional[str], typer.Option("--exclude", help=FILTER_EXCLUDE_HELP)
     ] = None,
     weak_is_strong: bool = typer.Option(
         False,
         "--weak-is-strong",
-        help="Parse snippet weak refs as strong refs.",
+        help="Parse snippet weak refs as strong refs (annotations use strong deref).",
     ),
 ) -> None:
     """Print the control-flow graph structure as text (goto view by default).
@@ -293,12 +295,6 @@ def cfg(
     Filters use intersection (AND). ``--from A --to B`` keeps blocks on
     some path from ``A`` to ``B``. ``--id-contains``/``--id-regex``/
     ``--cmd-contains``/``--only``/``--exclude`` combine with that.
-
-    Examples:
-      ctac cfg f.tac --plain
-      ctac cfg f.tac --plain --style edges --from entry --to 42_0_0
-      ctac cfg f.tac --plain --id-regex '^assert_'
-      ctac cfg f.tac --plain --style dot | dot -Tpng -o cfg.png
     """
     _ = agent
     plain = plain_requested(plain)
@@ -372,9 +368,23 @@ def cfg(
             c.print(line)
 
 
-@app.command()
+_PP_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac pp f.tac --plain[/cyan]\n\n"
+    "[cyan]ctac pp f.tac --plain --from A --to B[/cyan]"
+    "  [dim]# slice on a CFG path[/dim]\n\n"
+    "[cyan]ctac pp f.tac --plain --cmd-contains 'Select(M16'[/cyan]"
+    "  [dim]# pin bytemap reads[/dim]\n\n"
+    "[cyan]ctac pp f.tac -o f.htac[/cyan]"
+    "  [dim]# write pretty-printed text[/dim]"
+)
+
+
+@app.command(rich_help_panel=INSPECT_PANEL, epilog=_PP_EPILOG)
 def pp(
-    path: Optional[Path] = typer.Argument(None),
+    path: Optional[Path] = typer.Argument(
+        None, help="Path to .tac / .sbf.json file, or a Certora output directory."
+    ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
     output_path: Annotated[
@@ -406,17 +416,29 @@ def pp(
         Optional[int],
         typer.Option("--max-blocks", help="List at most this many blocks in file order."),
     ] = None,
-    to_block: Annotated[Optional[str], typer.Option("--to", metavar="NBID")] = None,
-    from_block: Annotated[Optional[str], typer.Option("--from", metavar="NBID")] = None,
-    only: Annotated[Optional[str], typer.Option("--only")] = None,
-    id_contains: Annotated[Optional[str], typer.Option("--id-contains")] = None,
-    id_regex: Annotated[Optional[str], typer.Option("--id-regex")] = None,
-    cmd_contains: Annotated[Optional[str], typer.Option("--cmd-contains")] = None,
-    exclude: Annotated[Optional[str], typer.Option("--exclude")] = None,
+    to_block: Annotated[
+        Optional[str], typer.Option("--to", metavar="NBID", help=FILTER_TO_HELP)
+    ] = None,
+    from_block: Annotated[
+        Optional[str], typer.Option("--from", metavar="NBID", help=FILTER_FROM_HELP)
+    ] = None,
+    only: Annotated[Optional[str], typer.Option("--only", help=FILTER_ONLY_HELP)] = None,
+    id_contains: Annotated[
+        Optional[str], typer.Option("--id-contains", help=FILTER_ID_CONTAINS_HELP)
+    ] = None,
+    id_regex: Annotated[
+        Optional[str], typer.Option("--id-regex", help=FILTER_ID_REGEX_HELP)
+    ] = None,
+    cmd_contains: Annotated[
+        Optional[str], typer.Option("--cmd-contains", help=FILTER_CMD_CONTAINS_HELP)
+    ] = None,
+    exclude: Annotated[
+        Optional[str], typer.Option("--exclude", help=FILTER_EXCLUDE_HELP)
+    ] = None,
     weak_is_strong: bool = typer.Option(
         False,
         "--weak-is-strong",
-        help="Parse snippet weak refs as strong refs.",
+        help="Parse snippet weak refs as strong refs (annotations use strong deref).",
     ),
 ) -> None:
     """Pretty-print TAC as a goto program with humanized expressions.
@@ -429,12 +451,6 @@ def pp(
     Accepts the same filters as ``ctac cfg`` (``--from/--to/--only/
     --id-contains/--id-regex/--cmd-contains/--exclude``), all combining
     with AND. Output goes to stdout unless ``-o`` is given.
-
-    Examples:
-      ctac pp f.tac --plain
-      ctac pp f.tac --plain --from A --to B              # slice on a path
-      ctac pp f.tac --plain --cmd-contains 'Select(M16'  # pin bytemap reads
-      ctac pp f.tac -o f.htac                            # write pretty-printed .htac
     """
     _ = agent
     plain = plain_requested(plain)
@@ -534,10 +550,27 @@ def pp(
             c.print(f"[cyan]wrote[/cyan]: [bold]{output_path}[/bold]")
 
 
-@app.command("grep")
-@app.command("search")
+_SEARCH_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac search f.tac 'assume.*\\[2\\^64' --plain --count[/cyan]"
+    "  [dim]# count range guards[/dim]\n\n"
+    "[cyan]ctac search f.tac Eq --plain --literal[/cyan]"
+    "  [dim]# substring[/dim]\n\n"
+    "[cyan]ctac search f.tac 'if \\(R[0-9]+\\) < \\1' --plain[/cyan]"
+    "  [dim]# self-compare[/dim]\n\n"
+    "[cyan]ctac search f.tac 'Select\\(M16' --plain --blocks-only[/cyan]"
+    "  [dim]# blocks-only[/dim]\n\n"
+    "[cyan]ctac grep f.tac havoc --plain --literal[/cyan]"
+    "  [dim]# alias[/dim]"
+)
+
+
+@app.command("grep", rich_help_panel=INSPECT_PANEL, epilog=_SEARCH_EPILOG)
+@app.command("search", rich_help_panel=INSPECT_PANEL, epilog=_SEARCH_EPILOG)
 def search_cmd(
-    path: Optional[Path] = typer.Argument(None),
+    path: Optional[Path] = typer.Argument(
+        None, help="Path to .tac / .sbf.json file, or a Certora output directory."
+    ),
     pattern: str = typer.Argument(..., help="Pattern to search in rendered command lines."),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
@@ -584,17 +617,29 @@ def search_cmd(
         "--blocks-only",
         help="Print only block ids that contain at least one match.",
     ),
-    to_block: Annotated[Optional[str], typer.Option("--to", metavar="NBID")] = None,
-    from_block: Annotated[Optional[str], typer.Option("--from", metavar="NBID")] = None,
-    only: Annotated[Optional[str], typer.Option("--only")] = None,
-    id_contains: Annotated[Optional[str], typer.Option("--id-contains")] = None,
-    id_regex: Annotated[Optional[str], typer.Option("--id-regex")] = None,
-    cmd_contains: Annotated[Optional[str], typer.Option("--cmd-contains")] = None,
-    exclude: Annotated[Optional[str], typer.Option("--exclude")] = None,
+    to_block: Annotated[
+        Optional[str], typer.Option("--to", metavar="NBID", help=FILTER_TO_HELP)
+    ] = None,
+    from_block: Annotated[
+        Optional[str], typer.Option("--from", metavar="NBID", help=FILTER_FROM_HELP)
+    ] = None,
+    only: Annotated[Optional[str], typer.Option("--only", help=FILTER_ONLY_HELP)] = None,
+    id_contains: Annotated[
+        Optional[str], typer.Option("--id-contains", help=FILTER_ID_CONTAINS_HELP)
+    ] = None,
+    id_regex: Annotated[
+        Optional[str], typer.Option("--id-regex", help=FILTER_ID_REGEX_HELP)
+    ] = None,
+    cmd_contains: Annotated[
+        Optional[str], typer.Option("--cmd-contains", help=FILTER_CMD_CONTAINS_HELP)
+    ] = None,
+    exclude: Annotated[
+        Optional[str], typer.Option("--exclude", help=FILTER_EXCLUDE_HELP)
+    ] = None,
     weak_is_strong: bool = typer.Option(
         False,
         "--weak-is-strong",
-        help="Parse snippet weak refs as strong refs.",
+        help="Parse snippet weak refs as strong refs (annotations use strong deref).",
     ),
 ) -> None:
     """Search TAC command lines using regex or literal pattern matching.
@@ -605,13 +650,6 @@ def search_cmd(
     ...`` filters as ``ctac pp`` / ``ctac cfg``, combined with AND.
 
     Aliased as ``ctac grep`` for muscle memory.
-
-    Examples:
-      ctac search f.tac 'assume.*\\[2\\^64' --plain --count
-      ctac search f.tac Eq --plain --literal                # substring match
-      ctac search f.tac 'if \\(R[0-9]+\\) < \\1' --plain     # self-compare
-      ctac search f.tac 'Select\\(M16' --plain --blocks-only # blocks-only
-      ctac grep f.tac havoc --plain --literal               # alias
     """
     _ = agent
     run_search(

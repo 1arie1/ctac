@@ -8,7 +8,14 @@ from rich.table import Table
 
 from ctac.diff.match_cfg import compare_matched_blocks, match_cfg_blocks
 from ctac.parse import ParseError, parse_path
-from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
+from ctac.tool.cli_runtime import (
+    COMPARE_PANEL,
+    PLAIN_HELP,
+    agent_option,
+    app,
+    console,
+    plain_requested,
+)
 from ctac.tool.input_resolution import resolve_tac_input_path
 
 
@@ -22,10 +29,28 @@ def truncate_diff_lines(lines: list[str], max_lines: int) -> tuple[list[str], in
     return keep, omitted
 
 
-@app.command("cfg-match")
+_CFG_MATCH_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac cfg-match a.tac b.tac --plain[/cyan]\n\n"
+    "[cyan]ctac cfg-match a.tac b.tac --plain --const-weight 0.2[/cyan]"
+    "  [dim]# constants strong[/dim]\n\n"
+    "[cyan]ctac cfg-match a.tac b.tac --plain --min-score 0.6[/cyan]"
+    "  [dim]# strong pairs only[/dim]\n\n"
+    "[cyan]ctac cfg-match a.tac b.tac --plain --max-rows 20[/cyan]"
+    "  [dim]# top 20[/dim]"
+)
+
+
+@app.command("cfg-match", rich_help_panel=COMPARE_PANEL, epilog=_CFG_MATCH_EPILOG)
 def match_cfg_cmd(
-    left: Path = typer.Argument(..., exists=True, dir_okay=True, readable=True),
-    right: Path = typer.Argument(..., exists=True, dir_okay=True, readable=True),
+    left: Path = typer.Argument(
+        ..., exists=True, dir_okay=True, readable=True,
+        help="Left-hand TAC / .sbf.json file or directory.",
+    ),
+    right: Path = typer.Argument(
+        ..., exists=True, dir_okay=True, readable=True,
+        help="Right-hand TAC / .sbf.json file or directory.",
+    ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
     min_score: float = typer.Option(
@@ -61,12 +86,6 @@ def match_cfg_cmd(
     which blocks moved vs. really changed. Constants are often strong
     anchors — raise ``--const-weight`` when the two builds should share
     many literals.
-
-    Examples:
-      ctac cfg-match a.tac b.tac --plain
-      ctac cfg-match a.tac b.tac --plain --const-weight 0.2
-      ctac cfg-match a.tac b.tac --plain --min-score 0.6   # strong pairs only
-      ctac cfg-match a.tac b.tac --plain --max-rows 20
     """
     _ = agent
     plain = plain_requested(plain)
@@ -141,10 +160,26 @@ def match_cfg_cmd(
             c.print(f"# ... {len(mr.unmatched_right) - 80} more right blocks")
 
 
-@app.command("bb-diff")
+_BB_DIFF_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac bb-diff a.tac b.tac --plain --drop-empty --max-diff-lines 120[/cyan]\n\n"
+    "[cyan]ctac bb-diff a.tac b.tac --plain --const-weight 0.2 --normalize-vars[/cyan]\n\n"
+    "[cyan]ctac bb-diff a.tac b.tac --plain --context 3 --keep-empty[/cyan]\n\n"
+    "[cyan]ctac bb-diff a.tac b.tac --plain --with-source[/cyan]"
+    "  [dim]# also print source origins[/dim]"
+)
+
+
+@app.command("bb-diff", rich_help_panel=COMPARE_PANEL, epilog=_BB_DIFF_EPILOG)
 def bb_diff_cmd(
-    left: Path = typer.Argument(..., exists=True, dir_okay=True, readable=True),
-    right: Path = typer.Argument(..., exists=True, dir_okay=True, readable=True),
+    left: Path = typer.Argument(
+        ..., exists=True, dir_okay=True, readable=True,
+        help="Left-hand TAC / .sbf.json file or directory.",
+    ),
+    right: Path = typer.Argument(
+        ..., exists=True, dir_okay=True, readable=True,
+        help="Right-hand TAC / .sbf.json file or directory.",
+    ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
     min_score: float = typer.Option(
@@ -207,12 +242,6 @@ def bb_diff_cmd(
     normalizes DSA-renamed variable names (so trivial ``R51 -> R62``
     renames don't light up as diffs) and reports per-block deltas.
     Equal blocks can be hidden with ``--drop-empty``.
-
-    Examples:
-      ctac bb-diff a.tac b.tac --plain --drop-empty --max-diff-lines 120
-      ctac bb-diff a.tac b.tac --plain --const-weight 0.2 --normalize-vars
-      ctac bb-diff a.tac b.tac --plain --context 3 --keep-empty
-      ctac bb-diff a.tac b.tac --plain --with-source        # also print origins
     """
     _ = agent
     plain = plain_requested(plain)

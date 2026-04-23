@@ -23,7 +23,14 @@ from ctac.ast.nodes import (
 )
 from ctac.ir.models import TacFile
 from ctac.parse import ParseError, parse_path
-from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
+from ctac.tool.cli_runtime import (
+    INSPECT_PANEL,
+    PLAIN_HELP,
+    agent_option,
+    app,
+    console,
+    plain_requested,
+)
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 from ctac.tool.stats_model import StatsCollection
 from ctac.tool.stats_render import render_plain_stats, render_rich_stats_tree
@@ -210,9 +217,21 @@ def run_stats(
     )
 
 
-@app.command()
+_STATS_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac stats f.tac --plain[/cyan]\n\n"
+    "[cyan]ctac stats dir/ --plain[/cyan]  [dim]# resolve dir/outputs/*.tac[/dim]\n\n"
+    "[cyan]ctac stats f.tac --plain --top-blocks 0 --no-by-cmd-kind[/cyan]"
+    "  [dim]# most compact[/dim]\n\n"
+    "[cyan]ctac stats f.tac --plain --top-blocks 5[/cyan]  [dim]# top 5 dense blocks[/dim]"
+)
+
+
+@app.command(rich_help_panel=INSPECT_PANEL, epilog=_STATS_EPILOG)
 def stats(
-    path: Optional[Path] = typer.Argument(None),
+    path: Optional[Path] = typer.Argument(
+        None, help="Path to .tac / .sbf.json file, or a Certora output directory."
+    ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
     by_cmd_kind: bool = typer.Option(
@@ -229,21 +248,15 @@ def stats(
     weak_is_strong: bool = typer.Option(
         False,
         "--weak-is-strong",
-        help="Parse snippet weak refs as strong refs.",
+        help="Parse snippet weak refs as strong refs (annotations use strong deref).",
     ),
 ) -> None:
     """Print summary statistics for a .tac file.
 
     Reports block/command/meta counts, symbol-table size, command-kind
-    counts, top-N dense blocks, expression-op frequencies,
-    non-linear mul/div counters, and the bytemap memory capability.
-    Cheap sanity check to start with on any unknown TAC or SBF file.
-
-    Examples:
-      ctac stats f.tac --plain
-      ctac stats dir/ --plain                         # resolve dir/outputs/*.tac
-      ctac stats f.tac --plain --top-blocks 0 --no-by-cmd-kind   # compact
-      ctac stats f.tac --plain --top-blocks 5          # top 5 dense blocks
+    counts, top-N dense blocks, expression-op frequencies, non-linear
+    mul/div counters, and the bytemap memory capability. Cheap sanity
+    check to start with on any unknown TAC or SBF file.
     """
     _ = agent
     run_stats(
@@ -255,9 +268,18 @@ def stats(
     )
 
 
-@app.command()
+_PARSE_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac parse f.tac --plain[/cyan]\n\n"
+    "[cyan]ctac parse dir/ --plain[/cyan]  [dim]# auto-resolves dir/outputs/*.tac[/dim]"
+)
+
+
+@app.command(rich_help_panel=INSPECT_PANEL, epilog=_PARSE_EPILOG)
 def parse(
-    path: Optional[Path] = typer.Argument(None),
+    path: Optional[Path] = typer.Argument(
+        None, help="Path to .tac / .sbf.json file, or a Certora output directory."
+    ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
     by_cmd_kind: bool = typer.Option(
@@ -274,7 +296,7 @@ def parse(
     weak_is_strong: bool = typer.Option(
         False,
         "--weak-is-strong",
-        help="Parse snippet weak refs as strong refs.",
+        help="Parse snippet weak refs as strong refs (annotations use strong deref).",
     ),
 ) -> None:
     """Parse a .tac file and print basic statistics.
@@ -282,10 +304,6 @@ def parse(
     Identical output to ``ctac stats``; the name emphasizes that a
     successful run means the file round-trips through the TAC parser.
     Use it as a first-pass syntactic check before doing anything else.
-
-    Examples:
-      ctac parse f.tac --plain
-      ctac parse dir/ --plain
     """
     _ = agent
     run_stats(

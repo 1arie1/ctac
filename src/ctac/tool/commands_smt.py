@@ -17,7 +17,14 @@ from ctac.smt.encoding.path_skeleton import sanitize_ident
 from ctac.smt.runner import parse_z3_args, run_z3_solver
 from ctac.smt import available_encodings, build_vc, render_smt_script
 from ctac.smt.z3_model import parse_z3_sat_output, z3_model_to_tac_model_text
-from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
+from ctac.tool.cli_runtime import (
+    PLAIN_HELP,
+    VERIFY_PANEL,
+    agent_option,
+    app,
+    console,
+    plain_requested,
+)
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 
 _SYMBOL_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*):([A-Za-z0-9_]+)\s*$")
@@ -34,9 +41,29 @@ def _model_symbol_sorts(symbol_table_text: str) -> dict[str, str]:
     return out
 
 
-@app.command("smt")
+_SMT_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac smt f.tac --plain[/cyan]"
+    "  [dim]# print VC to stdout[/dim]\n\n"
+    "[cyan]ctac smt f.tac --plain -o out.smt2[/cyan]"
+    "  [dim]# write file[/dim]\n\n"
+    "[cyan]ctac smt f.tac --plain --run[/cyan]"
+    "  [dim]# invoke z3[/dim]\n\n"
+    "[cyan]ctac smt f.tac --plain --run --model m.txt[/cyan]"
+    "  [dim]# write TAC model[/dim]\n\n"
+    "[cyan]ctac smt f.tac --plain --run --unsat-core[/cyan]"
+    "  [dim]# name asserts, print core[/dim]\n\n"
+    "[cyan]ctac smt f.tac --plain --run --timeout 60 --z3-args \"smt.random_seed=7\"[/cyan]\n\n"
+    "[cyan]ctac smt f.tac --plain --run --debug[/cyan]"
+    "  [dim]# print z3 stdin/stdout + replay cmd[/dim]"
+)
+
+
+@app.command("smt", rich_help_panel=VERIFY_PANEL, epilog=_SMT_EPILOG)
 def smt_cmd(
-    path: Optional[Path] = typer.Argument(None),
+    path: Optional[Path] = typer.Argument(
+        None, help="Path to .tac / .sbf.json file, or a Certora output directory."
+    ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
     encoding: Annotated[
@@ -119,15 +146,6 @@ def smt_cmd(
     ``ctac ua`` to merge multi-assert inputs); ``AssertCmd`` must be the
     last command in its block; bytemap usage must be ``bytemap-free`` or
     ``bytemap-ro`` (check with ``ctac stats --plain``).
-
-    Examples:
-      ctac smt f.tac --plain                             # print VC to stdout
-      ctac smt f.tac --plain -o out.smt2                 # write .smt2 file
-      ctac smt f.tac --plain --run                       # invoke z3
-      ctac smt f.tac --plain --run --model m.txt         # write SAT model (TAC format)
-      ctac smt f.tac --plain --run --unsat-core          # name asserts, print core
-      ctac smt f.tac --plain --run --timeout 60 --z3-args "smt.random_seed=7"
-      ctac smt f.tac --plain --run --debug               # print z3 stdin/stdout + replay cmd
     """
     _ = agent
     plain = plain_requested(plain)

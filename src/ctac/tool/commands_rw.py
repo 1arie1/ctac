@@ -25,7 +25,14 @@ from ctac.rewrite.rules import (
     R4A_DIV_PURIFY,
     simplify_pipeline,
 )
-from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
+from ctac.tool.cli_runtime import (
+    PLAIN_HELP,
+    TRANSFORM_PANEL,
+    agent_option,
+    app,
+    console,
+    plain_requested,
+)
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 
 
@@ -115,9 +122,32 @@ def _merge_phases(*phases: RewriteResult) -> RewriteResult:
     )
 
 
-@app.command("rw")
+_RW_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac rw f.tac --plain[/cyan]"
+    "  [dim]# pp to stdout[/dim]\n\n"
+    "[cyan]ctac rw f.tac --plain --report[/cyan]"
+    "  [dim]# + per-rule hit counts[/dim]\n\n"
+    "[cyan]ctac rw f.tac -o small.tac --plain[/cyan]"
+    "  [dim]# write round-trippable .tac[/dim]\n\n"
+    "[cyan]ctac rw f.tac -o small.htac --plain[/cyan]"
+    "  [dim]# write pretty-printed .htac[/dim]\n\n"
+    "[cyan]ctac rw f.tac --no-purify-div --plain[/cyan]"
+    "  [dim]# disable R4a[/dim]\n\n"
+    "[cyan]ctac rw f.tac --purify-assume --plain[/cyan]"
+    "  [dim]# also purify assumes[/dim]\n\n"
+    "Soundness is documented by [cyan]ctac rw-valid[/cyan] (per-rule SMT specs)."
+)
+
+
+@app.command("rw", rich_help_panel=TRANSFORM_PANEL, epilog=_RW_EPILOG)
 def rewrite_cmd(
-    path: Annotated[Optional[Path], typer.Argument()] = None,
+    path: Annotated[
+        Optional[Path],
+        typer.Argument(
+            help="Path to .tac / .sbf.json file, or a Certora output directory.",
+        ),
+    ] = None,
     output_path: Annotated[
         Optional[Path],
         typer.Option("-o", "--output", help="Write output here. .tac = TAC; .htac = pretty-printed."),
@@ -188,17 +218,6 @@ def rewrite_cmd(
     a round-trippable ``.tac`` file; with ``-o FILE.htac`` emits
     pretty-printed text to a file. Use ``--report`` to see per-rule hit
     counts and DCE stats.
-
-    Examples:
-      ctac rw f.tac --plain                              # pp to stdout
-      ctac rw f.tac --plain --report                     # + rule hit counts
-      ctac rw f.tac -o small.tac --plain                 # write round-trippable .tac
-      ctac rw f.tac -o small.htac --plain                # write pretty-printed .htac
-      ctac rw f.tac --no-purify-div --plain              # disable R4a
-      ctac rw f.tac --purify-assume --plain              # also purify assumes
-
-    Soundness of the rules is documented by ``ctac rw-valid`` (emits one
-    .smt2 per rule; expected ``unsat`` under z3).
     """
     _ = agent
     plain = plain_requested(plain)

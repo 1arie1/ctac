@@ -22,15 +22,42 @@ from ctac.ast.run_format import (
 from ctac.analysis import BytemapCapability, classify_bytemap_usage
 from ctac.eval import MemoryModel, RunConfig, Value, parse_model_path, run_program, value_to_text
 from ctac.parse import ParseError, parse_path
-from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
+from ctac.tool.cli_runtime import (
+    PLAIN_HELP,
+    VERIFY_PANEL,
+    agent_option,
+    app,
+    console,
+    plain_requested,
+)
 from ctac.tool.commands_cfg_pp_search import normalize_printer_name, parse_user_value
 from ctac.tool.input_resolution import resolve_model_input_path, resolve_tac_input_path, resolve_user_path
 from ctac.ast.pretty import configured_printer
 
 
-@app.command()
+_RUN_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac run f.tac --plain[/cyan]"
+    "  [dim]# zero-havoc run[/dim]\n\n"
+    "[cyan]ctac run dir/ --plain[/cyan]"
+    "  [dim]# auto-resolve .tac + model[/dim]\n\n"
+    "[cyan]ctac run f.tac --plain --trace[/cyan]"
+    "  [dim]# per-instruction trace[/dim]\n\n"
+    "[cyan]ctac run f.tac --plain --model m.txt --trace[/cyan]"
+    "  [dim]# replay a z3 model[/dim]\n\n"
+    "[cyan]ctac run f.tac --plain --model m.txt --validate[/cyan]"
+    "  [dim]# compare vs model[/dim]\n\n"
+    "[cyan]ctac run f.tac --plain --havoc-mode random --entry B1[/cyan]"
+    "  [dim]# random havocs from block B1[/dim]\n\n"
+    "[bold]Exit codes:[/bold] 0 ok, 2 stopped (assume failed), 3 error/max_steps."
+)
+
+
+@app.command(rich_help_panel=VERIFY_PANEL, epilog=_RUN_EPILOG)
 def run(
-    path: Optional[Path] = typer.Argument(None),
+    path: Optional[Path] = typer.Argument(
+        None, help="Path to .tac / .sbf.json file, or a Certora output directory."
+    ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
     trace: bool = typer.Option(
@@ -103,16 +130,6 @@ def run(
     ``--havoc-mode zero|random|ask`` (default ``zero``), or replayed from
     a model via ``--model``. Bytemap symbols load from memory entries in
     the model and feed ``Select`` lookups.
-
-    Examples:
-      ctac run f.tac --plain                             # zero-havoc run
-      ctac run dir/ --plain                              # auto-resolve .tac + model
-      ctac run f.tac --plain --trace                     # per-instruction trace
-      ctac run f.tac --plain --model m.txt --trace       # replay a z3 model
-      ctac run f.tac --plain --model m.txt --validate    # compare computed vs model
-      ctac run f.tac --plain --havoc-mode random --entry B1
-
-    Status codes: 0 ok, 2 stopped (assume failed), 3 error/max_steps.
     """
     _ = agent
     plain = plain_requested(plain)

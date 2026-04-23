@@ -17,10 +17,31 @@ from typing import Annotated, Optional
 import typer
 
 from ctac.rewrite.rules import all_rule_names, validation_cases
-from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
+from ctac.tool.cli_runtime import (
+    PLAIN_HELP,
+    VALIDATE_PANEL,
+    agent_option,
+    app,
+    console,
+    plain_requested,
+)
 
 
-@app.command("rw-valid")
+_RW_VALID_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac rw-valid -o /tmp/rwv --plain[/cyan]"
+    "  [dim]# emit all specs[/dim]\n\n"
+    "[cyan]ctac rw-valid -o /tmp/rwv --rule R4a --plain[/cyan]"
+    "  [dim]# one rule only[/dim]\n\n"
+    "[cyan]ctac rw-valid -o /tmp/rwv --rule R4 --rule R6 --plain[/cyan]\n\n"
+    "[bold]Then run the solver yourself:[/bold]\n\n"
+    "[cyan]for f in /tmp/rwv/*.smt2; do echo -n \"$(basename $f): \"; z3 $f -T:5; done[/cyan]\n\n"
+    "Expected: [cyan]unsat[/cyan] on every script (rule sound). "
+    "[cyan]sat[/cyan] is a counterexample (bug). [cyan]unknown[/cyan] means escalate."
+)
+
+
+@app.command("rw-valid", rich_help_panel=VALIDATE_PANEL, epilog=_RW_VALID_EPILOG)
 def rw_valid_cmd(
     output_dir: Annotated[
         Path,
@@ -53,17 +74,6 @@ def rw_valid_cmd(
     Currently covers R4 (5 cases), R4a (base + signed), R6 (base +
     signed). Other rules are listed under ``manifest.json``'s ``missing``
     array.
-
-    Examples:
-      ctac rw-valid -o /tmp/rwv --plain                  # emit all specs
-      ctac rw-valid -o /tmp/rwv --rule R4a --plain       # one rule only
-      ctac rw-valid -o /tmp/rwv --rule R4 --rule R6 --plain
-
-    Then run the solver:
-      for f in /tmp/rwv/*.smt2; do echo -n "$(basename $f): "; z3 $f; done
-
-    Expected: ``unsat`` on every script. ``sat`` is a counterexample
-    (rule bug). ``unknown`` means escalate (tactics, Lean).
     """
     _ = agent
     plain = plain_requested(plain)

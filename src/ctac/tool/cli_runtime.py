@@ -9,7 +9,52 @@ from rich.console import Console
 
 from ctac.ast.highlight import TAC_THEME
 
-app = typer.Typer(no_args_is_help=True, add_completion=False)
+app = typer.Typer(
+    no_args_is_help=True,
+    add_completion=False,
+    rich_markup_mode="rich",
+    help=(
+        "[bold]ctac[/bold] — inspect, analyze, transform, and verify Certora TAC.\n\n"
+        "TAC (three-address code) is the intermediate form Certora produces "
+        "before SMT. ctac parses it and exposes structural, semantic, and "
+        "solver-backed views — saving you from grepping raw dumps.\n\n"
+        "[bold]These are the common ctac commands, grouped by purpose:[/bold]\n\n"
+        "[bold cyan]inspect[/bold cyan] a TAC file (what's in it?)\n"
+        "   [cyan]stats[/cyan]       Summary counts + memory capability [dim](first look)[/dim]\n"
+        "   [cyan]parse[/cyan]       Alias of [cyan]stats[/cyan] emphasizing parse success\n"
+        "   [cyan]pp[/cyan]          Pretty-print TAC with humanized expressions\n"
+        "   [cyan]cfg[/cyan]         Control-flow graph as text ([dim]goto/edges/dot[/dim])\n"
+        "   [cyan]search[/cyan]      Regex/literal search inside TAC commands [dim](alias: grep)[/dim]\n\n"
+        "[bold cyan]compare[/bold cyan] two builds (what changed?)\n"
+        "   [cyan]cfg-match[/cyan]   Match blocks across two TACs by structural signature\n"
+        "   [cyan]bb-diff[/cyan]     Semantic per-block diff after [cyan]cfg-match[/cyan]\n\n"
+        "[bold cyan]analyze[/bold cyan] data-flow (is the TAC well-formed?)\n"
+        "   [cyan]df[/cyan]          Def-use, liveness, DCE, DSA validation, ...\n\n"
+        "[bold cyan]transform[/bold cyan] TAC → TAC (simplify for solving)\n"
+        "   [cyan]rw[/cyan]          Run the rewrite pipeline [dim](div/bitfield/Ite + DCE)[/dim]\n"
+        "   [cyan]ua[/cyan]          Uniquify assertions into a single __UA_ERROR block\n\n"
+        "[bold cyan]verify[/bold cyan] (check a property holds)\n"
+        "   [cyan]run[/cyan]         Concrete interpreter [dim](trace, model replay)[/dim]\n"
+        "   [cyan]smt[/cyan]         Emit SMT-LIB VC, optionally invoke z3\n\n"
+        "[bold cyan]validate[/bold cyan] the rewriter itself\n"
+        "   [cyan]rw-valid[/cyan]    Emit per-rule SMT soundness specs\n\n"
+        "[bold]Typical pipeline:[/bold]\n"
+        "   [cyan]ctac stats f.tac[/cyan] → [cyan]ctac rw f.tac -o opt.tac[/cyan] → "
+        "[cyan]ctac ua opt.tac -o sa.tac[/cyan] → [cyan]ctac smt sa.tac --run[/cyan]\n\n"
+        "Accepted inputs: [bold].tac[/bold], [bold].sbf.json[/bold], or a Certora "
+        "output directory (auto-resolves to [dim]<dir>/outputs/*.tac[/dim]).\n\n"
+        "Run [cyan]ctac <command> --help[/cyan] for full flags and examples, "
+        "or [cyan]ctac [--agent|<command> --agent][/cyan] for terse agent-oriented guidance."
+    ),
+)
+
+
+INSPECT_PANEL = "Inspect"
+COMPARE_PANEL = "Compare two builds"
+ANALYZE_PANEL = "Analyze data-flow"
+TRANSFORM_PANEL = "Transform TAC"
+VERIFY_PANEL = "Verify"
+VALIDATE_PANEL = "Validate the rewriter"
 
 _AGENT_GUIDE_MAIN = """ctac agent guide (plain, terse)
 
@@ -363,3 +408,29 @@ def plain_requested(plain: bool) -> bool:
 
 PATH_KW = dict(exists=True, dir_okay=True, readable=True)
 PLAIN_HELP = "Plain text only (no Rich styling); also set CTAC_PLAIN=1 or NO_COLOR."
+
+# CFG slicing filter help strings. Reused across cfg / pp / search / df.
+FILTER_FROM_HELP = (
+    "Keep only blocks reachable from NBID (successor cone). Combines with "
+    "--to via AND."
+)
+FILTER_TO_HELP = (
+    "Keep only ancestors of NBID (predecessor cone). Combines with --from "
+    "via AND; together they give the slice on some path from --from to --to."
+)
+FILTER_ONLY_HELP = (
+    "Comma-separated explicit block-id whitelist. Only these blocks survive."
+)
+FILTER_ID_CONTAINS_HELP = (
+    "Substring match on block ids. Keeps blocks whose id contains this."
+)
+FILTER_ID_REGEX_HELP = (
+    "Regex match on block ids. Keeps blocks whose id matches the pattern."
+)
+FILTER_CMD_CONTAINS_HELP = (
+    "Keep only blocks that have at least one command containing this substring."
+)
+FILTER_EXCLUDE_HELP = (
+    "Comma-separated block-id blacklist. These blocks are dropped after "
+    "other filters apply."
+)

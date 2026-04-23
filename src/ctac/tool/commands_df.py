@@ -24,7 +24,21 @@ from ctac.analysis import (
 )
 from ctac.graph import Cfg
 from ctac.parse import ParseError, parse_path, render_tac_file
-from ctac.tool.cli_runtime import PLAIN_HELP, agent_option, app, console, plain_requested
+from ctac.tool.cli_runtime import (
+    ANALYZE_PANEL,
+    FILTER_CMD_CONTAINS_HELP,
+    FILTER_EXCLUDE_HELP,
+    FILTER_FROM_HELP,
+    FILTER_ID_CONTAINS_HELP,
+    FILTER_ID_REGEX_HELP,
+    FILTER_ONLY_HELP,
+    FILTER_TO_HELP,
+    PLAIN_HELP,
+    agent_option,
+    app,
+    console,
+    plain_requested,
+)
 from ctac.tool.filters import CfgFilterOptions, apply_cfg_filters
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 from ctac.tool.stats_model import StatsCollection
@@ -128,9 +142,26 @@ def _program_topologically_ordered(program):
     return type(program)(blocks=Cfg(program).ordered_blocks())
 
 
-@app.command("df")
+_DF_EPILOG = (
+    "[bold]Examples:[/bold]\n\n"
+    "[cyan]ctac df f.tac --plain[/cyan]"
+    "  [dim]# all analyses, summary[/dim]\n\n"
+    "[cyan]ctac df f.tac --plain --show dce --details[/cyan]"
+    "  [dim]# DCE, per-item[/dim]\n\n"
+    "[cyan]ctac df f.tac --plain --show dsa[/cyan]"
+    "  [dim]# validate DSA form[/dim]\n\n"
+    "[cyan]ctac df f.tac --plain --show dce --style pp -o opt.tac[/cyan]"
+    "  [dim]# DCE + write transformed[/dim]\n\n"
+    "[cyan]ctac df f.tac --plain --json[/cyan]"
+    "  [dim]# machine-readable[/dim]"
+)
+
+
+@app.command("df", rich_help_panel=ANALYZE_PANEL, epilog=_DF_EPILOG)
 def dataflow_cmd(
-    path: Optional[Path] = typer.Argument(None),
+    path: Optional[Path] = typer.Argument(
+        None, help="Path to .tac / .sbf.json file, or a Certora output directory."
+    ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
     show: Annotated[
@@ -178,13 +209,25 @@ def dataflow_cmd(
         Optional[str],
         typer.Option("--style", help="Transformed output style: pp or raw."),
     ] = None,
-    to_block: Annotated[Optional[str], typer.Option("--to", metavar="NBID")] = None,
-    from_block: Annotated[Optional[str], typer.Option("--from", metavar="NBID")] = None,
-    only: Annotated[Optional[str], typer.Option("--only")] = None,
-    id_contains: Annotated[Optional[str], typer.Option("--id-contains")] = None,
-    id_regex: Annotated[Optional[str], typer.Option("--id-regex")] = None,
-    cmd_contains: Annotated[Optional[str], typer.Option("--cmd-contains")] = None,
-    exclude: Annotated[Optional[str], typer.Option("--exclude")] = None,
+    to_block: Annotated[
+        Optional[str], typer.Option("--to", metavar="NBID", help=FILTER_TO_HELP)
+    ] = None,
+    from_block: Annotated[
+        Optional[str], typer.Option("--from", metavar="NBID", help=FILTER_FROM_HELP)
+    ] = None,
+    only: Annotated[Optional[str], typer.Option("--only", help=FILTER_ONLY_HELP)] = None,
+    id_contains: Annotated[
+        Optional[str], typer.Option("--id-contains", help=FILTER_ID_CONTAINS_HELP)
+    ] = None,
+    id_regex: Annotated[
+        Optional[str], typer.Option("--id-regex", help=FILTER_ID_REGEX_HELP)
+    ] = None,
+    cmd_contains: Annotated[
+        Optional[str], typer.Option("--cmd-contains", help=FILTER_CMD_CONTAINS_HELP)
+    ] = None,
+    exclude: Annotated[
+        Optional[str], typer.Option("--exclude", help=FILTER_EXCLUDE_HELP)
+    ] = None,
 ) -> None:
     """Run TAC data-flow analyses and report summaries or detailed diagnostics.
 
@@ -196,13 +239,6 @@ def dataflow_cmd(
     Default prints compact summary stats per analysis; ``--details``
     switches to per-item listings (bounded by ``--max-items``). Use
     ``--json`` for machine-readable output.
-
-    Examples:
-      ctac df f.tac --plain                               # all analyses, summary
-      ctac df f.tac --plain --show dce --details          # only DCE, detailed
-      ctac df f.tac --plain --show dsa                    # validate DSA form
-      ctac df f.tac --plain --show dce --transformed -o opt.tac
-      ctac df f.tac --plain --json                        # JSON output
     """
     _ = agent
     plain = plain_requested(plain)
