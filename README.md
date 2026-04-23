@@ -242,6 +242,32 @@ vc  = build_vc(dataclasses.replace(tac, program=ua.program))
 print(render_smt_script(vc))
 ```
 
+## Editor integration
+
+A VSCode extension for the humanized TAC output of `ctac pp`
+(`.htac`) and rendered SBF files (`.sbf`) lives in
+[`tools/vscode-tac/`](tools/vscode-tac/) — syntax highlighting,
+go-to-definition for block targets and variables, and
+find-references for variables. It is not published to the
+marketplace yet; build and install locally:
+
+```bash
+cd tools/vscode-tac
+just package-install                                  # packages the .vsix and installs into `code`
+```
+
+Without `just`:
+
+```bash
+cd tools/vscode-tac
+npx @vscode/vsce package
+code --install-extension ctac-vscode-*.vsix
+```
+
+See [`tools/vscode-tac/README.md`](tools/vscode-tac/README.md) for
+file-association tips (e.g. treating `tac1.txt` / `tac2.txt` as
+`htac` without renaming).
+
 ## Authors
 
 - Arie Gurfinkel <arie@certora.com>
