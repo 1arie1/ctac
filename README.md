@@ -246,6 +246,22 @@ print(render_smt_script(vc))
 
 - Arie Gurfinkel <arie@certora.com>
 
+### AI collaborators
+
+This project was built in close collaboration with generative-AI
+coding tools. Design decisions, scope control, and final review rest
+with the human authors above; AI agents contributed implementation,
+tests, and documentation under direction.
+
+- **Claude Code** (Anthropic Claude Opus 4.x) — primary coding
+  collaborator across the session. Agent-level use is visible in
+  per-commit `Co-Authored-By:` trailers.
+- Occasional use of other assistants (editor-integrated
+  autocompletion, model-backed search) that do not appear in commit
+  trailers.
+
+All AI contributions were reviewed and committed by the human authors.
+
 ## License
 
 MIT. See `LICENSE`.
