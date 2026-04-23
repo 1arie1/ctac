@@ -35,9 +35,11 @@ from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 
 def normalize_cfg_style(raw: str) -> CfgStyle:
     s = raw.strip().lower()
-    if s in ("goto", "edges", "dot"):
+    if s in ("goto", "edges", "dot", "blocks"):
         return s  # type: ignore[return-value]
-    raise typer.BadParameter("use 'goto', 'edges', or 'dot'", param_hint="--style")
+    raise typer.BadParameter(
+        "use 'goto', 'edges', 'dot', or 'blocks'", param_hint="--style"
+    )
 
 
 def normalize_printer_name(raw: str) -> str:
@@ -358,7 +360,8 @@ _CFG_EPILOG = (
     "[bold green]Styles[/bold green]  [cyan]goto[/cyan] (block labels + goto "
     "targets, default), [cyan]edges[/cyan] (one [cyan]src -> dst[/cyan] line "
     "per edge, grep-friendly), [cyan]dot[/cyan] (Graphviz digraph; pipe to "
-    "[cyan]dot -Tpng[/cyan] for a picture).\n\n"
+    "[cyan]dot -Tpng[/cyan] for a picture), [cyan]blocks[/cyan] (one block "
+    "id per line, no preamble — clean for shell loops).\n\n"
     "[bold green]Filters[/bold green]  Combine with AND. "
     "[cyan]--from A --to B[/cyan] keeps blocks on some path from A to B. "
     "[cyan]--id-contains[/cyan] / [cyan]--id-regex[/cyan] / "
@@ -371,7 +374,10 @@ _CFG_EPILOG = (
     "[cyan]ctac cfg f.tac --plain --id-regex '^assert_'[/cyan]"
     "  [dim]# blocks by id pattern[/dim]\n\n"
     "[cyan]ctac cfg f.tac --plain --style dot | dot -Tpng -o cfg.png[/cyan]"
-    "  [dim]# render CFG[/dim]"
+    "  [dim]# render CFG[/dim]\n\n"
+    "[cyan]for b in $(ctac cfg f.tac --plain --style blocks); do "
+    "ctac search f.tac BWAnd --plain -q --only $b; done[/cyan]"
+    "  [dim]# shell-loop over blocks[/dim]"
 )
 
 
@@ -388,9 +394,10 @@ def cfg(
             "--style",
             help=(
                 "goto: block label + goto targets (default). edges: one 'src -> dst' line per edge. "
-                "dot: Graphviz digraph (block id labels; asserts red, clog pastel, source tooltips)."
+                "dot: Graphviz digraph (block id labels; asserts red, clog pastel, source tooltips). "
+                "blocks: one block id per line, nothing else — clean for shell loops."
             ),
-            autocompletion=complete_choices(["goto", "edges", "dot"]),
+            autocompletion=complete_choices(["goto", "edges", "dot", "blocks"]),
         ),
     ] = "goto",
     max_blocks: Annotated[
@@ -473,27 +480,32 @@ def cfg(
 
     st = normalize_cfg_style(style)
     _pfx = "//" if st == "dot" else "#"
-    if tac.path:
-        if st == "dot":
-            c.print(f"{_pfx} path: {tac.path}", markup=False)
-        else:
-            c.print(f"{_pfx} path: {tac.path}")
-    for w in (user_warnings + input_warnings):
-        if st == "dot":
-            c.print(f"{_pfx} input warning: {w}", markup=False)
-        else:
-            c.print(f"{_pfx} input warning: {w}")
-    for w in warnings:
-        if st == "dot":
-            c.print(f"{_pfx} {w}", markup=False)
-        else:
-            c.print(f"{_pfx} {w}")
-    if flt.any_active():
-        msg = f"{_pfx} filter: {len(filtered_cfg.blocks)} of {len(tac.program.blocks)} block(s)"
-        if st == "dot":
-            c.print(msg, markup=False)
-        else:
-            c.print(msg)
+    # `blocks` style is purpose-built for shell-loop consumption: one
+    # block id per line, nothing else. Skip the preamble entirely so
+    # `for b in $(ctac cfg f.tac --plain --style blocks); ...` gets
+    # pure ids rather than mixing header comments with ids.
+    if st != "blocks":
+        if tac.path:
+            if st == "dot":
+                c.print(f"{_pfx} path: {tac.path}", markup=False)
+            else:
+                c.print(f"{_pfx} path: {tac.path}")
+        for w in (user_warnings + input_warnings):
+            if st == "dot":
+                c.print(f"{_pfx} input warning: {w}", markup=False)
+            else:
+                c.print(f"{_pfx} input warning: {w}")
+        for w in warnings:
+            if st == "dot":
+                c.print(f"{_pfx} {w}", markup=False)
+            else:
+                c.print(f"{_pfx} {w}")
+        if flt.any_active():
+            msg = f"{_pfx} filter: {len(filtered_cfg.blocks)} of {len(tac.program.blocks)} block(s)"
+            if st == "dot":
+                c.print(msg, markup=False)
+            else:
+                c.print(msg)
 
     if st == "dot":
         for line in filtered_cfg.iter_dot(tac.metas, max_blocks=max_blocks, check_refs=check_refs):

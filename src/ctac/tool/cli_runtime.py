@@ -144,9 +144,13 @@ STYLES:
   --style goto     # block label + `goto <succ>` — default, block-oriented
   --style edges    # one `src -> dst` line per edge — grep-friendly
   --style dot      # Graphviz digraph — pipe to `dot -Tpng` for a picture
+  --style blocks   # one block id per line, no preamble — for shell loops
 
 TYPICAL:
   ctac cfg f.tac --plain --style edges --from entry --to assert_block
+  for b in $(ctac cfg f.tac --plain --style blocks); do
+      ctac search f.tac BWAnd --plain -q --only $b
+  done
 
 FILTERS: `--from/--to/--only/--id-contains/--id-regex/--cmd-contains/
 --exclude` all combine with AND. For CFG reasoning prefer `edges` +

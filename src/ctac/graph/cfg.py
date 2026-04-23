@@ -13,7 +13,7 @@ import networkx as nx
 from ctac.ir.models import TacBlock, TacProgram
 from ctac.ast.nodes import AnnotationCmd, AssertCmd, TacCmd
 
-CfgStyle = Literal["goto", "edges", "dot"]
+CfgStyle = Literal["goto", "edges", "dot", "blocks"]
 
 _FILL_ASSERT = "#ffcdd2"  # light red
 _FILL_CLOG = "#b3e5fc"  # pastel blue
@@ -361,25 +361,32 @@ class Cfg:
     def iter_lines(
         self,
         *,
-        style: Literal["goto", "edges"] = "goto",
+        style: Literal["goto", "edges", "blocks"] = "goto",
         max_blocks: int | None = None,
         check_refs: bool = True,
     ) -> Iterator[str]:
         if not self.program.blocks:
-            yield '# (no basic blocks to show)'
+            # `blocks` style is meant for shell-loop consumption; stay
+            # silent on empty input (no stderr-style noise) so an empty
+            # output loop simply iterates zero times. The other styles
+            # keep their informative preamble.
+            if style != 'blocks':
+                yield '# (no basic blocks to show)'
             return
 
         known = {b.id for b in self.program.blocks}
         dangling = 0
 
-        yield f"# entry (heuristic: first block in file order): {self.program.blocks[0].id}"
-        yield ''
+        if style != 'blocks':
+            yield f"# entry (heuristic: first block in file order): {self.program.blocks[0].id}"
+            yield ''
 
         shown = 0
         for b in self.ordered_blocks():
             if max_blocks is not None and shown >= max_blocks:
                 rest = len(self.program.blocks) - shown
-                yield f"# ... truncated: {rest} more block(s) not listed (--max-blocks {max_blocks})"
+                if style != 'blocks':
+                    yield f"# ... truncated: {rest} more block(s) not listed (--max-blocks {max_blocks})"
                 break
 
             for s in b.successors:
@@ -399,11 +406,15 @@ class Cfg:
                 else:
                     for s in b.successors:
                         yield f"{b.id} -> {s}"
+            elif style == 'blocks':
+                # One block id per line — clean for shell loops:
+                #   for b in $(ctac cfg f.tac --plain --style blocks); do ...
+                yield b.id
             else:
                 raise ValueError(f"unknown CFG style: {style!r}")
             shown += 1
 
-        if check_refs and dangling:
+        if check_refs and dangling and style != 'blocks':
             yield f"# warning: {dangling} edge(s) target block id(s) not present in this program"
 
 
