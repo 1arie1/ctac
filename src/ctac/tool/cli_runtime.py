@@ -27,7 +27,9 @@ _MAIN_EPILOG = (
     "[bold].sbf.json[/bold], or a Certora output directory (auto-resolves "
     "to [cyan]<dir>/outputs/*.tac[/cyan]).\n\n"
     "[bold green]Shell completion[/bold green]  One-time setup for tab "
-    "completion of commands, subcommands, and flag values:\n\n"
+    "completion of commands, subcommands, flag values, and "
+    "[cyan]ctac search[/cyan]'s pattern positional (TAC operator names "
+    "— BWAnd, Mod, Select, safe_math_narrow_bv256:bif, AssignExpCmd, ...):\n\n"
     "[cyan]ctac --install-completion[/cyan]"
     "  [dim]# auto-detects zsh / bash / fish / powershell; restart shell after[/dim]\n\n"
     "[cyan]ctac --show-completion[/cyan]"
@@ -78,7 +80,10 @@ CANONICAL WORKFLOWS:
 - Unknown file, first look: `ctac stats <path> --plain`.
 - Block-level code review: `ctac pp <path> --from A --to B --plain`.
 - CFG reasoning: `ctac cfg <path> --style edges --from A --to B --plain`.
-- Find patterns: `ctac search <path> <regex> --plain` (alias: `grep`).
+- Find / count / context: `ctac search <path> <regex> --plain` — alias
+  `ctac grep`. `-C N` for grep-style context, `--count-by-match` for a
+  frequency table of distinct values, `-q` for pipeable output (no `#`
+  preamble). Pattern tab-completes to TAC operator names.
 - Data-flow triage: `ctac df <path> --plain`.
 - Compare two builds: `ctac op-diff a.tac b.tac` for per-stat frequency
   delta; `ctac cfg-match` then `ctac bb-diff` for block-level diffs.
@@ -186,10 +191,36 @@ Under `--plain`, both are raw TAC, so `grep` and `ctac search` stay
 interchangeable (you can mix them in one pipeline). Without `--plain`,
 both are humanized so interactive "find" and "read" line up.
 
+KEY FLAGS (each replaces a shell-pipeline workflow):
+
+  --count-by-match   Frequency table of distinct matches (sorted desc
+                     by count, then alphabetic). If the regex has a
+                     capture group, the first group is the tally key;
+                     otherwise the whole match is. Replaces
+                     `| grep -oE ... | sort | uniq -c | sort -rn`.
+
+  -C N / -B N / -A N Grep-style context lines within the same block.
+                     Match rows keep `:` separator, context rows use
+                     `-`, non-adjacent hit groups get a `--` separator.
+                     Context never crosses block boundaries. Replaces
+                     `| awk '/Block N/,/Block M/' | grep -C`.
+
+  -q / --quiet       Suppress the `#`-prefixed preamble + footers so
+                     the output is just numeric results, tally rows, or
+                     block ids. Pair with `--count` for a two-line
+                     result that `awk '/^matches:/ {print $2}'` parses.
+                     Replaces `| tail -2 | head -1 | awk '{print $2}'`.
+
+  --pattern <TAB>    With shell completion installed, the pattern
+                     positional tab-completes to TAC operator names
+                     (BWAnd, Mod, Select, safe_math_narrow_bv256:bif,
+                     AssignExpCmd, ...). `ctac --install-completion`
+                     once; then `ctac search f.tac B<TAB>`.
+
 TYPICAL:
   ctac search f.tac 'BWAnd' --plain --count              # count op usage
   ctac search f.tac 'BWAnd' --plain --count -q           # pipeable, no `#` header
-  ctac search f.tac 'BWAnd' --plain -C 2                 # grep-style context lines
+  ctac search f.tac 'BWAnd' --plain -C 2                 # grep-style context
   ctac search f.tac '0x[0-9a-f]+' --plain --count-by-match  # frequency table
   ctac search f.tac 'if \\(R[0-9]+\\) < \\\\1' --plain   # tautological self-compare
   ctac search f.tac 'assume.*\\[2\\^64' --plain --count  # range-guard hits
