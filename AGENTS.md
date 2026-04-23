@@ -15,8 +15,14 @@ Use `ctac` in plain mode unless color is required.
 - Use `ctac stats <file> --plain --top-blocks 0 --no-by-cmd-kind` for compact stats.
 - If parse fails with `Missing line 'Program {'`, input is not a full `.tac` file.
 - For focused views, use `pp`/`cfg` with `--from` and `--to`.
-- For cross-build comparison, use `cfg-match` then `bb-diff`.
+- For cross-build comparison, start with `op-diff` (per-stat delta);
+  drill into blocks with `cfg-match` + `bb-diff`.
 - For CFG reasoning, prefer structured text (edges + block summaries), not images.
+- Before `ctac smt`: run `ctac ua` to ensure single-assert TAC, and
+  check `memory.capability` in `ctac stats` (must be `bytemap-free`
+  or `bytemap-ro`).
+- Soundness of rewrite rules: `ctac rw-valid -o <dir>` emits per-rule
+  SMT specs; run z3 on each (expected `unsat`).
 
 ## CFG Communication Format (Agent-First)
 
@@ -59,23 +65,38 @@ Prompt template:
 
 - `ctac cfg <file> --plain`
   - CFG-only text.
-  - `--style goto|edges`
+  - `--style goto|edges|dot|blocks`
+    - `goto`: default, block-oriented (`label: ...; goto <succ>`).
+    - `edges`: one `src -> dst` line per edge (grep-friendly).
+    - `dot`: Graphviz digraph (`| dot -Tsvg -o cfg.svg`).
+    - `blocks`: one block id per line, no preamble (shell loops).
   - Same filters as `pp`.
 
 - `ctac search <file> <pattern> --plain` (alias: `ctac grep`)
   - Search command lines in TAC blocks (regex by default; use `--literal` for substring).
+  - Pattern positional tab-completes to TAC operator names
+    (`BWAnd`, `Mod`, `Select`, `AssignExpCmd`, ...) after
+    `ctac --install-completion`.
   - Useful flags:
     - `--blocks-only`
     - `--count`
-    - `--max-matches <n>`
+    - `--count-by-match` — frequency table of distinct matches
+      (replaces `| grep -oE ... | sort | uniq -c | sort -rn`).
+    - `-C N` / `-B N` / `-A N` — grep-style context within a block.
+    - `-q` / `--quiet` — drop `#`-prefixed preamble + footers (pipeable).
+    - `--max-matches <n>` (use `0` for unlimited).
+    - `--printer auto|raw|human` — default `auto` picks `raw` under
+      `--plain` (so TAC op names match as typed) and `human` otherwise.
   - Supports same structural filters as `pp` (`--from/--to/--only/...`).
   - Useful analysis examples:
-    - `ctac search f.tac 'if (R[0-9]+) < \1' --plain --regex`
+    - `ctac search f.tac 'if (R[0-9]+) < \1' --plain`
       - Finds tautological-false self-compare candidates (optimization opportunities).
-    - `ctac search f.tac 'if .* == .* \{ 1 \} else \{ 0 \}' --plain --regex`
+    - `ctac search f.tac 'if .* == .* \{ 1 \} else \{ 0 \}' --plain`
       - Finds bool-temp equality checks often followed by `assume ... == 1` (canonicalization opportunities).
     - `ctac search f.tac 'assume R[0-9]+ <= \[2\^64-1\]' --plain --count --from <a> --to <b>`
       - Quantifies repeated range guards inside a path slice.
+    - `ctac search f.tac '0x[0-9a-f]+' --plain --count-by-match`
+      - Frequency table of distinct hex constants.
 
 - `ctac cfg-match <left> <right> --plain`
   - Coarse block mapping across programs.
@@ -96,6 +117,59 @@ Prompt template:
     - `--max-diff-lines <n>`
     - `--context <n>`
 
+- `ctac op-diff <left> <right> --plain`
+  - Per-stat frequency delta between two TAC files (grouped by
+    section: `expression_ops`, `command_kinds`, `memory`, ...).
+    Built on top of `ctac stats`; fastest way to spot encoder-level
+    drift between Prover versions.
+  - Key flags:
+    - `--show <sections>` — comma-separated list to restrict output.
+    - `--show-unchanged` — include zero-delta stats (audit view).
+    - `--json` — machine-readable.
+
+- `ctac df <file> --plain`
+  - Data-flow analyses: `def-use`, `liveness`, `dce`,
+    `use-before-def`, `dsa`, `control-dependence`, `uce`
+    (useless-assume elimination).
+  - Key flags:
+    - `--show <analyses>` — comma-separated list (default: all).
+    - `--details` — per-item listing (e.g. DCE dead items).
+    - `--json` — machine-readable.
+  - `dsa.status: invalid` means `ctac smt` will reject — check this
+    before running the VC.
+
+- `ctac rw <file> --plain`
+  - TAC -> TAC simplification: div / bitfield / Ite rewrites + DCE,
+    plus optional div and bool-name purification.
+  - Key flags:
+    - `-o <path>` — write round-trippable `.tac` or pretty-printed
+      `.htac` (extension decides).
+    - `--report` — per-rule hit counts.
+    - `--no-purify-div` / `--no-purify-ite` / `--no-purify-assert` /
+      `--no-purify-assume` — disable individual post-DCE naming phases.
+  - Soundness of every rewrite rule is documented by `ctac rw-valid`.
+
+- `ctac ua <file> --plain`
+  - Uniquify assertions: fold every `AssertCmd` into a single
+    `__UA_ERROR` block so the output satisfies `ctac smt`'s
+    one-assert precondition. Predicates are used verbatim — no
+    inversion, Floyd-Hoare style.
+  - Key flags:
+    - `-o <path>` — write `.tac` / `.htac` output.
+    - `--report` — counts.
+  - Single-assert input is a no-op (`was_noop: true`).
+
+- `ctac rw-valid --plain`
+  - Emit per-rule SMT-LIB soundness specs (one `.smt2` per rule +
+    `manifest.json`). Does NOT invoke z3 — run the solver yourself.
+  - Currently covers R4 (4 op variants), R4a (base + signed), R6
+    (base + signed). Other rules listed under `manifest.json:missing`.
+  - Key flags:
+    - `-o <dir>` (required) — output directory.
+    - `--rule <NAME>` (repeatable) — emit specs for named rules only.
+  - Expected solver result: `unsat` on every script. `sat` is a
+    counterexample (bug); `unknown` means escalate (tactics, Lean).
+
 - `ctac run <file> --plain`
   - Concrete interpreter.
   - Key flags:
@@ -110,12 +184,18 @@ Prompt template:
     - Non-`Assertions` suffix models are ignored with an input warning.
 
 - `ctac smt <file> --plain`
-  - Emit SMT-LIB VC. Encoder: `sea_vc` (currently the only supported one;
-    QF_BV path-predicate style was removed, would need a rebuild from scratch).
-  - Current preconditions: loop-free TAC, exactly one `AssertCmd`, and assert must be last in its block.
+  - Emit SMT-LIB VC. Encoder: `sea_vc` (QF_UFNIA, DSA +
+    block-reachability, sound bv256 domain constraints,
+    bytemap-as-UF with per-application range axiom; currently the
+    only supported encoder).
+  - Preconditions: loop-free TAC, exactly one `AssertCmd` (run
+    `ctac ua` first to merge), `AssertCmd` must be the last command
+    in its block, and memory capability must be `bytemap-free` or
+    `bytemap-ro` (check with `ctac stats`).
   - VC semantics: SAT iff assertion-failure state is reachable.
   - Solver mode: `--run` invokes z3 and reports `sat|unsat|unknown|timeout`.
   - SAT model export: `--model <path>` writes TAC model text compatible with `ctac run --model`.
+  - Unsat-core mode: `--unsat-core` names asserts and prints the core on UNSAT.
   - Z3 knobs: `--timeout` (seconds), `--seed`, `--tactic`, and passthrough `--z3-args`.
   - Debug mode: `--debug` prints z3 stdin/stdout/stderr and a replay command.
 
@@ -135,9 +215,20 @@ Prompt template:
   3. `ctac cfg f.tac --plain --from <a> --to <b>`
 
 - Compare two programs:
-  1. `ctac cfg-match a.tac b.tac --plain --const-weight 0.2`
-  2. `ctac bb-diff a.tac b.tac --plain --const-weight 0.2 --drop-empty --max-diff-lines 120`
-  3. Raise `--const-weight` if symmetric blocks are cross-matched.
+  1. `ctac op-diff a.tac b.tac --plain` — per-stat frequency delta,
+     headline finding in one shot.
+  2. `ctac cfg-match a.tac b.tac --plain --const-weight 0.2`
+  3. `ctac bb-diff a.tac b.tac --plain --const-weight 0.2 --drop-empty --max-diff-lines 120`
+  4. Raise `--const-weight` if symmetric blocks are cross-matched.
+
+- Solve an assertion end-to-end:
+  1. `ctac stats f.tac --plain` — confirm memory capability +
+     block/cmd counts.
+  2. `ctac rw f.tac -o opt.tac --plain` — simplify.
+  3. `ctac ua opt.tac -o sa.tac --plain` — fold to single assert.
+  4. `ctac smt sa.tac --plain --run --model m.txt` — z3 + TAC model.
+  5. `ctac run sa.tac --plain --model m.txt --trace` — replay
+     concretely.
 
 - Validate runtime against model:
   1. `ctac run f.tac --plain --model model.txt --validate`
