@@ -11,6 +11,7 @@ from ctac.rewrite.rules.bitfield import (
     N3_HIGH_MASK,
     N4_SHR_CONST,
 )
+from ctac.rewrite.rules.bv_to_int import ADD_BV_TO_INT, MUL_BV_TO_INT
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
 from ctac.rewrite.rules.ceildiv_validation import R6_CASES
 from ctac.rewrite.rules.copyprop import CP_ALIAS
@@ -63,6 +64,12 @@ simplify_pipeline: tuple[Rule, ...] = (
     ITE_BOOL,
     BOOL_ABSORB,
     DE_MORGAN,
+    # Range-safe narrowing: Mul/Add -> IntMul/IntAdd when interval
+    # inference proves the result fits in [0, 2^256). Must run after the
+    # div / bitfield rules so that the Mul(Div(..)) shapes they produce
+    # become the canonical input here.
+    MUL_BV_TO_INT,
+    ADD_BV_TO_INT,
     # CSE before CP: fold duplicate static defs to aliases, then CP propagates
     # and DCE removes. Runs inside the fixed-point so CP's output can in turn
     # expose new CSE opportunities on the next iteration.
@@ -102,6 +109,8 @@ all_rule_names: tuple[str, ...] = (
     ITE_BOOL.name,
     BOOL_ABSORB.name,
     DE_MORGAN.name,
+    MUL_BV_TO_INT.name,
+    ADD_BV_TO_INT.name,
     CSE.name,
     CP_ALIAS.name,
     ITE_PURIFY.name,
@@ -110,6 +119,7 @@ all_rule_names: tuple[str, ...] = (
 )
 
 __all__ = [
+    "ADD_BV_TO_INT",
     "BOOL_ABSORB",
     "CP_ALIAS",
     "CSE",
@@ -119,6 +129,7 @@ __all__ = [
     "ITE_BOOL",
     "ITE_PURIFY",
     "ITE_SAME",
+    "MUL_BV_TO_INT",
     "N1_SHIFTED_BWAND",
     "N2_LOW_MASK",
     "N3_HIGH_MASK",
