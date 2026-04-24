@@ -35,6 +35,7 @@ from ctac.rewrite.rules.ite_purify import ITE_PURIFY
 from ctac.rewrite.rules.purify_assert import PURIFY_ASSERT
 from ctac.rewrite.rules.purify_assume import PURIFY_ASSUME
 from ctac.rewrite.rules.ite import (
+    ADD_ITE_DIST,
     BOOL_ABSORB,
     DE_MORGAN,
     EQ_CONST_FOLD,
@@ -42,6 +43,8 @@ from ctac.rewrite.rules.ite import (
     ITE_BOOL,
     ITE_COND_FOLD,
     ITE_SAME,
+    SUB_ITE_DIST_LEFT,
+    SUB_ITE_DIST_RIGHT,
 )
 
 # Rules that run *before* R4a (div purification). They handle bit-op
@@ -66,6 +69,11 @@ simplify_pipeline: tuple[Rule, ...] = (
     # Boolean / Ite simplification.
     EQ_CONST_FOLD,
     EQ_ITE_DIST,
+    # Distribute Add/Sub over Ite operands so per-branch simplification
+    # (constant folding, range-driven narrowing) can fire independently.
+    ADD_ITE_DIST,
+    SUB_ITE_DIST_LEFT,
+    SUB_ITE_DIST_RIGHT,
     ITE_SAME,
     ITE_BOOL,
     # Range-driven Ite folding: decide `cond` via interval inference
@@ -121,6 +129,9 @@ all_rule_names: tuple[str, ...] = (
     R6_CEILDIV.name,
     EQ_CONST_FOLD.name,
     EQ_ITE_DIST.name,
+    ADD_ITE_DIST.name,
+    SUB_ITE_DIST_LEFT.name,
+    SUB_ITE_DIST_RIGHT.name,
     ITE_SAME.name,
     ITE_BOOL.name,
     ITE_COND_FOLD.name,
@@ -140,6 +151,7 @@ all_rule_names: tuple[str, ...] = (
 __all__ = [
     "ADD_BV_MAX_TO_ITE",
     "ADD_BV_TO_INT",
+    "ADD_ITE_DIST",
     "BOOL_ABSORB",
     "CP_ALIAS",
     "CSE",
@@ -164,6 +176,8 @@ __all__ = [
     "R4A_DIV_PURIFY",
     "R6_CEILDIV",
     "SUB_BV_TO_INT",
+    "SUB_ITE_DIST_LEFT",
+    "SUB_ITE_DIST_RIGHT",
     "ValidationCase",
     "all_rule_names",
     "default_pipeline",

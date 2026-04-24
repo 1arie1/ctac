@@ -80,6 +80,80 @@ def _rewrite_eq_ite_distribute(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None
     return None
 
 
+_ADD_OPS = frozenset({"Add", "IntAdd"})
+_SUB_OPS = frozenset({"Sub", "IntSub"})
+
+
+def _rewrite_add_ite_distribute(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    """``Add(Ite(c, T, E), Y)`` -> ``Ite(c, Add(T, Y), Add(E, Y))`` (and symmetric).
+
+    Applies to both ``Add`` and ``IntAdd``, and peels
+    ``safe_math_narrow_bvN`` wrappers so e.g. ``narrow(IntAdd(X,
+    Ite(c, T, E)))`` also distributes. Distribution is sound in int,
+    bv, and mixed semantics — the Ite selects an operand and the outer
+    op commutes with branch selection.
+    """
+    if not (isinstance(expr, ApplyExpr) and expr.op in _ADD_OPS and len(expr.args) == 2):
+        return None
+    op = expr.op
+    a, b = expr.args
+    a_lt = ctx.peel_narrow(a)
+    if _is_ite(a_lt):
+        assert isinstance(a_lt, ApplyExpr)
+        cond, then, els = a_lt.args
+        return ApplyExpr(
+            "Ite",
+            (cond, ApplyExpr(op, (then, b)), ApplyExpr(op, (els, b))),
+        )
+    b_lt = ctx.peel_narrow(b)
+    if _is_ite(b_lt):
+        assert isinstance(b_lt, ApplyExpr)
+        cond, then, els = b_lt.args
+        return ApplyExpr(
+            "Ite",
+            (cond, ApplyExpr(op, (a, then)), ApplyExpr(op, (a, els))),
+        )
+    return None
+
+
+def _rewrite_sub_ite_distribute_left(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    """``Sub(Ite(c, T, E), Y)`` -> ``Ite(c, Sub(T, Y), Sub(E, Y))``.
+
+    Applies to both ``Sub`` and ``IntSub``; peels narrows on the LHS.
+    Sub is non-commutative, so LHS and RHS Ite are separate rules.
+    """
+    if not (isinstance(expr, ApplyExpr) and expr.op in _SUB_OPS and len(expr.args) == 2):
+        return None
+    op = expr.op
+    a, b = expr.args
+    a_lt = ctx.peel_narrow(a)
+    if not _is_ite(a_lt):
+        return None
+    assert isinstance(a_lt, ApplyExpr)
+    cond, then, els = a_lt.args
+    return ApplyExpr(
+        "Ite",
+        (cond, ApplyExpr(op, (then, b)), ApplyExpr(op, (els, b))),
+    )
+
+
+def _rewrite_sub_ite_distribute_right(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    """``Sub(X, Ite(c, T, E))`` -> ``Ite(c, Sub(X, T), Sub(X, E))``."""
+    if not (isinstance(expr, ApplyExpr) and expr.op in _SUB_OPS and len(expr.args) == 2):
+        return None
+    op = expr.op
+    a, b = expr.args
+    b_lt = ctx.peel_narrow(b)
+    if not _is_ite(b_lt):
+        return None
+    assert isinstance(b_lt, ApplyExpr)
+    cond, then, els = b_lt.args
+    return ApplyExpr(
+        "Ite",
+        (cond, ApplyExpr(op, (a, then)), ApplyExpr(op, (a, els))),
+    )
+
+
 def _rewrite_ite_same(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
     """``Ite(c, X, X)`` -> ``X``."""
     if not _is_ite(expr):
@@ -252,6 +326,21 @@ EQ_ITE_DIST = Rule(
     name="EqIte",
     fn=_rewrite_eq_ite_distribute,
     description="Eq(Ite(c, T, E), V) -> Ite(c, Eq(T, V), Eq(E, V)).",
+)
+ADD_ITE_DIST = Rule(
+    name="AddIte",
+    fn=_rewrite_add_ite_distribute,
+    description="Add(Ite(c, T, E), Y) -> Ite(c, Add(T, Y), Add(E, Y)) (and symmetric).",
+)
+SUB_ITE_DIST_LEFT = Rule(
+    name="SubIteLeft",
+    fn=_rewrite_sub_ite_distribute_left,
+    description="Sub(Ite(c, T, E), Y) -> Ite(c, Sub(T, Y), Sub(E, Y)).",
+)
+SUB_ITE_DIST_RIGHT = Rule(
+    name="SubIteRight",
+    fn=_rewrite_sub_ite_distribute_right,
+    description="Sub(X, Ite(c, T, E)) -> Ite(c, Sub(X, T), Sub(X, E)).",
 )
 ITE_SAME = Rule(
     name="IteSame",
