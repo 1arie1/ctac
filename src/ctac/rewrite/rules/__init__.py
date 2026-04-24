@@ -11,7 +11,7 @@ from ctac.rewrite.rules.bitfield import (
     N3_HIGH_MASK,
     N4_SHR_CONST,
 )
-from ctac.rewrite.rules.bv_to_int import ADD_BV_TO_INT, MUL_BV_TO_INT
+from ctac.rewrite.rules.bv_to_int import ADD_BV_MAX_DEC, ADD_BV_TO_INT, MUL_BV_TO_INT
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
 from ctac.rewrite.rules.ceildiv_validation import R6_CASES
 from ctac.rewrite.rules.copyprop import CP_ALIAS
@@ -70,6 +70,9 @@ simplify_pipeline: tuple[Rule, ...] = (
     # become the canonical input here.
     MUL_BV_TO_INT,
     ADD_BV_TO_INT,
+    # Specialised sibling: collapse the two's-complement decrement
+    # `Add(BV256_MAX, X) -> IntSub(X, 1)` when `X >= 1`.
+    ADD_BV_MAX_DEC,
     # CSE before CP: fold duplicate static defs to aliases, then CP propagates
     # and DCE removes. Runs inside the fixed-point so CP's output can in turn
     # expose new CSE opportunities on the next iteration.
@@ -111,6 +114,7 @@ all_rule_names: tuple[str, ...] = (
     DE_MORGAN.name,
     MUL_BV_TO_INT.name,
     ADD_BV_TO_INT.name,
+    ADD_BV_MAX_DEC.name,
     CSE.name,
     CP_ALIAS.name,
     ITE_PURIFY.name,
@@ -119,6 +123,7 @@ all_rule_names: tuple[str, ...] = (
 )
 
 __all__ = [
+    "ADD_BV_MAX_DEC",
     "ADD_BV_TO_INT",
     "BOOL_ABSORB",
     "CP_ALIAS",

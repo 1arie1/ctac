@@ -56,23 +56,44 @@ def infer_expr_range(
             return None
         return (c, c)
     if isinstance(expr, SymbolRef):
-        r = ctx.range(expr.name)
-        if r is not None:
-            lo, hi = r
-            if hi is not None and lo is None and hi >= 0:
-                # Havoc'd bv vars default to lo=0; callers treat ints similarly.
-                lo = 0
-            if lo is not None and hi is not None:
-                return (lo, hi)
+        # Intersect bounds from every source that has something to say:
+        # the unique static definition's inferred range, dominating
+        # assume-facts, and the declared sort. Each source narrows the
+        # box; taking the tightest lo / hi across all of them is always
+        # sound. This lets a one-sided assume (e.g. `Ge(X, 1)` giving
+        # `lo=1, hi=None`) combine with the sort's upper bound
+        # (`hi = 2^256 - 1`) to yield a usable interval.
+        lo: int | None = None
+        hi: int | None = None
+
+        def _tighten(r: tuple[int | None, int | None] | None) -> None:
+            nonlocal lo, hi
+            if r is None:
+                return
+            r_lo, r_hi = r
+            if r_lo is not None:
+                lo = r_lo if lo is None else max(lo, r_lo)
+            if r_hi is not None:
+                hi = r_hi if hi is None else min(hi, r_hi)
+
         d = ctx.definition(expr.name)
         if d is not None:
-            return infer_expr_range(d, ctx, ite_depth=ite_depth)
-        # Fallback: symbols declared as ``bvk`` are in ``[0, 2^k - 1]`` by
-        # sort. Applies only when no tighter bound came from an assume or
-        # a static definition.
+            _tighten(infer_expr_range(d, ctx, ite_depth=ite_depth))
+        _tighten(ctx.range(expr.name))
         width = _sort_width(ctx.symbol_sort(expr.name))
         if width is not None:
-            return (0, (1 << width) - 1)
+            _tighten((0, (1 << width) - 1))
+
+        # Unsigned-by-convention fallback: if an upper bound exists but
+        # no source produced a lower bound, assume lo=0. TAC values in
+        # this pipeline are non-negative integers (bv values always,
+        # int values almost always), so an upper-only assume like
+        # `Le(R, K)` with K >= 0 is effectively a `[0, K]` range.
+        if lo is None and hi is not None and hi >= 0:
+            lo = 0
+
+        if lo is not None and hi is not None:
+            return (lo, hi)
         return None
     if isinstance(expr, ApplyExpr):
         return _infer_apply(expr, ctx, ite_depth=ite_depth)

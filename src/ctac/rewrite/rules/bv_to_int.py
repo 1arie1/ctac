@@ -17,6 +17,9 @@ Rules
 - ``MUL_BV_TO_INT``: ``Mul(a, b) -> IntMul(a, b)`` when the inferred
   range of the product is in ``[0, 2^256)``.
 - ``ADD_BV_TO_INT``: ``Add(a, b) -> IntAdd(a, b)`` likewise.
+- ``ADD_BV_MAX_DEC``: ``Add(BV256_MAX, X) -> IntSub(X, 1)`` when
+  ``X >= 1``. The two's-complement "subtract 1 via -1" idiom:
+  ``(2^256 - 1) + X = X - 1 (mod 2^256)`` exactly when ``X >= 1``.
 
 ``Sub`` is intentionally out of scope — it wraps when ``a < b``,
 which simple interval inference rarely disproves, so lifting it
@@ -25,12 +28,14 @@ needs a stronger invariant than we have today.
 
 from __future__ import annotations
 
-from ctac.ast.nodes import ApplyExpr, TacExpr
+from ctac.ast.nodes import ApplyExpr, ConstExpr, TacExpr
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
 from ctac.rewrite.range_infer import infer_expr_range
+from ctac.rewrite.rules.common import const_to_int
 
 _BV256_MOD = 1 << 256
+_BV256_MAX = _BV256_MOD - 1
 
 
 def _fits_in_bv256(expr: ApplyExpr, ctx: RewriteCtx) -> bool:
@@ -57,6 +62,26 @@ def _rewrite_add_bv_to_int(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     return ApplyExpr("IntAdd", expr.args)
 
 
+def _rewrite_add_bv_max_dec(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    # `(2^256 - 1) + X` wraps to `X - 1` in bv256 exactly when `X >= 1`.
+    # At `X = 0` the wrap doesn't happen and the bv result is BV256_MAX.
+    if not isinstance(expr, ApplyExpr) or expr.op != "Add" or len(expr.args) != 2:
+        return None
+    a, b = expr.args
+    a_val = const_to_int(a) if isinstance(a, ConstExpr) else None
+    b_val = const_to_int(b) if isinstance(b, ConstExpr) else None
+    if a_val == _BV256_MAX:
+        other = b
+    elif b_val == _BV256_MAX:
+        other = a
+    else:
+        return None
+    r = infer_expr_range(other, ctx)
+    if r is None or r[0] < 1:
+        return None
+    return ApplyExpr("IntSub", (other, ConstExpr("0x1")))
+
+
 MUL_BV_TO_INT = Rule(
     name="MUL_BV_TO_INT",
     fn=_rewrite_mul_bv_to_int,
@@ -73,5 +98,16 @@ ADD_BV_TO_INT = Rule(
     description=(
         "Add(a, b) -> IntAdd(a, b) when the range of the sum fits in "
         "[0, 2^256). Elides sea_vc's outer `(mod ... BV256_MOD)` wrap."
+    ),
+)
+
+
+ADD_BV_MAX_DEC = Rule(
+    name="ADD_BV_MAX_DEC",
+    fn=_rewrite_add_bv_max_dec,
+    description=(
+        "Add(BV256_MAX, X) -> IntSub(X, 1) when X >= 1. The bv256 "
+        "two's-complement '-1' idiom: `(2^256 - 1) + X` wraps to "
+        "`X - 1` exactly when X >= 1."
     ),
 )
