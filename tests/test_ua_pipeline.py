@@ -81,6 +81,21 @@ def test_pipeline_noop_on_single_compound_assert_still_purifies():
     assert names == ["TA0"]
 
 
+def test_pipeline_split_strategy_redirects():
+    # uniquify_asserts is merge-only; split has a distinct return shape.
+    # The error message points callers at uniquify_asserts_split.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd R0\n"
+            "\t}"
+        ),
+        path="<s>",
+    )
+    with pytest.raises(ValueError, match="uniquify_asserts_split"):
+        uniquify_asserts(tac.program, strategy="split")
+
+
 def test_pipeline_unknown_strategy_raises():
     tac = parse_string(
         _wrap(
@@ -90,5 +105,5 @@ def test_pipeline_unknown_strategy_raises():
         ),
         path="<s>",
     )
-    with pytest.raises(ValueError, match="unknown uniquify-asserts strategy"):
-        uniquify_asserts(tac.program, strategy="split")
+    with pytest.raises(ValueError, match="uniquify_asserts handles only 'merge'"):
+        uniquify_asserts(tac.program, strategy="bogus")

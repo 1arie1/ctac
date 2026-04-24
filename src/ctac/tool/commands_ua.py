@@ -7,6 +7,7 @@ been redirected to a single ``__UA_ERROR`` block. See
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -28,7 +29,7 @@ from ctac.tool.cli_runtime import (
     plain_requested,
 )
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
-from ctac.ua import merge_asserts
+from ctac.ua import merge_asserts, split_asserts
 
 
 def _count_asserts(program: TacProgram) -> int:
@@ -48,16 +49,23 @@ _UA_EPILOG = (
     "[cyan]assert true[/cyan].\n\n"
     "[bold]2.[/bold] [cyan]PURIFY_ASSERT[/cyan] rewrite — name each "
     "non-trivial predicate as a fresh [cyan]TA<N>:bool[/cyan].\n\n"
-    "[bold]3.[/bold] Apply [cyan]--strategy[/cyan] ([cyan]merge[/cyan] "
-    "redirects every remaining assert to [cyan]__UA_ERROR[/cyan] via "
-    "[cyan]if (P) goto GOOD else goto __UA_ERROR[/cyan], with "
-    "[cyan]assume P[/cyan] starting each continuation so later asserts can "
-    "assume earlier ones held).\n\n"
+    "[bold]3.[/bold] Apply [cyan]--strategy[/cyan]:\n\n"
+    "    [cyan]merge[/cyan] — redirect every remaining assert to "
+    "[cyan]__UA_ERROR[/cyan] via [cyan]if (P) goto GOOD else goto __UA_ERROR[/cyan], "
+    "with [cyan]assume P[/cyan] starting each continuation so later asserts "
+    "can assume earlier ones held. Output is a single .tac file.\n\n"
+    "    [cyan]split[/cyan] — emit one .tac per assertion. File i keeps the "
+    "i-th assert live; all other AssertCmds become AssumeExpCmds with the "
+    "same predicate. Each output is pruned to the cone of influence of the "
+    "live assert. Output is a directory with [cyan]assert_<NN>.tac[/cyan] "
+    "files and [cyan]manifest.json[/cyan].\n\n"
     "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac ua f.tac -o f_ua.tac --plain[/cyan]"
     "  [dim]# merge asserts[/dim]\n\n"
     "[cyan]ctac ua f.tac -o f_ua.tac --plain --report[/cyan]"
     "  [dim]# + counts[/dim]\n\n"
+    "[cyan]ctac ua f.tac -o split_dir --plain --strategy split[/cyan]"
+    "  [dim]# k files, one per assert[/dim]\n\n"
     "[cyan]ctac ua f.tac -o f_ua.tac --plain --no-purify-assert[/cyan]"
     "  [dim]# skip purification[/dim]\n\n"
     "[cyan]ctac ua f.tac -o f_ua.tac --plain --keep-true-asserts[/cyan]"
@@ -79,14 +87,22 @@ def ua_cmd(
         typer.Option(
             "-o",
             "--output",
-            help="Write the uniquified TAC here (.tac). Required.",
+            help=(
+                "For --strategy merge: .tac file to write the merged program. "
+                "For --strategy split: directory to populate with "
+                "assert_<NN>.tac files + manifest.json (created if missing)."
+            ),
         ),
     ] = None,
     strategy: str = typer.Option(
         "merge",
         "--strategy",
-        help="Uniquify-asserts strategy. Currently only 'merge' is supported.",
-        autocompletion=complete_choices(["merge"]),
+        help=(
+            "Uniquify-asserts strategy. 'merge' folds every assert into a "
+            "single __UA_ERROR block; 'split' emits one .tac per assert "
+            "(others become AssumeExpCmd) into the directory named by -o."
+        ),
+        autocompletion=complete_choices(["merge", "split"]),
     ),
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
     agent: bool = agent_option(),
@@ -112,11 +128,12 @@ def ua_cmd(
         ),
     ),
 ) -> None:
-    """Uniquify assertions (fold into a single __UA_ERROR block)."""
+    """Uniquify assertions (merge into one __UA_ERROR block, or split per assert)."""
     _ = agent
-    if strategy != "merge":
+    if strategy not in {"merge", "split"}:
         raise typer.BadParameter(
-            f"unknown strategy: {strategy!r} (supported: merge)", param_hint="--strategy",
+            f"unknown strategy: {strategy!r} (supported: merge, split)",
+            param_hint="--strategy",
         )
     plain = plain_requested(plain)
     c = console(plain)
@@ -156,6 +173,48 @@ def ua_cmd(
         program = rewrite.program
         extra_symbols = rewrite.extra_symbols
 
+    if strategy == "merge":
+        _run_merge(
+            c,
+            plain=plain,
+            tac=tac,
+            program=program,
+            output_path=output_path,
+            report=report,
+            asserts_before=asserts_before,
+            removed_true=removed_true,
+            extra_symbols=extra_symbols,
+            source_path=str(tac_path),
+        )
+    else:  # strategy == "split"
+        _run_split(
+            c,
+            plain=plain,
+            tac=tac,
+            program=program,
+            output_path=output_path,
+            report=report,
+            asserts_before=asserts_before,
+            removed_true=removed_true,
+            extra_symbols=extra_symbols,
+            source_path=str(tac_path),
+        )
+
+
+def _run_merge(
+    c,
+    *,
+    plain: bool,
+    tac,
+    program: TacProgram,
+    output_path: Optional[Path],
+    report: bool,
+    asserts_before: int,
+    removed_true: int,
+    extra_symbols: tuple[tuple[str, str], ...],
+    source_path: str,
+) -> None:
+    _ = source_path  # merge report doesn't reference it today
     try:
         result = merge_asserts(program)
     except ValueError as e:
@@ -163,13 +222,12 @@ def ua_cmd(
         raise typer.Exit(1) from e
 
     if report:
-        _print_report(
+        _print_merge_report(
             c,
             plain=plain,
             asserts_before=asserts_before,
             removed_true=removed_true,
             result=result,
-            strategy=strategy,
         )
 
     if output_path is None:
@@ -186,21 +244,93 @@ def ua_cmd(
         c.print(f"# wrote {output_path}", markup=False)
 
 
-def _print_report(
+def _run_split(
+    c,
+    *,
+    plain: bool,
+    tac,
+    program: TacProgram,
+    output_path: Optional[Path],
+    report: bool,
+    asserts_before: int,
+    removed_true: int,
+    extra_symbols: tuple[tuple[str, str], ...],
+    source_path: str,
+) -> None:
+    if output_path is None:
+        c.print(
+            "# error: --strategy split requires -o DIR for the output directory",
+            markup=False,
+        )
+        raise typer.Exit(1)
+    if output_path.exists() and not output_path.is_dir():
+        c.print(
+            f"# error: --strategy split expects -o to be a directory; "
+            f"{output_path} exists and is not a directory",
+            markup=False,
+        )
+        raise typer.Exit(1)
+
+    result = split_asserts(program)
+
+    output_path.mkdir(parents=True, exist_ok=True)
+    outputs_written = 0
+    k = len(result.outputs)
+    pad = max(2, len(str(max(k - 1, 0))))
+    manifest_outputs: list[dict] = []
+    for out in result.outputs:
+        filename = f"assert_{out.index:0{pad}d}.tac"
+        text = render_tac_file(tac, program=out.program, extra_symbols=extra_symbols)
+        (output_path / filename).write_text(text, encoding="utf-8")
+        outputs_written += 1
+        manifest_outputs.append(
+            {
+                "file": filename,
+                "index": out.index,
+                "block_id": out.block_id,
+                "cmd_index": out.cmd_index,
+                "message": out.message,
+            }
+        )
+    manifest = {
+        "strategy": "split",
+        "source_path": source_path,
+        "asserts_before": result.asserts_before,
+        "removed_true_asserts": removed_true,
+        "outputs": manifest_outputs,
+    }
+    (output_path / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+
+    if report:
+        _print_split_report(
+            c,
+            plain=plain,
+            asserts_before=asserts_before,
+            removed_true=removed_true,
+            result=result,
+            output_dir=output_path,
+            outputs_written=outputs_written,
+        )
+    elif outputs_written:
+        c.print(f"# wrote {outputs_written} files + manifest to {output_path}", markup=False)
+
+
+def _print_merge_report(
     c,
     *,
     plain: bool,
     asserts_before: int,
     removed_true: int,
     result,
-    strategy: str,
 ) -> None:
     def line(s: str) -> None:
         c.print(s, markup=not plain)
 
     if plain:
         line("ua:")
-        line(f"  strategy: {strategy}")
+        line("  strategy: merge")
         line(f"  asserts_before: {asserts_before}")
         line(f"  removed_true_asserts: {removed_true}")
         line(f"  asserts_merged: {result.asserts_merged}")
@@ -208,9 +338,40 @@ def _print_report(
         line(f"  was_noop: {str(result.was_noop).lower()}")
         return
     line("[bold]UA Summary[/bold]")
-    line(f"  strategy: [cyan]{strategy}[/cyan]")
+    line("  strategy: [cyan]merge[/cyan]")
     line(f"  asserts_before: [bold]{asserts_before}[/bold]")
     line(f"  removed_true_asserts: [bold]{removed_true}[/bold]")
     line(f"  asserts_merged:       [bold]{result.asserts_merged}[/bold]")
     line(f"  error_block_id: [cyan]{result.error_block_id or '-'}[/cyan]")
+    line(f"  was_noop: [bold]{str(result.was_noop).lower()}[/bold]")
+
+
+def _print_split_report(
+    c,
+    *,
+    plain: bool,
+    asserts_before: int,
+    removed_true: int,
+    result,
+    output_dir: Path,
+    outputs_written: int,
+) -> None:
+    def line(s: str) -> None:
+        c.print(s, markup=not plain)
+
+    if plain:
+        line("ua:")
+        line("  strategy: split")
+        line(f"  asserts_before: {asserts_before}")
+        line(f"  removed_true_asserts: {removed_true}")
+        line(f"  outputs_written: {outputs_written}")
+        line(f"  output_dir: {output_dir}")
+        line(f"  was_noop: {str(result.was_noop).lower()}")
+        return
+    line("[bold]UA Summary[/bold]")
+    line("  strategy: [cyan]split[/cyan]")
+    line(f"  asserts_before: [bold]{asserts_before}[/bold]")
+    line(f"  removed_true_asserts: [bold]{removed_true}[/bold]")
+    line(f"  outputs_written:      [bold]{outputs_written}[/bold]")
+    line(f"  output_dir: [cyan]{output_dir}[/cyan]")
     line(f"  was_noop: [bold]{str(result.was_noop).lower()}[/bold]")
