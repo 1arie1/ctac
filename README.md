@@ -45,25 +45,25 @@ ctac --install-completion       # auto-detects zsh / bash / fish / powershell
 **Solve an assertion end-to-end:**
 
 ```bash
-ctac stats f.tac --plain                              # first look (memory capability, block/cmd counts)
-ctac rw f.tac -o opt.tac --plain                      # simplify (div/bitfield/Ite rewrites + DCE)
-ctac ua opt.tac -o sa.tac --plain                     # fold all asserts into one __UA_ERROR block
-ctac smt sa.tac --plain --run --model m.txt           # generate VC, invoke z3, write SAT model
-ctac run sa.tac --plain --model m.txt --trace         # replay the model concretely
+ctac stats f.tac --plain  # first look: memory capability + block/cmd counts
+ctac rw f.tac -o opt.tac --plain  # simplify (div/bitfield/Ite + DCE)
+ctac ua opt.tac -o sa.tac --plain  # fold asserts into one __UA_ERROR block
+ctac smt sa.tac --plain --run --model m.txt  # VC + z3, write SAT model
+ctac run sa.tac --plain --model m.txt --trace  # replay concretely
 ```
 
 **Compare two builds (did the encoder drift?):**
 
 ```bash
-ctac op-diff a.tac b.tac --plain                      # per-stat frequency delta, grouped by section
-ctac cfg-match a.tac b.tac --plain                    # block correspondence (for bb-diff)
-ctac bb-diff a.tac b.tac --plain --drop-empty         # per-block semantic delta
+ctac op-diff a.tac b.tac --plain  # per-stat frequency delta, by section
+ctac cfg-match a.tac b.tac --plain  # block correspondence (for bb-diff)
+ctac bb-diff a.tac b.tac --plain --drop-empty  # per-block semantic delta
 ```
 
 **Validate the rewriter itself:**
 
 ```bash
-ctac rw-valid -o /tmp/rwv --plain                     # emit per-rule SMT soundness scripts
+ctac rw-valid -o /tmp/rwv --plain  # emit per-rule SMT soundness scripts
 for f in /tmp/rwv/*.smt2; do echo -n "$(basename $f): "; z3 "$f" -T:5; done
 # expected `unsat` on every script
 ```
@@ -73,22 +73,22 @@ for f in /tmp/rwv/*.smt2; do echo -n "$(basename $f): "; z3 "$f" -T:5; done
 ### Inspect
 
 ```bash
-ctac stats f.tac --plain                              # blocks/cmds/metas/ops + memory capability
-ctac stats path/to/output-dir --plain                 # auto-resolves outputs/*.tac
+ctac stats f.tac --plain  # blocks/cmds/metas/ops + memory capability
+ctac stats path/to/output-dir --plain  # auto-resolves outputs/*.tac
 
-ctac pp f.tac --plain                                 # humanized TAC (slices, ceil-div, etc.)
-ctac pp f.tac --plain --from A --to B                 # slice on a CFG path
-ctac pp f.tac -o out.htac                             # write pretty-printed text
+ctac pp f.tac --plain  # humanized TAC (slices, ceil-div, etc.)
+ctac pp f.tac --plain --from A --to B  # slice on a CFG path
+ctac pp f.tac -o out.htac  # write pretty-printed text
 
-ctac cfg f.tac --plain                                # goto-style CFG text (default)
-ctac cfg f.tac --plain --style edges                  # one `src -> dst` per line — grep-friendly
+ctac cfg f.tac --plain  # goto-style CFG text (default)
+ctac cfg f.tac --plain --style edges  # `src -> dst` per line, grep-friendly
 ctac cfg f.tac --plain --style dot | dot -Tsvg -o cfg.svg
-ctac cfg f.tac --plain --style blocks                 # one block id per line — for shell loops
+ctac cfg f.tac --plain --style blocks  # one block id per line, shell loops
 
-ctac search f.tac 'BWAnd' --plain --count             # count op usage (pattern tab-completes)
-ctac search f.tac 'BWAnd' --plain -C 2                # grep-style context (-B / -A / -C)
-ctac search f.tac '0x[0-9a-f]+' --plain --count-by-match  # frequency table of distinct matches
-ctac search f.tac 'BWAnd' --plain -q --count          # pipeable; `awk '/^matches:/ {print $2}'`
+ctac search f.tac 'BWAnd' --plain --count  # count op usage (tab-completes)
+ctac search f.tac 'BWAnd' --plain -C 2  # grep-style context (-B / -A / -C)
+ctac search f.tac '0x[0-9a-f]+' --plain --count-by-match  # frequency table
+ctac search f.tac 'BWAnd' --plain -q --count  # pipeable; awk on `matches:`
 ```
 
 `cfg`, `pp`, `search`, and `df` all share the same filter grammar —
@@ -98,9 +98,9 @@ ctac search f.tac 'BWAnd' --plain -q --count          # pipeable; `awk '/^matche
 ### Compare two builds
 
 ```bash
-ctac op-diff a.tac b.tac --plain                      # per-stat delta, headline finding in one shot
+ctac op-diff a.tac b.tac --plain  # per-stat delta, headline in one shot
 ctac op-diff a.tac b.tac --plain --show expression_ops
-ctac op-diff a.tac b.tac --json                       # machine-readable
+ctac op-diff a.tac b.tac --json  # machine-readable
 
 ctac cfg-match a.tac b.tac --plain --const-weight 0.2
 ctac bb-diff  a.tac b.tac --plain --drop-empty --max-diff-lines 120
@@ -113,10 +113,10 @@ Prover versions (it's built on top of `ctac stats`). Reach for
 ### Analyze data-flow
 
 ```bash
-ctac df f.tac --plain                                 # all analyses, summary
-ctac df f.tac --plain --show dsa                      # validate DSA form (rejecter for sea_vc)
-ctac df f.tac --plain --show dce --details            # per-item dead-code listing
-ctac df f.tac --plain --json                          # machine-readable
+ctac df f.tac --plain  # all analyses, summary
+ctac df f.tac --plain --show dsa  # validate DSA (rejecter for sea_vc)
+ctac df f.tac --plain --show dce --details  # per-item dead-code listing
+ctac df f.tac --plain --json  # machine-readable
 ```
 
 Available analyses: `def-use`, `liveness`, `dce`, `use-before-def`,
@@ -125,13 +125,13 @@ Available analyses: `def-use`, `liveness`, `dce`, `use-before-def`,
 ### Transform TAC
 
 ```bash
-ctac rw f.tac --plain --report                        # simplify + print per-rule hit counts
-ctac rw f.tac -o small.tac --plain                    # write a round-trippable .tac
-ctac rw f.tac -o small.htac --plain                   # write pretty-printed .htac
-ctac rw f.tac --no-purify-div --plain                 # disable R4a; other rules still run
+ctac rw f.tac --plain --report  # simplify + print per-rule hit counts
+ctac rw f.tac -o small.tac --plain  # write a round-trippable .tac
+ctac rw f.tac -o small.htac --plain  # write pretty-printed .htac
+ctac rw f.tac --no-purify-div --plain  # disable R4a; others still run
 
-ctac ua f.tac -o f_ua.tac --plain                     # fold every assert into one __UA_ERROR block
-ctac ua f.tac -o f_ua.tac --plain --report            # + counts
+ctac ua f.tac -o f_ua.tac --plain  # fold asserts into one __UA_ERROR block
+ctac ua f.tac -o f_ua.tac --plain --report  # + counts
 ```
 
 `rw` runs the iterated simplification pipeline (N1–N4 bit-op
@@ -148,15 +148,15 @@ inversion.
 ### Verify
 
 ```bash
-ctac run f.tac --plain                                # concrete interpreter, zero-havoc
-ctac run f.tac --plain --model m.txt --trace          # replay a z3 model (TAC or SMT-LIB format)
-ctac run f.tac --plain --model m.txt --validate       # compare computed values vs model
+ctac run f.tac --plain  # concrete interpreter, zero-havoc
+ctac run f.tac --plain --model m.txt --trace  # replay z3 model (TAC or SMT)
+ctac run f.tac --plain --model m.txt --validate  # compare computed vs model
 
-ctac smt f.tac --plain                                # emit SMT-LIB VC to stdout
-ctac smt f.tac --plain -o out.smt2                    # write .smt2
-ctac smt f.tac --plain --run                          # invoke z3
-ctac smt f.tac --plain --run --model out.model.txt    # write SAT model in TAC format
-ctac smt f.tac --plain --run --unsat-core             # name asserts, print core on unsat
+ctac smt f.tac --plain  # emit SMT-LIB VC to stdout
+ctac smt f.tac --plain -o out.smt2  # write .smt2
+ctac smt f.tac --plain --run  # invoke z3
+ctac smt f.tac --plain --run --model out.model.txt  # TAC-format SAT model
+ctac smt f.tac --plain --run --unsat-core  # name asserts, print core on unsat
 ```
 
 `ctac smt` requires loop-free, single-assert TAC (run `ua` first),
@@ -173,8 +173,8 @@ count toward `assert_fail`. Bytemap symbols load from model entries
 ### Validate the rewriter
 
 ```bash
-ctac rw-valid -o /tmp/rwv --plain                     # emit all per-rule SMT specs
-ctac rw-valid -o /tmp/rwv --plain --rule R4a          # one rule only
+ctac rw-valid -o /tmp/rwv --plain  # emit all per-rule SMT specs
+ctac rw-valid -o /tmp/rwv --plain --rule R4a  # one rule only
 ```
 
 Emits a self-contained `.smt2` per rule (plus `manifest.json`) whose
@@ -253,7 +253,7 @@ marketplace yet; build and install locally:
 
 ```bash
 cd tools/vscode-tac
-just package-install                                  # packages the .vsix and installs into `code`
+just package-install  # package the .vsix and install into `code`
 ```
 
 Without `just`:
