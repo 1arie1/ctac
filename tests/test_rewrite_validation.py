@@ -7,20 +7,30 @@ import re
 
 from typer.testing import CliRunner
 
-from ctac.rewrite.rules import R4_CASES, R4A_CASES, R6_CASES, validation_cases
+from ctac.rewrite.rules import (
+    ADD_BV_MAX_TO_ITE_CASES,
+    R4_CASES,
+    R4A_CASES,
+    R6_CASES,
+    validation_cases,
+)
 from ctac.tool.main import app
 
 
 def test_registry_holds_expected_cases():
-    """R4 has 5 operator variants; R4A and R6 each have base + signed."""
+    """R4 has 5 operator variants; R4A and R6 each have base + signed;
+    ADD_BV_MAX_TO_ITE has a single case."""
     cases_by_name = {(vc.name, vc.case) for vc in validation_cases}
     assert {("R4", c) for c in ("Lt", "Le", "Gt", "Ge", "Eq")} <= cases_by_name
     assert ("R4a", "") in cases_by_name
     assert ("R4a", "signed") in cases_by_name
     assert ("R6", "") in cases_by_name
     assert ("R6", "signed") in cases_by_name
-    # Registry is the sum of the three per-rule case tuples.
-    assert len(validation_cases) == len(R4_CASES) + len(R4A_CASES) + len(R6_CASES)
+    assert ("ADD_BV_MAX_TO_ITE", "") in cases_by_name
+    # Registry is the sum of the per-rule case tuples.
+    assert len(validation_cases) == (
+        len(R4_CASES) + len(R4A_CASES) + len(R6_CASES) + len(ADD_BV_MAX_TO_ITE_CASES)
+    )
 
 
 def test_every_smt2_script_has_the_flat_envelope():

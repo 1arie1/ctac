@@ -18,6 +18,7 @@ from ctac.rewrite.rules.bv_to_int import (
     SUB_BV_TO_INT,
 )
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
+from ctac.rewrite.rules.bv_max_to_ite_validation import ADD_BV_MAX_TO_ITE_CASES
 from ctac.rewrite.rules.ceildiv_validation import R6_CASES
 from ctac.rewrite.rules.copyprop import CP_ALIAS
 from ctac.rewrite.rules.cse import CSE
@@ -118,7 +119,9 @@ default_pipeline: tuple[Rule, ...] = purify_pipeline
 # Validation cases collected from per-rule sibling files. Single source of
 # truth for `ctac rw-valid`. Rules without an entry here have no soundness
 # spec yet — the CLI reports them as "missing" so coverage gaps are visible.
-validation_cases: tuple[ValidationCase, ...] = R4_CASES + R4A_CASES + R6_CASES
+validation_cases: tuple[ValidationCase, ...] = (
+    R4_CASES + R4A_CASES + R6_CASES + ADD_BV_MAX_TO_ITE_CASES
+)
 
 # Every rule name the rewriter exports, so `ctac rw-valid` can list the
 # ones that don't yet have a spec.
