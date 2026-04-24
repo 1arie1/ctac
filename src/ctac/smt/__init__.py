@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 from ctac.ir.models import TacFile
 from ctac.smt.encoding import (
     EncoderContext,
@@ -19,6 +21,7 @@ from ctac.smt.validate import (
     find_assert_site,
     validate_program_for_smt,
 )
+from ctac.splitcrit import split_critical_edges
 
 register_encoder("sea_vc", SeaVcEncoder)
 
@@ -30,6 +33,10 @@ def build_vc(
     unsat_core: bool = False,
     tight_logic: bool = False,
 ) -> SmtScript:
+    # Pre-pass: break any critical edges so sea_vc's predecessor
+    # exclusivity stays sound. Idempotent when the input is already clean.
+    split = split_critical_edges(tac_file.program)
+    tac_file = dataclasses.replace(tac_file, program=split.program)
     assert_site = validate_program_for_smt(tac_file.program)
     encoder = get_encoder(encoding)
     return encoder.encode(

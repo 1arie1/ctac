@@ -235,16 +235,18 @@ def test_smt_cli_rejects_cyclic_cfg(tmp_path: Path) -> None:
     assert "loop-free (acyclic) TAC program" in res.stdout
 
 
-def test_smt_cli_rejects_critical_edges(tmp_path: Path) -> None:
+def test_smt_cli_auto_splits_critical_edges(tmp_path: Path) -> None:
+    # Critical-edge input should not be rejected: ctac smt runs
+    # split_critical_edges as a pre-pass, so the VC is built on a
+    # cleaned-up CFG. Verify the VC emits and names a shim block.
     p = _write_tac(tmp_path, TAC_CRITICAL_EDGE, "critical.tac")
     runner = CliRunner()
     res = runner.invoke(app, ["smt", str(p), "--plain"])
-    assert res.exit_code == 1
-    assert "critical edge" in res.stdout
-    # The offender is named in the error.
-    assert "sink" in res.stdout
-    # Hint about how to fix.
-    assert "split them" in res.stdout
+    assert res.exit_code == 0
+    assert "(check-sat)" in res.stdout
+    # Shim ids follow `{u}_to_{v}`; at least one of the critical edges
+    # (check1 -> sink, check2 -> sink) should surface as a BLK_ decl.
+    assert "BLK_check1_to_sink" in res.stdout or "BLK_check2_to_sink" in res.stdout
 
 
 def test_smt_cli_output_file(tmp_path: Path) -> None:
