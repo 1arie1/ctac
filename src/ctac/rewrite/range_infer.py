@@ -8,6 +8,7 @@ Minimal coverage for MVP rewrite rules (notably R1):
     - ``Apply(safe_math_narrow_bvN:bif, E)`` where ``E``'s range fits in ``bvN``
     - ``IntMul``/``Mul``/``IntAdd``/``Add`` of non-negative bounded arguments
     - ``Div``/``IntDiv`` by a positive constant (bounds scale by floor-div)
+    - ``Mod``/``IntMod`` by a positive constant (always in ``[0, K - 1]``)
     - ``Ite(c, t, e)``: union of branch ranges, capped at ``ctx.ite_max_depth``
       nested levels to avoid exponential blowup on deep Ite chains
     - symbols whose static definition is one of the above
@@ -107,6 +108,15 @@ def _infer_apply(
             a = infer_expr_range(expr.args[0], ctx, ite_depth=ite_depth)
             if a and a[0] >= 0:
                 return (a[0] // k, a[1] // k)
+    if expr.op in {"Mod", "IntMod"} and len(expr.args) == 2:
+        # `a mod K` for positive constant K is always in [0, K-1], even
+        # without a bound on `a` — the range is determined by the divisor
+        # alone (under the non-negative-dividend semantics the pipeline
+        # uses). Tighter bounds on `a` would narrow further, but this is
+        # enough to unblock compositions like `Mul(Mod(X, 2^32), K)`.
+        k = const_to_int(expr.args[1]) if isinstance(expr.args[1], ConstExpr) else None
+        if k is not None and k > 0:
+            return (0, k - 1)
     if expr.op == "Ite" and len(expr.args) == 3:
         if ite_depth >= ctx.ite_max_depth:
             return None

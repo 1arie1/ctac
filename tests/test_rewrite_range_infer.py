@@ -144,6 +144,48 @@ def test_div_by_zero_or_non_constant_yields_none():
     assert infer_expr_range(dk, ctx) is None
 
 
+def test_mod_by_positive_constant_bounds_to_divisor_minus_one():
+    # a mod K is always in [0, K-1] for positive K, regardless of a's range.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd R1060\n"
+            "\t}",
+            syms="R1060:bv256",
+        ),
+        path="<s>",
+    )
+    ctx = _ctx(tac)
+    ctx.set_position("e", 0)
+    expr = ApplyExpr(op="Mod", args=(SymbolRef("R1060"), ConstExpr("0x100000000")))
+    r = infer_expr_range(expr, ctx)
+    assert r == (0, (1 << 32) - 1)
+
+
+def test_mod_composes_with_mul_to_stay_in_bv256():
+    # Mul(Mod(R1060, 2^32), 2^14) — mod bounds to [0, 2^32 - 1], times
+    # 2^14 gives [0, (2^32 - 1) * 2^14] = [0, 2^46 - 2^14], easily fits.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd R1060\n"
+            "\t}",
+            syms="R1060:bv256",
+        ),
+        path="<s>",
+    )
+    ctx = _ctx(tac)
+    ctx.set_position("e", 0)
+    inner = ApplyExpr(op="Mod", args=(SymbolRef("R1060"), ConstExpr("0x100000000")))
+    expr = ApplyExpr(op="Mul", args=(inner, ConstExpr("0x4000")))
+    r = infer_expr_range(expr, ctx)
+    assert r is not None
+    lo, hi = r
+    assert lo == 0
+    assert hi == ((1 << 32) - 1) * (1 << 14)
+    assert hi < (1 << 256)
+
+
 def test_unknown_sort_returns_none_without_assume():
     # int-sorted symbol, no dominating assume, no static def — no bound.
     tac = parse_string(
