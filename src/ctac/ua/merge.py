@@ -1,11 +1,18 @@
 """Merge strategy: redirect every AssertCmd to a shared ``__UA_ERROR`` block.
 
-Each ``AssertCmd P`` in a block ``B`` splits ``B`` into two pieces:
+Each ``AssertCmd P`` in a block ``B`` splits ``B`` into three pieces:
 
-    B:        ... (commands before the assert)
-              if (P) goto B_UA<N> else goto __UA_ERROR
-    B_UA<N>:  assume P            # Floyd-Hoare: predicate holds below
-              ... (commands after the assert)
+    B:             ... (commands before the assert)
+                   if (P) goto B_UA<N> else goto B_UA<N>_land
+    B_UA<N>:       assume P            # Floyd-Hoare: predicate holds below
+                   ... (commands after the assert)
+    B_UA<N>_land:  goto __UA_ERROR     # landing: single-successor shim
+
+The landing block breaks what would otherwise be a critical edge from
+``B`` (two successors) into ``__UA_ERROR`` (many predecessors). Without
+it, sea_vc's merge-block predecessor exclusivity is unsound; with it,
+every predecessor of ``__UA_ERROR`` has a single successor and the
+exclusivity holds.
 
 The condition variable in ``JumpiCmd`` is taken verbatim from the
 predicate's :class:`SymbolRef` name — the predicate is never inverted or
@@ -151,13 +158,15 @@ def _split_block_for_asserts(
             return result, merged
 
         assert isinstance(pred, SymbolRef)  # _validate_predicates guarantees this.
-        cont_id = f"{block.id}_UA{next(fresh)}"
+        n = next(fresh)
+        cont_id = f"{block.id}_UA{n}"
+        land_id = f"{block.id}_UA{n}_land"
         current_cmds.append(
             _raw(
                 JumpiCmd(
                     raw="",
                     then_target=cont_id,
-                    else_target=ERROR_BLOCK_ID,
+                    else_target=land_id,
                     condition=pred.name,
                 )
             )
@@ -165,10 +174,11 @@ def _split_block_for_asserts(
         result.append(
             TacBlock(
                 id=current_id,
-                successors=[cont_id, ERROR_BLOCK_ID],
+                successors=[cont_id, land_id],
                 commands=current_cmds,
             )
         )
+        result.append(_make_landing_block(land_id))
         current_id = cont_id
         current_cmds = [_raw(AssumeExpCmd(raw="", condition=SymbolRef(pred.name)))]
         idx += 1
@@ -192,6 +202,13 @@ def _make_error_block() -> TacBlock:
         )
     )
     return TacBlock(id=ERROR_BLOCK_ID, successors=[], commands=[err])
+
+
+def _make_landing_block(land_id: str) -> TacBlock:
+    # Single-successor shim so the edge from the assert site to
+    # ERROR_BLOCK_ID is not critical.
+    jump = _raw(JumpCmd(raw="", target=ERROR_BLOCK_ID))
+    return TacBlock(id=land_id, successors=[ERROR_BLOCK_ID], commands=[jump])
 
 
 def _raw(cmd: TacCmd) -> TacCmd:
