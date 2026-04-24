@@ -135,6 +135,47 @@ Metas {
 }
 """
 
+# Chain of two conditional jumps whose failing branches fan into a shared
+# sink — the shape `ctac ua` produces. `check1` and `check2` each have two
+# successors, and `sink` has two predecessors, so (check1, sink) and
+# (check2, sink) are critical edges. sea_vc's exclusivity is unsound on
+# this shape.
+TAC_CRITICAL_EDGE = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tb1:bool
+\tb2:bool
+}
+Program {
+\tBlock entry Succ [check1] {
+\t\tAssignExpCmd b1 true
+\t\tAssignExpCmd b2 false
+\t\tJumpCmd check1
+\t}
+\tBlock check1 Succ [check2, sink] {
+\t\tJumpiCmd check2 sink b1
+\t}
+\tBlock check2 Succ [ok, sink] {
+\t\tJumpiCmd ok sink b2
+\t}
+\tBlock ok Succ [] {
+\t\tAssumeExpCmd b2
+\t}
+\tBlock sink Succ [] {
+\t\tAssertCmd false "merged failure"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
 
 def _write_tac(tmp_path: Path, content: str, name: str) -> Path:
     path = tmp_path / name
@@ -192,6 +233,18 @@ def test_smt_cli_rejects_cyclic_cfg(tmp_path: Path) -> None:
     res = runner.invoke(app, ["smt", str(p), "--plain"])
     assert res.exit_code == 1
     assert "loop-free (acyclic) TAC program" in res.stdout
+
+
+def test_smt_cli_rejects_critical_edges(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_CRITICAL_EDGE, "critical.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain"])
+    assert res.exit_code == 1
+    assert "critical edge" in res.stdout
+    # The offender is named in the error.
+    assert "sink" in res.stdout
+    # Hint about how to fix.
+    assert "split them" in res.stdout
 
 
 def test_smt_cli_output_file(tmp_path: Path) -> None:

@@ -337,43 +337,6 @@ Metas {
 """
 
 
-TAC_BLOCK_AND_EDGE_PRED_CONSTRAINTS = """TACSymbolTable {
-\tUserDefined {
-\t}
-\tBuiltinFunctions {
-\t}
-\tUninterpretedFunctions {
-\t}
-\tc:bool
-\tok:bool
-}
-Program {
-\tBlock entry Succ [left, right] {
-\t\tAssignExpCmd c true
-\t\tJumpiCmd left right c
-\t}
-\tBlock left Succ [join, dead] {
-\t\tJumpiCmd join dead c
-\t}
-\tBlock right Succ [join, dead] {
-\t\tJumpiCmd join dead c
-\t}
-\tBlock dead Succ [] {
-\t\tAssumeExpCmd false
-\t}
-\tBlock join Succ [] {
-\t\tAssignExpCmd ok true
-\t\tAssertCmd ok "pred constraints"
-\t}
-}
-Axioms {
-}
-Metas {
-  "0": []
-}
-"""
-
-
 def test_sea_vc_logic_and_named_constants() -> None:
     tac = parse_string(TAC_SEA, path="<string>")
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
@@ -420,14 +383,6 @@ def test_sea_vc_cfg_at_most_falls_back_with_ufs() -> None:
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
     assert "(set-logic QF_UFNIA)" in rendered
     assert "((_ at-most 1) BLK_left BLK_right)" not in rendered
-    assert "(assert (=> BLK_join (or (not BLK_left) (not BLK_right))))" in rendered
-
-
-def test_sea_vc_cfg_has_both_edge_and_block_predecessor_constraints() -> None:
-    tac = parse_string(TAC_BLOCK_AND_EDGE_PRED_CONSTRAINTS, path="<string>")
-    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
-    assert "(assert (=> BLK_join (or (and BLK_left c) (and BLK_right c))))" in rendered
-    assert "(assert (=> BLK_join (or BLK_left BLK_right)))" in rendered
     assert "(assert (=> BLK_join (or (not BLK_left) (not BLK_right))))" in rendered
 
 

@@ -55,6 +55,8 @@ _SMT_EPILOG = (
     "[bold green]Preconditions[/bold green]  Loop-free TAC; exactly one "
     "[cyan]AssertCmd[/cyan] (run [cyan]ctac ua[/cyan] to merge multi-assert "
     "inputs); [cyan]AssertCmd[/cyan] must be the last command in its block; "
+    "no critical edges in the CFG (sea_vc's predecessor exclusivity is "
+    "unsound on critical edges); "
     "bytemap usage must be [cyan]bytemap-free[/cyan] or [cyan]bytemap-ro[/cyan] "
     "(check with [cyan]ctac stats --plain[/cyan]).\n\n"
     "[bold green]Examples[/bold green]\n\n"
