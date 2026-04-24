@@ -5,7 +5,12 @@ from __future__ import annotations
 from ctac.ast.nodes import ApplyExpr, AssignExpCmd, ConstExpr
 from ctac.parse import parse_string
 from ctac.rewrite import rewrite_program
-from ctac.rewrite.rules import ADD_BV_MAX_DEC, ADD_BV_TO_INT, MUL_BV_TO_INT
+from ctac.rewrite.rules import (
+    ADD_BV_MAX_TO_ITE,
+    ADD_BV_TO_INT,
+    ITE_COND_FOLD,
+    MUL_BV_TO_INT,
+)
 
 
 def _wrap(body: str, *, syms: str = "R850:bv256\n\tR801:bv256") -> str:
@@ -152,21 +157,20 @@ def test_add_doesnt_lift_when_sum_could_overflow():
     assert rhs.op == "Add"
 
 
-# --- ADD_BV_MAX_DEC -------------------------------------------------------
-# `Add(BV256_MAX, X) -> IntSub(X, 1)` when `X >= 1`. The two's-complement
-# "subtract 1 via -1" idiom: `(2^256 - 1) + X` wraps to `X - 1` in bv256
-# exactly when `X >= 1`. At `X = 0` the bv result is BV256_MAX, not -1,
-# so the range gate is mandatory for soundness.
+# --- ADD_BV_MAX_TO_ITE + ITE_COND_FOLD ------------------------------------
+# `Add(BV256_MAX, X)` is rewritten UNCONDITIONALLY to the Ite
+# `Ite(X >= 1, X - 1, BV256_MAX)`. Downstream ITE_COND_FOLD uses
+# range inference to collapse the Ite when `X >= 1` or `X == 0` is
+# decidable. Together they subsume the old gated "IntSub" rule.
 
 _BV256_MAX_HEX = "0x" + "f" * 64  # 2^256 - 1
 
 
-def test_add_bv_max_dec_rewrites_when_x_ge_1_const_on_left():
+def test_add_bv_max_to_ite_always_produces_ite_const_on_left():
     tac = parse_string(
         _wrap(
             "\tBlock e Succ [] {\n"
             "\t\tAssignHavocCmd X\n"
-            "\t\tAssumeExpCmd Ge(X 0x1)\n"
             f"\t\tAssignExpCmd R Add({_BV256_MAX_HEX} X)\n"
             "\t}",
             syms="X:bv256\n\tR:bv256",
@@ -174,22 +178,24 @@ def test_add_bv_max_dec_rewrites_when_x_ge_1_const_on_left():
         path="<s>",
     )
     res = rewrite_program(
-        tac.program, (ADD_BV_MAX_DEC,), symbol_sorts=tac.symbol_sorts
+        tac.program, (ADD_BV_MAX_TO_ITE,), symbol_sorts=tac.symbol_sorts
     )
     rhs = _rhs(res.program, "R")
     assert isinstance(rhs, ApplyExpr)
-    assert rhs.op == "IntSub"
-    # First arg is X (SymbolRef); second arg is ConstExpr("0x1").
-    assert rhs.args[1] == ConstExpr("0x1")
+    assert rhs.op == "Ite"
+    cond, then_branch, else_branch = rhs.args
+    assert isinstance(cond, ApplyExpr) and cond.op == "Ge"
+    assert cond.args[1] == ConstExpr("0x1")
+    assert isinstance(then_branch, ApplyExpr) and then_branch.op == "IntSub"
+    assert isinstance(else_branch, ConstExpr)
 
 
-def test_add_bv_max_dec_rewrites_with_const_on_right():
+def test_add_bv_max_to_ite_handles_const_on_right():
     # Add is commutative; the rule must handle either operand order.
     tac = parse_string(
         _wrap(
             "\tBlock e Succ [] {\n"
             "\t\tAssignHavocCmd X\n"
-            "\t\tAssumeExpCmd Ge(X 0x1)\n"
             f"\t\tAssignExpCmd R Add(X {_BV256_MAX_HEX})\n"
             "\t}",
             syms="X:bv256\n\tR:bv256",
@@ -197,16 +203,62 @@ def test_add_bv_max_dec_rewrites_with_const_on_right():
         path="<s>",
     )
     res = rewrite_program(
-        tac.program, (ADD_BV_MAX_DEC,), symbol_sorts=tac.symbol_sorts
+        tac.program, (ADD_BV_MAX_TO_ITE,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "R")
+    assert isinstance(rhs, ApplyExpr)
+    assert rhs.op == "Ite"
+
+
+def test_add_bv_max_to_ite_does_not_fire_for_other_constants():
+    # Only BV256_MAX triggers the rule; a different const left alone.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd R Add(0x1234 X)\n"
+            "\t}",
+            syms="X:bv256\n\tR:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (ADD_BV_MAX_TO_ITE,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "R")
+    assert isinstance(rhs, ApplyExpr)
+    assert rhs.op == "Add"
+
+
+def test_add_bv_max_to_ite_plus_cond_fold_collapses_when_x_ge_1():
+    # Composition test: with a dominating `Ge(X, 1)` assume, the emitted
+    # Ite's condition is always true, and ITE_COND_FOLD collapses the
+    # whole expression to `IntSub(X, 1)`.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssumeExpCmd Ge(X 0x1)\n"
+            f"\t\tAssignExpCmd R Add({_BV256_MAX_HEX} X)\n"
+            "\t}",
+            syms="X:bv256\n\tR:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program,
+        (ADD_BV_MAX_TO_ITE, ITE_COND_FOLD),
+        symbol_sorts=tac.symbol_sorts,
     )
     rhs = _rhs(res.program, "R")
     assert isinstance(rhs, ApplyExpr)
     assert rhs.op == "IntSub"
+    assert rhs.args[1] == ConstExpr("0x1")
 
 
-def test_add_bv_max_dec_does_not_fire_without_lower_bound():
-    # X is bv256 but no dominating `X >= 1` assume, so inferred lo is 0.
-    # Rule must NOT fire: at X=0 the bv sum is BV256_MAX, not -1.
+def test_ite_cond_fold_does_not_fire_when_range_is_ambiguous():
+    # With no lower-bound assume on X, X could be 0 or >=1, so the
+    # condition `X >= 1` is undecidable and the Ite must stay.
     tac = parse_string(
         _wrap(
             "\tBlock e Succ [] {\n"
@@ -218,29 +270,10 @@ def test_add_bv_max_dec_does_not_fire_without_lower_bound():
         path="<s>",
     )
     res = rewrite_program(
-        tac.program, (ADD_BV_MAX_DEC,), symbol_sorts=tac.symbol_sorts
+        tac.program,
+        (ADD_BV_MAX_TO_ITE, ITE_COND_FOLD),
+        symbol_sorts=tac.symbol_sorts,
     )
     rhs = _rhs(res.program, "R")
     assert isinstance(rhs, ApplyExpr)
-    assert rhs.op == "Add"
-
-
-def test_add_bv_max_dec_does_not_fire_for_other_constants():
-    # Only BV256_MAX triggers the rule; a different const left alone.
-    tac = parse_string(
-        _wrap(
-            "\tBlock e Succ [] {\n"
-            "\t\tAssignHavocCmd X\n"
-            "\t\tAssumeExpCmd Ge(X 0x1)\n"
-            "\t\tAssignExpCmd R Add(0x1234 X)\n"
-            "\t}",
-            syms="X:bv256\n\tR:bv256",
-        ),
-        path="<s>",
-    )
-    res = rewrite_program(
-        tac.program, (ADD_BV_MAX_DEC,), symbol_sorts=tac.symbol_sorts
-    )
-    rhs = _rhs(res.program, "R")
-    assert isinstance(rhs, ApplyExpr)
-    assert rhs.op == "Add"
+    assert rhs.op == "Ite"

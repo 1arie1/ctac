@@ -18,6 +18,7 @@ from __future__ import annotations
 from ctac.ast.nodes import ApplyExpr, ConstExpr, TacExpr
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
+from ctac.rewrite.range_infer import infer_expr_range
 from ctac.rewrite.rules.common import const_to_int
 
 _TRUE = ConstExpr("true")
@@ -111,6 +112,77 @@ def _rewrite_ite_bool(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
     return None
 
 
+_CMP_OPS = frozenset({"Ge", "Gt", "Le", "Lt", "Eq", "Ne"})
+
+
+def _eval_cmp_from_range(
+    cond: TacExpr, ctx: RewriteCtx
+) -> bool | None:
+    """Return True/False if ``cond`` is a comparison that range-inference
+    decides unambiguously; None otherwise.
+
+    Handles only binary comparisons whose operands both have an inferred
+    range. No effort is made to reason about boolean combinations — those
+    collapse via the driver's bottom-up traversal once the inner
+    comparisons fold.
+    """
+    if not isinstance(cond, ApplyExpr) or cond.op not in _CMP_OPS or len(cond.args) != 2:
+        return None
+    a_r = infer_expr_range(cond.args[0], ctx)
+    b_r = infer_expr_range(cond.args[1], ctx)
+    if a_r is None or b_r is None:
+        return None
+    a_lo, a_hi = a_r
+    b_lo, b_hi = b_r
+    op = cond.op
+    if op == "Ge":
+        if a_lo >= b_hi:
+            return True
+        if a_hi < b_lo:
+            return False
+    elif op == "Gt":
+        if a_lo > b_hi:
+            return True
+        if a_hi <= b_lo:
+            return False
+    elif op == "Le":
+        if a_hi <= b_lo:
+            return True
+        if a_lo > b_hi:
+            return False
+    elif op == "Lt":
+        if a_hi < b_lo:
+            return True
+        if a_lo >= b_hi:
+            return False
+    elif op == "Eq":
+        if a_lo == a_hi == b_lo == b_hi:
+            return True
+        if a_hi < b_lo or b_hi < a_lo:
+            return False
+    elif op == "Ne":
+        if a_hi < b_lo or b_hi < a_lo:
+            return True
+        if a_lo == a_hi == b_lo == b_hi:
+            return False
+    return None
+
+
+def _rewrite_ite_cond_fold(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    """``Ite(cond, then, else)`` -> ``then`` if range analysis proves ``cond``
+    is always true, ``else`` if always false."""
+    if not _is_ite(expr):
+        return None
+    assert isinstance(expr, ApplyExpr)
+    cond, then, els = expr.args
+    truth = _eval_cmp_from_range(cond, ctx)
+    if truth is True:
+        return then
+    if truth is False:
+        return els
+    return None
+
+
 _LNOT_CMP_FLIP = {"Lt": "Ge", "Le": "Gt", "Gt": "Le", "Ge": "Lt"}
 
 
@@ -190,6 +262,15 @@ ITE_BOOL = Rule(
     name="IteBool",
     fn=_rewrite_ite_bool,
     description="Collapse Ite with true/false literal branches into bool ops.",
+)
+ITE_COND_FOLD = Rule(
+    name="IteCondFold",
+    fn=_rewrite_ite_cond_fold,
+    description=(
+        "Ite(cond, T, E) -> T when range-inference proves cond is always "
+        "true; -> E when always false. Uses infer_expr_range on both sides "
+        "of a binary comparison."
+    ),
 )
 BOOL_ABSORB = Rule(
     name="BoolAbsorb",

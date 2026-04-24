@@ -11,7 +11,7 @@ from ctac.rewrite.rules.bitfield import (
     N3_HIGH_MASK,
     N4_SHR_CONST,
 )
-from ctac.rewrite.rules.bv_to_int import ADD_BV_MAX_DEC, ADD_BV_TO_INT, MUL_BV_TO_INT
+from ctac.rewrite.rules.bv_to_int import ADD_BV_MAX_TO_ITE, ADD_BV_TO_INT, MUL_BV_TO_INT
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
 from ctac.rewrite.rules.ceildiv_validation import R6_CASES
 from ctac.rewrite.rules.copyprop import CP_ALIAS
@@ -35,6 +35,7 @@ from ctac.rewrite.rules.ite import (
     EQ_CONST_FOLD,
     EQ_ITE_DIST,
     ITE_BOOL,
+    ITE_COND_FOLD,
     ITE_SAME,
 )
 
@@ -62,6 +63,11 @@ simplify_pipeline: tuple[Rule, ...] = (
     EQ_ITE_DIST,
     ITE_SAME,
     ITE_BOOL,
+    # Range-driven Ite folding: decide `cond` via interval inference
+    # and collapse to the then/else branch. Paired with ADD_BV_MAX_TO_ITE
+    # below, which always emits an Ite; COND_FOLD collapses it when the
+    # operand's range makes the condition decidable.
+    ITE_COND_FOLD,
     BOOL_ABSORB,
     DE_MORGAN,
     # Range-safe narrowing: Mul/Add -> IntMul/IntAdd when interval
@@ -70,9 +76,10 @@ simplify_pipeline: tuple[Rule, ...] = (
     # become the canonical input here.
     MUL_BV_TO_INT,
     ADD_BV_TO_INT,
-    # Specialised sibling: collapse the two's-complement decrement
-    # `Add(BV256_MAX, X) -> IntSub(X, 1)` when `X >= 1`.
-    ADD_BV_MAX_DEC,
+    # Express Add(BV256_MAX, X) — the bv256 two's-complement decrement —
+    # as an explicit Ite. ITE_COND_FOLD above collapses it whenever
+    # range analysis decides `X >= 1`.
+    ADD_BV_MAX_TO_ITE,
     # CSE before CP: fold duplicate static defs to aliases, then CP propagates
     # and DCE removes. Runs inside the fixed-point so CP's output can in turn
     # expose new CSE opportunities on the next iteration.
@@ -110,11 +117,12 @@ all_rule_names: tuple[str, ...] = (
     EQ_ITE_DIST.name,
     ITE_SAME.name,
     ITE_BOOL.name,
+    ITE_COND_FOLD.name,
     BOOL_ABSORB.name,
     DE_MORGAN.name,
     MUL_BV_TO_INT.name,
     ADD_BV_TO_INT.name,
-    ADD_BV_MAX_DEC.name,
+    ADD_BV_MAX_TO_ITE.name,
     CSE.name,
     CP_ALIAS.name,
     ITE_PURIFY.name,
@@ -123,7 +131,7 @@ all_rule_names: tuple[str, ...] = (
 )
 
 __all__ = [
-    "ADD_BV_MAX_DEC",
+    "ADD_BV_MAX_TO_ITE",
     "ADD_BV_TO_INT",
     "BOOL_ABSORB",
     "CP_ALIAS",
@@ -132,6 +140,7 @@ __all__ = [
     "EQ_CONST_FOLD",
     "EQ_ITE_DIST",
     "ITE_BOOL",
+    "ITE_COND_FOLD",
     "ITE_PURIFY",
     "ITE_SAME",
     "MUL_BV_TO_INT",

@@ -17,9 +17,12 @@ Rules
 - ``MUL_BV_TO_INT``: ``Mul(a, b) -> IntMul(a, b)`` when the inferred
   range of the product is in ``[0, 2^256)``.
 - ``ADD_BV_TO_INT``: ``Add(a, b) -> IntAdd(a, b)`` likewise.
-- ``ADD_BV_MAX_DEC``: ``Add(BV256_MAX, X) -> IntSub(X, 1)`` when
-  ``X >= 1``. The two's-complement "subtract 1 via -1" idiom:
-  ``(2^256 - 1) + X = X - 1 (mod 2^256)`` exactly when ``X >= 1``.
+- ``ADD_BV_MAX_TO_ITE``: ``Add(BV256_MAX, X) -> Ite(X >= 1, X - 1,
+  BV256_MAX)``. Unconditional — encodes the bv256 semantics
+  explicitly as a case split on whether the wrap happens
+  (``X = 0 -> BV256_MAX``; ``X >= 1 -> X - 1``). Subsequent
+  ``ITE_COND_FOLD`` / ``ITE_SAME`` rules collapse the Ite when
+  range analysis decides the condition.
 
 ``Sub`` is intentionally out of scope — it wraps when ``a < b``,
 which simple interval inference rarely disproves, so lifting it
@@ -62,24 +65,28 @@ def _rewrite_add_bv_to_int(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     return ApplyExpr("IntAdd", expr.args)
 
 
-def _rewrite_add_bv_max_dec(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
-    # `(2^256 - 1) + X` wraps to `X - 1` in bv256 exactly when `X >= 1`.
-    # At `X = 0` the wrap doesn't happen and the bv result is BV256_MAX.
+def _rewrite_add_bv_max_to_ite(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    # Express the bv256 semantics of `Add(BV256_MAX, X)` as an explicit
+    # case split: at X=0 the sum is BV256_MAX (no wrap); at X>=1 it's
+    # X-1 (the wrap subtracts 2^256 once). Unconditional — no range
+    # gate is needed because the Ite is semantically identical to the
+    # bv-Add for every value of X. ITE_COND_FOLD / ITE_SAME collapse
+    # the Ite downstream when range analysis decides the condition.
     if not isinstance(expr, ApplyExpr) or expr.op != "Add" or len(expr.args) != 2:
         return None
     a, b = expr.args
     a_val = const_to_int(a) if isinstance(a, ConstExpr) else None
     b_val = const_to_int(b) if isinstance(b, ConstExpr) else None
     if a_val == _BV256_MAX:
-        other = b
+        other, bv_max_const = b, a
     elif b_val == _BV256_MAX:
-        other = a
+        other, bv_max_const = a, b
     else:
         return None
-    r = infer_expr_range(other, ctx)
-    if r is None or r[0] < 1:
-        return None
-    return ApplyExpr("IntSub", (other, ConstExpr("0x1")))
+    one = ConstExpr("0x1")
+    cond = ApplyExpr("Ge", (other, one))
+    then_branch = ApplyExpr("IntSub", (other, one))
+    return ApplyExpr("Ite", (cond, then_branch, bv_max_const))
 
 
 MUL_BV_TO_INT = Rule(
@@ -102,12 +109,13 @@ ADD_BV_TO_INT = Rule(
 )
 
 
-ADD_BV_MAX_DEC = Rule(
-    name="ADD_BV_MAX_DEC",
-    fn=_rewrite_add_bv_max_dec,
+ADD_BV_MAX_TO_ITE = Rule(
+    name="ADD_BV_MAX_TO_ITE",
+    fn=_rewrite_add_bv_max_to_ite,
     description=(
-        "Add(BV256_MAX, X) -> IntSub(X, 1) when X >= 1. The bv256 "
-        "two's-complement '-1' idiom: `(2^256 - 1) + X` wraps to "
-        "`X - 1` exactly when X >= 1."
+        "Add(BV256_MAX, X) -> Ite(X >= 1, X - 1, BV256_MAX). "
+        "Unconditional: encodes the bv256 two's-complement decrement "
+        "as an explicit case split. Downstream ITE_COND_FOLD collapses "
+        "the Ite when range analysis decides the condition."
     ),
 )
