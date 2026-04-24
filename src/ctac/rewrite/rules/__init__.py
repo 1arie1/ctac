@@ -34,6 +34,7 @@ from ctac.rewrite.validation import ValidationCase
 from ctac.rewrite.rules.ite_purify import ITE_PURIFY
 from ctac.rewrite.rules.purify_assert import PURIFY_ASSERT
 from ctac.rewrite.rules.purify_assume import PURIFY_ASSUME
+from ctac.rewrite.rules.range_fold import RANGE_FOLD
 from ctac.rewrite.rules.ite import (
     ADD_ITE_DIST,
     BOOL_ABSORB,
@@ -90,6 +91,11 @@ simplify_pipeline: tuple[Rule, ...] = (
     MUL_BV_TO_INT,
     ADD_BV_TO_INT,
     SUB_BV_TO_INT,
+    # Collapse expressions whose range is a singleton to the
+    # corresponding ConstExpr. Runs after the narrowing rules so that
+    # IntAdd / IntSub / ... produced above get folded to constants
+    # when their ranges pin (e.g. Sub(X, Y) with equality assume).
+    RANGE_FOLD,
     # Express Add(BV256_MAX, X) — the bv256 two's-complement decrement —
     # as an explicit Ite. ITE_COND_FOLD above collapses it whenever
     # range analysis decides `X >= 1`.
@@ -140,6 +146,7 @@ all_rule_names: tuple[str, ...] = (
     MUL_BV_TO_INT.name,
     ADD_BV_TO_INT.name,
     SUB_BV_TO_INT.name,
+    RANGE_FOLD.name,
     ADD_BV_MAX_TO_ITE.name,
     CSE.name,
     CP_ALIAS.name,
@@ -175,6 +182,7 @@ __all__ = [
     "R4_DIV_IN_CMP",
     "R4A_DIV_PURIFY",
     "R6_CEILDIV",
+    "RANGE_FOLD",
     "SUB_BV_TO_INT",
     "SUB_ITE_DIST_LEFT",
     "SUB_ITE_DIST_RIGHT",

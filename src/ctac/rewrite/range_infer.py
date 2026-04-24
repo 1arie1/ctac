@@ -133,13 +133,17 @@ def _infer_apply(
             if a and a[0] >= 0:
                 return (a[0] // k, a[1] // k)
     if expr.op in {"Mod", "IntMod"} and len(expr.args) == 2:
-        # `a mod K` for positive constant K is always in [0, K-1], even
-        # without a bound on `a` — the range is determined by the divisor
-        # alone (under the non-negative-dividend semantics the pipeline
-        # uses). Tighter bounds on `a` would narrow further, but this is
-        # enough to unblock compositions like `Mul(Mod(X, 2^32), K)`.
+        # `a mod K` for positive constant K is always in [0, K-1]. If
+        # the dividend's range is already contained in [0, K), the mod
+        # is an identity and we can return the dividend's own range —
+        # this lets RANGE_FOLD and sibling rules see the tighter value.
         k = const_to_int(expr.args[1]) if isinstance(expr.args[1], ConstExpr) else None
         if k is not None and k > 0:
+            a = infer_expr_range(expr.args[0], ctx, ite_depth=ite_depth)
+            if a is not None:
+                a_lo, a_hi = a
+                if a_lo >= 0 and a_hi < k:
+                    return (a_lo, a_hi)
             return (0, k - 1)
     if expr.op in {"Sub", "IntSub"} and len(expr.args) == 2:
         a = infer_expr_range(expr.args[0], ctx, ite_depth=ite_depth)
