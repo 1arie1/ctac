@@ -245,6 +245,7 @@ def rewrite_cmd(
         simplify_pipeline,
         max_iterations=max_iterations,
         ite_max_depth=ite_max_depth,
+        symbol_sorts=tac.symbol_sorts,
     )
     if purify_div:
         phase2 = rewrite_program(
@@ -252,6 +253,7 @@ def rewrite_cmd(
             simplify_pipeline + (R4A_DIV_PURIFY,),
             max_iterations=max_iterations,
             ite_max_depth=ite_max_depth,
+            symbol_sorts=tac.symbol_sorts,
         )
         rw = _merge_phases(phase1, phase2)
     else:
@@ -286,6 +288,7 @@ def rewrite_cmd(
             tuple(phase_rules),
             max_iterations=max_iterations,
             ite_max_depth=ite_max_depth,
+            symbol_sorts=tac.symbol_sorts,
         )
         rw = _merge_phases(rw, phase_ite)
         program = phase_ite.program

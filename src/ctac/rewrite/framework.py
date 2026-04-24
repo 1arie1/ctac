@@ -193,6 +193,7 @@ def rewrite_program(
     *,
     max_iterations: int = 16,
     ite_max_depth: int = 4,
+    symbol_sorts: dict[str, str] | None = None,
 ) -> RewriteResult:
     """Run ``rules`` over ``program`` to fixed point.
 
@@ -203,6 +204,11 @@ def rewrite_program(
 
     ``ite_max_depth`` caps how many nested Ite unions the range inferrer
     explores; beyond the cap it reports "unknown" and dependent rules bail.
+
+    ``symbol_sorts`` maps declared symbol names to sorts (``"bv256"``,
+    ``"int"``, ``"bool"``). Optional; rules that rely on sort-based bounds
+    (e.g. defaulting a bv256 symbol's range to ``[0, 2^256 - 1]``) fall back
+    to dominating assume-facts only when it's empty.
     """
     rules_tuple: tuple[Rule, ...] = tuple(rules)
     all_hits: list[RuleHit] = []
@@ -218,6 +224,7 @@ def rewrite_program(
             current,
             ite_max_depth=ite_max_depth,
             fresh_counter_start=fresh_counter,
+            symbol_sorts=symbol_sorts or {},
         )
         changed_this_iter = False
         new_blocks: list[TacBlock] = []

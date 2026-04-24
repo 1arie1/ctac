@@ -107,6 +107,10 @@ class RewriteCtx:
     program: TacProgram
     ite_max_depth: int = 4
     fresh_counter_start: int = 0
+    # Declared sort per symbol (e.g. ``"bv256"``, ``"int"``, ``"bool"``).
+    # Optional; when empty, rules that rely on sort-based bounds fall back
+    # to dominating assume-facts only.
+    symbol_sorts: dict[str, str] = field(default_factory=dict)
     du: DefUseResult = field(init=False)
     dsa: DsaResult = field(init=False)
     static_symbols: frozenset[str] = field(init=False)
@@ -264,6 +268,11 @@ class RewriteCtx:
             if new_args != expr.args:
                 return replace(expr, args=new_args)
         return expr
+
+    def symbol_sort(self, var_name: str) -> str | None:
+        """Declared sort of ``var_name`` (e.g. ``"bv256"``), or ``None`` if unknown."""
+        sym = canonical_symbol(var_name, strip_var_suffixes=_STRIP_SUFFIXES)
+        return self.symbol_sorts.get(sym)
 
     def range(self, var_name: str) -> tuple[int | None, int | None] | None:
         """Return ``(lo, hi)`` interval inferred from dominating range-assume facts."""
