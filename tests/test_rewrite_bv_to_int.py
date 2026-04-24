@@ -10,6 +10,7 @@ from ctac.rewrite.rules import (
     ADD_BV_TO_INT,
     ITE_COND_FOLD,
     MUL_BV_TO_INT,
+    SUB_BV_TO_INT,
 )
 
 
@@ -277,3 +278,95 @@ def test_ite_cond_fold_does_not_fire_when_range_is_ambiguous():
     rhs = _rhs(res.program, "R")
     assert isinstance(rhs, ApplyExpr)
     assert rhs.op == "Ite"
+
+
+# --- SUB_BV_TO_INT --------------------------------------------------------
+# `Sub(a, b) -> IntSub(a, b)` when element-wise ranges + relational
+# assumes on the operand pair prove the result is in [0, 2^256).
+
+
+def test_sub_bv_to_int_fires_on_equality_assume():
+    # `assume Eq(R139, R575)` makes `Sub(R575, R139) ∈ {0}`, which fits.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd R575\n"
+            "\t\tAssignHavocCmd R139\n"
+            "\t\tAssumeExpCmd Eq(R139 R575)\n"
+            "\t\tAssignExpCmd C Sub(R575 R139)\n"
+            "\t}",
+            syms="R575:bv256\n\tR139:bv256\n\tC:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (SUB_BV_TO_INT,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "C")
+    assert isinstance(rhs, ApplyExpr)
+    assert rhs.op == "IntSub"
+
+
+def test_sub_bv_to_int_fires_on_ge_assume():
+    # `assume Ge(A, B)` proves `A - B >= 0`; `A <= 2^64-1` keeps hi finite.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd A\n"
+            "\t\tAssignHavocCmd B\n"
+            "\t\tAssumeExpCmd Le(A 0xffffffffffffffff)\n"
+            "\t\tAssumeExpCmd Ge(A B)\n"
+            "\t\tAssignExpCmd C Sub(A B)\n"
+            "\t}",
+            syms="A:bv256\n\tB:bv256\n\tC:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (SUB_BV_TO_INT,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "C")
+    assert isinstance(rhs, ApplyExpr)
+    assert rhs.op == "IntSub"
+
+
+def test_sub_bv_to_int_does_not_fire_without_relation():
+    # Both bv256, no relation between them. `A - B` can underflow; leave Sub.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd A\n"
+            "\t\tAssignHavocCmd B\n"
+            "\t\tAssignExpCmd C Sub(A B)\n"
+            "\t}",
+            syms="A:bv256\n\tB:bv256\n\tC:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (SUB_BV_TO_INT,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "C")
+    assert isinstance(rhs, ApplyExpr)
+    assert rhs.op == "Sub"
+
+
+def test_sub_bv_to_int_fires_on_self_subtraction():
+    # `Sub(X, X)` trivially 0 without any assume; diff_bounds returns (0,0)
+    # for same-symbol pair.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd C Sub(X X)\n"
+            "\t}",
+            syms="X:bv256\n\tC:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (SUB_BV_TO_INT,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "C")
+    assert isinstance(rhs, ApplyExpr)
+    assert rhs.op == "IntSub"

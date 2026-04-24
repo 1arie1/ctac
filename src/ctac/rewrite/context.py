@@ -39,13 +39,18 @@ from ctac.ast.nodes import (
 )
 from ctac.ast.range_constraints import (
     SymbolIntervalConstraint,
+    SymbolRelationConstraint,
     match_symbol_interval_constraint,
+    match_symbol_relation_constraint,
 )
 from ctac.graph import Cfg
 from ctac.ir.models import TacProgram
 
 _STRIP_SUFFIXES = True
 _NARROW_PREFIX = "safe_math_narrow_bv"
+
+# Flipping the orientation of a relational op: `a op b` <=> `b flipped(op) a`.
+_FLIP_REL_OP = {"<": ">", "<=": ">=", "==": "==", ">=": "<=", ">": "<"}
 
 
 def _is_safe_narrow_apply(expr: TacExpr) -> bool:
@@ -100,6 +105,13 @@ class _AssumeFact:
     interval: SymbolIntervalConstraint
 
 
+@dataclass(frozen=True)
+class _RelationFact:
+    block_id: str
+    cmd_index: int
+    relation: SymbolRelationConstraint
+
+
 @dataclass
 class RewriteCtx:
     """Per-program view of def-use, DSA, dominance and range facts."""
@@ -116,6 +128,7 @@ class RewriteCtx:
     static_symbols: frozenset[str] = field(init=False)
     static_defs: dict[str, TacExpr] = field(init=False)
     assumes_by_symbol: dict[str, list[_AssumeFact]] = field(init=False)
+    relations_by_pair: dict[tuple[str, str], list[_RelationFact]] = field(init=False)
     dominators: dict[str, frozenset[str]] = field(init=False)
     entry_block_id: str | None = field(init=False)
     _cur_block: str | None = field(default=None, init=False)
@@ -158,6 +171,7 @@ class RewriteCtx:
         self.static_defs = static_defs
 
         assumes: dict[str, list[_AssumeFact]] = defaultdict(list)
+        relations: dict[tuple[str, str], list[_RelationFact]] = defaultdict(list)
         for block in self.program.blocks:
             for idx, cmd in enumerate(block.commands):
                 if not isinstance(cmd, AssumeExpCmd):
@@ -165,12 +179,29 @@ class RewriteCtx:
                 interval = match_symbol_interval_constraint(
                     cmd.condition, strip_var_suffixes=_STRIP_SUFFIXES,
                 )
-                if interval is None:
+                if interval is not None:
+                    assumes[interval.symbol].append(
+                        _AssumeFact(block_id=block.id, cmd_index=idx, interval=interval)
+                    )
                     continue
-                assumes[interval.symbol].append(
-                    _AssumeFact(block_id=block.id, cmd_index=idx, interval=interval)
+                rel = match_symbol_relation_constraint(
+                    cmd.condition, strip_var_suffixes=_STRIP_SUFFIXES,
                 )
+                if rel is not None:
+                    fact = _RelationFact(block_id=block.id, cmd_index=idx, relation=rel)
+                    relations[(rel.left, rel.right)].append(fact)
+                    # Mirror so lookups from either direction hit.
+                    flipped_op = _FLIP_REL_OP[rel.op]
+                    mirror = _RelationFact(
+                        block_id=block.id,
+                        cmd_index=idx,
+                        relation=SymbolRelationConstraint(
+                            left=rel.right, op=flipped_op, right=rel.left
+                        ),
+                    )
+                    relations[(rel.right, rel.left)].append(mirror)
         self.assumes_by_symbol = assumes
+        self.relations_by_pair = relations
         self.dominators = _compute_dominators(self.program)
         self.entry_block_id = self.program.blocks[0].id if self.program.blocks else None
         self._fresh_counter = self.fresh_counter_start
@@ -301,9 +332,69 @@ class RewriteCtx:
         query_block: str,
         query_cmd: int | None,
     ) -> bool:
-        if fact.block_id == query_block:
-            return query_cmd is None or fact.cmd_index < query_cmd
-        return fact.block_id in self.dominators.get(query_block, frozenset())
+        return self._position_dominates(
+            fact.block_id, fact.cmd_index, query_block, query_cmd
+        )
+
+    def _position_dominates(
+        self,
+        fact_block: str,
+        fact_cmd: int,
+        query_block: str,
+        query_cmd: int | None,
+    ) -> bool:
+        if fact_block == query_block:
+            return query_cmd is None or fact_cmd < query_cmd
+        return fact_block in self.dominators.get(query_block, frozenset())
+
+    def diff_bounds(
+        self, a_name: str, b_name: str
+    ) -> tuple[int | None, int | None] | None:
+        """Return inclusive bounds on ``a - b`` from dominating relational
+        assumes, or ``None`` if nothing is known.
+
+        Each relational op tightens the difference:
+
+        - ``a <  b``  ⇒  ``a - b ≤ -1``
+        - ``a <= b``  ⇒  ``a - b ≤  0``
+        - ``a == b``  ⇒  ``a - b ∈ {0}``
+        - ``a >= b``  ⇒  ``a - b ≥  0``
+        - ``a >  b``  ⇒  ``a - b ≥  1``
+
+        When both symbols are the same canonical name, returns ``(0, 0)``
+        trivially.
+        """
+        sym_a = canonical_symbol(a_name, strip_var_suffixes=_STRIP_SUFFIXES)
+        sym_b = canonical_symbol(b_name, strip_var_suffixes=_STRIP_SUFFIXES)
+        if sym_a == sym_b:
+            return (0, 0)
+        facts = self.relations_by_pair.get((sym_a, sym_b))
+        if not facts:
+            return None
+        lo: int | None = None
+        hi: int | None = None
+        cur_block = self._cur_block
+        cur_cmd = self._cur_cmd
+        for fact in facts:
+            if cur_block is not None and not self._position_dominates(
+                fact.block_id, fact.cmd_index, cur_block, cur_cmd
+            ):
+                continue
+            op = fact.relation.op
+            if op == "==":
+                lo = 0 if lo is None else max(lo, 0)
+                hi = 0 if hi is None else min(hi, 0)
+            elif op == ">=":
+                lo = 0 if lo is None else max(lo, 0)
+            elif op == ">":
+                lo = 1 if lo is None else max(lo, 1)
+            elif op == "<=":
+                hi = 0 if hi is None else min(hi, 0)
+            elif op == "<":
+                hi = -1 if hi is None else min(hi, -1)
+        if lo is None and hi is None:
+            return None
+        return (lo, hi)
 
     # --- fresh-variable emission (entry-block insertion) ---
 

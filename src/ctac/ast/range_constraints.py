@@ -28,6 +28,20 @@ class SymbolIntervalConstraint:
     upper: int | None  # inclusive, None means +infinity
 
 
+@dataclass(frozen=True)
+class SymbolRelationConstraint:
+    """``left op right`` where both operands are canonicalized symbol names.
+
+    ``op`` is one of ``"<"``, ``"<="``, ``"=="``, ``">="``, ``">"``. Used
+    to capture relational assume facts like ``assume R139 == R575`` that
+    don't fit a single-symbol interval.
+    """
+
+    left: str
+    op: str
+    right: str
+
+
 def const_expr_to_int(expr: TacExpr) -> int | None:
     """Parse TAC constant expression into Python int."""
     if not isinstance(expr, ConstExpr):
@@ -174,3 +188,29 @@ def interval_constraint_intersects_u256(constraint: SymbolIntervalConstraint) ->
     lo = 0 if constraint.lower is None else max(0, constraint.lower)
     hi = MAX_U256 if constraint.upper is None else min(MAX_U256, constraint.upper)
     return lo <= hi
+
+
+_REL_OPS = {"Lt": "<", "Le": "<=", "Gt": ">", "Ge": ">=", "Eq": "=="}
+
+
+def match_symbol_relation_constraint(
+    expr: TacExpr,
+    *,
+    strip_var_suffixes: bool = True,
+) -> SymbolRelationConstraint | None:
+    """Match a binary comparison between two symbols.
+
+    Returns ``SymbolRelationConstraint(left=X, op='<=', right=Y)`` for
+    forms like ``Le(X, Y)``, ``Lt(X, Y)``, ``Ge(X, Y)``, ``Gt(X, Y)``,
+    ``Eq(X, Y)`` when both operands are ``SymbolRef`` nodes. Returns
+    ``None`` otherwise — single-symbol-vs-constant forms are handled by
+    :func:`match_symbol_interval_constraint`.
+    """
+    if not (isinstance(expr, ApplyExpr) and expr.op in _REL_OPS and len(expr.args) == 2):
+        return None
+    left, right = expr.args
+    if not (isinstance(left, SymbolRef) and isinstance(right, SymbolRef)):
+        return None
+    l_name = _canonical_symbol_name(left.name, strip_var_suffixes=strip_var_suffixes)
+    r_name = _canonical_symbol_name(right.name, strip_var_suffixes=strip_var_suffixes)
+    return SymbolRelationConstraint(left=l_name, op=_REL_OPS[expr.op], right=r_name)

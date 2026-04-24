@@ -11,7 +11,12 @@ from ctac.rewrite.rules.bitfield import (
     N3_HIGH_MASK,
     N4_SHR_CONST,
 )
-from ctac.rewrite.rules.bv_to_int import ADD_BV_MAX_TO_ITE, ADD_BV_TO_INT, MUL_BV_TO_INT
+from ctac.rewrite.rules.bv_to_int import (
+    ADD_BV_MAX_TO_ITE,
+    ADD_BV_TO_INT,
+    MUL_BV_TO_INT,
+    SUB_BV_TO_INT,
+)
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
 from ctac.rewrite.rules.ceildiv_validation import R6_CASES
 from ctac.rewrite.rules.copyprop import CP_ALIAS
@@ -76,6 +81,7 @@ simplify_pipeline: tuple[Rule, ...] = (
     # become the canonical input here.
     MUL_BV_TO_INT,
     ADD_BV_TO_INT,
+    SUB_BV_TO_INT,
     # Express Add(BV256_MAX, X) — the bv256 two's-complement decrement —
     # as an explicit Ite. ITE_COND_FOLD above collapses it whenever
     # range analysis decides `X >= 1`.
@@ -122,6 +128,7 @@ all_rule_names: tuple[str, ...] = (
     DE_MORGAN.name,
     MUL_BV_TO_INT.name,
     ADD_BV_TO_INT.name,
+    SUB_BV_TO_INT.name,
     ADD_BV_MAX_TO_ITE.name,
     CSE.name,
     CP_ALIAS.name,
@@ -156,6 +163,7 @@ __all__ = [
     "R4_DIV_IN_CMP",
     "R4A_DIV_PURIFY",
     "R6_CEILDIV",
+    "SUB_BV_TO_INT",
     "ValidationCase",
     "all_rule_names",
     "default_pipeline",

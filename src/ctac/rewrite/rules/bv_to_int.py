@@ -17,16 +17,15 @@ Rules
 - ``MUL_BV_TO_INT``: ``Mul(a, b) -> IntMul(a, b)`` when the inferred
   range of the product is in ``[0, 2^256)``.
 - ``ADD_BV_TO_INT``: ``Add(a, b) -> IntAdd(a, b)`` likewise.
+- ``SUB_BV_TO_INT``: ``Sub(a, b) -> IntSub(a, b)`` likewise. Relies
+  on relational assume facts (``ctx.diff_bounds``) to prove
+  ``a >= b`` when element-wise ranges don't.
 - ``ADD_BV_MAX_TO_ITE``: ``Add(BV256_MAX, X) -> Ite(X >= 1, X - 1,
   BV256_MAX)``. Unconditional — encodes the bv256 semantics
   explicitly as a case split on whether the wrap happens
   (``X = 0 -> BV256_MAX``; ``X >= 1 -> X - 1``). Subsequent
   ``ITE_COND_FOLD`` / ``ITE_SAME`` rules collapse the Ite when
   range analysis decides the condition.
-
-``Sub`` is intentionally out of scope — it wraps when ``a < b``,
-which simple interval inference rarely disproves, so lifting it
-needs a stronger invariant than we have today.
 """
 
 from __future__ import annotations
@@ -63,6 +62,14 @@ def _rewrite_add_bv_to_int(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     if not _fits_in_bv256(expr, ctx):
         return None
     return ApplyExpr("IntAdd", expr.args)
+
+
+def _rewrite_sub_bv_to_int(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    if not isinstance(expr, ApplyExpr) or expr.op != "Sub" or len(expr.args) != 2:
+        return None
+    if not _fits_in_bv256(expr, ctx):
+        return None
+    return ApplyExpr("IntSub", expr.args)
 
 
 def _rewrite_add_bv_max_to_ite(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
@@ -105,6 +112,17 @@ ADD_BV_TO_INT = Rule(
     description=(
         "Add(a, b) -> IntAdd(a, b) when the range of the sum fits in "
         "[0, 2^256). Elides sea_vc's outer `(mod ... BV256_MOD)` wrap."
+    ),
+)
+
+
+SUB_BV_TO_INT = Rule(
+    name="SUB_BV_TO_INT",
+    fn=_rewrite_sub_bv_to_int,
+    description=(
+        "Sub(a, b) -> IntSub(a, b) when the range of the difference fits "
+        "in [0, 2^256). Needs `a >= b` for the lower bound; relational "
+        "assumes (tracked via ctx.diff_bounds) are the usual source."
     ),
 )
 
