@@ -25,6 +25,8 @@ from ctac.ast.nodes import (
     TacCmd,
     TacExpr,
 )
+from ctac.analysis.defuse import extract_def_use
+from ctac.analysis.passes import analyze_dsa
 from ctac.ast.subst import subst_symbol
 from ctac.ir.models import TacBlock, TacProgram
 from ctac.rewrite.unparse import canonicalize_cmd, unparse_cmd
@@ -61,6 +63,17 @@ def emit_equivalence_program(
     _check_block_set(orig, rw)
     lhs_defined = _collect_defined_symbols(orig)
     rhs_defined = _collect_defined_symbols(rw)
+    # Dynamic-symbol classification from orig (DSA on orig). Used to
+    # hoist rw-eq's static CHK<n> insertions out of the dynamic
+    # parallel-assignment section of any block — DSA shape requires
+    # ``(static)*(dynamic)*terminator``, and a static after a dynamic
+    # is rejected by sea_vc's precondition check. Orig and rw share
+    # block structure (rule 6 is the only walker rule that introduces
+    # asymmetry, and it does so via shadow vars in the entry block,
+    # not in the body), so orig's classification is sufficient.
+    orig_du = extract_def_use(orig)
+    orig_dsa = analyze_dsa(orig, def_use=orig_du)
+    dynamic_symbols = frozenset(a.symbol for a in orig_dsa.dynamic_assignments)
     state = _WalkerState(
         lhs_defined=lhs_defined,
         rhs_defined=rhs_defined,
@@ -78,6 +91,7 @@ def emit_equivalence_program(
                 f"(orig={orig_b.successors!r}, rw={rw_b.successors!r})"
             )
         new_cmds = _walk_block(orig_b, rw_b, state)
+        new_cmds = _hoist_statics_above_dynamics(new_cmds, dynamic_symbols)
         new_blocks.append(
             TacBlock(id=orig_b.id, successors=list(orig_b.successors), commands=new_cmds)
         )
@@ -118,6 +132,69 @@ def _collect_defined_symbols(program: TacProgram) -> frozenset[str]:
             if isinstance(c, (AssignExpCmd, AssignHavocCmd)):
                 names.add(c.lhs)
     return frozenset(names)
+
+
+def _hoist_statics_above_dynamics(
+    cmds: list[TacCmd], dynamic_symbols: frozenset[str]
+) -> list[TacCmd]:
+    """Reorder ``cmds`` so any static AssignExpCmd (and its dependent
+    AssertCmd, when the assert refers to the assignment's lhs) appears
+    *before* any dynamic-classified assignment in the block.
+
+    DSA shape requires ``(static)*(dynamic)*terminator``: once a dynamic
+    assignment appears, no further static assignments may follow.
+    rw-eq's emit sites (rule 2 / 4 / 5 / 6) splice ``CHK<n> = Eq(...);
+    AssertCmd CHK<n>`` next to the original-program command they're
+    checking, which can land them in the block's dynamic phi-merge
+    section. This helper hoists those check pairs to the static prologue
+    so the merged program still satisfies DSA shape.
+
+    Mirrors SSA's "insert after phi nodes" convention applied to TAC's
+    parallel-assignment shape (where phi-like assignments live at the
+    end of a block, just before the terminator). Idempotent.
+
+    Caveat: a hoisted CHK whose RHS references a same-block dynamic
+    symbol would be moved before that symbol's definition, breaking
+    data flow. Today every emitted CHK references only static or
+    cross-block symbols, so this is safe; if a future emission rule
+    breaks the assumption, add a free-var check here.
+    """
+    first_dyn = None
+    for i, c in enumerate(cmds):
+        if isinstance(c, (AssignExpCmd, AssignHavocCmd)) and c.lhs in dynamic_symbols:
+            first_dyn = i
+            break
+    if first_dyn is None:
+        return cmds
+
+    prefix = list(cmds[:first_dyn])
+    rest_kept: list[TacCmd] = []
+    moved: list[TacCmd] = []
+
+    i = first_dyn
+    while i < len(cmds):
+        cmd = cmds[i]
+        if isinstance(cmd, AssignExpCmd) and cmd.lhs not in dynamic_symbols:
+            group: list[TacCmd] = [cmd]
+            j = i + 1
+            while j < len(cmds):
+                nxt = cmds[j]
+                if (
+                    isinstance(nxt, AssertCmd)
+                    and isinstance(nxt.predicate, SymbolRef)
+                    and nxt.predicate.name == cmd.lhs
+                ):
+                    group.append(nxt)
+                    j += 1
+                else:
+                    break
+            moved.extend(group)
+            i = j
+        else:
+            rest_kept.append(cmd)
+            i += 1
+
+    return prefix + moved + rest_kept
 
 
 class _WalkerState:
@@ -463,12 +540,19 @@ def _walk_block(
             continue
 
         # Rule 2: same LHS assignment, different RHS.
+        # Emit the equivalence check FIRST (CHK<n> = Eq(L.rhs, R.rhs);
+        # assert CHK<n>), then L's assignment. The check doesn't
+        # reference L.lhs, so the order is semantically equivalent —
+        # but it matters for DSA shape: when L's lhs is a dynamic
+        # symbol (parallel-phi merge variable), placing the static
+        # CHK assignment after it creates a static-after-dynamic shape
+        # violation that downstream tools (sea_vc encoder's DSA
+        # precondition check) reject.
         if (
             isinstance(L, AssignExpCmd)
             and isinstance(R, AssignExpCmd)
             and L.lhs == R.lhs
         ):
-            output.append(L)
             output.extend(
                 _emit_eq_assert(
                     state,
@@ -479,6 +563,7 @@ def _walk_block(
                     kind="assignment",
                 )
             )
+            output.append(L)
             li += 1
             ri += 1
             state.hit("2_assignment_diff")
@@ -530,6 +615,28 @@ def _walk_block(
             state.hit("5b_assert_pair")
             continue
 
+        # Rule 9b: lhs has an assignment whose LHS isn't defined in rhs
+        # at all — DCE removed it. Emit verbatim, advance LHS only. (The
+        # bare rule 9 only handles end-of-stream DCE; this handles the
+        # mid-stream case.)
+        #
+        # IMPORTANT: 9b runs *before* rules 4 (rhs-only assume) and 3
+        # (rhs fresh assignment). When the lhs has a soon-to-be-DCE'd
+        # assignment, eating it first lets the next-up lhs assume /
+        # assert / assignment pair with the rhs's matching command via
+        # rule 5a / 5b / 1 / 2. If we let rule 4 fire first, the rhs's
+        # "replacement" assume gets emitted as a rhs-only check and the
+        # subsequent lhs assume has nothing on the rhs to pair with —
+        # the walker stalls on a structurally-fine input.
+        if (
+            isinstance(L, (AssignExpCmd, AssignHavocCmd))
+            and L.lhs not in state.rhs_defined
+        ):
+            output.append(L)
+            li += 1
+            state.hit("9b_lhs_dce")
+            continue
+
         # Rule 4: rhs-only assume.
         if isinstance(R, AssumeExpCmd):
             output.extend(
@@ -541,6 +648,31 @@ def _walk_block(
             state.hit("4_rhs_assume")
             continue
 
+        # Rule 4b: lhs-only assume. The orig has a constraint here that
+        # the rhs doesn't pair with at this position. Most commonly this
+        # is the orig's bounds assume that survives a rule-6 rehavoc
+        # window: rule 6 substitutes the rhs's matching assume into
+        # `assume <cond[X→shadow]>` inside the window, and the lhs's
+        # post-window copy then shows up as a lhs-only assume.
+        #
+        # Soundness: emit `assume <cond>` verbatim. The merged program
+        # should reflect the orig's path constraints — this is the
+        # symmetric counterpart to rule 4, which emits `assert <cond>`
+        # on rhs-only assumes (because the rwriter introducing a new
+        # constraint is suspicious and worth verifying). The orig's
+        # constraints aren't suspicious; they're the spec.
+        #
+        # Caveat: if a future rule actually DROPS an orig assume (no
+        # current rule does this), this rule masks that bug — the
+        # merged program would still carry the orig's constraint and
+        # the equivalence asserts would not see the dropped state.
+        # When/if that arrives, rule 4b should be tightened.
+        if isinstance(L, AssumeExpCmd):
+            output.append(L)
+            li += 1
+            state.hit("4b_lhs_assume")
+            continue
+
         # Rule 3: rhs-introduced fresh symbol.
         if (
             isinstance(R, (AssignExpCmd, AssignHavocCmd))
@@ -549,19 +681,6 @@ def _walk_block(
             output.append(R)
             ri += 1
             state.hit("3_fresh_rhs")
-            continue
-
-        # Rule 9b: lhs has an assignment whose LHS isn't defined in rhs
-        # at all — DCE removed it. Emit verbatim, advance LHS only. (The
-        # bare rule 9 only handles end-of-stream DCE; this handles the
-        # mid-stream case.)
-        if (
-            isinstance(L, (AssignExpCmd, AssignHavocCmd))
-            and L.lhs not in state.rhs_defined
-        ):
-            output.append(L)
-            li += 1
-            state.hit("9b_lhs_dce")
             continue
 
         # Rule 10: nothing matches.
