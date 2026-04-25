@@ -31,6 +31,7 @@ from ctac.rewrite.rules.div import (
 from ctac.rewrite.rules.div_purify import R4A_DIV_PURIFY
 from ctac.rewrite.rules.div_purify_validation import R4A_CASES
 from ctac.rewrite.rules.div_validation import R4_CASES
+from ctac.rewrite.rules.div_validation_r1 import R1_CASES
 from ctac.rewrite.validation import ValidationCase
 from ctac.rewrite.rules.ite_purify import ITE_PURIFY
 from ctac.rewrite.rules.purify_assert import PURIFY_ASSERT
@@ -120,7 +121,7 @@ default_pipeline: tuple[Rule, ...] = purify_pipeline
 # truth for `ctac rw-valid`. Rules without an entry here have no soundness
 # spec yet — the CLI reports them as "missing" so coverage gaps are visible.
 validation_cases: tuple[ValidationCase, ...] = (
-    R4_CASES + R4A_CASES + R6_CASES + ADD_BV_MAX_TO_ITE_CASES
+    R1_CASES + R4_CASES + R4A_CASES + R6_CASES + ADD_BV_MAX_TO_ITE_CASES
 )
 
 # Every rule name the rewriter exports, so `ctac rw-valid` can list the

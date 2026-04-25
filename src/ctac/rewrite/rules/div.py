@@ -150,7 +150,22 @@ def _match_mod_pow2(expr: TacExpr, ctx: RewriteCtx) -> tuple[TacExpr, int] | Non
 
 
 def _rewrite_r1(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
-    """``Mul(Mod(Div(X, 2^k), 2^n), 2^k) -> X`` when ``X`` is in ``[0, 2^(k+n) - 1]``."""
+    """``Mul(Mod(Div(X, 2^k), 2^n), 2^k) -> X`` when ``X`` is in
+    ``[0, 2^(k+n) - 1]`` AND ``X`` is provably divisible by ``2^k``.
+
+    The wrapper expression keeps the ``[k, k+n-1]`` bit-window of X and
+    zeros all other bits. For the result to equal X, two conditions
+    must hold:
+
+    - **High bits**: ``X < 2^(k+n)`` — ensured by the ``hi >= bound``
+      range check.
+    - **Low bits**: ``X mod 2^k == 0`` — checked structurally via
+      :func:`_x_divisible_by_2k`. The N-rule normalisations that drive
+      R1 in real TAC produce ``X = IntMul(2^k * c, _)``-shaped values
+      where this is structurally guaranteed; without the check, the
+      rule was unsound on inputs that didn't go through that pipeline
+      (e.g. ``X`` directly assume-bounded by ``[0, 0xff]`` with k=4).
+    """
     if not isinstance(expr, ApplyExpr) or expr.op != "Mul" or len(expr.args) != 2:
         return None
     a, b = expr.args
@@ -183,7 +198,39 @@ def _rewrite_r1(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     lo, hi = r
     if lo < 0 or hi >= bound:
         return None
+    if not _x_divisible_by_2k(x_expr, k1, ctx):
+        return None
     return x_expr
+
+
+def _x_divisible_by_2k(expr: TacExpr, k: int, ctx: RewriteCtx) -> bool:
+    """Best-effort structural check that ``expr`` is divisible by ``2^k``.
+
+    Recognises:
+    - constants whose value is divisible by ``2^k``;
+    - ``Mul(C, _)`` / ``IntMul(C, _)`` (and the symmetric form) where
+      ``C`` is a constant divisible by ``2^k``.
+
+    Peels through ``ctx.lookthrough`` (static defs + safe-narrow casts)
+    so the check sees through pipeline-introduced wrappers.
+
+    Conservative: returns False for anything else, including bare
+    SymbolRefs without a recognisable static definition. This matches
+    R1's "structural pattern only" gate; no range / known-bits
+    inference.
+    """
+    if k <= 0:
+        return True
+    e = ctx.lookthrough(expr)
+    if isinstance(e, ConstExpr):
+        v = const_to_int(e)
+        return v is not None and v % (1 << k) == 0
+    if isinstance(e, ApplyExpr) and e.op in MUL_OPS and len(e.args) == 2:
+        for arg in e.args:
+            v = const_to_int(arg) if isinstance(arg, ConstExpr) else None
+            if v is not None and v % (1 << k) == 0:
+                return True
+    return False
 
 
 def _rewrite_r4(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:

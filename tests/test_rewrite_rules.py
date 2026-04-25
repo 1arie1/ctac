@@ -511,8 +511,14 @@ Metas {
     assert res.hits_by_rule.get("R1", 0) == 1, res.hits_by_rule
 
 
-def test_dominating_assume_allows_r1():
-    """Same assume in the dominating entry block should enable R1."""
+def test_r1_does_not_fire_without_low_bits_proof():
+    """R1's low-bits gate must reject directly-bounded havoc symbols.
+
+    Counterexample if it didn't: ``R0 = 1`` satisfies ``Le(R0 0xff)``
+    (R0 in [0, 2^8-1] — fits the 2^(k+n) bound), but
+    ``((R0/16)%16)*16 = 0 != R0 = 1``. The rule used to fire here
+    before the structural divisibility gate was added.
+    """
     tac_src = """TACSymbolTable {
 \tUserDefined {
 \t}
@@ -526,8 +532,8 @@ def test_dominating_assume_allows_r1():
 Program {
 \tBlock entry Succ [] {
 \t\tAssignHavocCmd R0
-\t\tAssumeExpCmd Le(R0 0xffffffff)
-\t\tAssignExpCmd R1 Mul(Mod(Div(R0 0x4000) 0x100000000) 0x4000)
+\t\tAssumeExpCmd Le(R0 0xff)
+\t\tAssignExpCmd R1 Mul(Mod(Div(R0 0x10) 0x10) 0x10)
 \t}
 }
 Axioms {
@@ -538,6 +544,4 @@ Metas {
 """
     tac = parse_string(tac_src, path="<s>")
     res = rewrite_program(tac.program, default_pipeline)
-    assert res.hits_by_rule.get("R1", 0) == 1
-    # After R1 + CP, R1's RHS should reduce to R0.
-    assert _rhs(res.program, "R1") == SymbolRef("R0")
+    assert res.hits_by_rule.get("R1", 0) == 0, res.hits_by_rule

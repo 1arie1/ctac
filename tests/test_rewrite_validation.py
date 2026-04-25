@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from ctac.rewrite.rules import (
     ADD_BV_MAX_TO_ITE_CASES,
+    R1_CASES,
     R4_CASES,
     R4A_CASES,
     R6_CASES,
@@ -18,18 +19,23 @@ from ctac.tool.main import app
 
 
 def test_registry_holds_expected_cases():
-    """R4 has 5 operator variants; R4A and R6 each have base + signed;
-    ADD_BV_MAX_TO_ITE has a single case."""
+    """R4 has 5 operator variants; R4A, R6 each have base + signed;
+    R1 and ADD_BV_MAX_TO_ITE each have a single case."""
     cases_by_name = {(vc.name, vc.case) for vc in validation_cases}
     assert {("R4", c) for c in ("Lt", "Le", "Gt", "Ge", "Eq")} <= cases_by_name
     assert ("R4a", "") in cases_by_name
     assert ("R4a", "signed") in cases_by_name
     assert ("R6", "") in cases_by_name
     assert ("R6", "signed") in cases_by_name
+    assert ("R1", "") in cases_by_name
     assert ("ADD_BV_MAX_TO_ITE", "") in cases_by_name
     # Registry is the sum of the per-rule case tuples.
     assert len(validation_cases) == (
-        len(R4_CASES) + len(R4A_CASES) + len(R6_CASES) + len(ADD_BV_MAX_TO_ITE_CASES)
+        len(R1_CASES)
+        + len(R4_CASES)
+        + len(R4A_CASES)
+        + len(R6_CASES)
+        + len(ADD_BV_MAX_TO_ITE_CASES)
     )
 
 
@@ -72,7 +78,7 @@ def test_cli_emits_scripts_and_manifest(tmp_path):
     # Manifest is valid JSON and records each case.
     manifest = json.loads((out / "manifest.json").read_text())
     assert len(manifest["rules"]) == len(validation_cases)
-    assert set(manifest["missing"]) >= {"R1", "R2", "R3", "N1", "N2", "N3", "N4"}
+    assert set(manifest["missing"]) >= {"R2", "R3", "N1", "N2", "N3", "N4"}
     # Every entry has the expected keys.
     for entry in manifest["rules"]:
         assert set(entry) == {"rule", "case", "smt2", "expected", "description"}
