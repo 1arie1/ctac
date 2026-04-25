@@ -315,6 +315,7 @@ TAC_UF_JOIN = """TACSymbolTable {
 Program {
 \tBlock entry Succ [left, right] {
 \t\tAssignExpCmd c true
+\t\tAssignHavocCmd x
 \t\tAssignExpCmd w BXor(x x)
 \t\tJumpiCmd left right c
 \t}

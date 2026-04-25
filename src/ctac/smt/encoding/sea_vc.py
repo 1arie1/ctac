@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
 
-from ctac.analysis import analyze_dsa, extract_def_use
+from ctac.analysis import analyze_dsa, analyze_use_before_def, extract_def_use
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
     ApplyExpr,
@@ -308,6 +308,22 @@ class SeaVcEncoder(SmtEncoder):
         if not dsa.is_valid:
             first = dsa.issues[0]
             raise SmtEncodingError(f"DSA precondition failed: {first.kind} at {first.block_id}:{first.cmd_index}")
+
+        # Use-before-def precondition: every used symbol must have at
+        # least one reaching def. DSA only flags multiple-defs and
+        # shape; a symbol with zero defs slips past it. sea_vc would
+        # then encode the symbol as a free SMT const — z3 may pick a
+        # value the program never could have produced, masking real
+        # encoder/program bugs. Reject explicitly so the merged
+        # program's structural integrity is what's verified.
+        ubd = analyze_use_before_def(program, def_use=du)
+        if ubd.issues:
+            first = ubd.issues[0]
+            raise SmtEncodingError(
+                f"use-before-def: {first.symbol!r} at "
+                f"{first.block_id}:{first.cmd_index} "
+                f"({first.cmd_kind}) — symbol used with no reaching def"
+            )
 
         dynamic_symbols = {x.symbol for x in dsa.dynamic_assignments}
         raw_sorts = _parse_symbol_sorts(ctx.tac_file.symbol_table_text)
