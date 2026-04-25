@@ -661,26 +661,43 @@ def _walk_block(
             state.hit("4_rhs_assume")
             continue
 
-        # Rule 4b: lhs-only assume. The orig has a constraint here that
-        # the rhs doesn't pair with at this position. Most commonly this
-        # is the orig's bounds assume that survives a rule-6 rehavoc
-        # window: rule 6 substitutes the rhs's matching assume into
-        # `assume <cond[X→shadow]>` inside the window, and the lhs's
-        # post-window copy then shows up as a lhs-only assume.
+        # Rule 4b: lhs-only assume. The orig has a constraint at this
+        # position that the rhs doesn't pair with. Two cases:
         #
-        # Soundness: emit `assume <cond>` verbatim. The merged program
-        # should reflect the orig's path constraints — this is the
-        # symmetric counterpart to rule 4, which emits `assert <cond>`
-        # on rhs-only assumes (because the rwriter introducing a new
-        # constraint is suspicious and worth verifying). The orig's
-        # constraints aren't suspicious; they're the spec.
+        # - Most often, an orig bounds-assume that survived a rule-6
+        #   rehavoc window: rule 6 already consumed the rhs's matching
+        #   assume inside the window (with ``X → shadow`` substitution),
+        #   so the lhs's post-window copy on the still-live X has no
+        #   rhs counterpart.
+        # - Hypothetically, a rule that drops an orig assume because
+        #   it's redundant given other constraints. No current rule
+        #   does this, but the gate must allow for it.
         #
-        # Caveat: if a future rule actually DROPS an orig assume (no
-        # current rule does this), this rule masks that bug — the
-        # merged program would still carry the orig's constraint and
-        # the equivalence asserts would not see the dropped state.
-        # When/if that arrives, rule 4b should be tightened.
+        # The rwriter is allowed to drop an orig assume only if the
+        # assume was *useless* — implied by the rest of the merged
+        # state. Emit a CHK that asserts ``L.cond`` is implied at this
+        # point (catches a future rule that drops a load-bearing
+        # assume), and ALSO emit ``assume L.cond`` so downstream
+        # equivalence checks (rule 2 / 5a / 5b) stay scoped to orig's
+        # reachable domain. Without the assume, a downstream rule-2
+        # check could fail on states where ``L.cond`` doesn't hold —
+        # states that orig wouldn't reach but the merged program would
+        # without the scoping — producing a false positive about a
+        # rwriter that's actually sound on orig's domain.
+        #
+        # Symmetric to rule 4 in the assert-the-orphan-condition sense
+        # (both emit CHK + assert), and to rule 5a in the
+        # preserve-path-scope sense (both ``assume L.cond`` afterward).
         if isinstance(L, AssumeExpCmd):
+            output.extend(
+                _emit_eq_assert_for_assume(
+                    state,
+                    L.condition,
+                    block_id=orig_block.id,
+                    cmd_index=li,
+                    kind="lhs-only-assume",
+                )
+            )
             output.append(L)
             li += 1
             state.hit("4b_lhs_assume")
@@ -717,9 +734,18 @@ def _emit_eq_assert_for_assume(
     *,
     block_id: str,
     cmd_index: int,
+    kind: str = "rhs-only-assume",
 ) -> list[TacCmd]:
-    """Rule 4: turn an RHS-only ``assume A`` into an ``assert A``
-    in the merged program (same shape as the equivalence checks)."""
+    """Rule 4 / 4b: turn an unpaired ``assume A`` into a CHK that
+    asserts ``A`` holds at this point in the merged program.
+
+    Rule 4 (rhs-only assume): catches a rwriter that ADDED a new
+    constraint not in orig — checks the addition is implied (else
+    the rwriter is restricting beyond orig and could mask bugs).
+    Rule 4b (lhs-only assume): catches a rwriter that DROPPED an
+    orig constraint — checks the dropped constraint is still
+    implied (else the rwriter dropped something load-bearing).
+    """
     chk = state.fresh_chk()
     state.asserts_emitted += 1
     return [
@@ -728,7 +754,7 @@ def _emit_eq_assert_for_assume(
             AssertCmd(
                 raw="",
                 predicate=SymbolRef(chk),
-                message=f"rw-eq:{block_id}:{cmd_index} rhs-only-assume",
+                message=f"rw-eq:{block_id}:{cmd_index} {kind}",
             )
         ),
     ]
