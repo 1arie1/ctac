@@ -487,16 +487,21 @@ def _walk_block(
             state.hit("8_rhs_only")
             continue
 
-        # Terminator handling: both should be terminators at this point
-        # if one is. Rule 7 (matching) or rule 10 (mismatch).
+        # Terminator handling (rule 7): pair matching terminators.
+        # When ONLY one side is at a terminator, fall through — rules
+        # 9b (lhs-only DCE), 4 (rhs-only assume), and 3 (rhs-only
+        # fresh assignment) will consume the asymmetric remainder and
+        # the walker eventually re-meets at the terminator. This is
+        # essential when the rewriter inserts new commands just before
+        # the entry block's terminator (e.g. CSE's TCSE<n> hoists,
+        # R4A's havoc + bound, ITE_PURIFY's TB<n> introductions): the
+        # rhs entry block grows additional rhs-only commands that the
+        # orig doesn't have, and rule 3 must get a chance to consume
+        # them before the terminator check fires. Rule 10 catches real
+        # asymmetries that rules 9b/4/3 can't handle.
         l_term = isinstance(L, _TERMINATOR_TYPES)
         r_term = isinstance(R, _TERMINATOR_TYPES)
-        if l_term or r_term:
-            if not (l_term and r_term):
-                raise EquivContractError(
-                    f"block {orig_block.id}: terminator on one side but not the other "
-                    f"(lhs={type(L).__name__}, rhs={type(R).__name__})"
-                )
+        if l_term and r_term:
             if not _cmd_equiv(L, R):
                 raise EquivContractError(
                     f"block {orig_block.id}: terminator mismatch"
