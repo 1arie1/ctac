@@ -27,7 +27,7 @@ from ctac.ast.nodes import (
 )
 from ctac.ast.subst import subst_symbol
 from ctac.ir.models import TacBlock, TacProgram
-from ctac.rewrite.unparse import canonicalize_cmd
+from ctac.rewrite.unparse import canonicalize_cmd, unparse_cmd
 from ctac.rw_eq.model import EquivContractError, EquivResult, RehavocSite
 
 _TERMINATOR_TYPES = (JumpCmd, JumpiCmd)
@@ -241,6 +241,112 @@ def _cmd_equiv(a: TacCmd, b: TacCmd) -> bool:
             and a.condition == b.condition
         )
     return False
+
+
+def _safe_unparse(cmd: TacCmd) -> str:
+    """Best-effort command rendering for diagnostics. Falls back to the
+    raw text or a type tag if unparse can't handle the shape."""
+    try:
+        return unparse_cmd(cmd)
+    except Exception:
+        raw = getattr(cmd, "raw", "") or ""
+        return raw if raw else f"<{type(cmd).__name__}>"
+
+
+def _format_cmd_window(
+    cmds: list[TacCmd], i: int, *, before: int = 2, after: int = 1
+) -> str:
+    """Render ``cmds[i]`` plus a small window of surrounding commands,
+    one per line, with ``>>`` marking the focus position. Used in
+    diagnostics so the user sees not just the failing pair but a few
+    commands of context on each side."""
+    lo = max(0, i - before)
+    hi = min(len(cmds), i + after + 1)
+    if lo >= len(cmds):
+        return "    (end of block)"
+    lines: list[str] = []
+    for k in range(lo, hi):
+        marker = ">>" if k == i else "  "
+        lines.append(f"    {marker} [{k:>3}] {_safe_unparse(cmds[k])}")
+    return "\n".join(lines)
+
+
+def _diagnose_no_match(L: TacCmd, R: TacCmd) -> str:
+    """One-line hint for the most common rule-10 fall-through patterns.
+    Empty string when nothing useful to add."""
+    if isinstance(L, AssumeExpCmd) and isinstance(
+        R, (AssignExpCmd, AssignHavocCmd)
+    ):
+        return (
+            "hint: lhs has an assume but rhs has an assignment to a "
+            "name that already exists on the lhs. The rewriter likely "
+            "reordered an assume past an assignment, or a rule "
+            "introduced a fresh name with the same identifier as an "
+            "existing one. Try `ctac rw --report` and look for rules "
+            "that reorder commands."
+        )
+    if isinstance(L, (AssignExpCmd, AssignHavocCmd)) and isinstance(
+        R, AssumeExpCmd
+    ):
+        return (
+            "hint: lhs has an assignment but rhs has an assume — "
+            "the rewriter likely lifted a side condition into an "
+            "assume on the rhs without a matching command on the lhs."
+        )
+    if isinstance(L, AssertCmd) and not isinstance(R, AssertCmd):
+        return (
+            "hint: lhs has an assert but rhs does not — the rewriter "
+            "may have dropped the assertion (rule 5b expects matching "
+            "asserts on both sides)."
+        )
+    if isinstance(R, AssertCmd) and not isinstance(L, AssertCmd):
+        return (
+            "hint: rhs has an assert that lhs lacks — the rewriter "
+            "introduced an assertion (rule 5b expects matching asserts "
+            "on both sides)."
+        )
+    return ""
+
+
+def _format_no_rule_match_error(
+    *,
+    orig_block_id: str,
+    lhs_cmds: list[TacCmd],
+    rhs_cmds: list[TacCmd],
+    li: int,
+    ri: int,
+    state: "_WalkerState",
+) -> str:
+    """Build the rule-10 diagnostic. Includes pretty-printed command
+    text on each side, a small surrounding-context window, and a
+    pattern-specific hint when the (lhs, rhs) shape is a known case."""
+    L = lhs_cmds[li]
+    R = rhs_cmds[ri]
+    hint = _diagnose_no_match(L, R)
+    rhs_lhs_overlap = (
+        isinstance(R, (AssignExpCmd, AssignHavocCmd))
+        and R.lhs in state.lhs_defined
+    )
+    overlap_note = (
+        f"\n  rhs assigns to {R.lhs!r} which is also defined on the lhs "
+        f"side — rule 3 (fresh-rhs) declined."
+        if rhs_lhs_overlap
+        else ""
+    )
+    parts = [
+        f"block {orig_block_id}: lockstep step does not match any rule",
+        f"  lhs[{li}]: {type(L).__name__}: {_safe_unparse(L)}",
+        f"  rhs[{ri}]: {type(R).__name__}: {_safe_unparse(R)}",
+        f"  lhs context (block {orig_block_id}):",
+        _format_cmd_window(lhs_cmds, li),
+        f"  rhs context (block {orig_block_id}):",
+        _format_cmd_window(rhs_cmds, ri),
+    ]
+    if overlap_note:
+        parts.append(overlap_note.lstrip("\n"))
+    if hint:
+        parts.append(f"  {hint}")
+    return "\n".join(parts)
 
 
 def _walk_block(
@@ -460,8 +566,14 @@ def _walk_block(
 
         # Rule 10: nothing matches.
         raise EquivContractError(
-            f"block {orig_block.id}: lockstep step does not match any rule "
-            f"(lhs={type(L).__name__}, rhs={type(R).__name__})"
+            _format_no_rule_match_error(
+                orig_block_id=orig_block.id,
+                lhs_cmds=lhs_cmds,
+                rhs_cmds=rhs_cmds,
+                li=li,
+                ri=ri,
+                state=state,
+            )
         )
 
     return output
