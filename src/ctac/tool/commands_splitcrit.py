@@ -10,8 +10,9 @@ from typing import Annotated, Optional
 
 import typer
 
-from ctac.parse import ParseError, parse_path, render_tac_file
+from ctac.parse import ParseError, parse_path
 from ctac.splitcrit import split_critical_edges
+from ctac.tool.tac_output import write_program_to_path
 from ctac.tool.cli_runtime import (
     PLAIN_HELP,
     TRANSFORM_PANEL,
@@ -57,7 +58,10 @@ def split_crit_cmd(
         typer.Option(
             "-o",
             "--output",
-            help="Write the split TAC here (.tac).",
+            help=(
+                "Write the split TAC here. .tac = round-trippable TAC; "
+                ".htac = pretty-printed."
+            ),
         ),
     ] = None,
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
@@ -93,13 +97,16 @@ def split_crit_cmd(
     if output_path is None:
         if not report:
             c.print(
-                "# no --output given; pass -o FILE.tac to write the result",
+                "# no --output given; pass -o FILE.tac (or .htac) to write the result",
                 markup=False,
             )
         return
 
-    text = render_tac_file(tac, program=result.program)
-    output_path.write_text(text, encoding="utf-8")
+    write_program_to_path(
+        output_path=output_path,
+        tac=tac,
+        program=result.program,
+    )
     if not report:
         c.print(f"# wrote {output_path}", markup=False)
 

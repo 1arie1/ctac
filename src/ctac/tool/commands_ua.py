@@ -17,6 +17,7 @@ from ctac.analysis import remove_true_asserts
 from ctac.ast.nodes import AssertCmd
 from ctac.ir.models import TacProgram
 from ctac.parse import ParseError, parse_path, render_tac_file
+from ctac.tool.tac_output import write_program_to_path
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.rules import PURIFY_ASSERT
 from ctac.tool.cli_runtime import (
@@ -233,13 +234,17 @@ def _run_merge(
     if output_path is None:
         if not report:
             c.print(
-                "# no --output given; pass -o FILE.tac to write the result",
+                "# no --output given; pass -o FILE.tac (or .htac) to write the result",
                 markup=False,
             )
         return
 
-    text = render_tac_file(tac, program=result.program, extra_symbols=extra_symbols)
-    output_path.write_text(text, encoding="utf-8")
+    write_program_to_path(
+        output_path=output_path,
+        tac=tac,
+        program=result.program,
+        extra_symbols=extra_symbols,
+    )
     if not report:
         c.print(f"# wrote {output_path}", markup=False)
 

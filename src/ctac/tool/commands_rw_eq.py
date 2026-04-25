@@ -16,6 +16,7 @@ import typer
 
 from ctac.parse import ParseError, parse_path, render_tac_file
 from ctac.rw_eq import EquivContractError, emit_equivalence_program
+from ctac.tool.tac_output import write_program_to_path
 from ctac.tool.cli_runtime import (
     PLAIN_HELP,
     VALIDATE_PANEL,
@@ -82,7 +83,10 @@ def rw_eq_cmd(
         typer.Option(
             "-o",
             "--output",
-            help="Write the merged equivalence-check TAC here.",
+            help=(
+                "Write the merged equivalence-check TAC here. "
+                ".tac = round-trippable TAC; .htac = pretty-printed."
+            ),
         ),
     ] = None,
     plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
@@ -148,15 +152,25 @@ def rw_eq_cmd(
         raise typer.Exit(exit_code) from e
 
     extra_symbols = result.extra_symbols
-    text = render_tac_file(orig_tac, program=result.program, extra_symbols=extra_symbols)
 
     if output_path is None:
+        # No -o: stream raw TAC to stdout. Useful for piping into a
+        # follow-up command. Pretty-printed output is opt-in via -o
+        # FILE.htac (matches the convention of `ctac rw`).
+        text = render_tac_file(
+            orig_tac, program=result.program, extra_symbols=extra_symbols
+        )
         if plain:
             sys.stdout.write(text)
         else:
             c.print(text)
     else:
-        output_path.write_text(text, encoding="utf-8")
+        write_program_to_path(
+            output_path=output_path,
+            tac=orig_tac,
+            program=result.program,
+            extra_symbols=extra_symbols,
+        )
 
     if report:
         _print_report(c, plain=plain, result=result, output_path=output_path)

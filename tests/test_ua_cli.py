@@ -98,3 +98,24 @@ def test_ua_continuation_block_has_assume_and_branch(tmp_path):
         assert term.__class__.__name__ in {"JumpiCmd", "JumpCmd"}
         if isinstance(term, JumpCmd):
             assert term.target == "__UA_ERROR"
+
+
+def test_ua_merge_htac_output_pretty_printed(tmp_path):
+    """``-o FILE.htac`` writes pretty-printed TAC; ``-o FILE.tac`` writes
+    raw round-trippable TAC. The convention matches ``ctac rw``."""
+    runner = CliRunner()
+    src = _require(KEV_TAC)
+    out_tac = tmp_path / "ua.tac"
+    out_htac = tmp_path / "ua.htac"
+    r1 = runner.invoke(app, ["ua", str(src), "-o", str(out_tac), "--plain"])
+    r2 = runner.invoke(app, ["ua", str(src), "-o", str(out_htac), "--plain"])
+    assert r1.exit_code == 0 and r2.exit_code == 0, (r1.output, r2.output)
+    tac_text = out_tac.read_text()
+    htac_text = out_htac.read_text()
+    # Raw .tac round-trips through the parser.
+    parse_path(out_tac)
+    # .htac uses `=` for assignments and contains block headers; it is
+    # NOT round-trippable, so we don't try to reparse it.
+    assert " = " in htac_text
+    assert "AssignExpCmd" in tac_text
+    assert "AssignExpCmd" not in htac_text

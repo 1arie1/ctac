@@ -213,7 +213,15 @@ def dataflow_cmd(
     ),
     output_path: Annotated[
         Optional[Path],
-        typer.Option("-o", "--output", help="Write transformed output to this path."),
+        typer.Option(
+            "-o",
+            "--output",
+            help=(
+                "Write transformed output to this path. .tac = "
+                "round-trippable TAC; .htac = pretty-printed. ``--style`` "
+                "overrides the extension-derived choice."
+            ),
+        ),
     ] = None,
     output_style: Annotated[
         Optional[str],
@@ -421,7 +429,11 @@ def dataflow_cmd(
             param_hint="-o/--style",
         )
     if output_path is not None and style is None:
-        style = "raw"
+        # Default style follows the project-wide convention: derive
+        # from the file extension. .htac → pretty-printed; anything
+        # else (typically .tac) → raw round-trippable. ``--style``
+        # explicitly given still wins.
+        style = "pp" if output_path.suffix.lower() == ".htac" else "raw"
     if output_path is None and style is not None and json_out:
         raise typer.BadParameter(
             "--style without -o is incompatible with --json output",

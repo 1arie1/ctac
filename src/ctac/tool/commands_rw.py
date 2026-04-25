@@ -7,11 +7,9 @@ import typer
 from rich.markup import escape
 
 from ctac.analysis import eliminate_dead_assignments
-from ctac.ast.pretty import configured_printer
-from ctac.ast.run_format import pp_terminator_line
-from ctac.graph import Cfg
 from ctac.ir.models import TacProgram
-from ctac.parse import ParseError, parse_path, render_tac_file
+from ctac.parse import ParseError, parse_path
+from ctac.tool.tac_output import render_pp_lines, write_program_to_path
 from collections import Counter
 
 from ctac.rewrite import rewrite_program
@@ -35,35 +33,6 @@ from ctac.tool.cli_runtime import (
     plain_requested,
 )
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
-
-
-def _render_pp_lines(program: TacProgram) -> list[str]:
-    pp = configured_printer("human", strip_var_suffixes=True, human_patterns=True)
-    out: list[str] = []
-    for b in Cfg(program).ordered_blocks():
-        out.append(f"{b.id}:")
-        for cmd in b.commands:
-            line = pp.print_cmd(cmd)
-            if line is not None and line != "":
-                out.append(f"  {line}")
-        term = pp_terminator_line(b, strip_var_suffixes=True)
-        if term is not None:
-            out.append(f"  {term}")
-        elif b.successors:
-            out.append(f"  goto {', '.join(b.successors)}")
-        else:
-            out.append("  stop")
-        out.append("")
-    return out
-
-
-def _output_kind(out: Path | None) -> str:
-    if out is None:
-        return "pp-stdout"
-    suffix = out.suffix.lower()
-    if suffix == ".htac":
-        return "pp"
-    return "tac"
 
 
 def _print_report(
@@ -316,8 +285,6 @@ def rewrite_cmd(
     final_program = program
     after_count = _command_count(final_program)
 
-    kind = _output_kind(output_path)
-
     if report:
         _print_report(
             c,
@@ -328,21 +295,16 @@ def rewrite_cmd(
             total_cmds_after=after_count,
         )
 
-    if kind == "tac":
-        assert output_path is not None
-        text = render_tac_file(tac, program=final_program, extra_symbols=rw.extra_symbols)
-        output_path.write_text(text, encoding="utf-8")
+    if output_path is not None:
+        write_program_to_path(
+            output_path=output_path,
+            tac=tac,
+            program=final_program,
+            extra_symbols=rw.extra_symbols,
+        )
         if not report:
             c.print(f"# wrote {output_path}", markup=False)
         return
 
-    lines = _render_pp_lines(final_program)
-    if kind == "pp":
-        assert output_path is not None
-        output_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-        if not report:
-            c.print(f"# wrote {output_path}", markup=False)
-        return
-
-    for ln in lines:
+    for ln in render_pp_lines(final_program):
         c.print(ln, markup=False)
