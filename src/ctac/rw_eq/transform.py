@@ -675,19 +675,17 @@ def _walk_block(
         #
         # The rwriter is allowed to drop an orig assume only if the
         # assume was *useless* — implied by the rest of the merged
-        # state. Emit a CHK that asserts ``L.cond`` is implied at this
-        # point (catches a future rule that drops a load-bearing
-        # assume), and ALSO emit ``assume L.cond`` so downstream
-        # equivalence checks (rule 2 / 5a / 5b) stay scoped to orig's
-        # reachable domain. Without the assume, a downstream rule-2
-        # check could fail on states where ``L.cond`` doesn't hold —
-        # states that orig wouldn't reach but the merged program would
-        # without the scoping — producing a false positive about a
-        # rwriter that's actually sound on orig's domain.
+        # state. Emit a CHK that asserts ``L.cond`` holds at this
+        # point. No ``assume L.cond`` afterward: a successful assert
+        # is automatically an assume for downstream reasoning (the
+        # ``ua --strategy split`` step converts every non-selected
+        # assert to an assume in each per-split file, so other split
+        # queries see ``CHK = L.cond; assume CHK`` and treat L.cond as
+        # a known fact). Adding a literal ``assume L.cond`` would just
+        # restate the same constraint.
         #
-        # Symmetric to rule 4 in the assert-the-orphan-condition sense
-        # (both emit CHK + assert), and to rule 5a in the
-        # preserve-path-scope sense (both ``assume L.cond`` afterward).
+        # Symmetric to rule 4 in shape: both unpaired assumes turn
+        # into ``CHK = cond; assert CHK``.
         if isinstance(L, AssumeExpCmd):
             output.extend(
                 _emit_eq_assert_for_assume(
@@ -698,7 +696,6 @@ def _walk_block(
                     kind="lhs-only-assume",
                 )
             )
-            output.append(L)
             li += 1
             state.hit("4b_lhs_assume")
             continue
