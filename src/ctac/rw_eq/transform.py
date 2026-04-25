@@ -44,6 +44,9 @@ Rule 6 — rehavoc window (R4A pattern)
 Triggered when ``L: X = e`` and ``R: havoc X`` with the same X (the
 rwriter's R4A "div purification": replace ``X = e`` with ``havoc X;
 assume bounds``). The walker mints a fresh shadow ``X__rw_eq<n>``,
+emits ``havoc X__rw_eq<n>`` so the shadow has a def site (downstream
+encoders treat it as a free SMT const, but the merged TAC is also
+structurally valid under ``ctac df --show use-before-def``),
 substitutes ``X → X_new`` in each rhs assume the window admits, and
 closes on the next non-assume rhs command by emitting:
 
@@ -897,6 +900,19 @@ def _consume_rehavoc_window(
             var_name=lhs.lhs,
             shadow_name=shadow,
         )
+    )
+    # Havoc the shadow before any of its uses: the substituted assumes
+    # below reference shadow, and the closing CHK does too. Without an
+    # explicit AssignHavocCmd, shadow has no def site — the symbol
+    # table declares it but no command assigns it. sea_vc happens to
+    # encode it as a free SMT const (so the ASSUMES still constrain
+    # it functionally), but the merged TAC is structurally invalid:
+    # `ctac df --show use-before-def` flags every reference, and a
+    # future encoder that requires a def for every use would reject
+    # the program. Emit `havoc shadow` so the merged TAC is well-
+    # formed independent of any encoder's tolerance.
+    output.append(
+        canonicalize_cmd(AssignHavocCmd(raw="", lhs=shadow))
     )
     mapping = {lhs.lhs: shadow}
 
