@@ -537,7 +537,15 @@ def _walk_block(
             continue
 
         # Rule 1: identical command on both sides.
-        if _cmd_equiv(L, R):
+        # AssertCmds are excluded — they must always go through rule
+        # 5b so the orig's predicate gets emitted as an `assume` in
+        # the merged program (the only AssertCmds in the merged
+        # program should be rw-eq's own equivalence checks). Without
+        # the AssertCmd exclusion, identical orig asserts pass through
+        # verbatim and downstream tools (ua --strategy split) treat
+        # them as assertion sites — leaking the orig's correctness
+        # question into the rwriter-soundness verification.
+        if _cmd_equiv(L, R) and not isinstance(L, AssertCmd):
             output.append(L)
             li += 1
             ri += 1
