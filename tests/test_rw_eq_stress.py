@@ -185,3 +185,83 @@ def _build_smt_for(tac_file_path: Path) -> str:
     tf = _parse(tac_file_path)
     script = build_vc(tf)
     return render_smt_script(script)
+
+
+# R6 needs a restricted pipeline: the default pipeline's bool / Ite
+# simplification rules pre-empt the chain pattern (rewriting X1 into a
+# bool temporary), preventing R6 from matching. The existing R6 unit
+# test in test_rewrite_ceildiv.py uses (N1, N2, N3, N4, R6) for this
+# reason. We do the same here so the rule actually fires and rw-eq
+# stresses *its* soundness rather than the surrounding rules'.
+
+
+@pytest.mark.skipif(not _z3_available(), reason="z3 not on PATH")
+def test_r6_stress_with_restricted_pipeline(tmp_path: Path) -> None:
+    """R6 (ceildiv chain collapse) stress-tested via the bit-op-only
+    pipeline that lets the rule actually fire. Exercises rw-eq's rule
+    6 (rehavoc window) on a non-trivial multi-assume admission — R6
+    is the most algebraically intricate rewrite the rewriter does
+    today, and the one with the largest soundness surface."""
+    from ctac.rewrite.rules import (
+        N1_SHIFTED_BWAND,
+        N2_LOW_MASK,
+        N3_HIGH_MASK,
+        N4_SHR_CONST,
+        R6_CEILDIV,
+    )
+
+    fixture = _FIXTURES_DIR / "R6" / "ceildiv_chain.tac"
+    orig_tac = parse_path(fixture)
+    rw = rewrite_program(
+        orig_tac.program,
+        (N1_SHIFTED_BWAND, N2_LOW_MASK, N3_HIGH_MASK, N4_SHR_CONST, R6_CEILDIV),
+    )
+    # Confirm R6 actually fired — otherwise this test isn't doing what
+    # it claims and the failure mode (rule didn't match) needs a
+    # diagnostic, not a silent pass.
+    assert rw.hits_by_rule.get("R6", 0) >= 1, (
+        f"R6 didn't fire on the chain fixture: rule_hits={rw.hits_by_rule}"
+    )
+
+    eq = emit_equivalence_program(orig_tac.program, rw.program)
+    # Rule 6 (rehavoc) should have been admitted at least once.
+    assert eq.rehavoc_sites, (
+        "rule 6 (rehavoc window) didn't fire — R6's rewrite is the "
+        "canonical rehavoc, so this is unexpected."
+    )
+
+    split = split_asserts(eq.program)
+    from ctac.ast.nodes import AssertCmd
+    from ctac.parse import render_tac_file
+
+    rw_eq_assert_count = 0
+    for out in split.outputs:
+        msg = out.message or ""
+        if not msg.startswith("rw-eq:"):
+            continue
+        rw_eq_assert_count += 1
+        out_path = tmp_path / f"r6_split_{out.index:02d}.tac"
+        text = render_tac_file(orig_tac, program=out.program)
+        out_path.write_text(text, encoding="utf-8")
+        smt_text = _build_smt_for(out_path)
+        result = subprocess.run(
+            ["z3", "-smt2", "-T:30", "-in"],
+            input=smt_text,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        verdict = result.stdout.strip().splitlines()[0] if result.stdout else ""
+        # Sanity that we exercise an AssertCmd in the split.
+        assert any(
+            isinstance(c, AssertCmd) for b in out.program.blocks for c in b.commands
+        ), "no AssertCmd in split output"
+        assert verdict == "unsat", (
+            f"R6 stress: split assert {out.index} ({msg!r}) returned "
+            f"{verdict!r} (expected unsat). z3 stdout: {result.stdout!r}"
+        )
+
+    assert rw_eq_assert_count >= 1, (
+        "no rw-eq assertions were emitted by the merged program — "
+        "rule 6 should have produced at least the rehavoc-close eq check."
+    )
