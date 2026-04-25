@@ -50,20 +50,42 @@ from ctac.rewrite.rules.ite import (
     SUB_ITE_DIST_RIGHT,
 )
 
-# Rules that run *before* R4a (div purification). They handle bit-op
-# canonicalization, the ceiling-div idiom, constant-divisor div simplification,
-# and general boolean/Ite cleanup. Running R6 here (before R4a) ensures the
-# ceiling chain collapses before R4a clobbers its inner IntDiv.
-simplify_pipeline: tuple[Rule, ...] = (
+# Phase 1 — chain recognition.
+#
+# Multi-command idioms (currently just R6's ceiling-division chain)
+# need to be recognized BEFORE distribution rules can rewrite their
+# constituent expressions. The rewrite driver does bottom-up
+# traversal: at each iteration it visits subexpressions before parents.
+# If a distribution rule (e.g. SUB_ITE_DIST_RIGHT) is in the same
+# pipeline, it can fire on a sub-expression of the chain (rewriting
+# `Sub(R_high, Ite(c, 1, 0))` into `Ite(c, Sub(R_high, 1), R_high)`)
+# at a position deeper in the AST than where R6 would match — so by
+# the time R6 looks at the chain's outer node, the chain has already
+# been distorted past its recognizer's pattern.
+#
+# Splitting R6 + the bit-op canonicalizers it depends on into a
+# dedicated phase guarantees they see the unmolested input.
+chain_recognition_pipeline: tuple[Rule, ...] = (
     # Bit-op canonicalization: produce Mod / Div / Mul(Div(..), 2^k) so
     # downstream matchers see canonical forms.
     N2_LOW_MASK,
     N3_HIGH_MASK,
     N4_SHR_CONST,
     N1_SHIFTED_BWAND,
-    # R6 before fine div rules so the ceiling-div chain collapses before
-    # R3 / R4 pick at its pieces.
+    # Multi-command chain recognizers. Run here, before any rule that
+    # could rewrite chain interior expressions.
     R6_CEILDIV,
+)
+
+
+# Phase 2 — general simplification. Bit-op canonicalizers also live
+# here so any chains that emerged in phase 1's output keep getting
+# normalized within the fixed-point loop.
+simplify_pipeline: tuple[Rule, ...] = (
+    N2_LOW_MASK,
+    N3_HIGH_MASK,
+    N4_SHR_CONST,
+    N1_SHIFTED_BWAND,
     # Existing const-divisor div rules + bitfield strip.
     R2_DIV_FUSE,
     R3_DIV_MUL_CANCEL,
@@ -109,9 +131,10 @@ simplify_pipeline: tuple[Rule, ...] = (
     CP_ALIAS,
 )
 
-# Full pipeline: simplification first, then purification. The CLI drives
-# these as two phases so that R6 and the peephole div rules get their chance
-# before R4a replaces any `Div` with a fresh symbol.
+# Full pipeline: chain recognition + simplification + purification. The
+# CLI drives these as separate phases so chain recognizers see the
+# unmolested input, distribution rules don't pre-empt R6, and R4a's
+# Div-replacement happens last.
 purify_pipeline: tuple[Rule, ...] = simplify_pipeline + (R4A_DIV_PURIFY,)
 
 default_pipeline: tuple[Rule, ...] = purify_pipeline

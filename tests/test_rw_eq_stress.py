@@ -28,7 +28,8 @@ import pytest
 
 from ctac.parse import parse_path
 from ctac.rewrite import rewrite_program
-from ctac.rewrite.rules import default_pipeline
+from ctac.rewrite.framework import RewriteResult
+from ctac.rewrite.rules import chain_recognition_pipeline, default_pipeline
 from ctac.rw_eq import emit_equivalence_program
 from ctac.ua import split_asserts
 
@@ -58,19 +59,75 @@ def fixtures() -> list[tuple[str, Path]]:
     return _all_fixtures()
 
 
-def _run_pipeline(fixture: Path) -> tuple[Path, list[Path]]:
-    """rw → rw-eq → ua-split. Returns (merged.tac, list of split assert files)."""
+def _run_default_two_phase(orig_program, symbol_sorts) -> RewriteResult:
+    """Drive ``ctac rw``'s actual two-phase pipeline: chain-recognition
+    first, then general simplification. Mirrors what the CLI does.
+    Without phase 0 the chain recognizers (currently just R6) miss
+    their patterns because distribution rules in phase 1 pre-empt
+    them via bottom-up traversal."""
+    phase0 = rewrite_program(
+        orig_program, chain_recognition_pipeline, symbol_sorts=symbol_sorts
+    )
+    phase1 = rewrite_program(
+        phase0.program, default_pipeline, symbol_sorts=symbol_sorts
+    )
+    # Merge hit counts so callers see firings from both phases.
+    from collections import Counter
+
+    merged_hits: Counter[str] = Counter(phase0.hits_by_rule)
+    merged_hits.update(phase1.hits_by_rule)
+    return RewriteResult(
+        program=phase1.program,
+        hits=phase0.hits + phase1.hits,
+        hits_by_rule=dict(merged_hits),
+        iterations=phase0.iterations + phase1.iterations,
+        extra_symbols=phase0.extra_symbols + phase1.extra_symbols,
+    )
+
+
+_DIR_TO_RULE_NAME: dict[str, str] = {
+    # Directory names follow the Python constant (e.g. CP_ALIAS); the
+    # rewriter's `Rule.name` attribute follows a different convention
+    # for some rules (e.g. "CP", "IteCondFold"). Map explicitly so the
+    # framework stays correct as either side gets renamed.
+    "CP_ALIAS": "CP",
+    "ITE_COND_FOLD": "IteCondFold",
+    "R4A": "R4a",
+}
+
+
+def _expected_rules_for(rule_dir_name: str) -> set[str]:
+    """Return the set of rule names that MUST fire on every fixture in
+    a rule directory under default-pipeline runs.
+
+    The directory name is the canonical rule slug; we expect that rule
+    (under its registered ``Rule.name``) to fire on its own fixtures,
+    with documented exceptions for cases where the fixture is a
+    NEGATIVE test (rule should NOT fire) — those fixtures use the
+    ``unsound_*`` or ``negative_*`` filename prefix convention.
+
+    This catches rule-interaction regressions: if a future rewrite
+    rule pre-empts the canonical rule's pattern, the runner reports
+    "rule X did not fire on its own fixture" loud and clear instead
+    of silently passing because the equivalence still happens to hold.
+    """
+    return {_DIR_TO_RULE_NAME.get(rule_dir_name, rule_dir_name)}
+
+
+def _is_negative_fixture(fixture: Path) -> bool:
+    """Fixtures that intentionally make the rule NOT fire (testing the
+    gate's rejection path) are named ``unsound_*`` or ``negative_*``."""
+    name = fixture.stem
+    return name.startswith("unsound_") or name.startswith("negative_")
+
+
+def _run_pipeline(fixture: Path) -> tuple:
+    """rw → rw-eq → ua-split. Returns (rw_result, equivalence_result, split_result)."""
     orig_tac = parse_path(fixture)
-
-    # Step 1: rewrite. Use full default pipeline (matches what ctac rw does).
-    rw = rewrite_program(orig_tac.program, default_pipeline)
-
-    # Step 2: rw-eq.
+    rw = _run_default_two_phase(orig_tac.program, orig_tac.symbol_sorts)
     eq = emit_equivalence_program(orig_tac.program, rw.program)
-
-    # Step 3: ua-split (in-process; we don't shell out for the test).
     split = split_asserts(eq.program)
-    return eq, split
+    return rw, eq, split
 
 
 def test_fixtures_directory_has_at_least_one_fixture():
@@ -88,8 +145,24 @@ def test_fixtures_directory_has_at_least_one_fixture():
 )
 def test_fixture_pipeline_structure(rule_name: str, fixture: Path) -> None:
     """Structural sanity: rewrite + rw-eq + split run without exceptions and
-    produce well-formed artefacts. Always runs; doesn't need z3."""
-    _, split = _run_pipeline(fixture)
+    produce well-formed artefacts. Always runs; doesn't need z3.
+
+    Also asserts that the canonical rule for the fixture's directory
+    actually fires under the default pipeline. This catches
+    rule-interaction regressions (e.g. a new distribution rule
+    pre-empting R6's chain pattern) loud and early."""
+    rw, _, split = _run_pipeline(fixture)
+    if not _is_negative_fixture(fixture):
+        expected = _expected_rules_for(rule_name)
+        fired = set(rw.hits_by_rule.keys())
+        missing = expected - fired
+        assert not missing, (
+            f"{rule_name}/{fixture.name}: expected rules {expected} to fire "
+            f"but {missing} did not. rule_hits={dict(rw.hits_by_rule)}. "
+            f"This indicates a rule-interaction regression — another rule "
+            f"may have pre-empted {missing}'s pattern under the default "
+            f"two-phase pipeline."
+        )
     # split is a SplitAssertsResult.
     # Every output's program should have at least one block (the
     # original assert site is preserved).
@@ -132,7 +205,7 @@ def test_fixture_rw_eq_assertions_discharge(
     manifest's ``message`` field to identify which split files are
     rw-eq checks.
     """
-    eq, split = _run_pipeline(fixture)
+    _, _, split = _run_pipeline(fixture)
 
     # Write split outputs to disk so ctac smt CLI can consume them.
     # (We could call build_vc directly, but the CLI integration is
@@ -150,8 +223,8 @@ def test_fixture_rw_eq_assertions_discharge(
             continue
 
         out_path = tmp_path / f"split_{out.index:02d}.tac"
-        # `eq` here is the merged TacProgram; we need a TacFile to
-        # render. Reuse the original TacFile envelope.
+        # Reuse the original TacFile envelope (symbol table, axioms)
+        # to render each per-assert program back to .tac text.
         orig_tac_file = parse_path(fixture)
         text = render_tac_file(orig_tac_file, program=out.program)
         out_path.write_text(text, encoding="utf-8")

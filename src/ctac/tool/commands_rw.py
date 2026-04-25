@@ -23,6 +23,7 @@ from ctac.rewrite.rules import (
     PURIFY_ASSERT,
     PURIFY_ASSUME,
     R4A_DIV_PURIFY,
+    chain_recognition_pipeline,
     simplify_pipeline,
 )
 from ctac.tool.cli_runtime import (
@@ -236,12 +237,24 @@ def rewrite_cmd(
         c.print(f"# input warning: {w}", markup=False)
 
     before_count = _command_count(tac.program)
-    # Phase 1: simplification (bit-ops, const-divisor div rules, R6, boolean/Ite).
-    # Phase 2 (optional): add R4a (div purification for non-constant divisors).
-    # Splitting ensures R6 and peephole rules get first crack at the ceiling
-    # chain before R4a replaces any `Div` with a fresh symbol.
-    phase1 = rewrite_program(
+    # Phase 0: chain recognition (R6's ceildiv idiom + bit-op
+    # canonicalization). Runs in isolation so distribution rules can't
+    # rewrite chain-interior expressions before R6 sees them. Without
+    # this, SUB_ITE_DIST_RIGHT etc. (in simplify_pipeline) fire on the
+    # chain's `Sub(R_high, Ite(...))` before R6 can match the outer
+    # IntAdd, silently disabling R6.
+    phase0 = rewrite_program(
         tac.program,
+        chain_recognition_pipeline,
+        max_iterations=max_iterations,
+        ite_max_depth=ite_max_depth,
+        symbol_sorts=tac.symbol_sorts,
+    )
+    # Phase 1: simplification (bit-ops, const-divisor div rules, boolean/Ite,
+    # distribution, range narrowing). Operates on phase 0's output.
+    # Phase 2 (optional): add R4a (div purification for non-constant divisors).
+    phase1 = rewrite_program(
+        phase0.program,
         simplify_pipeline,
         max_iterations=max_iterations,
         ite_max_depth=ite_max_depth,
@@ -255,9 +268,9 @@ def rewrite_cmd(
             ite_max_depth=ite_max_depth,
             symbol_sorts=tac.symbol_sorts,
         )
-        rw = _merge_phases(phase1, phase2)
+        rw = _merge_phases(phase0, phase1, phase2)
     else:
-        rw = phase1
+        rw = _merge_phases(phase0, phase1)
     # Iterate DCE to fixed point: a chain of dead defs needs multiple sweeps
     # because liveness is computed once per pass and each pass only removes
     # the directly-dead leaves.

@@ -37,9 +37,13 @@ def test_rw_report_counts_on_target():
     result = runner.invoke(app, ["rw", str(src), "--plain", "--report"])
     assert result.exit_code == 0, result.output
     assert "rule_hits:" in result.output
-    # N1 and R1 should both fire — the target has the shifted-BWAnd pattern with bounds.
+    # N1 fires — the target has the shifted-BWAnd pattern with bounds, and
+    # bit-op canonicalisation is the gateway for everything below.
     assert "N1:" in result.output
-    assert "R1:" in result.output
+    # R6 fires on the ceiling-div chain. Before the chain-recognition phase
+    # split, distribution rules pre-empted R6's match; pinning R6 here
+    # catches a regression of that interaction.
+    assert "R6:" in result.output
 
 
 def test_rw_tac_output_roundtrips(tmp_path):
@@ -77,7 +81,7 @@ def test_rw_no_purify_div_disables_r4a():
     assert "R4a:" not in disabled.output
     # Other rules still fire in both runs.
     assert "N1:" in disabled.output
-    assert "R1:" in disabled.output
+    assert "R6:" in disabled.output
 
 
 def test_rw_no_purify_ite_disables_tb_naming():
