@@ -1,9 +1,121 @@
-"""Lockstep walker that merges (orig, rw) into one equivalence-check
+"""Lockstep walker that merges ``(orig, rw)`` into one equivalence-check
 TAC program.
 
-See ``Plan: ctac rw-eq`` for the full rules table; the implementation
-below maps each rule to a branch in :func:`_walk_block`. Rule numbers
-in comments correspond to the table.
+The walker visits each (same-id) block of ``orig`` and ``rw`` in
+lockstep, advancing one or both sides per dispatched rule. It emits a
+single merged ``TacProgram`` whose only ``AssertCmd`` instances are
+rw-eq's own equivalence checks (``CHK<n> = ...; assert CHK<n>``); the
+orig program's own assertions are converted to assumes so downstream
+tools (``ua --strategy split`` + ``ctac smt``) verify rwriter
+soundness, not the orig's own correctness question.
+
+Rules table
+-----------
+
+Code-execution order (NOT rule-number order). The first matching
+branch wins; rule 10 is the abort sink.
+
+==  ===========================  =====================================  =======================================  ========
+#   Rule                         Trigger                                Emit                                     Advance
+==  ===========================  =====================================  =======================================  ========
+9   eos lhs                      ``R is None``                          L verbatim                               L
+8   eos rhs                      ``L is None``                          R verbatim                               R
+7   terminator                   both at JumpCmd / JumpiCmd             one terminator (after equiv check)       both
+6   rehavoc window               ``L: X = e``, ``R: havoc X``           shadow window (see §rule 6)              both*
+1   identical (non-assert)       ``cmd_equiv(L, R)`` and not Assert     L verbatim                               both
+2   same-lhs assignment          both AssignExp, ``L.lhs == R.lhs``     ``CHK = Eq(L.rhs, R.rhs); assert CHK; L``  both
+5a  paired assumes               both AssumeExp                         ``CHK = Eq(L.cond, R.cond); assert CHK;
+                                                                        assume L.cond [; assume R.cond if differ]``  both
+5b  paired asserts               both AssertCmd                         ``CHK = Eq(L.pred, R.pred); assert CHK;
+                                                                        assume L.pred [; assume R.pred if differ]``  both
+9b  lhs-only DCE                 L is AssignExp/Havoc, ``L.lhs ∉ rhs``  L verbatim                               L
+4   rhs-only assume              R is AssumeExp                         ``CHK = R.cond; assert CHK``             R
+4b  lhs-only assume              L is AssumeExp                         ``CHK = L.cond; assert CHK``             L
+3   rhs-only fresh assignment    R is AssignExp/Havoc, ``R.lhs ∉ lhs``  R verbatim                               R
+10  no-match abort               nothing matched                        rich diagnostic, raise                   —
+==  ===========================  =====================================  =======================================  ========
+
+* Rule 6 advances the lhs by 1 (past ``X = e``) and the rhs through
+  the entire window (havoc + admitted assumes + close).
+
+Rule 6 — rehavoc window (R4A pattern)
+-------------------------------------
+
+Triggered when ``L: X = e`` and ``R: havoc X`` with the same X (the
+rwriter's R4A "div purification": replace ``X = e`` with ``havoc X;
+assume bounds``). The walker mints a fresh shadow ``X__rw_eq<n>``,
+substitutes ``X → X_new`` in each rhs assume the window admits, and
+closes on the next non-assume rhs command by emitting:
+
+    assert (e == X_new); X = e
+
+So the post-window state has ``X`` bound to ``e`` (matching orig) and
+the shadow's bounds in scope.
+
+Caveat: the window admits the rwriter's post-havoc assumes without
+checking they're jointly satisfiable (``--check-feasibility`` inserts
+per-window probes; ``--strict`` aborts instead).
+
+Post-walk pass: hoist statics above dynamics
+--------------------------------------------
+
+After walking each block, :func:`_hoist_statics_above_dynamics`
+reorders any static AssignExpCmd (and its dependent AssertCmd, when
+the assert references the assignment's lhs) that landed *after* a
+dynamic-classified (parallel-phi merge) assignment to the static
+prologue. DSA shape requires ``(static)*(dynamic)*terminator``: rule
+2 firing on a phi-merge assignment would otherwise place the static
+CHK after a dynamic and break sea_vc's DSA precondition.
+
+Mirrors SSA's "insert after phi nodes" applied to TAC's
+parallel-assignment shape (where phi-likes live at end of block).
+
+Assumptions and caveats
+-----------------------
+
+1. **Block topology matches**: ``orig`` and ``rw`` must have the same
+   set of block ids and the same successor list per block. Rule 6
+   introduces shadow vars only in the entry block; it does not touch
+   block topology.
+
+2. **Single namespace**: variable names are preserved across orig and
+   rw — the rwriter renames nothing. Rule 6 mints fresh
+   ``X__rw_eq<n>`` shadow vars; that's the only walker-introduced
+   namespace addition. Rules 3 / 4 / 5 / 6 also mint fresh ``CHK<n>``
+   bools for equivalence checks.
+
+3. **Asserts → assumes**: the orig's AssertCmds are converted to
+   assumes by rule 5b (paired) so the merged program doesn't carry
+   the orig's own correctness question. Rule 1 explicitly excludes
+   AssertCmds from its "identical → emit verbatim" path so this
+   conversion happens for identical asserts too.
+
+4. **A successful assert is automatically an assume downstream**:
+   rules 4 and 4b emit ``CHK = cond; assert CHK`` with no following
+   ``assume cond``. ``ua --strategy split`` converts non-selected
+   asserts to assumes in each per-split file, so other split queries
+   see ``assume CHK`` ⇒ ``cond`` true. Rules 5a / 5b *do* emit
+   explicit ``assume L.cond`` because their CHK captures the
+   *equivalence* of two conditions, not either condition's truth.
+
+5. **Rule 4b assumes the rwriter is allowed to drop only useless
+   assumes**: dropping an orig assume is sound iff the assume is
+   implied by the rest of the merged state. Rule 4b's CHK catches a
+   dropped load-bearing assume. False positives are possible if the
+   rwriter is sound on orig's domain but its computation differs on
+   orig-unreachable states; no current rule triggers that pattern.
+
+6. **Hoist post-pass assumes CHKs reference only static / cross-block
+   symbols**: a CHK whose RHS references a same-block dynamic symbol
+   would be moved before that symbol's definition, breaking data
+   flow. No current emission rule produces such a CHK; if one is
+   added, the hoist needs a free-var safety check.
+
+7. **Dynamic-symbol classification comes from orig's DSA**: orig and
+   rw share block structure (rule 6 adds shadow vars only to the
+   entry block, not in the body), so orig's classification suffices.
+   A future rwriter rule that adds *body* commands asymmetrically
+   would need this revisited.
 """
 
 from __future__ import annotations
@@ -770,11 +882,11 @@ def _consume_rehavoc_window(
     """Process the rhs's rehavoc window starting just past the
     ``havoc X``. Returns the new ``ri`` after the window closes.
 
-    See the plan's "Rule 6 — rehavoc window" for the contract; in v1
-    the window admits consecutive AssumeExpCmds (with X→X_new
-    substitution) and closes on the next non-assume command (or
-    exhaustion). Anything that doesn't fit aborts via
-    EquivContractError.
+    See the module docstring's "Rule 6" section for the contract.
+    The window admits consecutive AssumeExpCmds (with ``X → X_new``
+    substitution in each condition) and closes on the next non-assume
+    command (or exhaustion). Anything that doesn't fit aborts via
+    :class:`EquivContractError`.
     """
     sort = _guess_sort(lhs.lhs)
     shadow = state.fresh_shadow(lhs.lhs, sort)

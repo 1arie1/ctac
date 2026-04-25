@@ -356,6 +356,72 @@ counterexample (bug). `unknown` means escalate (tactics, Lean).
 Currently covers R4, R4a, R6 (9 cases); other rules are listed under
 `manifest.json`:`missing`.
 """,
+    "rw-eq": """ctac rw-eq --agent
+
+End-to-end equivalence check between an orig TAC and its `ctac rw`
+output. Emits one merged TAC where every site at which orig and rw
+differ becomes an `assert (CHK<n>)`. Hand off the merged file to
+`ua --strategy split` + `ctac smt --run`; every emitted assert
+should discharge `unsat`. A `sat` is a real soundness bug in the
+rwriter (rw-eq found one in CSE — alias source's def-block didn't
+dominate the use site).
+
+WHY BEAT MANUAL: hand-checking that `ctac rw`'s output preserves the
+orig's semantics on a real-world TAC is impractical. rw-valid covers
+per-rule soundness in isolation; rw-eq covers a specific (orig, rw)
+pair — catches rule-interaction bugs that per-rule specs miss.
+
+TYPICAL:
+  ctac rw orig.tac -o rw.tac --plain
+  ctac rw-eq orig.tac rw.tac -o eq.tac --plain --report
+  ctac ua eq.tac --strategy split -o split --plain
+  for f in split/*.tac; do ctac smt "$f" --plain --run --timeout 30; done
+  # expect every line to be `unsat`. `sat` = soundness bug.
+
+INPUTS CONTRACT: orig and rw must share block ids and successor
+lists per block. Variable names are preserved; only rule 6 (rehavoc,
+R4A pattern) mints fresh `X__rw_eq<n>` shadow vars.
+
+WALKER RULES (code-execution order; first match wins):
+  9   eos lhs                  R is None                       emit L,        advance L
+  8   eos rhs                  L is None                       emit R,        advance R
+  7   terminator               both at Jump/Jumpi (paired)     emit one,      advance both
+  6   rehavoc window           L: X=e, R: havoc X              shadow window, advance both
+  1   identical (non-assert)   cmd_equiv(L, R) and not Assert  emit L,        advance both
+  2   same-lhs assignment      both AssignExp, same lhs        CHK + assert + L,                advance both
+  5a  paired assumes           both AssumeExp                  CHK + assert + assume L [+ R],   advance both
+  5b  paired asserts           both AssertCmd                  CHK + assert + assume L [+ R],   advance both
+  9b  lhs-only DCE             L is AssignExp, L.lhs ∉ rhs     emit L,        advance L
+  4   rhs-only assume          R is AssumeExp                  CHK + assert,  advance R
+  4b  lhs-only assume          L is AssumeExp                  CHK + assert,  advance L
+  3   rhs-only fresh assign    R is AssignExp, R.lhs ∉ lhs     emit R,        advance R
+  10  no-match abort           nothing matched                 raise
+
+The merged program is post-processed per-block to hoist any static
+CHK assignment that landed after a dynamic (parallel-phi) assignment
+into the static prologue — DSA shape requires
+`(static)*(dynamic)*terminator`.
+
+SOUNDNESS NOTES:
+- Rule 6 admits the rwriter's post-havoc assumes without a joint
+  satisfiability check. Pass `--check-feasibility` to insert per-
+  window probes; pass `--strict` to abort instead.
+- Rule 4b assumes the rwriter is allowed to drop only useless
+  assumes (implied by other constraints). The CHK catches a future
+  rule that drops a load-bearing assume.
+- A successful assert is automatically an assume downstream (the
+  split step converts non-selected asserts to assumes), so rules 4
+  and 4b emit no explicit assume after their CHK.
+
+FLAGS:
+  --strict                abort on rule-6 trigger (exit 2)
+  --check-feasibility     insert per-rehavoc-window `assert false` probes
+  --report                print rule-hit counts + rehavoc sites
+  -o PATH, --output PATH  write merged TAC here
+
+WALKER SOURCE: src/ctac/rw_eq/transform.py — module docstring is
+authoritative; this guide is a summary.
+""",
     "run": """ctac run --agent
 
 Concrete TAC interpreter. Executes deterministically, optionally
