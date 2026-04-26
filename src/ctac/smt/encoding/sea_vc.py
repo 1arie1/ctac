@@ -190,8 +190,22 @@ def _xor_axiom_define_fun() -> str:
     )
 
 
+def _int_ceil_div_axiom_define_fun() -> str:
+    # Partial axiom for ceiling division of integers: defined when the
+    # divisor is positive. Outside ``b > 0`` the function is left totally
+    # free (z3 can pick any value) — same totalization style as
+    # bv256_xor's "outside {0,1}^2 it's free".
+    return (
+        "(define-fun int_ceil_div_axiom ((a Int) (b Int)) Bool "
+        "(=> (> b 0) "
+        "(and (>= (* b (int_ceil_div a b)) a) "
+        "(< (* b (int_ceil_div a b)) (+ a b)))))"
+    )
+
+
 _UF_AXIOM_DEFINE_BY_UF: dict[str, tuple[str, Callable[[], str]]] = {
     "bv256_xor": ("bv256_xor_axiom", _xor_axiom_define_fun),
+    "int_ceil_div": ("int_ceil_div_axiom", _int_ceil_div_axiom_define_fun),
 }
 
 
@@ -607,6 +621,18 @@ class SeaVcEncoder(SmtEncoder):
                         "IntMod": "mod",
                     }[op]
                     return f"({smt} {a1} {a2})", "Int"
+                if op == "IntCeilDiv":
+                    # Ceiling division — total UF axiomatized partially
+                    # for ``b > 0`` via ``int_ceil_div_axiom``. Per-app
+                    # axiom instantiation happens at finalize time.
+                    if len(expr.args) != 2:
+                        raise SmtEncodingError("IntCeilDiv expects two args")
+                    a1, _ = emit_expr(expr.args[0], expected_sort="Int")
+                    a2, _ = emit_expr(expr.args[1], expected_sort="Int")
+                    uf = "int_ceil_div"
+                    uf_decl_lines.add(f"(declare-fun {uf} (Int Int) Int)")
+                    uf_apps[uf].add((a1, a2))
+                    return f"({uf} {a1} {a2})", "Int"
                 if op in {"Shl", "BvShl", "BVShl", "LShift", "ShiftLeft"}:
                     if len(expr.args) != 2:
                         raise SmtEncodingError(f"{op} expects two args")

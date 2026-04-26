@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
+
+import pytest
+
 from ctac.parse import parse_string
 from ctac.smt import build_vc, render_smt_script
+
+
+def _z3_available() -> bool:
+    return shutil.which("z3") is not None
 
 TAC_SEA = """TACSymbolTable {
 \tUserDefined {
@@ -484,5 +493,114 @@ def test_sea_vc_simplifies_dynamic_bool_ite_leafs() -> None:
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
     # was: (ite BLK_left false true)
     assert "(assert (= b (not BLK_left)))" in rendered
+
+
+# ---------------------------------------------------------------------------
+# IntCeilDiv concept: UF + partial axiom (gated on b > 0). Mirrors the
+# bv256_xor axiom infrastructure.
+
+TAC_INT_CEIL_DIV = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\ta:bv256
+\tb:bv256
+\tx:bv256
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd a
+\t\tAssignHavocCmd b
+\t\tAssumeExpCmd Gt(b 0x0)
+\t\tAssignExpCmd x IntCeilDiv(a b)
+\t\tAssignExpCmd ok Ge(IntMul(b x) a)
+\t\tAssertCmd ok "ceil-div lower bound"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_sea_vc_int_ceil_div_emits_uf_and_axiom() -> None:
+    """IntCeilDiv lowers to a UF call ``(int_ceil_div a b)``; sea_vc
+    declares the UF, emits the partial axiom's ``define-fun`` once, and
+    asserts the axiom for each unique application — same shape as the
+    existing bv256_xor handling."""
+    tac = parse_string(TAC_INT_CEIL_DIV, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    assert "(declare-fun int_ceil_div (Int Int) Int)" in rendered
+    assert "Axiom Instantiations" in rendered
+    assert "(define-fun int_ceil_div_axiom ((a Int) (b Int)) Bool" in rendered
+    assert "; instantiate int_ceil_div_axiom for each int_ceil_div application" in rendered
+    # The application itself appears as a UF call wrapping the operands.
+    assert "(int_ceil_div a b)" in rendered
+    # And the per-application axiom is asserted exactly once for (a, b).
+    assert "(assert (int_ceil_div_axiom a b))" in rendered
+
+
+# Discharge VC for a property the axiom should make universally true.
+# sea_vc encodes "SAT iff assertion-fail is reachable", so we assert
+# ``b*x >= a`` (always true under ``b > 0`` thanks to the axiom) and
+# expect ``unsat`` (no state can violate the assertion). If the axiom
+# weren't being emitted / weren't being used, z3 could pick any free
+# value for the UF and return ``sat`` for the negation.
+TAC_INT_CEIL_DIV_DISCHARGE = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\ta:bv256
+\tb:bv256
+\tx:bv256
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd a
+\t\tAssignHavocCmd b
+\t\tAssumeExpCmd Gt(b 0x0)
+\t\tAssignExpCmd x IntCeilDiv(a b)
+\t\tAssignExpCmd ok Ge(IntMul(b x) a)
+\t\tAssertCmd ok "ceil-div lower bound: b*x >= a holds under b > 0"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+@pytest.mark.skipif(not _z3_available(), reason="z3 not on PATH")
+def test_sea_vc_int_ceil_div_axiom_discharges_via_z3() -> None:
+    """Z3 actually uses the IntCeilDiv axiom: assert the axiom's lower
+    bound ``b*x >= a`` and expect ``unsat`` (the assertion can never
+    fail). Without the axiom, the UF is free and z3 would pick a value
+    violating the bound."""
+    tac = parse_string(TAC_INT_CEIL_DIV_DISCHARGE, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=rendered,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    verdict = proc.stdout.strip().splitlines()[0] if proc.stdout else ""
+    assert verdict == "unsat", (
+        f"expected unsat, got {verdict!r}; z3 stdout: {proc.stdout!r}, "
+        f"stderr: {proc.stderr!r}"
+    )
 
 
