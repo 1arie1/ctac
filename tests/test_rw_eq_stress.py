@@ -342,3 +342,105 @@ def test_r6_stress_with_restricted_pipeline(tmp_path: Path) -> None:
         "no rw-eq assertions were emitted by the merged program — "
         "rule 6 should have produced at least the rehavoc-close eq check."
     )
+
+
+@pytest.mark.skipif(not _z3_available(), reason="z3 not on PATH")
+def test_r6_stress_with_int_ceil_div(tmp_path: Path) -> None:
+    """R6 in the new ``IntCeilDiv``-emitting mode stress-tested via
+    rw-eq end-to-end. With ``use_int_ceil_div=True`` (default in this
+    test):
+
+    - The rewriter emits ``Apply(safe_math_narrow_bv256:bif
+      IntCeilDiv(R_num, R_den))`` for the chain-final assignment.
+    - The rw-eq walker sees no rule-6 (rehavoc) trigger — the rw side
+      has an ordinary AssignExpCmd, not ``havoc X`` — so
+      ``eq.rehavoc_sites`` is empty.
+    - Every emitted equivalence assertion must discharge ``unsat``
+      under z3, confirming the IntCeilDiv axiom plus the orig
+      program's existing range assumes are sufficient. No
+      rewriter-injected helper assumes are emitted on this path.
+    """
+    from ctac.ast.nodes import ApplyExpr, AssertCmd, AssignExpCmd, SymbolRef
+    from ctac.parse import render_tac_file
+    from ctac.rewrite.rules import (
+        N1_SHIFTED_BWAND,
+        N2_LOW_MASK,
+        N3_HIGH_MASK,
+        N4_SHR_CONST,
+        R6_CEILDIV,
+    )
+
+    fixture = _FIXTURES_DIR / "R6" / "ceildiv_chain.tac"
+    orig_tac = parse_path(fixture)
+    rw = rewrite_program(
+        orig_tac.program,
+        (N1_SHIFTED_BWAND, N2_LOW_MASK, N3_HIGH_MASK, N4_SHR_CONST, R6_CEILDIV),
+        use_int_ceil_div=True,
+    )
+    assert rw.hits_by_rule.get("R6", 0) >= 1, (
+        f"R6 didn't fire on the chain fixture: rule_hits={rw.hits_by_rule}"
+    )
+
+    # The new path emits an IntCeilDiv ApplyExpr somewhere in the rw program.
+    def _has_int_ceil_div(e):
+        if isinstance(e, ApplyExpr):
+            if e.op == "IntCeilDiv":
+                return True
+            return any(_has_int_ceil_div(a) for a in e.args)
+        return False
+
+    found = False
+    for b in rw.program.blocks:
+        for c in b.commands:
+            if isinstance(c, AssignExpCmd) and _has_int_ceil_div(c.rhs):
+                found = True
+                break
+        if found:
+            break
+    assert found, "expected IntCeilDiv in rw output but didn't find it"
+
+    eq = emit_equivalence_program(orig_tac.program, rw.program)
+    # The new path triggers no rule-6 rehavoc window (the rw side has
+    # an ordinary assignment, not ``havoc R_ceil``).
+    assert eq.rehavoc_sites == (), (
+        f"unexpected rehavoc sites under the new IntCeilDiv path: "
+        f"{eq.rehavoc_sites}"
+    )
+
+    split = split_asserts(eq.program)
+    rw_eq_assert_count = 0
+    for out in split.outputs:
+        msg = out.message or ""
+        if not msg.startswith("rw-eq:"):
+            continue
+        rw_eq_assert_count += 1
+        out_path = tmp_path / f"r6_intceildiv_split_{out.index:02d}.tac"
+        text = render_tac_file(orig_tac, program=out.program)
+        out_path.write_text(text, encoding="utf-8")
+        smt_text = _build_smt_for(out_path)
+        result = subprocess.run(
+            ["z3", "-smt2", "-T:30", "-in"],
+            input=smt_text,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        verdict = result.stdout.strip().splitlines()[0] if result.stdout else ""
+        # Sanity that we exercise an AssertCmd in the split.
+        assert any(
+            isinstance(c, AssertCmd) for b in out.program.blocks for c in b.commands
+        ), "no AssertCmd in split output"
+        assert verdict == "unsat", (
+            f"R6 IntCeilDiv stress: split assert {out.index} ({msg!r}) "
+            f"returned {verdict!r} (expected unsat). z3 stdout: "
+            f"{result.stdout!r}"
+        )
+
+    assert rw_eq_assert_count >= 1, (
+        "no rw-eq assertions were emitted by the merged program — "
+        "the rule-2 step that rewrites R_ceil's RHS should have produced "
+        "at least one equivalence check."
+    )
+
+    # Suppress unused-import lint hints.
+    _ = SymbolRef
