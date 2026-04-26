@@ -17,7 +17,7 @@ from ctac.analysis import remove_true_asserts
 from ctac.ast.nodes import AssertCmd
 from ctac.ir.models import TacProgram
 from ctac.parse import ParseError, parse_path, render_tac_file
-from ctac.tool.tac_output import write_program_to_path
+from ctac.tool.tac_output import filter_live_extra_symbols, write_program_to_path
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.rules import PURIFY_ASSERT
 from ctac.tool.cli_runtime import (
@@ -239,11 +239,12 @@ def _run_merge(
             )
         return
 
+    live_extra = filter_live_extra_symbols(extra_symbols, result.program)
     write_program_to_path(
         output_path=output_path,
         tac=tac,
         program=result.program,
-        extra_symbols=extra_symbols,
+        extra_symbols=live_extra,
     )
     if not report:
         c.print(f"# wrote {output_path}", markup=False)
@@ -285,7 +286,8 @@ def _run_split(
     manifest_outputs: list[dict] = []
     for out in result.outputs:
         filename = f"assert_{out.index:0{pad}d}.tac"
-        text = render_tac_file(tac, program=out.program, extra_symbols=extra_symbols)
+        live_extra = filter_live_extra_symbols(extra_symbols, out.program)
+        text = render_tac_file(tac, program=out.program, extra_symbols=live_extra)
         (output_path / filename).write_text(text, encoding="utf-8")
         outputs_written += 1
         manifest_outputs.append(

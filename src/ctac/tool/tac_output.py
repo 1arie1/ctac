@@ -20,11 +20,46 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
+from ctac.analysis import extract_def_use
 from ctac.ast.pretty import configured_printer
 from ctac.ast.run_format import pp_terminator_line
 from ctac.graph import Cfg
 from ctac.ir.models import TacProgram
 from ctac.parse import render_tac_file
+
+
+def filter_live_extra_symbols(
+    extra_symbols: "tuple[tuple[str, str], ...]",
+    program: TacProgram,
+) -> "tuple[tuple[str, str], ...]":
+    """Drop entries from ``extra_symbols`` whose name doesn't appear
+    anywhere in ``program``'s def-use.
+
+    Background: rewriter rules (CSE, R4a, R6, ITE_PURIFY, PURIFY_*)
+    queue fresh-variable declarations into ``RewriteResult.extra_symbols``
+    each time they emit a new symbol. ``extra_symbols`` is append-only;
+    when a downstream pass (DCE, copy-prop) removes the corresponding
+    ``AssignExpCmd``, the symbol-table declaration sticks around as
+    an orphan. This helper prunes those.
+
+    Liveness here is "appears in def-use", which covers:
+
+    - **Strong uses**: any ``SymbolRef`` reading the name in a command's
+      RHS / condition / predicate.
+    - **Defs**: ``AssignExpCmd`` / ``AssignHavocCmd`` lhs.
+    - **Weak uses**: annotation references (``AnnotationCmd.weak_refs``).
+      Symbols mentioned only in annotations have no behavioral role in
+      the program but their declarations are kept here for traceability
+      — debug-info annotations would otherwise become dangling.
+
+    Used as a final-pass filter at the boundary between
+    ``RewriteResult`` and ``render_tac_file``.
+    """
+    if not extra_symbols:
+        return ()
+    du = extract_def_use(program)
+    live = set(du.symbol_to_id)
+    return tuple((name, sort) for (name, sort) in extra_symbols if name in live)
 
 
 def output_kind_for_path(path: Path) -> Literal["tac", "pp"]:
@@ -92,6 +127,7 @@ def write_program_to_path(
 
 
 __all__ = [
+    "filter_live_extra_symbols",
     "output_kind_for_path",
     "render_pp_lines",
     "write_program_to_path",

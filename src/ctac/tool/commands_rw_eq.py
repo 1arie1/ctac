@@ -16,7 +16,7 @@ import typer
 
 from ctac.parse import ParseError, parse_path, render_tac_file
 from ctac.rw_eq import EquivContractError, emit_equivalence_program
-from ctac.tool.tac_output import write_program_to_path
+from ctac.tool.tac_output import filter_live_extra_symbols, write_program_to_path
 from ctac.tool.cli_runtime import (
     PLAIN_HELP,
     VALIDATE_PANEL,
@@ -151,7 +151,10 @@ def rw_eq_cmd(
         exit_code = 2 if "rule-6 rehavoc" in str(e) else 1
         raise typer.Exit(exit_code) from e
 
-    extra_symbols = result.extra_symbols
+    # Filter extra_symbols to those still referenced (defs / strong /
+    # weak uses) in the merged program. Keeps the symbol table free of
+    # orphan declarations whose AssignExpCmd was DCE'd upstream.
+    extra_symbols = filter_live_extra_symbols(result.extra_symbols, result.program)
 
     if output_path is None:
         # No -o: stream raw TAC to stdout. Useful for piping into a

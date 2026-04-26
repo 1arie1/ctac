@@ -9,7 +9,11 @@ from rich.markup import escape
 from ctac.analysis import eliminate_dead_assignments
 from ctac.ir.models import TacProgram
 from ctac.parse import ParseError, parse_path
-from ctac.tool.tac_output import render_pp_lines, write_program_to_path
+from ctac.tool.tac_output import (
+    filter_live_extra_symbols,
+    render_pp_lines,
+    write_program_to_path,
+)
 from collections import Counter
 
 from ctac.rewrite import rewrite_program
@@ -356,11 +360,17 @@ def rewrite_cmd(
         )
 
     if output_path is not None:
+        # Prune symbol-table declarations whose AssignExpCmd was DCE'd
+        # so the output's TACSymbolTable doesn't carry orphan
+        # ``TCSE<n>:bv256`` lines without a matching def. Annotation-
+        # only weak refs are preserved (extract_def_use treats them as
+        # uses), so debug metadata stays valid.
+        live_extra = filter_live_extra_symbols(rw.extra_symbols, final_program)
         write_program_to_path(
             output_path=output_path,
             tac=tac,
             program=final_program,
-            extra_symbols=rw.extra_symbols,
+            extra_symbols=live_extra,
         )
         if not report:
             c.print(f"# wrote {output_path}", markup=False)
