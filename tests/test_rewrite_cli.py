@@ -140,3 +140,43 @@ def test_rw_purify_assume_off_by_default():
     result = runner.invoke(app, ["rw", str(src), "--plain", "--report"])
     assert result.exit_code == 0, result.output
     assert "PURIFY_ASSUME:" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# --ceildiv-op flag — toggles R6's emit shape between IntCeilDiv (default)
+# and the legacy havoc + polynomial-bounds form.
+
+_R6_FIXTURE = Path("tests/rw_eq_fixtures/R6/ceildiv_chain.tac")
+
+
+def test_rw_ceildiv_op_default_emits_intceildiv(tmp_path):
+    """Default ``--ceildiv-op`` flag: R6 emits IntCeilDiv wrapped in
+    safe_math_narrow_bv256 instead of havoc + bounds."""
+    runner = CliRunner()
+    if not _R6_FIXTURE.is_file():
+        pytest.skip(f"R6 fixture not present: {_R6_FIXTURE}")
+    out = tmp_path / "ceildiv.tac"
+    result = runner.invoke(app, ["rw", str(_R6_FIXTURE), "-o", str(out), "--plain"])
+    assert result.exit_code == 0, result.output
+    text = out.read_text()
+    assert "IntCeilDiv" in text
+    assert "safe_math_narrow_bv256" in text
+
+
+def test_rw_no_ceildiv_op_uses_legacy_havoc(tmp_path):
+    """``--no-ceildiv-op`` falls back to the legacy emission: a havoc
+    on R_ceil + polynomial-bound assumes (R_den * R_ceil >= R_num,
+    etc.). No IntCeilDiv anywhere."""
+    runner = CliRunner()
+    if not _R6_FIXTURE.is_file():
+        pytest.skip(f"R6 fixture not present: {_R6_FIXTURE}")
+    out = tmp_path / "ceildiv_legacy.tac"
+    result = runner.invoke(
+        app, ["rw", str(_R6_FIXTURE), "-o", str(out), "--plain", "--no-ceildiv-op"]
+    )
+    assert result.exit_code == 0, result.output
+    text = out.read_text()
+    assert "IntCeilDiv" not in text
+    # Legacy emission has a havoc on R_ceil + IntMul(R_den, R_ceil) bound.
+    assert "AssignHavocCmd R_ceil" in text
+    assert "IntMul(R_den" in text

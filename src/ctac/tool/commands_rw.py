@@ -186,6 +186,17 @@ def rewrite_cmd(
             "(TA<N>). Runs in the post-DCE phase. Default off."
         ),
     ),
+    ceildiv_op: bool = typer.Option(
+        True,
+        "--ceildiv-op/--no-ceildiv-op",
+        help=(
+            "When R6 collapses the 256-bit ceiling-division chain, emit "
+            "`Apply(safe_math_narrow_bv256:bif IntCeilDiv(num, den))` (an "
+            "int-typed UF in SMT, axiomatized) instead of fresh havoc + "
+            "polynomial-bound assumes. Default on; --no-ceildiv-op uses "
+            "the legacy emission as the performance benchmark."
+        ),
+    ),
 ) -> None:
     """Simplify TAC via the rewrite pipeline (div/bit-field rewrites + DCE)."""
     _ = agent
@@ -218,6 +229,7 @@ def rewrite_cmd(
         max_iterations=max_iterations,
         ite_max_depth=ite_max_depth,
         symbol_sorts=tac.symbol_sorts,
+        use_int_ceil_div=ceildiv_op,
     )
     # Phase 1: simplification (bit-ops, const-divisor div rules, boolean/Ite,
     # distribution, range narrowing). Operates on phase 0's output.
@@ -228,6 +240,7 @@ def rewrite_cmd(
         max_iterations=max_iterations,
         ite_max_depth=ite_max_depth,
         symbol_sorts=tac.symbol_sorts,
+        use_int_ceil_div=ceildiv_op,
     )
     if purify_div:
         phase2 = rewrite_program(
@@ -236,6 +249,7 @@ def rewrite_cmd(
             max_iterations=max_iterations,
             ite_max_depth=ite_max_depth,
             symbol_sorts=tac.symbol_sorts,
+            use_int_ceil_div=ceildiv_op,
         )
         rw = _merge_phases(phase0, phase1, phase2)
     else:
@@ -271,6 +285,7 @@ def rewrite_cmd(
             max_iterations=max_iterations,
             ite_max_depth=ite_max_depth,
             symbol_sorts=tac.symbol_sorts,
+            use_int_ceil_div=ceildiv_op,
         )
         rw = _merge_phases(rw, phase_ite)
         program = phase_ite.program
