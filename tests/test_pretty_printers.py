@@ -185,3 +185,27 @@ def test_human_renders_scope_annotations_as_calls() -> None:
     human = DEFAULT_PRINTERS.get("human")
     lines = pretty_lines([start, end], printer=human)
     assert lines == ['clog_scope_start("pre")', 'clog_scope_end("pre")']
+
+
+def test_human_renders_int_ceil_div_as_function_call() -> None:
+    """``IntCeilDiv(a, b)`` is a TAC concept (not a primitive op). The human
+    printer renders it as ``int_div_ceil(a, b)`` (Rust naming convention);
+    the raw printer round-trips the PascalCase form."""
+    cmd = parse_command_line("AssignExpCmd R IntCeilDiv(A B)")
+    human = DEFAULT_PRINTERS.get("human")
+    raw = DEFAULT_PRINTERS.get("raw")
+    assert pretty_lines([cmd], printer=human) == ["R = int_div_ceil(A, B)"]
+    # Raw printer preserves the input verbatim.
+    assert pretty_lines([cmd], printer=raw) == ["AssignExpCmd R IntCeilDiv(A B)"]
+
+
+def test_human_int_ceil_div_round_trips_through_parser() -> None:
+    """Parser round-trip: parse `IntCeilDiv(A, B)` from raw TAC, render
+    the AST, reparse — ApplyExpr.op stays ``IntCeilDiv``."""
+    from ctac.ast.nodes import ApplyExpr
+
+    cmd = parse_command_line("AssignExpCmd R IntCeilDiv(A B)")
+    assert isinstance(cmd, AssignExpCmd)
+    assert isinstance(cmd.rhs, ApplyExpr)
+    assert cmd.rhs.op == "IntCeilDiv"
+    assert len(cmd.rhs.args) == 2

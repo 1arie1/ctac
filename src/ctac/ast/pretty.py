@@ -176,6 +176,14 @@ class HumanPrettyPrinter(PrettyPrinter):
         "BWNot": "~",
     }
 
+    # Function-call-style rendering (snake_case) for TAC ops that are
+    # axiomatized concepts rather than primitive operations. The raw TAC
+    # name (PascalCase, e.g. ``IntCeilDiv``) round-trips unchanged; only
+    # the human printer remaps to a snake_case alias.
+    _int_func_remap = {
+        "IntCeilDiv": "int_div_ceil",
+    }
+
     @staticmethod
     def _const_to_int(expr: TacExpr) -> int | None:
         if not isinstance(expr, ConstExpr):
@@ -297,6 +305,11 @@ class HumanPrettyPrinter(PrettyPrinter):
         if op in self._binary_infix and len(args) >= 2:
             inf = self._binary_infix[op]
             return "(" + f" {inf} ".join(args) + ")"
+
+        if op in self._int_func_remap:
+            fn = self._int_func_remap[op]
+            rest = ", ".join(self._strip_outer_parens_once(a) for a in args)
+            return f"{fn}({rest})"
 
         if op == "Apply" and args:
             fn = self._short_fn_name(args[0])
