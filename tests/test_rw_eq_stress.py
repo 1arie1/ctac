@@ -285,9 +285,13 @@ def test_r6_stress_with_restricted_pipeline(tmp_path: Path) -> None:
 
     fixture = _FIXTURES_DIR / "R6" / "ceildiv_chain.tac"
     orig_tac = parse_path(fixture)
+    # Pinned to the legacy emission (havoc + polynomial bounds) so this
+    # test continues to assert on the rehavoc-window path. The new
+    # IntCeilDiv emission is exercised by a sibling test below.
     rw = rewrite_program(
         orig_tac.program,
         (N1_SHIFTED_BWAND, N2_LOW_MASK, N3_HIGH_MASK, N4_SHR_CONST, R6_CEILDIV),
+        use_int_ceil_div=False,
     )
     # Confirm R6 actually fired — otherwise this test isn't doing what
     # it claims and the failure mode (rule didn't match) needs a

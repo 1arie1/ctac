@@ -194,6 +194,7 @@ def rewrite_program(
     max_iterations: int = 16,
     ite_max_depth: int = 4,
     symbol_sorts: dict[str, str] | None = None,
+    use_int_ceil_div: bool = True,
 ) -> RewriteResult:
     """Run ``rules`` over ``program`` to fixed point.
 
@@ -209,6 +210,11 @@ def rewrite_program(
     ``"int"``, ``"bool"``). Optional; rules that rely on sort-based bounds
     (e.g. defaulting a bv256 symbol's range to ``[0, 2^256 - 1]``) fall back
     to dominating assume-facts only when it's empty.
+
+    ``use_int_ceil_div`` toggles R6's emit shape between the new
+    ``IntCeilDiv``-as-concept form (default) and the legacy ``havoc +
+    polynomial-bounds`` form. The latter remains the performance-validated
+    benchmark; the former is gated to let us explore SMT interaction.
     """
     rules_tuple: tuple[Rule, ...] = tuple(rules)
     all_hits: list[RuleHit] = []
@@ -225,6 +231,7 @@ def rewrite_program(
             ite_max_depth=ite_max_depth,
             fresh_counter_start=fresh_counter,
             symbol_sorts=symbol_sorts or {},
+            use_int_ceil_div=use_int_ceil_div,
         )
         changed_this_iter = False
         new_blocks: list[TacBlock] = []

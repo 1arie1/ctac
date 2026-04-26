@@ -123,6 +123,12 @@ class RewriteCtx:
     # Optional; when empty, rules that rely on sort-based bounds fall back
     # to dominating assume-facts only.
     symbol_sorts: dict[str, str] = field(default_factory=dict)
+    # When True, R6 emits ``Apply(safe_math_narrow_bv256:bif IntCeilDiv(...))``
+    # instead of the legacy ``havoc + polynomial-bounds`` rewrite. The
+    # IntCeilDiv concept is then axiomatized at the SMT layer (sea_vc).
+    # Default-on; ``ctac rw --no-ceildiv-op`` flips it for benchmark
+    # comparison against the legacy emission.
+    use_int_ceil_div: bool = True
     du: DefUseResult = field(init=False)
     dsa: DsaResult = field(init=False)
     static_symbols: frozenset[str] = field(init=False)

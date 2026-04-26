@@ -96,9 +96,15 @@ def test_r6_fires_on_full_chain():
     R6 reuses the host LHS (R_ceil) as the new havoc name: the original
     chain-final ``AssignExpCmd R_ceil ...`` is dropped, replaced by
     ``AssignHavocCmd R_ceil`` followed by the polynomial bounds.
+
+    Pinned to the legacy emission via ``use_int_ceil_div=False`` so this
+    test continues to assert on the havoc form. The new IntCeilDiv
+    emission is covered separately below.
     """
     tac = parse_string(_tac_with_ceildiv_chain(), path="<s>")
-    res = rewrite_program(tac.program, _pipeline_with_r6())
+    res = rewrite_program(
+        tac.program, _pipeline_with_r6(), use_int_ceil_div=False
+    )
     assert res.hits_by_rule.get("R6", 0) == 1
     # No new symbol is introduced; R_ceil's name is reused.
     assert res.extra_symbols == ()
@@ -196,3 +202,94 @@ def test_r6_dsa_still_valid_after_rewrite():
     dsa = analyze_dsa(res.program)
     shape_issues = [i for i in dsa.issues if i.kind == "shape"]
     assert not shape_issues, f"DSA shape issues after R6: {shape_issues}"
+
+
+def test_r6_emits_intceildiv_when_flag_on():
+    """With ``use_int_ceil_div=True`` (default), R6 emits a single
+    ``AssignExpCmd R_ceil Apply(safe_math_narrow_bv256:bif IntCeilDiv(R_num,
+    R_den))`` and no havoc / no polynomial-bound assumes. The 6 chain
+    intermediates become dead and DCE removes them."""
+    tac = parse_string(_tac_with_ceildiv_chain(), path="<s>")
+    res = rewrite_program(tac.program, _pipeline_with_r6(), use_int_ceil_div=True)
+    assert res.hits_by_rule.get("R6", 0) == 1
+
+    block = res.program.blocks[0]
+
+    # No havoc on R_ceil (legacy emission shape) and no extra symbols
+    # registered for R_ceil (its sort stays bv256).
+    r_ceil_havocs = [
+        c for c in block.commands if isinstance(c, AssignHavocCmd) and c.lhs == "R_ceil"
+    ]
+    assert not r_ceil_havocs
+    assert res.extra_symbols == ()
+
+    # Exactly one AssignExpCmd assigns R_ceil, with the new RHS shape.
+    r_ceil_assigns = [
+        c for c in block.commands if isinstance(c, AssignExpCmd) and c.lhs == "R_ceil"
+    ]
+    assert len(r_ceil_assigns) == 1
+    rhs = r_ceil_assigns[0].rhs
+    assert isinstance(rhs, ApplyExpr)
+    assert rhs.op == "Apply"
+    assert len(rhs.args) == 2
+    bif_tag, inner = rhs.args
+    assert isinstance(bif_tag, SymbolRef)
+    assert bif_tag.name == "safe_math_narrow_bv256:bif"
+    assert isinstance(inner, ApplyExpr)
+    assert inner.op == "IntCeilDiv"
+    assert len(inner.args) == 2
+
+    # The legacy bound assumes (Ge(IntMul(R_den, R_ceil), R_num) etc.)
+    # are NOT emitted on the new path.
+    def _refers_to_r_ceil(e):
+        if isinstance(e, SymbolRef):
+            return e.name == "R_ceil"
+        if isinstance(e, ApplyExpr):
+            return any(_refers_to_r_ceil(a) for a in e.args)
+        return False
+
+    new_r_ceil_assumes = [
+        c
+        for c in block.commands
+        if isinstance(c, AssumeExpCmd) and _refers_to_r_ceil(c.condition)
+    ]
+    assert not new_r_ceil_assumes, (
+        f"new path should not emit R_ceil assumes; got {new_r_ceil_assumes}"
+    )
+
+
+def test_r6_falls_back_to_havoc_when_flag_off():
+    """``use_int_ceil_div=False`` preserves the legacy havoc + bounds
+    emission verbatim — performance-validated and serving as the
+    benchmark for the new path."""
+    tac = parse_string(_tac_with_ceildiv_chain(), path="<s>")
+    res = rewrite_program(
+        tac.program, _pipeline_with_r6(), use_int_ceil_div=False
+    )
+    assert res.hits_by_rule.get("R6", 0) == 1
+
+    block = res.program.blocks[0]
+    # Legacy: a single havoc on R_ceil and no AssignExpCmd assigning it.
+    r_ceil_havocs = [
+        c for c in block.commands if isinstance(c, AssignHavocCmd) and c.lhs == "R_ceil"
+    ]
+    assert len(r_ceil_havocs) == 1
+    r_ceil_assigns = [
+        c for c in block.commands if isinstance(c, AssignExpCmd) and c.lhs == "R_ceil"
+    ]
+    assert not r_ceil_assigns
+
+    # No IntCeilDiv ApplyExpr on the legacy path.
+    def _has_int_ceil_div(e):
+        if isinstance(e, ApplyExpr):
+            if e.op == "IntCeilDiv":
+                return True
+            return any(_has_int_ceil_div(a) for a in e.args)
+        return False
+
+    for cmd in block.commands:
+        rhs = getattr(cmd, "rhs", None) or getattr(cmd, "condition", None)
+        if rhs is not None:
+            assert not _has_int_ceil_div(rhs), (
+                "legacy path leaked an IntCeilDiv emission"
+            )

@@ -225,6 +225,26 @@ def _rewrite_r6(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
         num_range = infer_expr_range(r_num_peeled, ctx)
     num_non_negative = num_range is not None and num_range[0] >= 0
 
+    if ctx.use_int_ceil_div:
+        # New path: emit ``R_ceil = Apply(safe_math_narrow_bv256:bif
+        # IntCeilDiv(R_num, R_den))`` as a single expression replacing
+        # the host's RHS. The ``safe_math_narrow_bv256`` wrapper keeps
+        # R_ceil's bv256 sort intact (no symbol-table change). The
+        # IntCeilDiv concept is axiomatized at the SMT layer (sea_vc's
+        # ``int_ceil_div_axiom`` define-fun, instantiated per call).
+        # The 6 chain intermediates (R_floor .. X2) become dead once
+        # R_ceil no longer references them and DCE removes them in the
+        # existing fixed-point loop.
+        return ApplyExpr(
+            "Apply",
+            (
+                SymbolRef("safe_math_narrow_bv256:bif"),
+                ApplyExpr("IntCeilDiv", (r_num, r_den)),
+            ),
+        )
+
+    # Legacy path: havoc + polynomial-bounds. Performance-validated on
+    # z3; preserved as the benchmark for the new emission shape.
     def build_assumes(t: SymbolRef) -> list[TacExpr]:
         den_times_t = ApplyExpr("IntMul", (r_den, t))
         conds: list[TacExpr] = [
