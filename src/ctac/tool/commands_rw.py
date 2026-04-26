@@ -14,6 +14,7 @@ from collections import Counter
 
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.framework import RewriteResult, RuleHit
+from ctac.rewrite.materialize_assumes import materialize_assumes
 from ctac.rewrite.rules import (
     CP_ALIAS,
     CSE,
@@ -36,10 +37,20 @@ from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 
 
 def _print_report(
-    c, *, plain: bool, rewrite: RewriteResult, dce_removed: int, total_cmds_before: int, total_cmds_after: int,
+    c,
+    *,
+    plain: bool,
+    rewrite: RewriteResult,
+    dce_removed: int,
+    total_cmds_before: int,
+    total_cmds_after: int,
+    materialize_hits: dict[str, int] | None = None,
 ) -> None:
     def line(s: str) -> None:
         c.print(s, markup=not plain)
+
+    materialize_hits = materialize_hits or {}
+    materialize_total = sum(materialize_hits.values())
 
     if plain:
         line("rw:")
@@ -50,6 +61,10 @@ def _print_report(
         line(f"  dce_removed: {dce_removed}")
         line(f"  commands_before: {total_cmds_before}")
         line(f"  commands_after: {total_cmds_after}")
+        if materialize_hits:
+            line(f"  materialized_assumes: {materialize_total}")
+            for name in sorted(materialize_hits):
+                line(f"    {name}: {materialize_hits[name]}")
         return
     line("[bold]Rewrite Summary[/bold]")
     line(f"  iterations: [bold]{rewrite.iterations}[/bold]")
@@ -59,6 +74,12 @@ def _print_report(
     line(f"  dce_removed: [bold]{dce_removed}[/bold]")
     line(f"  commands_before: {total_cmds_before}")
     line(f"  commands_after:  {total_cmds_after}")
+    if materialize_hits:
+        line(f"  materialized_assumes: [bold]{materialize_total}[/bold]")
+        for name in sorted(materialize_hits):
+            line(
+                f"    [cyan]{escape(name)}[/cyan]: {materialize_hits[name]}"
+            )
 
 
 def _command_count(program: TacProgram) -> int:
@@ -197,6 +218,19 @@ def rewrite_cmd(
             "the legacy emission as the performance benchmark."
         ),
     ),
+    materialize_assumes_flag: bool = typer.Option(
+        True,
+        "--materialize-assumes/--no-materialize-assumes",
+        help=(
+            "Run a final pass that materializes range-derived assumes "
+            "around uses of axiomatized operators (today: IntCeilDiv). "
+            "Strictly gated by interval analysis — every emitted assume "
+            "comes from a successful infer_expr_range query, not from "
+            "thin air. Targets verification-time solver speed; rw-eq "
+            "validates each materialized assume holds under the orig "
+            "program's existing constraints. Default on."
+        ),
+    ),
 ) -> None:
     """Simplify TAC via the rewrite pipeline (div/bit-field rewrites + DCE)."""
     _ = agent
@@ -297,6 +331,16 @@ def rewrite_cmd(
             if not dce.removed:
                 break
             program = dce.program
+    # Final phase (gated): selectively materialize range-derived
+    # assumes around uses of axiomatized operators (today: IntCeilDiv).
+    # Runs LAST so range analysis sees the post-rewrite program; the
+    # output flows directly into ctac rw-eq, which validates each
+    # materialized assume against the orig program's constraints.
+    materialize_hits: dict[str, int] = {}
+    if materialize_assumes_flag:
+        mres = materialize_assumes(program, symbol_sorts=tac.symbol_sorts)
+        program = mres.program
+        materialize_hits = mres.hits
     final_program = program
     after_count = _command_count(final_program)
 
@@ -308,6 +352,7 @@ def rewrite_cmd(
             dce_removed=total_removed,
             total_cmds_before=before_count,
             total_cmds_after=after_count,
+            materialize_hits=materialize_hits,
         )
 
     if output_path is not None:

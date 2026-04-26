@@ -132,6 +132,21 @@ def _infer_apply(
             a = infer_expr_range(expr.args[0], ctx, ite_depth=ite_depth)
             if a and a[0] >= 0:
                 return (a[0] // k, a[1] // k)
+    if expr.op == "IntCeilDiv" and len(expr.args) == 2:
+        # ceil(a / b) for non-negative numerator and positive divisor:
+        # bounded by the per-corner ceiling values. lo = ceil(a_lo/b_hi),
+        # hi = ceil(a_hi/b_lo). For ``a_lo == 0`` the lo is 0. Don't try
+        # to bound when ``a`` could be negative or ``b`` could be
+        # zero/negative — the IntCeilDiv axiom leaves the value totally
+        # free outside ``b > 0``, so any bound would be unsound.
+        a = infer_expr_range(expr.args[0], ctx, ite_depth=ite_depth)
+        b = infer_expr_range(expr.args[1], ctx, ite_depth=ite_depth)
+        if a is not None and b is not None and a[0] >= 0 and b[0] > 0:
+            a_lo, a_hi = a
+            b_lo, b_hi = b
+            lo = (a_lo + b_hi - 1) // b_hi if a_lo > 0 else 0
+            hi = (a_hi + b_lo - 1) // b_lo
+            return (lo, hi)
     if expr.op in {"Mod", "IntMod"} and len(expr.args) == 2:
         # `a mod K` for positive constant K is always in [0, K-1]. If
         # the dividend's range is already contained in [0, K), the mod
