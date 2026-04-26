@@ -178,3 +178,116 @@ def test_cse_does_not_self_alias_the_canonical_first():
     # R1's RHS remains the IntMul, not SymbolRef(R1).
     rhs_r1 = _rhs(res.program, "R1")
     assert isinstance(rhs_r1, ApplyExpr) and rhs_r1.op == "IntMul"
+
+
+# ---------------------------------------------------------------------------
+# Common-dominator hoist: when CSE's canonical RHS uses a non-entry-defined
+# variable, the hoist target must be the deepest common dominator of all
+# use sites, not the entry block. Hoisting to entry would either be unsound
+# (TCSE in entry uses a variable defined later) or — with the current gate
+# — bail entirely, missing the optimization.
+
+_TCSE_HOIST_FIXTURE = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tA:int
+\tW:int
+\tY:int
+\tZ:int
+\tQ:int
+\tc:bool
+\tok:bool
+}
+Program {
+\tBlock entry Succ [M] {
+\t\tAssignHavocCmd A
+\t\tAssignHavocCmd c
+\t\tJumpCmd M
+\t}
+\tBlock M Succ [B, C] {
+\t\tAssignExpCmd W IntAdd(A 0x5(int))
+\t\tJumpiCmd B C c
+\t}
+\tBlock B Succ [J] {
+\t\tAssignExpCmd Y IntAdd(W 0x1(int))
+\t\tAssumeExpCmd Eq(Y 0x6(int))
+\t\tJumpCmd J
+\t}
+\tBlock C Succ [J] {
+\t\tAssignExpCmd Z IntAdd(W 0x1(int))
+\t\tAssumeExpCmd Eq(Z 0x6(int))
+\t\tJumpCmd J
+\t}
+\tBlock J Succ [] {
+\t\tAssignExpCmd Q IntAdd(W 0x1(int))
+\t\tAssignExpCmd ok Eq(Q 0x0(int))
+\t\tAssertCmd ok "ok"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_cse_hoists_to_common_dominator_when_rhs_uses_non_entry_var():
+    """W is defined in block M (not entry); Y, Z, Q each compute
+    ``W + 1`` in B, C, J respectively. None of these blocks dominates
+    the others (B and C are siblings; J is their common successor),
+    so CSE wants to hoist a TCSE.
+
+    Hoisting to entry is wrong: entry doesn't have W defined, so
+    ``TCSE = W + 1`` in entry would be a use-before-def. The correct
+    target is the deepest block that dominates all of {B, C, J} —
+    here that's M, where W is in scope.
+
+    After CSE fires, all three uses should share a single TCSE
+    that lives at the end of M, and the resulting program must
+    pass use-before-def analysis.
+    """
+    from ctac.analysis import analyze_use_before_def, extract_def_use
+
+    tac = parse_string(_TCSE_HOIST_FIXTURE, path="<s>")
+    res = rewrite_program(
+        tac.program, (CSE, CP_ALIAS), symbol_sorts=tac.symbol_sorts
+    )
+
+    # CSE should fire on the duplicates (Z and Q both alias to a TCSE
+    # that captures Y's RHS, or all three alias to a fresh TCSE).
+    assert res.hits_by_rule.get("CSE", 0) >= 2, (
+        f"CSE should fire on at least 2 of the 3 duplicate sites; "
+        f"hits={dict(res.hits_by_rule)}"
+    )
+
+    # Locate the hoisted TCSE.
+    tcse_defs = []
+    for b in res.program.blocks:
+        for cmd in b.commands:
+            if isinstance(cmd, AssignExpCmd) and cmd.lhs.startswith("TCSE"):
+                tcse_defs.append((b.id, cmd))
+
+    # If CSE hoists, the TCSE must NOT be in the entry block (W is
+    # not defined there). It should land in M, the common dominator
+    # of the use sites where W is in scope.
+    if tcse_defs:
+        for block_id, cmd in tcse_defs:
+            assert block_id != "entry", (
+                f"TCSE {cmd.lhs} placed in entry but its RHS uses W "
+                f"which is defined in M, not entry. Use-before-def!"
+            )
+            assert block_id == "M", (
+                f"expected TCSE in common dominator M, found in {block_id}"
+            )
+
+    # Output must pass use-before-def regardless.
+    du = extract_def_use(res.program)
+    ubd = analyze_use_before_def(res.program, def_use=du)
+    assert not ubd.issues, (
+        f"CSE hoist produced use-before-def: {ubd.issues}"
+    )

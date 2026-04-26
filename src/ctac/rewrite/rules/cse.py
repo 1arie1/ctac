@@ -8,14 +8,21 @@ rewrite splits two ways depending on whether Y's def-block dominates X's:
    ``X → Y`` at uses; DCE removes the alias. Smallest diff, easiest to
    eyeball.
 
-2. **Y does not dominate X** — hoist ``TCSE<n> := rhs`` into the entry
-   block (which dominates everything), record it in the index so
-   subsequent non-dominating uses share the same TCSE, and emit
-   ``X := TCSE<n>``. The original ``Y := rhs`` is left untouched —
-   it's the orig program's own def, sound in its own scope. The hoist
-   is skipped (rule declines) when any free variable of ``rhs`` isn't
-   entry-defined: hoisting a computation whose inputs aren't visible
-   at the entry block would read undefined values.
+2. **Y does not dominate X** — hoist ``TCSE<n> := rhs`` into the
+   *deepest common dominator* of every use site of ``rhs`` (the
+   block where TCSE is visible to every CSE-replaceable site).
+   Record the TCSE so subsequent non-dominating uses share it, and
+   emit ``X := TCSE<n>`` at the original use site. The original
+   ``Y := rhs`` is left untouched. The hoist is skipped (rule
+   declines) when any free variable of ``rhs`` has a definition that
+   doesn't dominate the chosen target block: hoisting a computation
+   whose inputs aren't visible there would read undefined values.
+
+   Note: when the deepest common dominator is the entry block
+   (because uses live on disjoint branches of an early fork), this
+   degenerates to the entry-block hoist that earlier versions
+   always performed. The common-dominator generalization simply
+   accepts more cases without forcing entry placement.
 
 **Scope:** fires only when the RHS is a compound expression. Plain
 ``SymbolRef`` RHS (aliases) are CP's job; ``ConstExpr`` RHS has no
@@ -78,13 +85,16 @@ def _iter_free_symbols(expr: TacExpr):
 
 def _build_rhs_index(
     ctx: RewriteCtx,
-) -> dict[TacExpr, tuple[str, str, TacExpr]]:
+) -> dict[TacExpr, tuple[str, str, TacExpr, frozenset[str]]]:
     """Map canonicalized static ``AssignExpCmd`` RHS -> (first lhs in
-    program order, that def's block id, the original RHS expression).
-    The block id drives the dominance split; the original RHS is needed
-    to materialize a hoisted ``TCSE<n> := rhs`` in the non-dominating
-    case."""
-    index: dict[TacExpr, tuple[str, str, TacExpr]] = {}
+    program order, that def's block id, the original RHS expression,
+    set of block ids where the canonical RHS appears as a static def).
+
+    The first three drive the dominance split / TCSE construction;
+    the use-block set lets the slow path compute the deepest common
+    dominator instead of forcing the hoist into entry."""
+    first: dict[TacExpr, tuple[str, str, TacExpr]] = {}
+    use_blocks: dict[TacExpr, set[str]] = {}
     for block in ctx.program.blocks:
         for cmd in block.commands:
             if not isinstance(cmd, AssignExpCmd):
@@ -95,8 +105,59 @@ def _build_rhs_index(
             lhs = canonical_symbol(cmd.lhs)
             if lhs not in ctx.static_symbols:
                 continue
-            index.setdefault(_canonical(cmd.rhs), (lhs, block.id, cmd.rhs))
-    return index
+            canon = _canonical(cmd.rhs)
+            first.setdefault(canon, (lhs, block.id, cmd.rhs))
+            use_blocks.setdefault(canon, set()).add(block.id)
+    return {k: (*first[k], frozenset(use_blocks[k])) for k in first}
+
+
+def _deepest_common_strict_dominator(
+    use_blocks: "frozenset[str] | set[str]", ctx: RewriteCtx
+) -> str | None:
+    """Return the deepest block that *strictly* dominates every block
+    in ``use_blocks``. A block does not strictly dominate itself, so
+    the result is never in ``use_blocks``.
+
+    The strictness matters for hoisting: if the result were a use
+    block X, the def would land at end of X (just before X's
+    terminator), but uses earlier in X would read the symbol before
+    its def — use-before-def. Restricting to strict dominators
+    guarantees the def's block is positionally above every use.
+
+    Returns ``None`` if no strict common dominator exists (e.g. when
+    ``use_blocks == {entry}`` since entry has no strict dominators)."""
+    if not use_blocks:
+        return None
+    common: set[str] | None = None
+    for b in use_blocks:
+        # Strip the block itself from its dominator set to get proper
+        # dominators (those that are above ``b`` in the dom tree).
+        proper = ctx.dominators.get(b, frozenset()) - {b}
+        if common is None:
+            common = set(proper)
+        else:
+            common &= proper
+    if not common:
+        return None
+    # Domination is a tree; the intersection is a chain. The deepest
+    # element has the largest dominator set (deeper = more ancestors).
+    return max(common, key=lambda c: len(ctx.dominators.get(c, frozenset())))
+
+
+def _all_defs_dominate(
+    var_name: str, target_block: str, ctx: RewriteCtx
+) -> bool:
+    """True iff every definition of ``var_name`` is in a block that
+    dominates (or equals) ``target_block``. Required for hoisting a
+    TCSE into ``target_block`` whose RHS references ``var_name`` —
+    otherwise the hoisted def would read a variable not yet defined
+    on some path to ``target_block``."""
+    canonical = canonical_symbol(var_name)
+    defs = ctx.du.definitions_by_symbol.get(canonical, ())
+    if not defs:
+        return False
+    target_doms = ctx.dominators.get(target_block, frozenset())
+    return all(d.block_id in target_doms for d in defs)
 
 
 def _rewrite_cse(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
@@ -117,7 +178,7 @@ def _rewrite_cse(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     hit = index.get(canon)
     if hit is None:
         return None
-    first_lhs, first_block, first_rhs = hit
+    first_lhs, first_block, first_rhs, use_blocks = hit
     if first_lhs == canonical_symbol(host.lhs):
         return None  # this IS the canonical first definition
     cur_block = ctx._cur_block
@@ -134,12 +195,26 @@ def _rewrite_cse(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
         return SymbolRef(first_lhs)
 
     # Slow path: alias source is in a non-dominating block. Hoist
-    # ``TCSE<n> := first_rhs`` into the entry block — the entry block
-    # dominates everywhere, so the hoisted def is visible at every
-    # use. Skip when any free variable of ``first_rhs`` isn't
-    # entry-defined: we can't hoist a computation whose inputs aren't
-    # visible at the entry block insertion point.
-    if not all(ctx.is_entry_defined(v) for v in _iter_free_symbols(first_rhs)):
+    # ``TCSE<n> := first_rhs`` to the *deepest STRICT common dominator*
+    # of all use sites — a block that dominates every use site and is
+    # not itself a use site. Strictness matters: the def lands at the
+    # end of the chosen block (just before its terminator), and if
+    # the chosen block were one of the use sites, uses earlier in
+    # that block would read the TCSE before its def — use-before-def.
+    #
+    # Constraints on the target:
+    # - must strictly dominate every use site (visibility +
+    #   positional ordering);
+    # - every free var of ``first_rhs`` must be defined in the
+    #   target itself or in a block dominating the target (so the
+    #   TCSE's RHS is well-formed under def-use).
+    target_block = _deepest_common_strict_dominator(use_blocks, ctx)
+    if target_block is None:
+        return None
+    if not all(
+        _all_defs_dominate(v, target_block, ctx)
+        for v in _iter_free_symbols(first_rhs)
+    ):
         return None
 
     # Cache hoisted aliases per RHS so multiple non-dominating uses of
@@ -159,7 +234,11 @@ def _rewrite_cse(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
             # symbol_sorts is populated, or stay un-rewritten.
             return None
         tx = ctx.emit_fresh_assign(
-            prefix="TCSE", rhs=first_rhs, sort=sort, placement="entry"
+            prefix="TCSE",
+            rhs=first_rhs,
+            sort=sort,
+            placement="block_end",
+            block_id=target_block,
         )
         tx_name = tx.name
         hoisted[canon] = tx_name

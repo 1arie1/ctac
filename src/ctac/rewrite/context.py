@@ -33,6 +33,8 @@ from ctac.ast.nodes import (
     AssignExpCmd,
     AssignHavocCmd,
     AssumeExpCmd,
+    JumpCmd,
+    JumpiCmd,
     SymbolRef,
     TacCmd,
     TacExpr,
@@ -481,14 +483,24 @@ class RewriteCtx:
         *,
         sort: str,
         placement: str = "current",
+        block_id: str | None = None,
     ) -> SymbolRef:
         """Queue ``AssignExpCmd <name> <rhs>`` and register ``<name>:<sort>``.
 
         Counterpart to :meth:`emit_fresh_var` for the straight-assignment
         case: introduce a fresh variable whose value is exactly ``rhs``.
         Returns ``SymbolRef(<name>)`` so the caller can substitute it in
-        place of ``rhs`` at the call site. ``placement`` semantics match
-        :meth:`emit_fresh_var`.
+        place of ``rhs`` at the call site.
+
+        Placements:
+
+        - ``"current"`` — insert just before the rule's current command
+          (mirrors :meth:`emit_fresh_var`).
+        - ``"entry"`` — insert just before the entry block's terminator.
+        - ``"block_end"`` — insert just before ``block_id``'s terminator.
+          ``block_id`` is required and must name a block in the current
+          program. Used by CSE to hoist a TCSE to the deepest common
+          dominator of its uses, which is broader than entry alone.
         """
         name = self._next_fresh_name(prefix)
         cmd = AssignExpCmd(raw="", lhs=name, rhs=rhs)
@@ -499,6 +511,28 @@ class RewriteCtx:
                 "emit_fresh_assign(placement='current') requires a set position"
             )
             key = (self._cur_block, self._cur_cmd)
+            self._pending_by_position.setdefault(key, []).append(cmd)
+        elif placement == "block_end":
+            if block_id is None:
+                raise ValueError(
+                    "emit_fresh_assign(placement='block_end') requires block_id"
+                )
+            block_obj = next(
+                (b for b in self.program.blocks if b.id == block_id), None
+            )
+            if block_obj is None:
+                raise ValueError(
+                    f"emit_fresh_assign: block_id={block_id!r} not in program"
+                )
+            term_idx = next(
+                (
+                    i
+                    for i, c in enumerate(block_obj.commands)
+                    if isinstance(c, (JumpCmd, JumpiCmd))
+                ),
+                len(block_obj.commands),
+            )
+            key = (block_id, term_idx)
             self._pending_by_position.setdefault(key, []).append(cmd)
         else:
             raise ValueError(f"unknown placement: {placement!r}")
