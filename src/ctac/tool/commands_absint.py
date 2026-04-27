@@ -18,7 +18,8 @@ import typer
 from rich.markup import escape
 from rich.tree import Tree
 
-from ctac.analysis.abs_int import analyze_polynomial_degree
+from ctac.analysis.abs_int import analyze_intervals, analyze_polynomial_degree
+from ctac.analysis.abs_int.interval_ops import Interval, meet as iv_meet
 from ctac.ast.pretty import configured_printer
 from ctac.parse import ParseError, parse_path
 from ctac.tool.cli_runtime import (
@@ -42,12 +43,12 @@ from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
 from ctac.tool.stats_model import StatsCollection
 from ctac.tool.stats_render import render_plain_stats, render_rich_stats_tree
 
-_VALID_SHOW = ("degree", "all")
+_VALID_SHOW = ("degree", "interval", "all")
 _DEFAULT_SHOW = "all"
 
 
 def _parse_show_modes(raw: str) -> set[str]:
-    valid = {"degree", "all"}
+    valid = {"degree", "interval", "all"}
     items = {x.strip().lower() for x in raw.split(",") if x.strip()}
     if not items:
         raise typer.BadParameter("at least one mode required", param_hint="--show")
@@ -59,6 +60,16 @@ def _parse_show_modes(raw: str) -> set[str]:
     if "all" in items:
         return valid - {"all"}
     return items
+
+
+def _format_interval(iv: Interval) -> str:
+    if iv.is_top():
+        return "TOP"
+    if iv.is_bot():
+        return "BOT"
+    lo = "-inf" if iv.lo is None else str(iv.lo)
+    hi = "+inf" if iv.hi is None else str(iv.hi)
+    return f"[{lo}, {hi}]"
 
 
 def _format_duration(seconds: float) -> str:
@@ -81,16 +92,17 @@ _ABSINT_EPILOG = (
     "default [cyan]all[/cyan]:\n\n"
     "[cyan]degree[/cyan] (polynomial degree of every variable; ranks the program's "
     "non-linear expressions).\n\n"
-    "Default prints summary stats. [cyan]--details[/cyan] adds the top non-linear "
-    "expression table (sorted by degree descending). [cyan]--json[/cyan] for "
-    "machine-readable output.\n\n"
+    "[cyan]interval[/cyan] (per-variable integer interval inferred via DSA-aware "
+    "abstract interpretation; surfaces tightest bounds + counts of TOP/BOT vars).\n\n"
+    "Default prints summary stats. [cyan]--details[/cyan] adds top tables. "
+    "[cyan]--json[/cyan] for machine-readable output.\n\n"
     "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac absint f.tac --plain[/cyan]"
     "  [dim]# all analyses, summary[/dim]\n\n"
     "[cyan]ctac absint f.tac --plain --details[/cyan]"
-    "  [dim]# top non-linear expressions[/dim]\n\n"
-    "[cyan]ctac absint f.tac --plain --details --min-degree 3[/cyan]"
-    "  [dim]# only cubic and up[/dim]\n\n"
+    "  [dim]# top tables for each enabled analysis[/dim]\n\n"
+    "[cyan]ctac absint f.tac --plain --show interval --details[/cyan]"
+    "  [dim]# tightest non-trivial intervals[/dim]\n\n"
     "[cyan]ctac absint f.tac --plain --json[/cyan]"
     "  [dim]# machine-readable[/dim]"
 )
@@ -282,6 +294,77 @@ def absint_cmd(
             "top_unknown": top_unknown_rendered,
         }
 
+    if "interval" in modes:
+        t0 = time.perf_counter()
+        interval_result = analyze_intervals(
+            filtered_program, symbol_sorts=tac.symbol_sorts
+        )
+        timings_sec["interval"] = time.perf_counter() - t0
+
+        # Categorize static intervals: concrete (both bounds known),
+        # partial (one side bound), TOP (both unknown), BOT (empty).
+        concrete_count = 0
+        partial_count = 0
+        top_count = 0
+        bot_count = 0
+        for v in interval_result.static.values():
+            if v.is_bot():
+                bot_count += 1
+            elif v.is_top():
+                top_count += 1
+            elif v.lo is None or v.hi is None:
+                partial_count += 1
+            else:
+                concrete_count += 1
+
+        # Per-var tightest interval seen anywhere (across `static` and
+        # every block's `local`). Refinements never mutate static, so a
+        # static var can have a tighter local view at one block; the
+        # user's question "how tight is this value really known?" is
+        # answered by the meet across all observed views. Sound for
+        # display purposes (it's the strongest fact derivable about the
+        # variable from the analysis output).
+        tightest: dict[str, Interval] = {
+            var: v for var, v in interval_result.static.items()
+        }
+        for block_local in interval_result.per_block_local.values():
+            for var, v in block_local.items():
+                prev = tightest.get(var)
+                tightest[var] = v if prev is None else iv_meet(prev, v)
+        rankable = [
+            (var, v)
+            for var, v in tightest.items()
+            if v.lo is not None and v.hi is not None and not v.is_bot()
+        ]
+        rankable.sort(
+            key=lambda kv: (
+                kv[1].hi - kv[1].lo if kv[1].hi is not None and kv[1].lo is not None else 0,
+                kv[0],
+            )
+        )
+        top_intervals = [
+            {
+                "var": var,
+                "interval": _format_interval(v),
+                "lo": v.lo,
+                "hi": v.hi,
+            }
+            for var, v in rankable[:max_items]
+        ]
+
+        payload["interval"] = {
+            "static_symbols_total": len(interval_result.static),
+            "concrete_count": concrete_count,
+            "partial_count": partial_count,
+            "top_count": top_count,
+            "bot_count": bot_count,
+            "blocks_with_local": len(interval_result.per_block_local),
+            "local_entries_total": sum(
+                len(d) for d in interval_result.per_block_local.values()
+            ),
+            "top_tightest": top_intervals,
+        }
+
     payload["timings_sec"] = {k: timings_sec[k] for k in sorted(timings_sec)}
 
     if json_out:
@@ -309,6 +392,16 @@ def absint_cmd(
         summary_stats.add_num("degree.nonlinear_count", deg_obj["nonlinear_count"])
         for k, v in deg_obj["distribution"].items():
             summary_stats.add_num(f"degree.distribution.deg_{k}", v)
+
+    if "interval" in modes:
+        iv_obj = payload["interval"]  # type: ignore[assignment]
+        summary_stats.add_num("interval.static_symbols_total", iv_obj["static_symbols_total"])
+        summary_stats.add_num("interval.concrete_count", iv_obj["concrete_count"])
+        summary_stats.add_num("interval.partial_count", iv_obj["partial_count"])
+        summary_stats.add_num("interval.top_count", iv_obj["top_count"])
+        summary_stats.add_num("interval.bot_count", iv_obj["bot_count"])
+        summary_stats.add_num("interval.blocks_with_local", iv_obj["blocks_with_local"])
+        summary_stats.add_num("interval.local_entries_total", iv_obj["local_entries_total"])
 
     if not details:
         if plain:
@@ -370,6 +463,38 @@ def absint_cmd(
                     loc = f"{r['block_id']}:{r['cmd_index'] + 1}"
                     c.print(
                         f"  {loc:<{loc_w}} | {str(r['lhs']):<{lhs_w}} | {r['rendered']}",
+                        markup=False,
+                    )
+
+        if "interval" in modes:
+            iv_obj = payload["interval"]  # type: ignore[assignment]
+            c.print("interval:", markup=False)
+            c.print(
+                f"  time: {_format_duration(timings_sec.get('interval', 0.0))}",
+                markup=False,
+            )
+            c.print(
+                (
+                    f"  static_symbols_total: {iv_obj['static_symbols_total']}, "
+                    f"concrete: {iv_obj['concrete_count']}, "
+                    f"partial: {iv_obj['partial_count']}, "
+                    f"top: {iv_obj['top_count']}, "
+                    f"bot: {iv_obj['bot_count']}, "
+                    f"blocks_with_local: {iv_obj['blocks_with_local']}, "
+                    f"local_entries: {iv_obj['local_entries_total']}"
+                ),
+                markup=False,
+            )
+            top_iv = iv_obj["top_tightest"]  # type: ignore[index]
+            if top_iv:
+                c.print(
+                    "  tightest static intervals (format: var | interval):",
+                    markup=False,
+                )
+                var_w = max(3, max(len(str(r["var"])) for r in top_iv))
+                for r in top_iv:
+                    c.print(
+                        f"  {str(r['var']):<{var_w}} | {r['interval']}",
                         markup=False,
                     )
         return
@@ -442,5 +567,28 @@ def absint_cmd(
                         str(r["rendered"]),
                     )
                 )
+
+    if "interval" in modes:
+        iv_obj = payload["interval"]  # type: ignore[assignment]
+        sec = _add_section(
+            "interval",
+            [
+                ("time", _format_duration(timings_sec.get("interval", 0.0))),
+                ("static_symbols_total", str(iv_obj["static_symbols_total"])),
+                ("concrete_count", str(iv_obj["concrete_count"])),
+                ("partial_count", str(iv_obj["partial_count"])),
+                ("top_count", str(iv_obj["top_count"])),
+                ("bot_count", str(iv_obj["bot_count"])),
+                ("blocks_with_local", str(iv_obj["blocks_with_local"])),
+                ("local_entries_total", str(iv_obj["local_entries_total"])),
+            ],
+        )
+        top_iv = iv_obj["top_tightest"]  # type: ignore[index]
+        if top_iv:
+            top_node = sec.add(
+                _node_text("tightest static intervals", notes="var | interval")
+            )
+            for r in top_iv:
+                top_node.add(_node_text(str(r["var"]), str(r["interval"])))
 
     c.print(tree)
