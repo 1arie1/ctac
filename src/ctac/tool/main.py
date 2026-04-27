@@ -6,6 +6,7 @@ from ctac.tool.cli_runtime import app
 from ctac.tool.commands_diff import truncate_diff_lines as _truncate_diff_lines
 
 # Import subcommand modules for Typer registration side effects.
+import_module("ctac.tool.commands_absint")
 import_module("ctac.tool.commands_cfg_pp_search")
 import_module("ctac.tool.commands_df")
 import_module("ctac.tool.commands_diff")

@@ -293,6 +293,29 @@ Prover versions; `op-diff` surfaces the encoder-level differences in
 one shot (fewer Mods, more BWAnds, extra commands, symbol-table
 growth). Much faster than hand-comparing `ctac stats` outputs.
 """,
+    "absint": """ctac absint --agent
+
+Abstract-interpreter-driven analyses over post-rewrite TAC. v1 exposes
+polynomial degree (a stats case that ranks the program's non-linear
+expressions). Most absint work supports other transformations; this
+command surfaces the analyses with useful standalone reports.
+
+WHY BEAT MANUAL: degree of every TAC variable falls out of a single
+forward pass over the DSA, loop-free CFG; computing it by hand on a
+medium-sized program is hopeless. The top-non-linear table points at
+the multiply-divide chains and bitwise transforms that drive solver
+cost — a cheap pre-flight before `ctac smt`.
+
+TYPICAL:
+  ctac absint f.tac --plain                            # summary
+  ctac absint f.tac --plain --details                  # top non-linear table
+  ctac absint f.tac --plain --details --min-degree 3   # cubic and up only
+  ctac absint f.tac --plain --json                     # machine-readable
+
+OUTPUT: `degree.distribution.deg_<k>` shows how many vars at each
+degree; `degree.saw_top` flags any unrecognized operators (e.g. SBF
+intrinsics not yet in the operator table — sound over-approximation).
+""",
     "df": """ctac df --agent
 
 TAC data-flow analyses: def-use, liveness, DCE, use-before-def, DSA
