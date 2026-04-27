@@ -83,15 +83,9 @@ def bump(a: AbsVal) -> AbsVal:
 _LINEAR_OPS = frozenset({"Add", "IntAdd", "Sub", "IntSub"})
 _MUL_OPS = frozenset({"Mul", "IntMul"})
 _DIV_OPS = frozenset({"Div", "IntDiv", "Mod", "IntMod", "IntCeilDiv", "SDiv", "SMod"})
-_BITWISE_BIN_OPS = frozenset(
-    {
-        "BWAnd",
-        "BWOr",
-        "BWXor",
-        "ShiftLeft",
-        "ShiftRightLogical",
-        "ShiftRightArithmetical",
-    }
+_BITWISE_BIN_OPS = frozenset({"BWAnd", "BWOr", "BWXor"})
+_SHIFT_OPS = frozenset(
+    {"ShiftLeft", "ShiftRightLogical", "ShiftRightArithmetical"}
 )
 _BITWISE_UN_OPS = frozenset({"BWNot"})
 _REL_OPS = frozenset(
@@ -132,6 +126,17 @@ def evaluate_degree(expr: TacExpr, vals: Mapping[str, AbsVal]) -> AbsVal:
     return TOP
 
 
+def _is_constant_degree(v: AbsVal) -> bool:
+    """Proxy for 'this operand is a literal constant'.
+
+    A ConstExpr has degree 0; combinations of constants (Add of two
+    consts, Mul of two consts, etc.) also yield degree 0 via the lattice
+    rules. Symbolic refs are degree >= 1, so degree-0 == const-valued is
+    a sound proxy in this analysis.
+    """
+    return isinstance(v, int) and v == 0
+
+
 def _eval_apply(expr: ApplyExpr, vals: Mapping[str, AbsVal]) -> AbsVal:
     op = expr.op
     arg_exprs = list(expr.args)
@@ -155,16 +160,38 @@ def _eval_apply(expr: ApplyExpr, vals: Mapping[str, AbsVal]) -> AbsVal:
         return join_val(args[0], args[1])
 
     if op in _MUL_OPS and len(args) == 2:
+        # Mul is degree-additive; deg(c) = 0 already gives the
+        # mul-by-constant linear case for free (deg(x) + 0 = deg(x)).
         return add_deg(args[0], args[1])
 
     if op in _DIV_OPS and len(args) == 2:
+        # Div / Mod / IntCeilDiv by a constant divisor is linear scaling
+        # (same degree as the numerator) — `x / c = (1/c) * x`. Only a
+        # symbolic divisor introduces 1/x and bumps the degree.
+        if _is_constant_degree(args[1]):
+            return args[0]
         return bump(join_val(args[0], args[1]))
 
     if op in _BITWISE_BIN_OPS and len(args) == 2:
+        # Bitwise op against a constant mask is linear in the other
+        # operand; only symbolic-on-both-sides genuinely introduces
+        # bit-level nonlinearity.
+        if _is_constant_degree(args[0]) or _is_constant_degree(args[1]):
+            return join_val(args[0], args[1])
         return bump(join_val(args[0], args[1]))
 
     if op in _BITWISE_UN_OPS and len(args) == 1:
-        return bump(args[0])
+        # BWNot is bit-complement: ~x = -x - 1 in two's complement,
+        # linear in x.
+        return args[0]
+
+    if op in _SHIFT_OPS and len(args) == 2:
+        # Shift by a constant amount is multiplication / division by a
+        # power of two — linear. A variable shift count is genuinely
+        # nonlinear.
+        if _is_constant_degree(args[1]):
+            return args[0]
+        return bump(join_val(args[0], args[1]))
 
     if op in _REL_OPS and len(args) == 2:
         return join_val(args[0], args[1])

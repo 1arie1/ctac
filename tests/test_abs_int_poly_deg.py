@@ -171,15 +171,112 @@ def test_select_treated_as_fresh_symbol() -> None:
     assert res.final_state["R"] == 1
 
 
-def test_bitwise_and_bumps_degree() -> None:
+def test_bitwise_and_with_const_mask_is_linear() -> None:
     res = _run_single(
         [
             _havoc("X"),
             _assign("R", _apply("BWAnd", _sym("X"), _const("0xff"))),
         ]
     )
-    # max(deg(X), deg(0xff)) + 1 = 1 + 1 = 2
+    # Mask op with a constant: linear in X.
+    assert res.final_state["R"] == 1
+
+
+def test_bitwise_and_two_symbolic_bumps_degree() -> None:
+    res = _run_single(
+        [
+            _havoc("X"),
+            _havoc("Y"),
+            _assign("R", _apply("BWAnd", _sym("X"), _sym("Y"))),
+        ]
+    )
+    # Both symbolic: genuinely nonlinear.
     assert res.final_state["R"] == 2
+
+
+def test_div_by_const_is_linear() -> None:
+    res = _run_single(
+        [
+            _havoc("X"),
+            _assign("R", _apply("Div", _sym("X"), _const("8"))),
+        ]
+    )
+    # x / c is linear scaling (multiplication by 1/c).
+    assert res.final_state["R"] == 1
+
+
+def test_div_of_const_by_var_bumps_degree() -> None:
+    res = _run_single(
+        [
+            _havoc("X"),
+            _assign("R", _apply("Div", _const("8"), _sym("X"))),
+        ]
+    )
+    # c / x introduces 1/x — genuinely nonlinear.
+    assert res.final_state["R"] == 2
+
+
+def test_mod_by_const_is_linear() -> None:
+    res = _run_single(
+        [
+            _havoc("X"),
+            _assign("R", _apply("Mod", _sym("X"), _const("8"))),
+        ]
+    )
+    assert res.final_state["R"] == 1
+
+
+def test_shift_by_const_is_linear() -> None:
+    res = _run_single(
+        [
+            _havoc("X"),
+            _assign("R", _apply("ShiftLeft", _sym("X"), _const("4"))),
+        ]
+    )
+    # x << k = x * 2^k for constant k — linear.
+    assert res.final_state["R"] == 1
+
+
+def test_shift_by_var_bumps_degree() -> None:
+    res = _run_single(
+        [
+            _havoc("X"),
+            _havoc("K"),
+            _assign("R", _apply("ShiftLeft", _sym("X"), _sym("K"))),
+        ]
+    )
+    # Variable shift count is genuinely nonlinear.
+    assert res.final_state["R"] == 2
+
+
+def test_bwnot_is_linear() -> None:
+    res = _run_single(
+        [
+            _havoc("X"),
+            _assign("R", _apply("BWNot", _sym("X"))),
+        ]
+    )
+    # Bit-complement is linear (~x = -x - 1).
+    assert res.final_state["R"] == 1
+
+
+def test_div_then_mul_by_same_const_stays_linear() -> None:
+    # The kvault chain `(R / [2^14]) *int [2^14]` should not inflate
+    # degree when both operations are by constants.
+    res = _run_single(
+        [
+            _havoc("X"),
+            _assign(
+                "R",
+                _apply(
+                    "Mul",
+                    _apply("Div", _sym("X"), _const("0x4000")),
+                    _const("0x4000"),
+                ),
+            ),
+        ]
+    )
+    assert res.final_state["R"] == 1
 
 
 def test_two_block_straight_line() -> None:
