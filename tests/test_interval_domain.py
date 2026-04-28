@@ -347,10 +347,11 @@ def test_raw_bv_op_falls_back_to_bv_range_on_overflow() -> None:
     assert result.static["R"] == Interval(0, (1 << 256) - 1)
 
 
-def test_raw_bv_op_no_width_context_returns_top() -> None:
-    """If the assignment's lhs has no bv sort, we have no width to
-    drive the modular-interval clamp — fall back to TOP rather than
-    pretending the op is unbounded."""
+def test_raw_bv_op_infers_width_from_operand_sorts() -> None:
+    """If the assignment's lhs has no bv sort but the operands are
+    bv-typed, the bv op's width is inferred from the operand sorts.
+    Add(X_bv256, X_bv256) is bv256-modular regardless of where the
+    result is assigned."""
     program = TacProgram(
         blocks=[
             _block(
@@ -364,9 +365,72 @@ def test_raw_bv_op_no_width_context_returns_top() -> None:
             ),
         ]
     )
-    # Note: no sort for R → no width context for the bv Add.
+    # No sort for R → the bv Add picks up width 256 from X's sort.
+    # X ∈ [0, 16]; un-wrapped X+X = [0, 32], fits in bv256 → precise.
     result = analyze_intervals(program, symbol_sorts={"X": "bv256"})
+    assert result.static["R"] == Interval(0, 32)
+
+
+def test_raw_bv_op_with_no_width_signal_anywhere_is_top() -> None:
+    """Genuinely no-width-context: operands are int-sorted (or
+    unsorted), and the assignment's lhs has no sort either. The bv
+    op falls back to TOP — sound, since we don't know the modular
+    domain to clamp into."""
+    program = TacProgram(
+        blocks=[
+            _block(
+                "e",
+                [],
+                [
+                    _havoc("X"),
+                    _assume(_apply("Le", _sym("X"), _const("0x10"))),
+                    _assign("R", _apply("Add", _sym("X"), _sym("X"))),
+                ],
+            ),
+        ]
+    )
+    # X is int-sorted; R has no sort; no width signal anywhere.
+    result = analyze_intervals(program, symbol_sorts={"X": "int"})
     assert result.static["R"] == Interval(None, None)
+
+
+def test_int_op_threads_width_to_nested_bv_op() -> None:
+    """Regression for the TCSE2 case in real targets:
+    ``IntMul(Mod(R, K), C)`` with a bv256-sorted lhs. Without
+    threading ``result_width`` from the lhs through ``IntMul`` down
+    to ``Mod``, the bv ``Mod`` saw no width context and returned
+    TOP, leaving ``IntMul`` at TOP too."""
+    program = TacProgram(
+        blocks=[
+            _block(
+                "e",
+                [],
+                [
+                    _havoc("R148"),
+                    _assign(
+                        "TCSE2",
+                        _apply(
+                            "IntMul",
+                            _apply(
+                                "Mod",
+                                _sym("R148"),
+                                _const("0x100000000"),
+                            ),
+                            _const("0x4000"),
+                        ),
+                    ),
+                ],
+            ),
+        ]
+    )
+    result = analyze_intervals(
+        program, symbol_sorts={"R148": "bv256", "TCSE2": "bv256"}
+    )
+    # Mod(R148, 2^32) ∈ [0, 2^32 - 1] under bv256 modular semantics
+    # (un-wrapped fits) → IntMul by 2^14 → [0, (2^32-1) * 2^14].
+    assert result.static["TCSE2"] == Interval(
+        0, ((1 << 32) - 1) * (1 << 14)
+    )
 
 
 def test_intadd_and_bv_add_dispatch_to_distinct_transfer_functions() -> None:

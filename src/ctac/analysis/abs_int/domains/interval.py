@@ -175,16 +175,37 @@ class IntervalDomain:
             return self._default(var)
         return v
 
+    def _infer_bv_width_from_operand_sorts(
+        self, args: list[TacExpr]
+    ) -> int | None:
+        """Fallback width inference for raw bv ops without a
+        surrounding ``result_width``: if every SymbolRef operand has
+        a bv-N sort and they agree on N, return N. Otherwise return
+        ``None`` (and the bv op falls back to TOP)."""
+        widths: set[int] = set()
+        for a in args:
+            if isinstance(a, SymbolRef):
+                w = _sort_width(self._sorts.get(a.name))
+                if w is not None:
+                    widths.add(w)
+        if len(widths) == 1:
+            return next(iter(widths))
+        return None
+
     # ----------------------------------------------------------------
     # Expression evaluation
     #
     # ``result_width`` carries the bv width of the surrounding context
-    # (set by ``transfer`` from the AssignExpCmd's lhs sort, propagated
-    # through bv ops, reset to None inside an ``Apply(narrow_bvN, ...)``
-    # since the inner is int). Bv ops use it to detect wraparound: if
-    # the un-wrapped interval fits in ``[0, 2^width-1]`` the bv result
-    # equals it (modular interval is precise); else the result is
-    # clamped to the full bv range.
+    # (set by ``transfer`` from the AssignExpCmd's lhs sort). It flows
+    # *through* every op — int ops ignore it for their own arithmetic,
+    # but a bv op nested inside an int op (e.g. ``IntMul(Mod(R, K), C)``
+    # with a bv256 lhs) needs it to compute its modular result.
+    #
+    # The width context resets to ``None`` inside ``Apply(narrow_bvN, ...)``:
+    # narrow's argument is int-typed, so anything underneath is in the
+    # int domain. Bv ops without a width context fall back to inferring
+    # one from operand sorts (all SymbolRef operands sharing bv-N →
+    # use N); without either signal, bv ops return TOP.
 
     def _eval(
         self, expr: TacExpr, state: State, *, result_width: int | None = None
@@ -215,57 +236,69 @@ class IntervalDomain:
             return iv.TOP
 
         # Int-domain (unbounded) arithmetic — interval math is sound
-        # directly. Operands of int ops are int too, so width context
-        # stays None.
+        # directly. ``result_width`` flows through to operands so a bv
+        # op nested inside (e.g. ``Mod`` inside an ``IntMul`` whose
+        # surrounding lhs is bv256) can compute its modular result.
         if op == "IntAdd" and len(args) == 2:
             return iv.add(
-                self._eval(args[0], state),
-                self._eval(args[1], state),
+                self._eval(args[0], state, result_width=result_width),
+                self._eval(args[1], state, result_width=result_width),
             )
         if op == "IntSub" and len(args) == 2:
             return iv.sub(
-                self._eval(args[0], state),
-                self._eval(args[1], state),
+                self._eval(args[0], state, result_width=result_width),
+                self._eval(args[1], state, result_width=result_width),
             )
         if op == "IntMul" and len(args) == 2:
             result = iv.mul_nonneg(
-                self._eval(args[0], state),
-                self._eval(args[1], state),
+                self._eval(args[0], state, result_width=result_width),
+                self._eval(args[1], state, result_width=result_width),
             )
             return result if result is not None else iv.TOP
         if op == "IntDiv" and len(args) == 2:
             k = const_to_int(args[1]) if isinstance(args[1], ConstExpr) else None
             if k is not None and k > 0:
-                a = self._eval(args[0], state)
+                a = self._eval(args[0], state, result_width=result_width)
                 result = iv.floor_div_by_pos_const(a, k)
                 if result is not None:
                     return result
             return iv.TOP
         if op == "IntCeilDiv" and len(args) == 2:
-            a = self._eval(args[0], state)
-            b = self._eval(args[1], state)
+            a = self._eval(args[0], state, result_width=result_width)
+            b = self._eval(args[1], state, result_width=result_width)
             result = iv.ceil_div_nonneg(a, b)
             return result if result is not None else iv.TOP
         if op == "IntMod" and len(args) == 2:
             k = const_to_int(args[1]) if isinstance(args[1], ConstExpr) else None
             if k is not None and k > 0:
-                a = self._eval(args[0], state)
+                a = self._eval(args[0], state, result_width=result_width)
                 result = iv.mod_by_pos_const(a, k)
                 if result is not None:
                     return result
             return iv.TOP
 
-        # Raw bv ops — modular interval semantics. Operands inherit
-        # the same width (bv ops are width-preserving). Without a
-        # width context we conservatively return TOP.
+        # Raw bv ops — modular interval semantics. Width comes from
+        # the surrounding context first, then from operand SymbolRef
+        # sorts when they agree (e.g. ``Add(R_bv256, R_bv256)`` is
+        # bv256-modular even when the assignment's lhs sort is
+        # missing). Without either signal, return TOP.
         if op in {"Add", "Sub", "Mul", "Div", "Mod"} and len(args) == 2:
-            if result_width is None:
+            width = result_width
+            if width is None:
+                width = self._infer_bv_width_from_operand_sorts(args)
+            if width is None:
                 return iv.TOP
-            a = self._eval(args[0], state, result_width=result_width)
-            b = self._eval(args[1], state, result_width=result_width)
-            return self._eval_bv_binop(op, a, b, result_width)
+            a = self._eval(args[0], state, result_width=width)
+            b = self._eval(args[1], state, result_width=width)
+            return self._eval_bv_binop(op, a, b, width)
         if op == "Ite" and len(args) == 3:
-            return iv.join(self._eval(args[1], state), self._eval(args[2], state))
+            # Branches are values of the same type as the Ite result —
+            # carry the width context through so nested bv ops in the
+            # arms get a width.
+            return iv.join(
+                self._eval(args[1], state, result_width=result_width),
+                self._eval(args[2], state, result_width=result_width),
+            )
         if op in _REL_OPS and len(args) == 2:
             return iv.bool_iv()
         if op in _BOOL_BIN_OPS and len(args) == 2:
