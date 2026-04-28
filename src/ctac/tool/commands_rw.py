@@ -15,9 +15,11 @@ from ctac.tool.tac_output import (
     write_program_to_path,
 )
 from collections import Counter
+from dataclasses import replace
 
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.framework import RewriteResult, RuleHit
+from ctac.rewrite.lift_dynamic_ite import lift_dynamic_ite_rhs
 from ctac.rewrite.materialize_assumes import materialize_assumes
 from ctac.rewrite.rules import (
     CP_ALIAS,
@@ -49,6 +51,7 @@ def _print_report(
     total_cmds_before: int,
     total_cmds_after: int,
     materialize_hits: dict[str, int] | None = None,
+    lift_dynamic_ite_hits: int = 0,
 ) -> None:
     def line(s: str) -> None:
         c.print(s, markup=not plain)
@@ -65,6 +68,8 @@ def _print_report(
         line(f"  dce_removed: {dce_removed}")
         line(f"  commands_before: {total_cmds_before}")
         line(f"  commands_after: {total_cmds_after}")
+        if lift_dynamic_ite_hits:
+            line(f"  lifted_dynamic_ite: {lift_dynamic_ite_hits}")
         if materialize_hits:
             line(f"  materialized_assumes: {materialize_total}")
             for name in sorted(materialize_hits):
@@ -78,6 +83,8 @@ def _print_report(
     line(f"  dce_removed: [bold]{dce_removed}[/bold]")
     line(f"  commands_before: {total_cmds_before}")
     line(f"  commands_after:  {total_cmds_after}")
+    if lift_dynamic_ite_hits:
+        line(f"  lifted_dynamic_ite: [bold]{lift_dynamic_ite_hits}[/bold]")
     if materialize_hits:
         line(f"  materialized_assumes: [bold]{materialize_total}[/bold]")
         for name in sorted(materialize_hits):
@@ -306,6 +313,23 @@ def rewrite_cmd(
         if not dce.removed:
             break
         program = dce.program
+    # Lift dynamic ``Ite``-RHS assignments out of their host block as
+    # static T-defs *before* the first dynamic in the block. This
+    # gives ITE_PURIFY a clean static prefix to insert ``TB<N>`` defs
+    # into; without it, blocks with multiple dynamics would have a TB
+    # land between two dynamics and break sea_vc's
+    # ``(static)*(dynamic)*term`` shape invariant. Skipped when
+    # purify_ite is off (no consumer for the lifted T-defs).
+    lift_hits = 0
+    if purify_ite:
+        lres = lift_dynamic_ite_rhs(program, symbol_sorts=tac.symbol_sorts)
+        program = lres.program
+        lift_hits = lres.hits
+        if lres.extra_symbols:
+            rw = replace(
+                rw,
+                extra_symbols=rw.extra_symbols + lres.extra_symbols,
+            )
     # Phase 3 (optional): after all simplification + DCE, name every remaining
     # non-trivial Ite condition as a fresh bool var, then do the same for
     # assert predicates and (optionally) assume conditions. Pair with CSE +
@@ -363,6 +387,7 @@ def rewrite_cmd(
             total_cmds_before=before_count,
             total_cmds_after=after_count,
             materialize_hits=materialize_hits,
+            lift_dynamic_ite_hits=lift_hits,
         )
 
     if output_path is not None:
