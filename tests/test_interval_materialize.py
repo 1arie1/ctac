@@ -354,12 +354,13 @@ def test_materialize_skips_emission_at_non_dominated_block() -> None:
     )
 
 
-def test_materialize_emits_at_dominated_block() -> None:
-    """A linear chain ``e → B1 → B2``: B2 IS dominated by B1, so a
-    refinement on a B1-defined var emitted via B1's local should
-    propagate to B2 via the analysis and be materializable there
-    too. Pinning the positive case so the dominance gate isn't
-    over-restrictive."""
+def test_materialize_subsumption_skips_redundant_dominated_emission() -> None:
+    """Linear chain ``e → B1 → B2``: refinement on X at B1 propagates
+    unchanged to B2 via the analysis. The materializer must emit the
+    assume only at B1 (the topmost block where the fact is first
+    established) and skip B2 — by dominance + control flow, B1's
+    assume is already in scope at B2, so a second emission would be
+    redundant. Pinning the subsumption filter."""
     src = _wrap(
         "\tBlock e Succ [B1] {\n"
         "\t\tAssignHavocCmd X\n"
@@ -375,26 +376,30 @@ def test_materialize_emits_at_dominated_block() -> None:
         syms="X:bv256",
     )
     tac = parse_string(src, path="<chain>")
-    augmented, _ = materialize_intervals(
+    augmented, report = materialize_intervals(
         tac.program, symbol_sorts=tac.symbol_sorts
     )
     by_id = {b.id: b for b in augmented.blocks}
-    # X is defined at e (DSA-static, single havoc). e's def block is e
-    # itself, which dominates B1 and B2. The refinement at B1 should
-    # propagate via analysis and materialize at B1 / B2 ends.
     b1_x_assumes = [
         c for c in by_id["B1"].commands
         if isinstance(c, AssumeExpCmd) and "X" in (c.raw or "")
     ]
-    # B1 has the original assume + a materialized one on X.
-    assert len(b1_x_assumes) >= 1
-    # B2 is dominated by e (X's def block) → can carry the propagated
-    # local refinement and materialize.
-    b2_x_assumes = [
+    # B1 has the original assume + a materialized one on X (since B1
+    # is itself a refining block — the refinement is *new* there).
+    materialized_at_b1 = [c for c in b1_x_assumes if c.raw.startswith("AssumeExpCmd")]
+    assert materialized_at_b1, "expected materialized assume on X at B1"
+    # B2 inherits from B1 unchanged → subsumed → no materialized
+    # assume on X at B2.
+    b2_materialized = [
         c for c in by_id["B2"].commands
         if isinstance(c, AssumeExpCmd) and "X" in (c.raw or "")
     ]
-    assert b2_x_assumes, "expected materialized assume on X at dominated block B2"
+    assert not b2_materialized, (
+        f"B2's redundant emission wasn't suppressed: "
+        f"{[c.raw for c in b2_materialized]}"
+    )
+    # Subsumption metric: at least one was filtered.
+    assert report.subsumed_by_dominator >= 1
 
 
 def test_materialized_assumes_inserted_before_terminator_not_after() -> None:

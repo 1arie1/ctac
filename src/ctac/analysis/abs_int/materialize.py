@@ -50,6 +50,21 @@ from ctac.ir.models import NBId, TacBlock, TacProgram
 class MaterializeReport:
     blocks_with_emissions: int
     assumes_emitted: int
+    # Emissions skipped because a strict dominator already
+    # materialized an at-least-as-tight fact about the same var.
+    subsumed_by_dominator: int = 0
+
+
+def _strictly_tighter_or_equal(a: Interval, b: Interval) -> bool:
+    """Is ``a`` a subset of (or equal to) ``b`` as integer intervals?
+    True iff every value in ``a`` is also in ``b``."""
+    if a.is_bot():
+        return True
+    if b.is_top():
+        return True
+    a_lo_ok = b.lo is None or (a.lo is not None and a.lo >= b.lo)
+    a_hi_ok = b.hi is None or (a.hi is not None and a.hi <= b.hi)
+    return a_lo_ok and a_hi_ok
 
 
 _TERMINATOR_TYPES = (JumpCmd, JumpiCmd, AssertCmd)
@@ -130,13 +145,37 @@ def materialize_intervals(
         }
         dominance_scope[var] = frozenset(scope)
 
+    # Track each var's tightest emitted fact along the dominator
+    # chain. Filled top-down so when we visit B, any strict dominator
+    # of B that emitted X has already populated this map. Skip B's
+    # emission for X iff a strict dominator's emitted interval is
+    # at-least-as-tight (subset). Trivially safe: by dominance the
+    # dominator's assume already establishes the fact at B.
+    emitted_by_dominators: dict[NBId, dict[str, Interval]] = {}
+
+    def best_dominator_fact(var: str, block_id: NBId) -> Interval | None:
+        """Return the tightest interval emitted for ``var`` at any
+        strict dominator of ``block_id`` (None if nothing emitted)."""
+        best: Interval | None = None
+        for dom_id in dominators.get(block_id, frozenset()):
+            if dom_id == block_id:
+                continue
+            iv = emitted_by_dominators.get(dom_id, {}).get(var)
+            if iv is None:
+                continue
+            if best is None or _strictly_tighter_or_equal(iv, best):
+                best = iv
+        return best
+
     new_blocks: list[TacBlock] = []
     total_assumes = 0
     blocks_with_emissions = 0
+    subsumed_count = 0
 
     for block in program.blocks:
         local = result.per_block_local.get(block.id, {})
         emissions: list[tuple[str, Interval]] = []
+        emitted_here: dict[str, Interval] = {}
 
         # Block-local refinements (apply only at this block onward).
         for var, interval in sorted(local.items()):
@@ -145,7 +184,21 @@ def materialize_intervals(
             scope = dominance_scope.get(var)
             if scope is None or block.id not in scope:
                 continue
+            # Subsumption: skip if a dominator already emitted at-least-
+            # as-tight a fact about this var.
+            dom_fact = best_dominator_fact(var, block.id)
+            if dom_fact is not None and _strictly_tighter_or_equal(
+                dom_fact, interval
+            ):
+                subsumed_count += 1
+                # Record the dominator's stronger fact under our
+                # `emitted_here` so further descendants see it as the
+                # current best — no need to walk back through every
+                # ancestor chain at every block.
+                emitted_here[var] = dom_fact
+                continue
             emissions.append((var, interval))
+            emitted_here[var] = interval
 
         # Static facts: emit at the var's def block, after the def
         # has been processed in the original. The def block is itself
@@ -158,8 +211,19 @@ def materialize_intervals(
                 continue
             if var in local:
                 continue
-            if is_emittable(var, interval):
-                emissions.append((var, interval))
+            if not is_emittable(var, interval):
+                continue
+            dom_fact = best_dominator_fact(var, block.id)
+            if dom_fact is not None and _strictly_tighter_or_equal(
+                dom_fact, interval
+            ):
+                subsumed_count += 1
+                emitted_here[var] = dom_fact
+                continue
+            emissions.append((var, interval))
+            emitted_here[var] = interval
+
+        emitted_by_dominators[block.id] = emitted_here
 
         new_cmds = _insert_assumes_before_terminator(
             block.commands, emissions
@@ -178,6 +242,7 @@ def materialize_intervals(
     return TacProgram(blocks=new_blocks), MaterializeReport(
         blocks_with_emissions=blocks_with_emissions,
         assumes_emitted=total_assumes,
+        subsumed_by_dominator=subsumed_count,
     )
 
 
