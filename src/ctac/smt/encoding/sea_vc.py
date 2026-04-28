@@ -36,7 +36,7 @@ from ctac.ast.range_constraints import match_inclusive_range_constraint
 _SYMBOL_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*):([A-Za-z0-9_]+)\s*$")
 _BASE_SYMBOL = re.compile(r"^(.*):\d+$")
 _TYPED_CONST = re.compile(
-    r"^(?P<num>(?:-?[0-9]+|0[xX][0-9a-fA-F_]+))\((?P<tag>[A-Za-z0-9_]+)\)$"
+    r"^(?P<num>(?:-?[0-9]+|0[xX]-?[0-9a-fA-F_]+))\((?P<tag>[A-Za-z0-9_]+)\)$"
 )
 _SAFE_MATH_NARROW_BIF = re.compile(r"^safe_math_narrow_bv(?P<w>\d+):bif$")
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -70,7 +70,13 @@ def _parse_symbol_sorts(symbol_table_text: str) -> dict[str, str]:
 def _parse_int_token(token: str) -> int:
     t = token.replace("_", "").strip()
     if t.startswith(("0x", "0X")):
-        return int(t, 16)
+        # TAC dumps emit negative hex as ``0x-N`` (sign right after
+        # the radix prefix). Python's ``int(_, 16)`` doesn't accept
+        # that shape; strip and re-prefix.
+        body = t[2:]
+        if body.startswith("-"):
+            return -int(body[1:], 16)
+        return int(body, 16)
     return int(t, 10)
 
 

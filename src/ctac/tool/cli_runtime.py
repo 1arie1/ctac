@@ -560,11 +560,19 @@ def _app_callback(
 
 def console(plain: bool) -> Console:
     force_terminal = False if plain else None
+    # In plain mode, output is for agents / scripts — never re-flow
+    # to fit a terminal column. Rich would otherwise wrap at the
+    # detected width, fragmenting tokens like ``bytemap-rw`` across
+    # lines and breaking grep / pattern matching. A very large width
+    # disables wrapping while keeping Console's other plain-text
+    # behaviors.
+    width: int | None = 10**9 if plain else None
     return Console(
         force_terminal=force_terminal,
         no_color=plain or bool(os.environ.get("NO_COLOR")) or not sys.stdout.isatty(),
         highlight=False,
         theme=TAC_THEME,
+        width=width,
     )
 
 
