@@ -11,6 +11,18 @@ without having to interpret compound condition expressions each time.
 Downstream SMT emission is free to inline these definitions if that's
 cheaper for its solver.
 
+**Placement:** the TB-def must dominate the use **and** sit in the
+DSA-static prefix of its host block (sea_vc requires
+``(static)*(dynamic)*terminator`` per block). We insert TB just
+before the current Ite use site (``placement="current"``), which is
+sound and shape-valid as long as no DSA-dynamic def already precedes
+the use in the same block. When such a dynamic def exists, the TB
+(static, single-def) would land between two dynamics and break the
+shape; in that case we **skip** the rewrite for this Ite rather than
+silently producing a TAC the encoder rejects. (Hoisting to entry is
+not generally safe either: cond's operands may not all be visible at
+entry, and uses inside the entry block would violate use-before-def.)
+
 **Ordering:** this rule is intentionally *not* part of
 ``simplify_pipeline``. It runs as a final phase after DCE so that the
 existing Ite rules (IteBool / IteSame / EqIte / BoolAbsorb / DeMorgan)
@@ -32,6 +44,21 @@ def _rewrite_ite_purify(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     # Already a named bool (SymbolRef) or a trivial literal — nothing to do.
     if isinstance(cond, (SymbolRef, ConstExpr)):
         return None
+    # Skip if a DSA-dynamic def already precedes the current cmd in
+    # this block: inserting a static TB-def at ``current`` would land
+    # between two dynamics and violate ``(static)*(dynamic)*term``.
+    cur_block = ctx._cur_block
+    cur_cmd = ctx._cur_cmd
+    if cur_block is not None and cur_cmd is not None:
+        for dyn in ctx.dsa.dynamic_assignments:
+            if dyn.block_id == cur_block and dyn.cmd_index < cur_cmd:
+                ctx.warnings.append(
+                    f"ITE_PURIFY: skipped Ite at {cur_block}:{cur_cmd} "
+                    f"— DSA-dynamic def at {dyn.block_id}:{dyn.cmd_index} "
+                    "precedes the use; inserting a TB-def at current "
+                    "would violate (static)*(dynamic)*term shape"
+                )
+                return None
     tb = ctx.emit_fresh_assign(prefix="TB", rhs=cond, sort="bool")
     return ApplyExpr("Ite", (tb, then_branch, else_branch))
 

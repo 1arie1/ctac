@@ -101,12 +101,14 @@ def _merge_phases(*phases: RewriteResult) -> RewriteResult:
     all_hits: list[RuleHit] = []
     all_counts: Counter[str] = Counter()
     all_extras: list[tuple[str, str]] = []
+    all_warnings: list[str] = []
     iterations = 0
     for p in phases:
         all_hits.extend(p.hits)
         for name, n in p.hits_by_rule.items():
             all_counts[name] += n
         all_extras.extend(p.extra_symbols)
+        all_warnings.extend(p.warnings)
         iterations += p.iterations
     return RewriteResult(
         program=phases[-1].program,
@@ -114,6 +116,7 @@ def _merge_phases(*phases: RewriteResult) -> RewriteResult:
         hits_by_rule=dict(all_counts),
         iterations=iterations,
         extra_symbols=tuple(all_extras),
+        warnings=tuple(all_warnings),
     )
 
 
@@ -347,6 +350,9 @@ def rewrite_cmd(
         materialize_hits = mres.hits
     final_program = program
     after_count = _command_count(final_program)
+
+    for w in dict.fromkeys(rw.warnings):
+        c.print(f"# rewrite warning: {w}", markup=False)
 
     if report:
         _print_report(

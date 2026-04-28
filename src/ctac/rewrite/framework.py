@@ -60,6 +60,7 @@ class RewriteResult:
     hits_by_rule: dict[str, int] = field(default_factory=dict)
     iterations: int = 0
     extra_symbols: tuple[tuple[str, str], ...] = field(default=())
+    warnings: tuple[str, ...] = field(default=())
 
     @property
     def total_hits(self) -> int:
@@ -298,4 +299,5 @@ def rewrite_program(
         hits_by_rule=dict(counts),
         iterations=iteration,
         extra_symbols=tuple(extra_symbols),
+        warnings=tuple(ctx.warnings),
     )

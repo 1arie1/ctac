@@ -150,6 +150,11 @@ class RewriteCtx:
     _pending_symbols: list[tuple[str, str]] = field(default_factory=list, init=False)
     _pending_skips: set[tuple[str, int]] = field(default_factory=set, init=False)
     _fresh_counter: int = field(default=0, init=False)
+    # Rules push human-readable diagnostics here when they decline to
+    # rewrite for non-obvious reasons (e.g., insertion would break a
+    # downstream invariant). The driver propagates these to
+    # ``RewriteResult.warnings`` and the CLI prints them.
+    warnings: list[str] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         self.du = extract_def_use(self.program, strip_var_suffixes=_STRIP_SUFFIXES)
