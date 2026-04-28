@@ -29,6 +29,12 @@ import subprocess
 import pytest
 
 from ctac.analysis.abs_int import materialize_intervals
+from ctac.ast.nodes import (
+    ApplyExpr,
+    AssertCmd,
+    AssumeExpCmd,
+    SymbolRef,
+)
 from ctac.ir.models import TacFile
 from ctac.parse import parse_string
 from ctac.rw_eq import emit_equivalence_program
@@ -216,6 +222,120 @@ def test_materialized_assumes_discharge_unsat(name: str, src: str) -> None:
             f"{verdict!r} (expected unsat). z3 stdout:\n{result.stdout}\n"
             f"z3 stderr:\n{result.stderr}"
         )
+
+
+# ---- Static-fact emission site regression -----------------------------
+# Pins the latest materialization fix: a DSA-static var defined in a
+# non-entry block must have its static assume emitted at the def
+# block's end, NOT at entry's end. Emitting at entry would reference
+# a symbol the original program hasn't defined yet — sea_vc would
+# (correctly) reject with use-before-def, breaking the pipeline on
+# any real-target program where some bool/int is defined downstream.
+
+
+def _refers_to(expr, var_name: str) -> bool:
+    """Recursive: does the expression reference SymbolRef(name=var)?"""
+    if isinstance(expr, SymbolRef):
+        return expr.name == var_name
+    if isinstance(expr, ApplyExpr):
+        return any(_refers_to(a, var_name) for a in expr.args)
+    return False
+
+
+def _block_assume_vars(block) -> set[str]:
+    """Symbols mentioned in any AssumeExpCmd in this block."""
+    out: set[str] = set()
+    for cmd in block.commands:
+        if isinstance(cmd, AssumeExpCmd):
+            _collect_symbols(cmd.condition, out)
+    return out
+
+
+def _collect_symbols(expr, out: set[str]) -> None:
+    if isinstance(expr, SymbolRef):
+        out.add(expr.name)
+    elif isinstance(expr, ApplyExpr):
+        for a in expr.args:
+            _collect_symbols(a, out)
+
+
+def test_static_var_defined_in_non_entry_emits_at_def_block_not_entry() -> None:
+    """Regression: when X is DSA-static but defined in a non-entry
+    block, materialize_intervals must emit its static assume at the
+    def block's end, not at the entry block's end.
+
+    The bug we're pinning: an earlier materialize implementation put
+    every static fact at entry's end. For X defined in a downstream
+    block, that produced ``Le(X, ...)`` referencing a not-yet-defined
+    symbol → sea_vc rejects with use-before-def at first encode."""
+    src = _wrap(
+        "\tBlock e Succ [B1] {\n"
+        "\t\tJumpCmd B1\n"
+        "\t}\n"
+        "\tBlock B1 Succ [] {\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssumeExpCmd Le(X 0x64)\n"
+        "\t\tAssertCmd:1 Le(X 0x64) \"x_bounded\"\n"
+        "\t}",
+        syms="X:bv256",
+    )
+    tac = parse_string(src, path="<def_in_b1>")
+    augmented, _ = materialize_intervals(
+        tac.program, symbol_sorts=tac.symbol_sorts
+    )
+
+    by_id = augmented.block_by_id()
+    e_assume_vars = _block_assume_vars(by_id["e"])
+    b1_assume_vars = _block_assume_vars(by_id["B1"])
+
+    # Entry must NOT mention X — at entry's end, X has no def yet.
+    assert "X" not in e_assume_vars, (
+        f"entry block leaked an assume on undefined X: {e_assume_vars}"
+    )
+    # B1 (the def block) is where the materialized assume must land.
+    assert "X" in b1_assume_vars, (
+        f"B1's local refinement on X wasn't materialized: {b1_assume_vars}"
+    )
+
+    # End-to-end check: the augmented program should encode without
+    # use-before-def. (The earlier bug would fail right here.)
+    new_tac = dataclasses.replace(tac, program=augmented)
+    build_vc(new_tac)  # raises SmtEncodingError if anything is off
+
+
+def test_materialized_assumes_inserted_before_terminator_not_after() -> None:
+    """Regression for emission-at-end-of-block: the materialized
+    assume must come BEFORE the block's terminator (JumpCmd /
+    JumpiCmd / AssertCmd), not appended after. A post-terminator
+    assume would be unreachable in the merged program."""
+    src = _wrap(
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssumeExpCmd Le(X 0x64)\n"
+        "\t\tAssertCmd:1 Le(X 0x64) \"bound\"\n"
+        "\t}",
+        syms="X:bv256",
+    )
+    tac = parse_string(src, path="<terminator>")
+    augmented, _ = materialize_intervals(
+        tac.program, symbol_sorts=tac.symbol_sorts
+    )
+    cmds = augmented.blocks[0].commands
+    assume_indices = [
+        i for i, c in enumerate(cmds) if isinstance(c, AssumeExpCmd)
+    ]
+    # Identify the terminator (the AssertCmd here is the last cmd
+    # because emission inserts before it).
+    assert_indices = [
+        i for i, c in enumerate(cmds) if isinstance(c, AssertCmd)
+    ]
+    assert assert_indices, "fixture lost its assert"
+    last_assume = max(assume_indices)
+    assert last_assume < assert_indices[0], (
+        f"a materialized assume landed at index {last_assume} but the "
+        f"terminator AssertCmd is at {assert_indices[0]} — assumes must "
+        f"sit before the terminator"
+    )
 
 
 # ---- Negative test (unsound materialization → sat) ------------------

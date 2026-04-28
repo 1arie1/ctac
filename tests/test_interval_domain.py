@@ -369,6 +369,223 @@ def test_raw_bv_op_no_width_context_returns_top() -> None:
     assert result.static["R"] == Interval(None, None)
 
 
+def test_intadd_and_bv_add_dispatch_to_distinct_transfer_functions() -> None:
+    """Regression test: ``IntAdd`` (unbounded int arithmetic) and
+    ``Add`` (bvN-modular) MUST dispatch to different transfer
+    functions. Same operands, different lhs-sort context.
+
+    Operand X is exactly 2^255. The un-wrapped sum is 2^256.
+
+    - ``IntAdd``: int domain, unbounded. Result interval = ``[2^256, 2^256]``.
+    - ``Add`` on bv256: un-wrapped 2^256 doesn't fit in ``[0, 2^256-1]`` →
+      modular clamp to bv256 range ``[0, 2^256-1]``.
+
+    If the dispatch ever conflates the two ops again (the bug we
+    fixed mid-session), one of these assertions will fail loud.
+    """
+    half = 1 << 255
+
+    # Int side: IntAdd with int-typed result.
+    int_program = TacProgram(
+        blocks=[
+            _block(
+                "e",
+                [],
+                [
+                    _havoc("X"),
+                    _assume(_apply("Eq", _sym("X"), _const(hex(half)))),
+                    _assign(
+                        "Y", _apply("IntAdd", _sym("X"), _sym("X"))
+                    ),
+                ],
+            ),
+        ]
+    )
+    int_result = analyze_intervals(
+        int_program, symbol_sorts={"X": "bv256", "Y": "int"}
+    )
+    assert int_result.static["Y"] == Interval(1 << 256, 1 << 256)
+
+    # Bv side: Add with bv256-typed result.
+    bv_program = TacProgram(
+        blocks=[
+            _block(
+                "e",
+                [],
+                [
+                    _havoc("X"),
+                    _assume(_apply("Eq", _sym("X"), _const(hex(half)))),
+                    _assign("Y", _apply("Add", _sym("X"), _sym("X"))),
+                ],
+            ),
+        ]
+    )
+    bv_result = analyze_intervals(
+        bv_program, symbol_sorts={"X": "bv256", "Y": "bv256"}
+    )
+    assert bv_result.static["Y"] == Interval(0, (1 << 256) - 1)
+
+
+def test_intsub_propagates_intervals() -> None:
+    """``IntSub`` is unbounded subtraction; result can be negative."""
+    program = TacProgram(
+        blocks=[
+            _block(
+                "e",
+                [],
+                [
+                    _havoc("X"),
+                    _assume(_apply("Ge", _sym("X"), _const("0x0"))),
+                    _assume(_apply("Le", _sym("X"), _const("0x14"))),
+                    _havoc("Y"),
+                    _assume(_apply("Ge", _sym("Y"), _const("0x0"))),
+                    _assume(_apply("Le", _sym("Y"), _const("0xa"))),
+                    _assign("Z", _apply("IntSub", _sym("X"), _sym("Y"))),
+                ],
+            ),
+        ]
+    )
+    # X ∈ [0, 20], Y ∈ [0, 10] → X - Y ∈ [-10, 20].
+    result = analyze_intervals(
+        program, symbol_sorts={"X": "int", "Y": "int", "Z": "int"}
+    )
+    assert result.static["Z"] == Interval(-10, 20)
+
+
+def test_intceildiv_in_domain() -> None:
+    """``IntCeilDiv`` with non-negative numerator and positive divisor
+    yields ``ceil(a/b)``: ``a∈[0,100], b∈[3,3] → result ∈ [0, 34]``."""
+    program = TacProgram(
+        blocks=[
+            _block(
+                "e",
+                [],
+                [
+                    _havoc("A"),
+                    _assume(_apply("Ge", _sym("A"), _const("0x0"))),
+                    _assume(_apply("Le", _sym("A"), _const("0x64"))),
+                    _assign(
+                        "Q",
+                        _apply("IntCeilDiv", _sym("A"), _const("0x3")),
+                    ),
+                ],
+            ),
+        ]
+    )
+    result = analyze_intervals(
+        program, symbol_sorts={"A": "int", "Q": "int"}
+    )
+    assert result.static["Q"] == Interval(0, 34)
+
+
+def test_lt_gt_ne_refinement() -> None:
+    """Strict comparisons tighten by 1; Ne is intentionally a no-op
+    (excluding a single value can't shrink an interval)."""
+    program = TacProgram(
+        blocks=[
+            _block(
+                "e",
+                [],
+                [
+                    _havoc("X"),
+                    _assume(_apply("Lt", _sym("X"), _const("0x64"))),  # X < 100
+                    _havoc("Y"),
+                    _assume(_apply("Gt", _sym("Y"), _const("0xa"))),  # Y > 10
+                    _havoc("Z"),
+                    _assume(_apply("Ne", _sym("Z"), _const("0x32"))),  # Z != 50 (no-op)
+                ],
+            ),
+        ]
+    )
+    result = analyze_intervals(
+        program, symbol_sorts={"X": "bv256", "Y": "bv256", "Z": "bv256"}
+    )
+    assert result.static["X"] == Interval(0, 99)
+    assert result.static["Y"] == Interval(11, (1 << 256) - 1)
+    # Ne refinement is a no-op — Z stays at the sort default.
+    assert result.static["Z"] == Interval(0, (1 << 256) - 1)
+
+
+def test_lnot_inverts_relational_predicate() -> None:
+    """LNot(Le(X, 100)) on the polarity must invert to ``X > 100`` =
+    ``Ge(X, 101)``. This is the path the framework's
+    ``edge_condition`` takes for the else-branch of a JumpiCmd."""
+    program = TacProgram(
+        blocks=[
+            _block(
+                "e",
+                [],
+                [
+                    _havoc("X"),
+                    _assume(
+                        _apply(
+                            "LNot", _apply("Le", _sym("X"), _const("0x64"))
+                        )
+                    ),
+                ],
+            ),
+        ]
+    )
+    result = analyze_intervals(program, symbol_sorts={"X": "bv256"})
+    # ¬(X ≤ 100) ⇒ X ≥ 101.
+    assert result.static["X"] == Interval(101, (1 << 256) - 1)
+
+
+def test_bitwise_and_shift_ops_return_top_in_v1() -> None:
+    """v1 contract: bitwise binops (``BWAnd``/``BWOr``/``BWXor``) and
+    shift ops are unhandled — they return TOP regardless of operand
+    intervals. Pinning so a future implementer knows what's left to
+    add (and so removing this fallback intentionally requires
+    updating this test)."""
+    program = TacProgram(
+        blocks=[
+            _block(
+                "e",
+                [],
+                [
+                    _havoc("X"),
+                    _assume(_apply("Le", _sym("X"), _const("0xff"))),
+                    _assign("A", _apply("BWAnd", _sym("X"), _const("0xf"))),
+                    _assign("O", _apply("BWOr", _sym("X"), _const("0xf"))),
+                    _assign("XOR", _apply("BWXor", _sym("X"), _const("0xf"))),
+                    _assign(
+                        "SL",
+                        _apply("ShiftLeft", _sym("X"), _const("0x1")),
+                    ),
+                    _assign(
+                        "SRL",
+                        _apply(
+                            "ShiftRightLogical", _sym("X"), _const("0x1")
+                        ),
+                    ),
+                ],
+            ),
+        ]
+    )
+    result = analyze_intervals(
+        program,
+        symbol_sorts={
+            "X": "bv256",
+            "A": "bv256",
+            "O": "bv256",
+            "XOR": "bv256",
+            "SL": "bv256",
+            "SRL": "bv256",
+        },
+    )
+    # No dispatch branch handles bitwise/shift ops → fall through to
+    # the unhandled-op case which returns iv.TOP. Lhs sort doesn't
+    # rescue them: write_def stores TOP, lookup re-applies the sort
+    # default only on unknown vars, not on stored TOPs. If/when these
+    # ops gain real transfer functions, this test must be updated.
+    top = Interval(None, None)
+    assert result.static["A"] == top
+    assert result.static["O"] == top
+    assert result.static["XOR"] == top
+    assert result.static["SL"] == top
+    assert result.static["SRL"] == top
+
+
 def test_safe_math_narrow_around_intadd_keeps_precision() -> None:
     """The wrap-checked form recovers precision: an IntAdd of bounded
     operands wrapped in safe_math_narrow_bv256 is identity when the
