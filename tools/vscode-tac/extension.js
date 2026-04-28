@@ -3,7 +3,7 @@
 const vscode = require("vscode");
 
 const TOKEN_RE = /[A-Za-z0-9_]+(?::\d+)?/;
-const VAR_RE = /^[RBIFTSrbifts][A-Za-z0-9_]*(?::\d+)?$/;
+const VAR_RE = /^[RBIFTSMrbiftsm][A-Za-z0-9_]*(?::\d+)?$/;
 
 function collectBlockDefinitions(document) {
   const defs = new Map();
@@ -27,7 +27,7 @@ function collectBlockDefinitions(document) {
 function collectVariableDefinitions(document) {
   const defs = new Map();
   // pp/human command lines: "  R1 = ...", "  B2 = ...", etc.
-  const assignRe = /^\s*([RBIFTSrbifts][A-Za-z0-9_]*(?::\d+)?)\s*=/;
+  const assignRe = /^\s*([RBIFTSMrbiftsm][A-Za-z0-9_]*(?::\d+)?)\s*=/;
   for (let i = 0; i < document.lineCount; i += 1) {
     const line = document.lineAt(i).text;
     const m = assignRe.exec(line);
