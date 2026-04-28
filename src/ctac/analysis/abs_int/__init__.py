@@ -22,9 +22,17 @@ from ctac.analysis.abs_int.materialize import (
     MaterializeReport,
     materialize_intervals,
 )
+from ctac.analysis.abs_int.explain import (
+    DefSite,
+    RefinementSite,
+    VarExplanation,
+    explain_var,
+    format_var_explanation,
+)
 
 __all__ = [
     "BOT",
+    "DefSite",
     "Domain",
     "ExprDegree",
     "ExprInterval",
@@ -35,10 +43,14 @@ __all__ = [
     "MaterializeReport",
     "PolyDegResult",
     "PolynomialDegreeDomain",
+    "RefinementSite",
     "TOP",
+    "VarExplanation",
     "analyze_intervals",
     "analyze_polynomial_degree",
     "evaluate_degree",
+    "explain_var",
+    "format_var_explanation",
     "materialize_intervals",
     "run",
 ]

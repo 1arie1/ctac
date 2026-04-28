@@ -18,7 +18,12 @@ import typer
 from rich.markup import escape
 from rich.tree import Tree
 
-from ctac.analysis.abs_int import analyze_intervals, analyze_polynomial_degree
+from ctac.analysis.abs_int import (
+    analyze_intervals,
+    analyze_polynomial_degree,
+    explain_var,
+    format_var_explanation,
+)
 from ctac.analysis.abs_int.interval_ops import Interval, meet as iv_meet
 from ctac.ast.pretty import configured_printer
 from ctac.parse import ParseError, parse_path
@@ -148,6 +153,20 @@ def absint_cmd(
         "--raw",
         help="Use raw TAC command text in the detail rows (default: pretty-printed).",
     ),
+    explain: Annotated[
+        Optional[str],
+        typer.Option(
+            "--explain",
+            metavar="VAR",
+            help=(
+                "Print a per-variable diagnostic for the interval analysis: "
+                "DSA classification, sort, def sites, refining assumes, "
+                "per-block view, and tightest meet. Useful when the headline "
+                "tightest-table shows an unexpectedly tight value and you "
+                "need to know which block(s) the tightening came from."
+            ),
+        ),
+    ] = None,
     strip_var_suffixes: bool = typer.Option(
         True,
         "--strip-var-suffix/--keep-var-suffix",
@@ -300,6 +319,20 @@ def absint_cmd(
             filtered_program, symbol_sorts=tac.symbol_sorts
         )
         timings_sec["interval"] = time.perf_counter() - t0
+
+        # --explain VAR short-circuits the rest of the rendering: the
+        # diagnostic is by itself the answer the user wants, and
+        # interleaving with the headline summary just clutters.
+        if explain is not None:
+            exp = explain_var(
+                filtered_program,
+                explain,
+                result=interval_result,
+                symbol_sorts=tac.symbol_sorts,
+            )
+            for line in format_var_explanation(exp):
+                c.print(line, markup=False)
+            return
 
         # Categorize static intervals: concrete (both bounds known),
         # partial (one side bound), TOP (both unknown), BOT (empty).
