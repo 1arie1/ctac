@@ -33,7 +33,9 @@ from ctac.ast.bit_mask import (
 )
 from ctac.ast.range_constraints import match_inclusive_range_constraint
 
-_SYMBOL_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*):([A-Za-z0-9_]+)\s*$")
+_SYMBOL_LINE = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*):([A-Za-z0-9_]+)(?::\d+)?\s*$"
+)
 _BASE_SYMBOL = re.compile(r"^(.*):\d+$")
 _TYPED_CONST = re.compile(
     r"^(?P<num>(?:-?[0-9]+|0[xX]-?[0-9a-fA-F_]+))\((?P<tag>[A-Za-z0-9_]+)\)$"
@@ -405,6 +407,33 @@ class SeaVcEncoder(SmtEncoder):
             else:
                 symbol_sort[s] = "Bool" if (raw_lc == "bool" or s in bool_hints) else "Int"
 
+        # ``ReachabilityCertora<block-id>`` symbols are the production
+        # pipeline's name for per-block reachability predicates — same
+        # concept as our ``BLK_<id>``. The TAC ships them as free
+        # havoc'd Bools (production adds the equality axioms during
+        # lowering, which our pipeline doesn't reproduce). We alias
+        # them to the matching ``BLK_<id>`` via ``define-fun`` so z3
+        # substitutes inline. No constraints, no equality assertion,
+        # no extra solver work. Static analysis won't see the
+        # semantics through this alias — the constraints are missing
+        # — but it matches what production does today.
+        block_id_set = {b.id for b in program.blocks}
+        reach_alias: dict[str, str] = {}
+        encoder_warnings: list[str] = []
+        for s in ordered_symbols:
+            if not s.startswith("ReachabilityCertora"):
+                continue
+            block_id = s[len("ReachabilityCertora"):]
+            if block_id in block_id_set:
+                reach_alias[s] = block_guard(block_id, entry_block_id=entry_block_id)
+        if reach_alias:
+            encoder_warnings.append(
+                f"aliased {len(reach_alias)} ReachabilityCertora* "
+                "symbol(s) to BLK_* via define-fun "
+                "(production-pipeline compatibility — TAC ships these "
+                "as unconstrained Bools)"
+            )
+
         decls: list[SmtDeclaration] = []
         decl_seen: set[str] = set()
         uf_decl_lines: set[str] = set()
@@ -415,6 +444,10 @@ class SeaVcEncoder(SmtEncoder):
             decl_seen.add(nm)
             if s in memory_symbols:
                 uf_decl_lines.add(f"(declare-fun {nm} (Int) Int)")
+            elif s in reach_alias:
+                # Alias is emitted as a ``define-fun`` later in a
+                # banner-marked block. Skip the ``declare-const`` here.
+                continue
             else:
                 decls.append(SmtDeclaration(name=nm, sort=symbol_sort[s]))
         for b in program.blocks:
@@ -792,13 +825,31 @@ class SeaVcEncoder(SmtEncoder):
         # makes the last branch the implicit default.
         # ──────────────────────────────────────────────────────────
 
-        _MAP_PARAM = "i_map"
+        _MAP_PARAM = "idx"
 
-        def _expr_has_store_op(expr: TacExpr) -> bool:
+        def _is_map_branch(expr: TacExpr) -> bool:
+            """Sub-expression usable as a branch in a map ``define-fun``
+            body: a SymbolRef to a map symbol, a Store-tree, or a
+            nested Ite of map-branches."""
+            if isinstance(expr, SymbolRef):
+                return canonical_symbol(expr.name, strip_var_suffixes=True) in memory_symbols
+            if isinstance(expr, ApplyExpr):
+                if expr.op == "Store" and len(expr.args) == 3:
+                    return _is_map_branch(expr.args[0])
+                if expr.op == "Ite" and len(expr.args) == 3:
+                    return _is_map_branch(expr.args[1]) and _is_map_branch(expr.args[2])
+            return False
+
+        def _expr_is_map_define_shape(expr: TacExpr) -> bool:
+            """RHS shapes that we lower to a map ``define-fun`` body:
+            Store-trees, and value-level Ite on map-branches (TAC's
+            SSA merge of bytemaps). Bare SymbolRef aliases are not
+            map-defines."""
             if isinstance(expr, ApplyExpr):
                 if expr.op == "Store":
                     return True
-                return any(_expr_has_store_op(a) for a in expr.args)
+                if expr.op == "Ite" and len(expr.args) == 3:
+                    return _is_map_branch(expr.args[1]) and _is_map_branch(expr.args[2])
             return False
 
         # Memory symbols handled via the map section (function-level
@@ -815,7 +866,7 @@ class SeaVcEncoder(SmtEncoder):
                 continue
             for ds in defs:
                 cmd = block_by_id(program, ds.block_id).commands[ds.cmd_index]
-                if isinstance(cmd, AssignExpCmd) and _expr_has_store_op(cmd.rhs):
+                if isinstance(cmd, AssignExpCmd) and _expr_is_map_define_shape(cmd.rhs):
                     maps_with_store_def.add(mem_sym)
                     break
         for mem_sym in maps_with_store_def:
@@ -824,9 +875,16 @@ class SeaVcEncoder(SmtEncoder):
             )
 
         def _emit_map_body(expr: TacExpr) -> str:
-            """Build the body of a map ``define-fun`` from a Store-tree.
-            Terminal SymbolRef → ``(M_old i)`` function application.
-            ApplyExpr(Store, M_old, k, v) → ``(ite (= i k) v <body_for_M_old>)``."""
+            """Build the body of a map ``define-fun``.
+
+            * SymbolRef → ``(M_old idx)`` function application.
+            * Store(M_old, k, v) → ``(ite (= idx k) v <body_for_M_old>)``.
+            * Ite(c, M_t, M_f) on map-typed branches (TAC SSA merge
+              of bytemaps) → ``(ite <c> (M_t idx) (M_f idx))``. We
+              lift the equality into application-level form to keep
+              the result inside QF_UFNIA — a value-level
+              ``(= M_lhs (ite c M_t M_f))`` would force z3 into
+              array-extensional reasoning (incomplete)."""
             if isinstance(expr, SymbolRef):
                 m_name = canonical_symbol(expr.name, strip_var_suffixes=True)
                 if m_name not in symbol_term:
@@ -840,6 +898,14 @@ class SeaVcEncoder(SmtEncoder):
                 v_term, _ = emit_expr(v, expected_sort="Int")
                 old_body = _emit_map_body(m_old)
                 return f"(ite (= {_MAP_PARAM} {k_term}) {v_term} {old_body})"
+            if isinstance(expr, ApplyExpr) and expr.op == "Ite" and len(expr.args) == 3:
+                cond, t_arg, f_arg = expr.args
+                cond_term, cond_sort = emit_expr(cond, expected_sort="Bool")
+                if cond_sort != "Bool":
+                    cond_term = f"(not (= {cond_term} 0))"
+                t_body = _emit_map_body(t_arg)
+                f_body = _emit_map_body(f_arg)
+                return f"(ite {cond_term} {t_body} {f_body})"
             raise SmtEncodingError(
                 f"map body has unsupported shape: {expr!r}"
             )
@@ -1069,9 +1135,82 @@ class SeaVcEncoder(SmtEncoder):
             out_lines.append(f"; {bar}")
             out_lines.append("")
 
+        if reach_alias:
+            emit_banner("ReachabilityCertora -> BLK_ Aliases")
+            out_lines.append(
+                "; Production pipeline names per-block reachability"
+            )
+            out_lines.append(
+                "; ``ReachabilityCertora<id>`` and adds equality axioms"
+            )
+            out_lines.append(
+                "; during lowering. Our TAC source has the names but not"
+            )
+            out_lines.append(
+                "; the axioms — alias each to the matching BLK_<id> so"
+            )
+            out_lines.append(
+                "; z3 substitutes inline. Soundness-wise this *adds*"
+            )
+            out_lines.append(
+                "; constraints (collapses two equivalent vars into one);"
+            )
+            out_lines.append(
+                "; static analyses see the alias, not the underlying"
+            )
+            out_lines.append(
+                "; CFG semantics, which is the production trade-off."
+            )
+            for sym in sorted(reach_alias):
+                out_lines.append(
+                    f"(define-fun {symbol_term[sym]} () Bool {reach_alias[sym]})"
+                )
+
         if map_section_lines:
             emit_banner("Bytemap Definitions (lambda form)")
-            out_lines.extend(map_section_lines)
+            # Topologically sort by inter-map references so each
+            # ``define-fun`` body sees its dependencies already
+            # declared. Block-order emission isn't enough: a TAC SSA
+            # merge ``M571 = Ite(c, M569, M627)`` may sit in an
+            # earlier block than the defs of M569 / M627.
+            decl_re = re.compile(r"^\((?:declare-fun|define-fun) (\S+) ")
+            line_by_name: dict[str, str] = {}
+            ordered_names: list[str] = []
+            for line in map_section_lines:
+                m = decl_re.match(line)
+                if m is None:
+                    raise SmtEncodingError(
+                        f"map section line has unexpected shape: {line!r}"
+                    )
+                name = m.group(1)
+                line_by_name[name] = line
+                ordered_names.append(name)
+            defined_set = set(line_by_name)
+            ident_re = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+            deps: dict[str, set[str]] = {}
+            for name, line in line_by_name.items():
+                _, _, body_part = line.partition(") Int ")
+                refs = set(ident_re.findall(body_part)) & defined_set
+                refs.discard(name)
+                deps[name] = refs
+
+            sorted_lines: list[str] = []
+            temp: set[str] = set()
+            perm: set[str] = set()
+
+            def _visit(n: str) -> None:
+                if n in perm or n in temp:
+                    return
+                temp.add(n)
+                for d in sorted(deps.get(n, ())):
+                    _visit(d)
+                temp.remove(n)
+                perm.add(n)
+                sorted_lines.append(line_by_name[n])
+
+            for n in ordered_names:
+                _visit(n)
+            out_lines.extend(sorted_lines)
 
         # Emit UF axiom definitions once, then instantiate per application.
         emitted_axiom_funs: set[str] = set()
@@ -1152,4 +1291,5 @@ class SeaVcEncoder(SmtEncoder):
             ),
             check_sat=True,
             unsat_core=ctx.unsat_core,
+            warnings=tuple(encoder_warnings),
         )

@@ -21,3 +21,4 @@ class SmtScript:
     comments: tuple[str, ...] = field(default_factory=tuple)
     check_sat: bool = True
     unsat_core: bool = False
+    warnings: tuple[str, ...] = field(default_factory=tuple)

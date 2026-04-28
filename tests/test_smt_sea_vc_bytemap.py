@@ -98,7 +98,7 @@ def test_select_with_symbolref_index():
 
 def test_single_store_emits_define_fun_with_ite_body():
     """``M1 = Store(M0, K, V)`` becomes a single ``define-fun`` with
-    the canonical ``(ite (= i_map K) V (M0 i_map))`` body."""
+    the canonical ``(ite (= idx K) V (M0 idx))`` body."""
     src = _wrap(
         "\tBlock e Succ [] {\n"
         "\t\tAssignHavocCmd M0\n"
@@ -111,7 +111,7 @@ def test_single_store_emits_define_fun_with_ite_body():
     )
     out = _render(src)
     assert "(declare-fun M0 (Int) Int)" in out  # M0 has no Store-def
-    assert "(define-fun M1 ((i_map Int)) Int (ite (= i_map K) V (M0 i_map)))" in out
+    assert "(define-fun M1 ((idx Int)) Int (ite (= idx K) V (M0 idx)))" in out
     assert "Bytemap Definitions (lambda form)" in out
 
 
@@ -134,8 +134,8 @@ def test_chained_stores_emit_one_define_fun_per_step():
     )
     out = _render(src)
     # Each step defines its own function referencing the prior one.
-    assert "(define-fun M1 ((i_map Int)) Int (ite (= i_map K1) V1 (M0 i_map)))" in out
-    assert "(define-fun M2 ((i_map Int)) Int (ite (= i_map K2) V2 (M1 i_map)))" in out
+    assert "(define-fun M1 ((idx Int)) Int (ite (= idx K1) V1 (M0 idx)))" in out
+    assert "(define-fun M2 ((idx Int)) Int (ite (= idx K2) V2 (M1 idx)))" in out
 
 
 def test_nested_store_in_one_rhs_emits_nested_ite():
@@ -156,8 +156,8 @@ def test_nested_store_in_one_rhs_emits_nested_ite():
     out = _render(src)
     # Outer Store wraps inner Store body: nested ITE in M2's body.
     assert (
-        "(define-fun M2 ((i_map Int)) Int "
-        "(ite (= i_map K2) V2 (ite (= i_map K1) V1 (M0 i_map))))"
+        "(define-fun M2 ((idx Int)) Int "
+        "(ite (= idx K2) V2 (ite (= idx K1) V1 (M0 idx))))"
     ) in out
     # M1 is not introduced as an intermediate name.
     assert "(define-fun M1 (" not in out
@@ -231,6 +231,31 @@ def test_multi_havoc_bytemap_encodes_as_dynamic_map():
     assert "(check-sat)" in rendered
     # Multi-havoc map → DSA-dynamic merged define-fun shape.
     assert "Bytemap Definitions (lambda form)" in rendered
+
+
+def test_ssa_ite_on_maps_lowers_to_application_level_define_fun():
+    """TAC SSA can produce ``M = Ite(c, M_t, M_f)`` where the Ite
+    branches are bytemap symbols (an SSA-merge of maps). The encoder
+    must lift this into a function-application body — otherwise z3
+    sees a function-valued equality and silently rewrites the goal
+    into array theory, which is incomplete on QF_UFNIA."""
+    src = _wrap(
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd M0\n"
+        "\t\tAssignHavocCmd M1\n"
+        "\t\tAssignHavocCmd C\n"
+        "\t\tAssignExpCmd M2 Ite(C M0 M1)\n"
+        "\t\tAssignExpCmd R0 Select(M2 0x10)\n"
+        "\t\tAssertCmd false \"boom\"\n"
+        "\t}",
+        "C:bool\n\tR0:bv256\n\tM0:bytemap\n\tM1:bytemap\n\tM2:bytemap",
+    )
+    out = _render(src)
+    # Application-level form: branches reference (M0 idx) / (M1 idx),
+    # not raw map symbols (which would be function equality).
+    assert "(define-fun M2 ((idx Int)) Int (ite C (M0 idx) (M1 idx)))" in out
+    # No bare ``(= M2 ...)`` function equality leaked through.
+    assert "(assert (= M2 " not in out
 
 
 def test_select_emits_bv256_range_axiom_per_application():

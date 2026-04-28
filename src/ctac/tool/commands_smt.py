@@ -184,6 +184,8 @@ def smt_cmd(
         c.print(f"# encoding: {encoding}", markup=False)
         for w in user_warnings + input_warnings:
             c.print(f"# input warning: {w}", markup=False)
+        for w in script.warnings:
+            c.print(f"# encoder warning: {w}", markup=False)
 
     if output_path is not None:
         output_path.write_text(smt_text, encoding="utf-8")

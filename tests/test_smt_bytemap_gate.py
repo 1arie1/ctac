@@ -129,4 +129,4 @@ def test_smt_accepts_bytemap_rw_input(tmp_path):
     # Map definitions are hoisted to the top under their banner.
     assert "Bytemap Definitions (lambda form)" in result.output
     # The Store body emits the canonical ITE shape.
-    assert "(ite (= i_map" in result.output
+    assert "(ite (= idx" in result.output
