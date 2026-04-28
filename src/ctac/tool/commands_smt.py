@@ -11,7 +11,6 @@ from typing import Annotated, Optional
 import typer
 
 from ctac.analysis.symbols import canonical_symbol
-from ctac.analysis import BytemapCapability, classify_bytemap_usage
 from ctac.parse import ParseError, parse_path
 from ctac.smt.encoding.path_skeleton import sanitize_ident
 from ctac.smt.runner import parse_z3_args, run_z3_solver
@@ -163,16 +162,10 @@ def smt_cmd(
         user_path, user_warnings = resolve_user_path(path)
         tac_path, input_warnings = resolve_tac_input_path(user_path)
         tac = parse_path(tac_path)
-        capability = classify_bytemap_usage(tac.program, tac.symbol_sorts)
-        if capability is BytemapCapability.BYTEMAP_RW:
-            msg = (
-                f"SMT encoding of bytemap writes (Store) is not yet supported; "
-                f"input classified as {capability.value}. "
-                f"bytemap-free and bytemap-ro are supported. "
-                f"See `ctac stats --plain` for details."
-            )
-            c.print(f"input error: {msg}" if plain else f"[red]input error:[/red] {msg}")
-            raise typer.Exit(2)
+        # bytemap-rw used to be rejected here; sea_vc now encodes Store
+        # via lambda-style ``define-fun`` per-map definitions
+        # (function-level ITE for DSA-dynamic merges; ``Select`` is
+        # unchanged as function application). See sea_vc.py for shape.
         script = build_vc(
             tac, encoding=encoding, unsat_core=unsat_core, tight_logic=tight_logic
         )

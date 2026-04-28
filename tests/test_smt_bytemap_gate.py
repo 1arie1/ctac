@@ -115,10 +115,18 @@ def test_smt_accepts_bytemap_free_input(tmp_path):
     assert "(check-sat)" in result.output
 
 
-def test_smt_rejects_bytemap_rw_input(tmp_path):
+def test_smt_accepts_bytemap_rw_input(tmp_path):
+    """sea_vc encodes bytemap-rw via lambda-style ``define-fun`` per
+    map. ``Store(M, k, v)`` becomes a function body
+    ``(ite (= i k) v (M i))``; ``Select`` is unchanged. Used to be
+    rejected at the precondition; now succeeds."""
     src = tmp_path / "rw.tac"
     src.write_text(_BYTEMAP_RW_SRC)
     runner = CliRunner()
     result = runner.invoke(app, ["smt", str(src), "--plain"])
-    assert result.exit_code == 2, result.output
-    assert "bytemap-rw" in result.output
+    assert result.exit_code == 0, result.output
+    assert "(check-sat)" in result.output
+    # Map definitions are hoisted to the top under their banner.
+    assert "Bytemap Definitions (lambda form)" in result.output
+    # The Store body emits the canonical ITE shape.
+    assert "(ite (= i_map" in result.output

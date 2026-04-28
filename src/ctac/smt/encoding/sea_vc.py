@@ -405,20 +405,6 @@ class SeaVcEncoder(SmtEncoder):
             else:
                 symbol_sort[s] = "Bool" if (raw_lc == "bool" or s in bool_hints) else "Int"
 
-        # Reject multi-def bytemaps early: sea_vc models each memory symbol
-        # as a single uninterpreted function, so multiple havocs (or any
-        # mix of defs) for the same bytemap aren't representable today.
-        multi_def_memory = sorted(
-            sym
-            for sym in memory_symbols
-            if len(du.definitions_by_symbol.get(sym, ())) > 1
-        )
-        if multi_def_memory:
-            bad = ", ".join(multi_def_memory)
-            raise SmtEncodingError(
-                f"bytemap with multiple definitions is not supported in sea_vc: {bad}"
-            )
-
         decls: list[SmtDeclaration] = []
         decl_seen: set[str] = set()
         uf_decl_lines: set[str] = set()
@@ -583,6 +569,15 @@ class SeaVcEncoder(SmtEncoder):
                         callee = expr.args[0].name
                         if _SAFE_MATH_NARROW_BIF.fullmatch(callee):
                             return emit_expr(expr.args[1], expected_sort=expected_sort)
+                        # Twos-complement encode/decode bifs are
+                        # represented by ``to_s256`` / ``from_s256``
+                        # define-funs in the preamble.
+                        if callee == "wrap_twos_complement_256:bif" and len(expr.args) == 2:
+                            arg, _ = emit_expr(expr.args[1], expected_sort="Int")
+                            return f"(to_s256 {arg})", "Int"
+                        if callee == "unwrap_twos_complement_256:bif" and len(expr.args) == 2:
+                            arg, _ = emit_expr(expr.args[1], expected_sort="Int")
+                            return f"(from_s256 {arg})", "Int"
                         uf = f"uf_{sanitize_ident(callee)}"
                         args = [emit_expr(a, expected_sort="Int")[0] for a in expr.args[1:]]
                         ret_sort = expected_sort or "Int"
@@ -782,9 +777,144 @@ class SeaVcEncoder(SmtEncoder):
                 raise SmtEncodingError(f"unsupported operator in sea_vc: {op}")
             raise SmtEncodingError(f"unsupported expression node: {expr!r}")
 
+        # ──────────────────────────────────────────────────────────
+        # Bytemap definitions (lambda-style ``define-fun`` per map).
+        #
+        # A memory symbol with at least one ``Store`` def is encoded
+        # as a function definition rather than an uninterpreted
+        # function declaration. The body for ``M = Store(M_old, k, v)``
+        # is ``(ite (= i k) v (M_old i))`` where ``i`` is the
+        # parameter; nested Stores fold into nested ITEs in one body.
+        # DSA-dynamic maps (multiple Store-defs across blocks) emit
+        # per-block bodies plus a merged define-fun selecting on
+        # block guards — same shape sea_vc uses for non-map dynamic
+        # vars, lifted from value to function level. Block exclusivity
+        # makes the last branch the implicit default.
+        # ──────────────────────────────────────────────────────────
+
+        _MAP_PARAM = "i_map"
+
+        def _expr_has_store_op(expr: TacExpr) -> bool:
+            if isinstance(expr, ApplyExpr):
+                if expr.op == "Store":
+                    return True
+                return any(_expr_has_store_op(a) for a in expr.args)
+            return False
+
+        # Memory symbols handled via the map section (function-level
+        # ``define-fun``): either at least one Store-def, or multiple
+        # defs of any kind (DSA-dynamic havocs that merge at a join
+        # need the same per-block-then-merged shape). Skipped in the
+        # static / dynamic constraint loops below; their per-symbol
+        # ``declare-fun`` is dropped from uf_decl_lines.
+        maps_with_store_def: set[str] = set()
+        for mem_sym in memory_symbols:
+            defs = du.definitions_by_symbol.get(mem_sym, ())
+            if len(defs) > 1:
+                maps_with_store_def.add(mem_sym)
+                continue
+            for ds in defs:
+                cmd = block_by_id(program, ds.block_id).commands[ds.cmd_index]
+                if isinstance(cmd, AssignExpCmd) and _expr_has_store_op(cmd.rhs):
+                    maps_with_store_def.add(mem_sym)
+                    break
+        for mem_sym in maps_with_store_def:
+            uf_decl_lines.discard(
+                f"(declare-fun {symbol_term[mem_sym]} (Int) Int)"
+            )
+
+        def _emit_map_body(expr: TacExpr) -> str:
+            """Build the body of a map ``define-fun`` from a Store-tree.
+            Terminal SymbolRef → ``(M_old i)`` function application.
+            ApplyExpr(Store, M_old, k, v) → ``(ite (= i k) v <body_for_M_old>)``."""
+            if isinstance(expr, SymbolRef):
+                m_name = canonical_symbol(expr.name, strip_var_suffixes=True)
+                if m_name not in symbol_term:
+                    raise SmtEncodingError(
+                        f"map body references unknown symbol: {m_name!r}"
+                    )
+                return f"({symbol_term[m_name]} {_MAP_PARAM})"
+            if isinstance(expr, ApplyExpr) and expr.op == "Store" and len(expr.args) == 3:
+                m_old, k, v = expr.args
+                k_term, _ = emit_expr(k, expected_sort="Int")
+                v_term, _ = emit_expr(v, expected_sort="Int")
+                old_body = _emit_map_body(m_old)
+                return f"(ite (= {_MAP_PARAM} {k_term}) {v_term} {old_body})"
+            raise SmtEncodingError(
+                f"map body has unsupported shape: {expr!r}"
+            )
+
+        # Walk all program defs in order; emit map definitions
+        # alongside their natural program position (so cross-map
+        # references — the body of M_n that uses M_{n-1} — see
+        # M_{n-1} already defined). For dynamic maps, emit the
+        # merged ``define-fun`` after the last per-block body.
+        map_section_lines: list[str] = []
+        per_block_rows: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        per_block_remaining: dict[str, int] = {
+            sym: len(du.definitions_by_symbol.get(sym, ()))
+            for sym in maps_with_store_def
+            if sym in dynamic_symbols
+        }
+        for b in program.blocks:
+            for ci, cmd in enumerate(b.commands):
+                if not isinstance(cmd, (AssignExpCmd, AssignHavocCmd)):
+                    continue
+                sym = cmd.lhs
+                if sym not in maps_with_store_def:
+                    continue
+                nm = symbol_term[sym]
+                is_dynamic = sym in dynamic_symbols
+                cond = block_guard(b.id, entry_block_id=entry_block_id)
+                if isinstance(cmd, AssignHavocCmd):
+                    # Dynamic-side havoc-def of a map: the per-block
+                    # body is a fresh declared UF.
+                    block_nm = f"{nm}_at_{sanitize_ident(b.id)}"
+                    map_section_lines.append(
+                        f"(declare-fun {block_nm} (Int) Int)"
+                    )
+                    if is_dynamic:
+                        per_block_rows[sym].append(
+                            (cond, f"({block_nm} {_MAP_PARAM})")
+                        )
+                else:  # AssignExpCmd
+                    body = _emit_map_body(cmd.rhs)
+                    if is_dynamic:
+                        block_nm = f"{nm}_at_{sanitize_ident(b.id)}"
+                        map_section_lines.append(
+                            f"(define-fun {block_nm} (({_MAP_PARAM} Int)) Int {body})"
+                        )
+                        per_block_rows[sym].append(
+                            (cond, f"({block_nm} {_MAP_PARAM})")
+                        )
+                    else:
+                        map_section_lines.append(
+                            f"(define-fun {nm} (({_MAP_PARAM} Int)) Int {body})"
+                        )
+                if is_dynamic:
+                    per_block_remaining[sym] -= 1
+                    if per_block_remaining[sym] == 0:
+                        # All per-block bodies for this dynamic map
+                        # are emitted; build the merged define-fun
+                        # that selects via block guards. Last branch
+                        # is the implicit default — block exclusivity
+                        # makes the choice deterministic.
+                        rows = per_block_rows[sym]
+                        merged_body = rows[-1][1]
+                        for c2, b2 in reversed(rows[:-1]):
+                            merged_body = f"(ite {c2} {b2} {merged_body})"
+                        map_section_lines.append(
+                            f"(define-fun {nm} (({_MAP_PARAM} Int)) Int {merged_body})"
+                        )
+
         # Static assignment encoding and assume constraints.
         for ds in du.definitions:
             if ds.symbol in dynamic_symbols:
+                continue
+            if ds.symbol in maps_with_store_def:
+                # Maps with Store-defs are handled by the map_section
+                # ``define-fun`` (function-level), not value-level
+                # equality constraints.
                 continue
             b = block_by_id(program, ds.block_id)
             cmd = b.commands[ds.cmd_index]
@@ -843,6 +973,10 @@ class SeaVcEncoder(SmtEncoder):
         for d in dsa.dynamic_assignments:
             dynamic_by_symbol[d.symbol].append(d)
         for sym, rows in sorted(dynamic_by_symbol.items()):
+            if sym in maps_with_store_def:
+                # Maps with Store-defs are handled by map_section's
+                # function-level merged ``define-fun``.
+                continue
             grouped_conds: dict[str, list[str]] = defaultdict(list)
             rhs_rank: dict[str, int] = {}
             for row in rows:
@@ -910,6 +1044,13 @@ class SeaVcEncoder(SmtEncoder):
         out_lines: list[str] = [
             f"(define-fun BV256_MOD () Int {_BV256_MOD})",
             "(define-fun BV256_MAX () Int (- BV256_MOD 1))",
+            "(define-fun BV256_HALF () Int (div BV256_MOD 2))",
+            # Twos-complement encode/decode for bv256. Both total + pure;
+            # ``to_s256(s) = s mod 2^256`` (Python-style mod, always
+            # non-negative); ``from_s256(b) = b`` for the non-negative
+            # half, ``b - 2^256`` for the high half (sign-extended).
+            "(define-fun to_s256 ((s Int)) Int (mod s BV256_MOD))",
+            "(define-fun from_s256 ((b Int)) Int (ite (< b BV256_HALF) b (- b BV256_MOD)))",
         ]
         for name in _order_constant_defs(const_defs, predefined={"BV256_MOD", "BV256_MAX"}):
             if name in {"BV256_MOD", "BV256_MAX"}:
@@ -927,6 +1068,10 @@ class SeaVcEncoder(SmtEncoder):
             out_lines.append("; |                                                                              |")
             out_lines.append(f"; {bar}")
             out_lines.append("")
+
+        if map_section_lines:
+            emit_banner("Bytemap Definitions (lambda form)")
+            out_lines.extend(map_section_lines)
 
         # Emit UF axiom definitions once, then instantiate per application.
         emitted_axiom_funs: set[str] = set()
