@@ -303,6 +303,100 @@ def test_static_var_defined_in_non_entry_emits_at_def_block_not_entry() -> None:
     build_vc(new_tac)  # raises SmtEncodingError if anything is off
 
 
+def test_materialize_skips_emission_at_non_dominated_block() -> None:
+    """Dominance gate: a var defined in only one branch of a join
+    must NOT have its assume materialized at the join. The join
+    isn't dominated by the def block; sea_vc's unconditional def
+    encoding could otherwise let z3 construct counter-examples by
+    taking the un-defining path."""
+    src = _wrap(
+        # Diamond: e splits to BT or BF; both join at J.
+        # X is defined only in BT. J is NOT dominated by BT.
+        "\tBlock e Succ [BT, BF] {\n"
+        "\t\tAssignHavocCmd c\n"
+        "\t\tJumpiCmd BT BF c\n"
+        "\t}\n"
+        "\tBlock BT Succ [J] {\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssumeExpCmd Le(X 0x64)\n"
+        "\t\tJumpCmd J\n"
+        "\t}\n"
+        "\tBlock BF Succ [J] {\n"
+        "\t\tJumpCmd J\n"
+        "\t}\n"
+        "\tBlock J Succ [] {\n"
+        "\t\tAssertCmd:1 Eq(0x0 0x0) \"trivial\"\n"
+        "\t}",
+        syms="X:bv256\n\tc:bool",
+    )
+    tac = parse_string(src, path="<diamond>")
+    augmented, _ = materialize_intervals(
+        tac.program, symbol_sorts=tac.symbol_sorts
+    )
+    by_id = {b.id: b for b in augmented.blocks}
+    # BT (the def block, which dominates itself) → emission allowed.
+    bt_assumes = [
+        c for c in by_id["BT"].commands if isinstance(c, AssumeExpCmd)
+    ]
+    bt_x_assume = any(
+        "X" in (c.raw or "") for c in bt_assumes
+    )
+    assert bt_x_assume, "expected materialized assume on X at BT (def block)"
+    # J (NOT dominated by BT) → no emission for X.
+    j_cmds = by_id["J"].commands
+    j_x_assumes = [
+        c for c in j_cmds
+        if isinstance(c, AssumeExpCmd) and "X" in (c.raw or "")
+    ]
+    assert not j_x_assumes, (
+        f"materialization emitted an X-assume at non-dominated join J: "
+        f"{[c.raw for c in j_x_assumes]}"
+    )
+
+
+def test_materialize_emits_at_dominated_block() -> None:
+    """A linear chain ``e → B1 → B2``: B2 IS dominated by B1, so a
+    refinement on a B1-defined var emitted via B1's local should
+    propagate to B2 via the analysis and be materializable there
+    too. Pinning the positive case so the dominance gate isn't
+    over-restrictive."""
+    src = _wrap(
+        "\tBlock e Succ [B1] {\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tJumpCmd B1\n"
+        "\t}\n"
+        "\tBlock B1 Succ [B2] {\n"
+        "\t\tAssumeExpCmd Le(X 0x64)\n"
+        "\t\tJumpCmd B2\n"
+        "\t}\n"
+        "\tBlock B2 Succ [] {\n"
+        "\t\tAssertCmd:1 Eq(0x0 0x0) \"trivial\"\n"
+        "\t}",
+        syms="X:bv256",
+    )
+    tac = parse_string(src, path="<chain>")
+    augmented, _ = materialize_intervals(
+        tac.program, symbol_sorts=tac.symbol_sorts
+    )
+    by_id = {b.id: b for b in augmented.blocks}
+    # X is defined at e (DSA-static, single havoc). e's def block is e
+    # itself, which dominates B1 and B2. The refinement at B1 should
+    # propagate via analysis and materialize at B1 / B2 ends.
+    b1_x_assumes = [
+        c for c in by_id["B1"].commands
+        if isinstance(c, AssumeExpCmd) and "X" in (c.raw or "")
+    ]
+    # B1 has the original assume + a materialized one on X.
+    assert len(b1_x_assumes) >= 1
+    # B2 is dominated by e (X's def block) → can carry the propagated
+    # local refinement and materialize.
+    b2_x_assumes = [
+        c for c in by_id["B2"].commands
+        if isinstance(c, AssumeExpCmd) and "X" in (c.raw or "")
+    ]
+    assert b2_x_assumes, "expected materialized assume on X at dominated block B2"
+
+
 def test_materialized_assumes_inserted_before_terminator_not_after() -> None:
     """Regression for emission-at-end-of-block: the materialized
     assume must come BEFORE the block's terminator (JumpCmd /

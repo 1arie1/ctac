@@ -130,19 +130,15 @@ class IntervalDomain:
             # The lhs sort gives the result's bv width, which the bv
             # op transfer functions need to detect wraparound.
             width = _sort_width(self._sort_for(cmd.lhs))
-            # Evaluate using ONLY universal (static) operand values —
-            # not block-local refinements. Reason: sea_vc encodes
-            # ``X = e`` unconditionally (no per-block guard on the
-            # equality), so the def must be sound under operand values
-            # at any program point, not just at the def block. A
-            # block-local refinement at the def block (e.g. ``assume
-            # Le(R, K)`` earlier in the same block) is path-conditional
-            # in the SMT — z3 can pick a model where the def block
-            # isn't on the path, the refinement doesn't fire, but the
-            # def equality still applies and the value blows past the
-            # analysis's bound. Keeping defs aligned with universal
-            # facts only is what makes the materialization sound.
-            value = self._eval(cmd.rhs, state, result_width=width, universal=True)
+            # Evaluate using the normal lookup (local + static + sort
+            # default). Operand refinements within the same block are
+            # sequentially valid at the def site under program
+            # semantics — and program semantics are what the
+            # materialization+rw-eq pipeline checks. The materializer
+            # is responsible for only emitting the resulting facts at
+            # blocks dominated by the def, which is where dominance
+            # transitively guarantees the operand refinements fired.
+            value = self._eval(cmd.rhs, state, result_width=width)
             # The lhs sort's default is a sound upper bound on the
             # value regardless of how the rhs evaluated — for any
             # bv-typed lhs, the actual runtime value is in
@@ -206,18 +202,7 @@ class IntervalDomain:
             return self._sorts.get(canon)
         return None
 
-    def _lookup(
-        self, state: State, var: str, *, universal: bool = False
-    ) -> Interval:
-        if universal:
-            # Skip ``state.local`` — return only static / sort default.
-            # Used at AssignExpCmd transfer to compute def values from
-            # universal facts only (matches sea_vc's unconditional
-            # encoding of ``X = e``).
-            v = state.static.get(var, iv.TOP)
-            if v.is_top():
-                return self._default(var)
-            return v
+    def _lookup(self, state: State, var: str) -> Interval:
         v = self._storage.get(state, var)
         if v.is_top():
             return self._default(var)
@@ -261,17 +246,14 @@ class IntervalDomain:
         state: State,
         *,
         result_width: int | None = None,
-        universal: bool = False,
     ) -> Interval:
         if isinstance(expr, ConstExpr):
             c = const_to_int(expr)
             return iv.point(c) if c is not None else iv.TOP
         if isinstance(expr, SymbolRef):
-            return self._lookup(state, expr.name, universal=universal)
+            return self._lookup(state, expr.name)
         if isinstance(expr, ApplyExpr):
-            return self._eval_apply(
-                expr, state, result_width=result_width, universal=universal
-            )
+            return self._eval_apply(expr, state, result_width=result_width)
         return iv.TOP
 
     def _eval_apply(
@@ -280,7 +262,6 @@ class IntervalDomain:
         state: State,
         *,
         result_width: int | None,
-        universal: bool = False,
     ) -> Interval:
         op = expr.op
         args = list(expr.args)
@@ -291,8 +272,7 @@ class IntervalDomain:
             width = _narrow_width(args[0].name)
             if width is not None and len(args) == 2:
                 inner = self._eval(
-                    args[1], state, result_width=None, universal=universal
-                )
+                    args[1], state, result_width=None                )
                 clamped = iv.narrow_clamp(inner, width)
                 return clamped if clamped is not None else iv.TOP
             return iv.TOP
@@ -303,37 +283,37 @@ class IntervalDomain:
         # surrounding lhs is bv256) can compute its modular result.
         if op == "IntAdd" and len(args) == 2:
             return iv.add(
-                self._eval(args[0], state, result_width=result_width, universal=universal),
-                self._eval(args[1], state, result_width=result_width, universal=universal),
+                self._eval(args[0], state, result_width=result_width),
+                self._eval(args[1], state, result_width=result_width),
             )
         if op == "IntSub" and len(args) == 2:
             return iv.sub(
-                self._eval(args[0], state, result_width=result_width, universal=universal),
-                self._eval(args[1], state, result_width=result_width, universal=universal),
+                self._eval(args[0], state, result_width=result_width),
+                self._eval(args[1], state, result_width=result_width),
             )
         if op == "IntMul" and len(args) == 2:
             result = iv.mul_nonneg(
-                self._eval(args[0], state, result_width=result_width, universal=universal),
-                self._eval(args[1], state, result_width=result_width, universal=universal),
+                self._eval(args[0], state, result_width=result_width),
+                self._eval(args[1], state, result_width=result_width),
             )
             return result if result is not None else iv.TOP
         if op == "IntDiv" and len(args) == 2:
             k = const_to_int(args[1]) if isinstance(args[1], ConstExpr) else None
             if k is not None and k > 0:
-                a = self._eval(args[0], state, result_width=result_width, universal=universal)
+                a = self._eval(args[0], state, result_width=result_width)
                 result = iv.floor_div_by_pos_const(a, k)
                 if result is not None:
                     return result
             return iv.TOP
         if op == "IntCeilDiv" and len(args) == 2:
-            a = self._eval(args[0], state, result_width=result_width, universal=universal)
-            b = self._eval(args[1], state, result_width=result_width, universal=universal)
+            a = self._eval(args[0], state, result_width=result_width)
+            b = self._eval(args[1], state, result_width=result_width)
             result = iv.ceil_div_nonneg(a, b)
             return result if result is not None else iv.TOP
         if op == "IntMod" and len(args) == 2:
             k = const_to_int(args[1]) if isinstance(args[1], ConstExpr) else None
             if k is not None and k > 0:
-                a = self._eval(args[0], state, result_width=result_width, universal=universal)
+                a = self._eval(args[0], state, result_width=result_width)
                 result = iv.mod_by_pos_const(a, k)
                 if result is not None:
                     return result
@@ -358,8 +338,8 @@ class IntervalDomain:
             # carry the width context through so nested bv ops in the
             # arms get a width.
             return iv.join(
-                self._eval(args[1], state, result_width=result_width, universal=universal),
-                self._eval(args[2], state, result_width=result_width, universal=universal),
+                self._eval(args[1], state, result_width=result_width),
+                self._eval(args[2], state, result_width=result_width),
             )
         if op in _REL_OPS and len(args) == 2:
             return iv.bool_iv()

@@ -2,21 +2,31 @@
 
 For each block, emit one assume per var whose interval at the block's
 exit is non-trivial (tighter than the var's sort default). Emissions
-go right before the block's terminator. For the entry block we also
-emit static facts (universally true). Other blocks emit only their
-local refinements (block-scoped).
+go right before the block's terminator.
 
-Soundness contract: every emitted assume must follow from the
-original program's reachable state at the emission point. Validated
-end-to-end by feeding (orig, materialized) to
-``ctac.rw_eq.emit_equivalence_program`` and discharging every
-emitted CHK assertion via z3 — see ``tests/test_interval_materialize.py``.
+**Dominance gate.** An emission of ``X`` at block ``B`` is sound only
+when ``B`` is dominated by some def block of ``X``. Reason: in the
+original program, ``X`` is "live" only at blocks reachable from a def
+of ``X``, and DSA additionally guarantees the def dominates uses. At
+a non-dominated block, the var's value is undefined on some
+incoming paths — sea_vc encodes def equalities unconditionally, so
+introducing a *new* read at a non-dominated block forces z3 to
+consider models where the def block is off-path and the analysis's
+operand refinements at the def haven't fired. Materialization
+without the dominance gate produces SAT counter-examples on rw-eq.
+
+Soundness contract: every emitted assume follows from the original
+program's reachable state at the emission point. Validated
+end-to-end via ``rw_eq.emit_equivalence_program`` + z3 — see
+``tests/test_interval_materialize.py``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+
+import networkx as nx
 
 from ctac.analysis.abs_int.domains.interval import analyze_intervals
 from ctac.analysis.abs_int.interval_ops import Interval
@@ -32,6 +42,7 @@ from ctac.ast.nodes import (
     TacCmd,
     TacExpr,
 )
+from ctac.graph.cfg import Cfg
 from ctac.ir.models import NBId, TacBlock, TacProgram
 
 
@@ -51,11 +62,31 @@ def materialize_intervals(
 ) -> tuple[TacProgram, MaterializeReport]:
     """Run interval analysis on ``program`` and return a copy with
     inferred bounds inserted as ``assume`` commands at the end of each
-    block (immediately before the terminator).
+    block's static section (before any DSA-dynamic assignment and
+    before the terminator).
 
     The original commands are preserved verbatim — the augmented
     program is the original plus fresh assumes. Soundness of every
-    emitted assume is the analysis's contract.
+    emitted assume rests on two contracts:
+
+    1. **Dominance gate.** An assume on var ``X`` is emitted at block
+       ``B`` only when ``B`` is dominated by some def block of ``X``.
+       In a DSA program every actual use of ``X`` is dominated by a
+       def, so emissions at dominated blocks correspond to legitimate
+       reads — the analysis's claim, plus dominance, plus the
+       sequential semantics of the def block, gives the soundness
+       story directly. Without this, materialization would create
+       fake reads of ``X`` outside its live range, and sea_vc's
+       unconditional def encoding would let z3 construct
+       counter-models.
+    2. **Placement.** Materialized assumes go *after* every other
+       command in the block but before the terminator. ``rw-eq``'s
+       ``_hoist_statics_above_dynamics`` only reorders static
+       AssignExpCmds (LHS not in DSA-dynamic), not AssumeExpCmds, so
+       sea_vc's ``(static)*(dynamic)*terminator`` shape rule doesn't
+       constrain assume placement. Putting the assumes after all
+       defs in the block also avoids use-before-def for any var
+       defined dynamically in the same block.
     """
     result = analyze_intervals(program, symbol_sorts=symbol_sorts)
     sorts = dict(symbol_sorts or {})
@@ -76,16 +107,28 @@ def materialize_intervals(
             return False
         return interval != sort_default(var)
 
-    # Each DSA-static var has a single def block; emit its static fact
-    # at that block's end (after the def has fired in the original).
-    # Emitting at entry's end is wrong for vars defined downstream —
-    # the assume would reference an undefined symbol, which the SMT
-    # encoder (correctly) rejects as use-before-def.
+    # Def sites, keyed by canonical name (parallel-assignment SSA
+    # renames like ``R1048:26`` resolve to the canonical's defs).
     du = extract_def_use(program)
-    static_emit_block: dict[str, NBId] = {}
-    for var, defs in du.definitions_by_symbol.items():
-        if defs:
-            static_emit_block[var] = defs[0].block_id
+
+    def_blocks_by_var: dict[str, set[NBId]] = {
+        var: {d.block_id for d in defs}
+        for var, defs in du.definitions_by_symbol.items()
+        if defs
+    }
+
+    # Dominance scope per var: the set of blocks dominated by at least
+    # one of the var's def blocks. An emission of ``var`` at block B
+    # is sound iff B ∈ dominance_scope[var]. (For DSA-static vars this
+    # is the dominator subtree of the single def; for DSA-dynamic
+    # vars it's the union over all defs.)
+    dominators = _compute_dominators(program)
+    dominance_scope: dict[str, frozenset[NBId]] = {}
+    for var, def_blocks in def_blocks_by_var.items():
+        scope = {
+            b for b, dom_set in dominators.items() if dom_set & def_blocks
+        }
+        dominance_scope[var] = frozenset(scope)
 
     new_blocks: list[TacBlock] = []
     total_assumes = 0
@@ -97,21 +140,30 @@ def materialize_intervals(
 
         # Block-local refinements (apply only at this block onward).
         for var, interval in sorted(local.items()):
-            if is_emittable(var, interval):
-                emissions.append((var, interval))
+            if not is_emittable(var, interval):
+                continue
+            scope = dominance_scope.get(var)
+            if scope is None or block.id not in scope:
+                continue
+            emissions.append((var, interval))
 
         # Static facts: emit at the var's def block, after the def
-        # has been processed in the original. Skip if a local entry
-        # at this block already covers it (local shadows static).
+        # has been processed in the original. The def block is itself
+        # in the var's dominance scope, so the gate is automatically
+        # satisfied. Skip if a local entry at this block already
+        # covers it (local shadows static).
         for var, interval in sorted(result.static.items()):
-            if static_emit_block.get(var) != block.id:
+            def_blocks = def_blocks_by_var.get(var)
+            if def_blocks is None or block.id not in def_blocks:
                 continue
             if var in local:
                 continue
             if is_emittable(var, interval):
                 emissions.append((var, interval))
 
-        new_cmds = _insert_assumes_before_terminator(block.commands, emissions)
+        new_cmds = _insert_assumes_before_terminator(
+            block.commands, emissions
+        )
         new_blocks.append(
             TacBlock(
                 id=block.id,
@@ -129,18 +181,55 @@ def materialize_intervals(
     )
 
 
+def _compute_dominators(
+    program: TacProgram,
+) -> dict[NBId, frozenset[NBId]]:
+    """Block-level dominator sets via networkx. Each block's set
+    includes the block itself. Mirrors
+    ``ctac.rewrite.context._compute_dominators`` — duplicated here to
+    avoid making this module depend on the rewriter; promote when a
+    third caller wants it."""
+    if not program.blocks:
+        return {}
+    entry = program.blocks[0].id
+    digraph = Cfg(program).to_digraph()
+    idom = nx.immediate_dominators(digraph, entry)
+    dom: dict[NBId, frozenset[NBId]] = {}
+
+    def dominators_of(node: NBId) -> frozenset[NBId]:
+        if node in dom:
+            return dom[node]
+        parent = idom.get(node, node)
+        if parent == node:
+            result = frozenset({node})
+        else:
+            result = frozenset({node}) | dominators_of(parent)
+        dom[node] = result
+        return result
+
+    for node in idom:
+        dominators_of(node)
+    return dom
+
+
 def _insert_assumes_before_terminator(
-    cmds: list[TacCmd], emissions: list[tuple[str, Interval]]
+    cmds: list[TacCmd],
+    emissions: list[tuple[str, Interval]],
 ) -> list[TacCmd]:
+    """Insert materialized assumes immediately before the block's
+    terminator (last ``JumpCmd``/``JumpiCmd``/``AssertCmd``), placing
+    them after every other command in the block. This is after all
+    defs (so no use-before-def for vars defined in this block) and
+    before the terminator (so they fire on the way out)."""
     if not emissions:
         return list(cmds)
-    term_idx = len(cmds)
+    insert_at = len(cmds)
     for i in range(len(cmds) - 1, -1, -1):
         if isinstance(cmds[i], _TERMINATOR_TYPES):
-            term_idx = i
+            insert_at = i
             break
     new_assumes = [_assume_for(var, interval) for var, interval in emissions]
-    return list(cmds[:term_idx]) + new_assumes + list(cmds[term_idx:])
+    return list(cmds[:insert_at]) + new_assumes + list(cmds[insert_at:])
 
 
 def _assume_for(var: str, interval: Interval) -> AssumeExpCmd:
