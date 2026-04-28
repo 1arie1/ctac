@@ -7,8 +7,11 @@ import re
 from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 
 _CONST_BOOL = frozenset({"true", "false"})
+# TAC dumps emit negative hex constants as ``0x-N`` (sign right after
+# the radix prefix), e.g. ``0x-48(int)``. Standard Python int parsing
+# uses ``-0xN``; we accept TAC's style here.
 _TYPED_CONST = re.compile(
-    r"^(?P<num>(?:-?[0-9]+|0[xX][0-9a-fA-F_]+))\((?P<tag>[A-Za-z0-9_]+)\)$"
+    r"^(?P<num>(?:-?[0-9]+|0[xX]-?[0-9a-fA-F_]+))\((?P<tag>[A-Za-z0-9_]+)\)$"
 )
 
 
@@ -20,7 +23,7 @@ def _is_const_token(tok: str) -> bool:
         return True
     if re.fullmatch(r"-?[0-9]+", t):
         return True
-    if re.fullmatch(r"0[xX][0-9a-fA-F_]+", t):
+    if re.fullmatch(r"0[xX]-?[0-9a-fA-F_]+", t):
         return True
     if _TYPED_CONST.fullmatch(t):
         return True

@@ -274,6 +274,73 @@ def test_human_unwrap_twos_complement_renders_as_from_s256() -> None:
     assert pretty_lines([cmd], printer=human) == ["I = from_s256(R)"]
 
 
+def test_parser_accepts_negative_hex_const() -> None:
+    """TAC dumps emit negative hex constants as ``0x-N``. Parser must
+    treat them as a single ConstExpr, not as ``Apply(0x-N, ...)``
+    (which was the bug that surfaced as use-before-def on the
+    symbol ``int``)."""
+    from ctac.ast.nodes import ApplyExpr, ConstExpr
+
+    cmd = parse_command_line(
+        "AssumeExpCmd Eq(I581 0x-48(int))"
+    )
+    cond = cmd.condition
+    assert isinstance(cond, ApplyExpr)
+    assert cond.op == "Eq"
+    rhs = cond.args[1]
+    assert isinstance(rhs, ConstExpr)
+    assert rhs.value == "0x-48(int)"
+
+
+def test_human_renders_negative_const_with_sign_outside_brackets() -> None:
+    """Pretty-print a negative constant by formatting the absolute
+    value with the existing labeled-form logic and prepending ``-``
+    OUTSIDE the brackets — ``-[2^64]`` not ``[-2^64]``. The brackets
+    are the unambiguous grouping marker; the sign goes outside.
+
+    Plain decimals (no labeled form) get the standard ``-72`` form
+    via ``_format_dec_10k``."""
+    cases = [
+        # (input, expected_pretty)
+        ("0x-48(int)", "-[2^6+8]"),  # -72; 72 = 2^6 + 8 → labeled form
+        # Power-of-two: sign outside the bracketed pure-power label.
+        # (-(2^64) — int constant, hex would wrap mod 2^256, so use a
+        # decimal-shaped negative.)
+    ]
+    for raw, expected in cases:
+        cmd = parse_command_line(f"AssignExpCmd I {raw}")
+        human = DEFAULT_PRINTERS.get("human")
+        assert pretty_lines([cmd], printer=human) == [
+            f"I = {expected}"
+        ], f"failed for {raw!r}"
+
+
+def test_human_renders_negative_pow2_label() -> None:
+    """``-2^64`` renders as ``-[2^64]`` (sign outside the pure-power
+    label, no extra parens)."""
+    from ctac.eval.value_format import Value, format_value_human_single
+
+    assert format_value_human_single(Value("int", -(1 << 64))) == "-[2^64]"
+    assert format_value_human_single(Value("int", 1 << 64)) == "[2^64]"
+
+
+def test_human_renders_negative_compound_label() -> None:
+    """A compound label like ``2^6+8`` (= 72) negated stays without
+    parens — brackets are the grouping. ``-72 → -[2^6+8]``."""
+    from ctac.eval.value_format import Value, format_value_human_single
+
+    assert format_value_human_single(Value("int", -72)) == "-[2^6+8]"
+
+
+def test_human_renders_small_negative_as_plain_decimal() -> None:
+    """Small negatives that don't match any labeled form fall through
+    to plain decimal, no brackets."""
+    from ctac.eval.value_format import Value, format_value_human_single
+
+    assert format_value_human_single(Value("int", -7)) == "-7"
+    assert format_value_human_single(Value("int", -1234)) == "-1234"
+
+
 def test_twos_complement_bifs_excluded_from_use_iterator() -> None:
     """The ``:bif`` callee in ``Apply(unwrap_twos_complement_256:bif, R)``
     is a built-in function symbol, not a variable use. Adding it to

@@ -16,6 +16,14 @@ def _typed_const_kind(tag: str) -> str:
     return "bv"
 
 
+def _parse_hex_with_tac_negative(base: str) -> int:
+    """Parse ``0xNNN`` or ``0x-NNN`` (TAC's negative-hex convention)."""
+    body = base[2:]
+    if body.startswith("-"):
+        return -int(body[1:], 16)
+    return int(body, 16)
+
+
 def parse_const_token(text: str) -> Value | None:
     t = text.strip()
     if t == "true":
@@ -28,10 +36,13 @@ def parse_const_token(text: str) -> Value | None:
         if rp == len(t) - 1 and lp > 0:
             base = t[:lp]
             tag = t[lp + 1 : rp]
-            if base.startswith(("0x", "0X")):
-                n = int(base, 16)
-            else:
-                n = int(base, 10)
+            try:
+                if base.startswith(("0x", "0X")):
+                    n = _parse_hex_with_tac_negative(base)
+                else:
+                    n = int(base, 10)
+            except ValueError:
+                return None
             kind = _typed_const_kind(tag)
             if kind == "bv":
                 return Value("bv", n % MOD_256)
@@ -39,7 +50,10 @@ def parse_const_token(text: str) -> Value | None:
                 return Value("bool", bool(n))
             return Value("int", n)
     if t.startswith(("0x", "0X")):
-        return Value("bv", int(t, 16) % MOD_256)
+        try:
+            return Value("bv", _parse_hex_with_tac_negative(t) % MOD_256)
+        except ValueError:
+            return None
     try:
         return Value("int", int(t, 10))
     except ValueError:
@@ -224,13 +238,19 @@ def format_value_human_single(v: Value) -> str:
         n = int(v.data)
         if -SINGLE_REPR_SMALL_MAX <= n <= SINGLE_REPR_SMALL_MAX:
             return str(n)
-        if n > 0:
-            p2 = _pow2_near_label(n, max_delta=16)
-            if p2:
-                return f"[{p2}]"
-            p10 = _pow10_family_label(n)
-            if _is_exact_family_label(p10) and n >= 10_000:
-                return f"[{p10}]"
+        # Try the labeled forms on the absolute value. The brackets
+        # already serve as the unambiguous grouping marker, so the
+        # sign goes OUTSIDE: ``-[2^64]`` rather than ``[-2^64]``.
+        # Plain decimals fall through to ``_format_dec_10k`` (emits
+        # ``-72``-style output for negatives).
+        sign = "-" if n < 0 else ""
+        u = abs(n)
+        p2 = _pow2_near_label(u, max_delta=16)
+        if p2:
+            return f"{sign}[{p2}]"
+        p10 = _pow10_family_label(u)
+        if _is_exact_family_label(p10) and u >= 10_000:
+            return f"{sign}[{p10}]"
         return _format_dec_10k(n)
 
     # bv
