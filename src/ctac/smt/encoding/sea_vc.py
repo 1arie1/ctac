@@ -340,9 +340,18 @@ class SeaVcEncoder(SmtEncoder):
 
         du = extract_def_use(program)
         dsa = analyze_dsa(program, def_use=du)
-        if not dsa.is_valid:
-            first = dsa.issues[0]
-            raise SmtEncodingError(f"DSA precondition failed: {first.kind} at {first.block_id}:{first.cmd_index}")
+        # ``shape`` issues (e.g. static def appearing after a dynamic one
+        # within a block) are stylistic — sea_vc encodes each def-site
+        # independently in ``du.definitions`` order, not block-linear
+        # order, so within-block interleaving doesn't change the
+        # encoded VC. Only ``ambiguous-use`` (multiple reaching defs
+        # for a non-dynamic symbol) is genuinely encoder-fatal.
+        fatal = [i for i in dsa.issues if i.kind != "shape"]
+        if fatal:
+            first = fatal[0]
+            raise SmtEncodingError(
+                f"DSA precondition failed: {first.kind} at {first.block_id}:{first.cmd_index}"
+            )
 
         # Use-before-def precondition: every used symbol must have at
         # least one reaching def. DSA only flags multiple-defs and
