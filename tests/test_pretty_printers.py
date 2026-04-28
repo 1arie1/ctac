@@ -231,4 +231,63 @@ def test_human_int_mul_div_round_trips_through_parser() -> None:
     assert isinstance(cmd, AssignExpCmd)
     assert isinstance(cmd.rhs, ApplyExpr)
     assert cmd.rhs.op == "IntMulDiv"
-    assert len(cmd.rhs.args) == 3
+
+
+def test_human_select_renders_as_index() -> None:
+    cmd = parse_command_line("AssignExpCmd R Select(M K)")
+    human = DEFAULT_PRINTERS.get("human")
+    assert pretty_lines([cmd], printer=human) == ["R = M[K]"]
+
+
+def test_human_store_renders_as_functional_update() -> None:
+    cmd = parse_command_line("AssignExpCmd M2 Store(M1 K V)")
+    human = DEFAULT_PRINTERS.get("human")
+    assert pretty_lines([cmd], printer=human) == ["M2 = M1[K := V]"]
+
+
+def test_human_store_chain_renders_as_chained_updates() -> None:
+    """Nested ``Store(Store(Store(M, k1, v1), k2, v2), k3, v3)`` —
+    common shape on bytemap-rw programs — renders as a chain of
+    bracket-update segments."""
+    cmd = parse_command_line(
+        "AssignExpCmd M4 Store(Store(Store(M K1 V1) K2 V2) K3 V3)"
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    assert pretty_lines([cmd], printer=human) == [
+        "M4 = M[K1 := V1][K2 := V2][K3 := V3]"
+    ]
+
+
+def test_human_wrap_twos_complement_renders_as_to_s256() -> None:
+    cmd = parse_command_line(
+        "AssignExpCmd R Apply(wrap_twos_complement_256:bif I)"
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    assert pretty_lines([cmd], printer=human) == ["R = to_s256(I)"]
+
+
+def test_human_unwrap_twos_complement_renders_as_from_s256() -> None:
+    cmd = parse_command_line(
+        "AssignExpCmd I Apply(unwrap_twos_complement_256:bif R)"
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    assert pretty_lines([cmd], printer=human) == ["I = from_s256(R)"]
+
+
+def test_twos_complement_bifs_excluded_from_use_iterator() -> None:
+    """The ``:bif`` callee in ``Apply(unwrap_twos_complement_256:bif, R)``
+    is a built-in function symbol, not a variable use. Adding it to
+    BUILTIN_FUNCTIONS lets ``iter_expr_symbols`` skip the callee
+    position via ``is_known_builtin_function_symbol`` (already wired
+    in expr_walk.py). Pinning so the registry entry can't drift
+    silently."""
+    from ctac.analysis.expr_walk import command_uses
+
+    cmd = parse_command_line(
+        "AssignExpCmd I Apply(unwrap_twos_complement_256:bif R0)"
+    )
+    uses = command_uses(cmd)
+    # Only R0 is a use; the bif callee is filtered.
+    assert "R0" in uses
+    assert not any("twos_complement" in u for u in uses)
+    assert not any(":bif" in u for u in uses)

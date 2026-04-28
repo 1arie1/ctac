@@ -124,7 +124,7 @@
       "patterns": [
         {
           "name": "keyword.operator.htac",
-          "match": "==|<=|>=|<s|<=s|>s|>=s|&&|\\|\\||<<|>>s|>>|\\+int|-int|\\*int|/int|%int|[+\\-*/%&|^~!=<>]"
+          "match": ":=|==|<=|>=|<s|<=s|>s|>=s|&&|\\|\\||<<|>>s|>>|\\+int|-int|\\*int|/int|%int|[+\\-*/%&|^~!=<>]"
         }
       ]
     },

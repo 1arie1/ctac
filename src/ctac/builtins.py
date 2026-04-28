@@ -14,6 +14,8 @@ class BuiltinFunction:
 # Keep this list small and explicit; expand as new builtins are supported.
 BUILTIN_FUNCTIONS: tuple[BuiltinFunction, ...] = (
     BuiltinFunction(key_prefix="safe_math_narrow_bv256", pretty_name="narrow"),
+    BuiltinFunction(key_prefix="wrap_twos_complement_256", pretty_name="to_s256"),
+    BuiltinFunction(key_prefix="unwrap_twos_complement_256", pretty_name="from_s256"),
 )
 
 

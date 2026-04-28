@@ -303,6 +303,15 @@ class HumanPrettyPrinter(PrettyPrinter):
             cond = self._strip_outer_parens_once(args[0])
             return f"(if {cond} {{ {args[1]} }} else {{ {args[2]} }})"
 
+        if op == "Select" and len(args) == 2:
+            return f"{args[0]}[{args[1]}]"
+
+        if op == "Store" and len(args) == 3:
+            # Functional update: returns a new map equal to args[0]
+            # except at args[1], where it's args[2]. Renders well in
+            # the common nested-Store chain (each segment chains).
+            return f"{args[0]}[{args[1]} := {args[2]}]"
+
         if op in self._binary_infix and len(args) >= 2:
             inf = self._binary_infix[op]
             return "(" + f" {inf} ".join(args) + ")"
