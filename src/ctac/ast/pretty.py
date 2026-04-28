@@ -182,6 +182,7 @@ class HumanPrettyPrinter(PrettyPrinter):
     # the human printer remaps to a snake_case alias.
     _int_func_remap = {
         "IntCeilDiv": "int_div_ceil",
+        "IntMulDiv": "muldiv",
     }
 
     @staticmethod

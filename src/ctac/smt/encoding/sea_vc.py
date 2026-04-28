@@ -203,9 +203,22 @@ def _int_ceil_div_axiom_define_fun() -> str:
     )
 
 
+def _int_mul_div_axiom_define_fun() -> str:
+    # Partial axiom for floor multiply-then-divide: defined when the
+    # divisor is positive. The bounds avoid introducing ``div`` in the
+    # axiom (pure NIA), mirroring int_ceil_div's shape.
+    return (
+        "(define-fun int_mul_div_axiom ((a Int) (b Int) (c Int)) Bool "
+        "(=> (> c 0) "
+        "(and (<= (* c (int_mul_div a b c)) (* a b)) "
+        "(< (* a b) (+ (* c (int_mul_div a b c)) c)))))"
+    )
+
+
 _UF_AXIOM_DEFINE_BY_UF: dict[str, tuple[str, Callable[[], str]]] = {
     "bv256_xor": ("bv256_xor_axiom", _xor_axiom_define_fun),
     "int_ceil_div": ("int_ceil_div_axiom", _int_ceil_div_axiom_define_fun),
+    "int_mul_div": ("int_mul_div_axiom", _int_mul_div_axiom_define_fun),
 }
 
 
@@ -633,6 +646,20 @@ class SeaVcEncoder(SmtEncoder):
                     uf_decl_lines.add(f"(declare-fun {uf} (Int Int) Int)")
                     uf_apps[uf].add((a1, a2))
                     return f"({uf} {a1} {a2})", "Int"
+                if op == "IntMulDiv":
+                    # Floor multiply-then-divide: floor((a*b)/c). Total UF
+                    # axiomatized partially for ``c > 0`` via
+                    # ``int_mul_div_axiom``. Per-app axiom instantiation
+                    # happens at finalize time.
+                    if len(expr.args) != 3:
+                        raise SmtEncodingError("IntMulDiv expects three args")
+                    a1, _ = emit_expr(expr.args[0], expected_sort="Int")
+                    a2, _ = emit_expr(expr.args[1], expected_sort="Int")
+                    a3, _ = emit_expr(expr.args[2], expected_sort="Int")
+                    uf = "int_mul_div"
+                    uf_decl_lines.add(f"(declare-fun {uf} (Int Int Int) Int)")
+                    uf_apps[uf].add((a1, a2, a3))
+                    return f"({uf} {a1} {a2} {a3})", "Int"
                 if op in {"Shl", "BvShl", "BVShl", "LShift", "ShiftLeft"}:
                     if len(expr.args) != 2:
                         raise SmtEncodingError(f"{op} expects two args")

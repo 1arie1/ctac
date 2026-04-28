@@ -209,3 +209,26 @@ def test_human_int_ceil_div_round_trips_through_parser() -> None:
     assert isinstance(cmd.rhs, ApplyExpr)
     assert cmd.rhs.op == "IntCeilDiv"
     assert len(cmd.rhs.args) == 2
+
+
+def test_human_renders_int_mul_div_as_function_call() -> None:
+    """``IntMulDiv(a, b, c)`` is a TAC concept (axiomatized full-precision
+    multiply-then-divide). The human printer renders as ``muldiv(a, b, c)``;
+    the raw printer round-trips the PascalCase form."""
+    cmd = parse_command_line("AssignExpCmd R IntMulDiv(A B C)")
+    human = DEFAULT_PRINTERS.get("human")
+    raw = DEFAULT_PRINTERS.get("raw")
+    assert pretty_lines([cmd], printer=human) == ["R = muldiv(A, B, C)"]
+    assert pretty_lines([cmd], printer=raw) == ["AssignExpCmd R IntMulDiv(A B C)"]
+
+
+def test_human_int_mul_div_round_trips_through_parser() -> None:
+    """Parser round-trip: `IntMulDiv(A B C)` parses as
+    ``ApplyExpr(op="IntMulDiv", args=(A, B, C))`` and stays that way."""
+    from ctac.ast.nodes import ApplyExpr
+
+    cmd = parse_command_line("AssignExpCmd R IntMulDiv(A B C)")
+    assert isinstance(cmd, AssignExpCmd)
+    assert isinstance(cmd.rhs, ApplyExpr)
+    assert cmd.rhs.op == "IntMulDiv"
+    assert len(cmd.rhs.args) == 3

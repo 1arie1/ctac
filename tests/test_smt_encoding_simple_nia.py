@@ -604,3 +604,116 @@ def test_sea_vc_int_ceil_div_axiom_discharges_via_z3() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# IntMulDiv concept: floor((a*b)/c) — UF + partial axiom (gated on c > 0).
+# Mirrors the IntCeilDiv shape with a 3-arg signature.
+
+TAC_INT_MUL_DIV = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\ta:bv256
+\tb:bv256
+\tc:bv256
+\tq:bv256
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd a
+\t\tAssignHavocCmd b
+\t\tAssignHavocCmd c
+\t\tAssumeExpCmd Gt(c 0x0)
+\t\tAssignExpCmd q IntMulDiv(a b c)
+\t\tAssignExpCmd ok Le(IntMul(c q) IntMul(a b))
+\t\tAssertCmd ok "muldiv lower bound"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_sea_vc_int_mul_div_emits_uf_and_axiom() -> None:
+    """IntMulDiv lowers to a UF call ``(int_mul_div a b c)``; sea_vc
+    declares the UF (Int Int Int → Int), emits the partial axiom's
+    ``define-fun`` once, and asserts the axiom for each unique
+    application — same shape as the existing int_ceil_div handling
+    extended to three arguments."""
+    tac = parse_string(TAC_INT_MUL_DIV, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    assert "(declare-fun int_mul_div (Int Int Int) Int)" in rendered
+    assert "Axiom Instantiations" in rendered
+    assert "(define-fun int_mul_div_axiom ((a Int) (b Int) (c Int)) Bool" in rendered
+    assert (
+        "; instantiate int_mul_div_axiom for each int_mul_div application"
+        in rendered
+    )
+    # The application itself appears as a UF call wrapping the operands.
+    assert "(int_mul_div a b c)" in rendered
+    # And the per-application axiom is asserted exactly once for (a, b, c).
+    assert "(assert (int_mul_div_axiom a b c))" in rendered
+
+
+@pytest.mark.skipif(not _z3_available(), reason="z3 not on PATH")
+def test_sea_vc_int_mul_div_axiom_discharges_via_z3() -> None:
+    """Z3 actually uses the IntMulDiv axiom: assert the floor lower
+    bound ``c*q ≤ a*b`` (always true under ``c > 0``) and expect
+    ``unsat``. Without the axiom, the UF would be free and z3 could
+    pick a value violating the bound."""
+    tac = parse_string(TAC_INT_MUL_DIV, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=rendered,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    verdict = proc.stdout.strip().splitlines()[0] if proc.stdout else ""
+    assert verdict == "unsat", (
+        f"expected unsat, got {verdict!r}; z3 stdout: {proc.stdout!r}, "
+        f"stderr: {proc.stderr!r}"
+    )
+
+
+def test_sea_vc_int_mul_div_arity_mismatch_errors() -> None:
+    """Wrong-arity IntMulDiv rejected by the encoder."""
+    bad_tac = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\ta:bv256
+\tb:bv256
+\tq:bv256
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd a
+\t\tAssignHavocCmd b
+\t\tAssignExpCmd q IntMulDiv(a b)
+\t\tAssignExpCmd ok Eq(q 0x0)
+\t\tAssertCmd ok "wrong arity"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    tac = parse_string(bad_tac, path="<string>")
+    with pytest.raises(Exception, match="IntMulDiv expects three args"):
+        render_smt_script(build_vc(tac, encoding="sea_vc"))
+
+
