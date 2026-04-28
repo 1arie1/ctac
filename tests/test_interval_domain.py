@@ -394,6 +394,51 @@ def test_raw_bv_op_with_no_width_signal_anywhere_is_top() -> None:
     assert result.static["R"] == Interval(None, None)
 
 
+def test_def_uses_universal_operands_not_block_local_refinements() -> None:
+    """Soundness regression: a DSA-static var defined in a non-entry
+    block must NOT pick up its operands' block-local refinements when
+    computing the def's static value.
+
+    The reason: sea_vc encodes ``X = e`` as an unconditional equality.
+    A model that doesn't reach the def block still sees the equality
+    fire — but block-local refinements at the def block are
+    path-conditional in the SMT, so a model where the def block
+    isn't on the path skips them and the def's value can blow past
+    the analysis's claim.
+
+    Fixture: at non-entry block ``B1``, refine ``X`` to ``[0, 100]``
+    *before* defining ``Y = IntAdd(X, 1)``. The block-local view at
+    ``B1`` after the def has Y in ``[1, 101]``, but the universal
+    static value of Y must use X's universal range (sort default for
+    bv256), so static[Y] is much wider — matching what sea_vc would
+    see when the model picks a path that doesn't go through B1.
+    """
+    program = TacProgram(
+        blocks=[
+            _block("e", ["B1"], [_havoc("X"), _jump("B1")]),
+            _block(
+                "B1",
+                [],
+                [
+                    _assume(_apply("Le", _sym("X"), _const("0x64"))),
+                    _assign("Y", _apply("IntAdd", _sym("X"), _const("0x1"))),
+                ],
+            ),
+        ]
+    )
+    result = analyze_intervals(
+        program, symbol_sorts={"X": "bv256", "Y": "int"}
+    )
+    # static[X] is the bv256 sort default (refinement is non-entry,
+    # stays in local).
+    assert result.static["X"] == Interval(0, (1 << 256) - 1)
+    # static[Y]: must use X's UNIVERSAL value, not B1's local
+    # refinement. So Y ∈ [0+1, 2^256-1+1] = [1, 2^256]. NOT [1, 101]
+    # — that would be the unsound bound the bug produced.
+    assert result.static["Y"] == Interval(1, (1 << 256))
+    assert result.static["Y"] != Interval(1, 101)
+
+
 def test_int_op_threads_width_to_nested_bv_op() -> None:
     """Regression for the TCSE2 case in real targets:
     ``IntMul(Mod(R, K), C)`` with a bv256-sorted lhs. Without
@@ -595,12 +640,14 @@ def test_lnot_inverts_relational_predicate() -> None:
     assert result.static["X"] == Interval(101, (1 << 256) - 1)
 
 
-def test_bitwise_and_shift_ops_return_top_in_v1() -> None:
+def test_bitwise_and_shift_ops_clamp_to_lhs_sort_default() -> None:
     """v1 contract: bitwise binops (``BWAnd``/``BWOr``/``BWXor``) and
-    shift ops are unhandled — they return TOP regardless of operand
-    intervals. Pinning so a future implementer knows what's left to
-    add (and so removing this fallback intentionally requires
-    updating this test)."""
+    shift ops have no transfer function — their rhs evaluation
+    returns TOP. But ``transfer`` meets every assignment's value with
+    the lhs sort default, so for a bv-sorted lhs the stored value is
+    the sort default, not TOP. Pinning the contract: future transfer
+    functions can only tighten this; if they ever return wider than
+    the lhs sort, that's unsound."""
     program = TacProgram(
         blocks=[
             _block(
@@ -637,17 +684,16 @@ def test_bitwise_and_shift_ops_return_top_in_v1() -> None:
             "SRL": "bv256",
         },
     )
-    # No dispatch branch handles bitwise/shift ops → fall through to
-    # the unhandled-op case which returns iv.TOP. Lhs sort doesn't
-    # rescue them: write_def stores TOP, lookup re-applies the sort
-    # default only on unknown vars, not on stored TOPs. If/when these
-    # ops gain real transfer functions, this test must be updated.
-    top = Interval(None, None)
-    assert result.static["A"] == top
-    assert result.static["O"] == top
-    assert result.static["XOR"] == top
-    assert result.static["SL"] == top
-    assert result.static["SRL"] == top
+    # No dispatch branch handles bitwise/shift ops → rhs eval yields
+    # TOP, but ``transfer`` meets with the lhs sort default. So
+    # bv256-typed lhs gets the sort default. If/when these ops gain
+    # real transfer functions the result will narrow, never widen.
+    bv256_full = Interval(0, (1 << 256) - 1)
+    assert result.static["A"] == bv256_full
+    assert result.static["O"] == bv256_full
+    assert result.static["XOR"] == bv256_full
+    assert result.static["SL"] == bv256_full
+    assert result.static["SRL"] == bv256_full
 
 
 def test_safe_math_narrow_around_intadd_keeps_precision() -> None:
