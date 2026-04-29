@@ -29,9 +29,9 @@ branch wins; rule 10 is the abort sink.
 5b  paired asserts               both AssertCmd                         ``CHK = Eq(L.pred, R.pred); assert CHK;
                                                                         assume L.pred [; assume R.pred if differ]``  both
 9b  lhs-only DCE                 L is AssignExp/Havoc, ``L.lhs ∉ rhs``  L verbatim                               L
+3   rhs-only fresh assignment    R is AssignExp/Havoc, ``R.lhs ∉ lhs``  R verbatim                               R
 4   rhs-only assume              R is AssumeExp                         ``CHK = R.cond; assert CHK``             R
 4b  lhs-only assume              L is AssumeExp                         ``CHK = L.cond; assert CHK``             L
-3   rhs-only fresh assignment    R is AssignExp/Havoc, ``R.lhs ∉ lhs``  R verbatim                               R
 10  no-match abort               nothing matched                        rich diagnostic, raise                   —
 ==  ===========================  =====================================  =======================================  ========
 
@@ -106,7 +106,15 @@ Assumptions and caveats
    implied by the rest of the merged state. Rule 4b's CHK catches a
    dropped load-bearing assume. False positives are possible if the
    rwriter is sound on orig's domain but its computation differs on
-   orig-unreachable states; no current rule triggers that pattern.
+   orig-unreachable states. The dispatch order pre-empts the most
+   common shape of this — a rwriter-introduced fresh assignment
+   sitting between an orig assume and its rwriter-side replacement
+   assume — by running rules 9b / 3 *before* rules 4 / 4b, so the
+   asymmetric remainder gets consumed first and the assumes pair via
+   rule 5a. Patterns that survive even that pre-emption (e.g. an orig
+   assume with no rwriter-side replacement at all, or a replacement
+   that requires multi-cmd reordering across an Assume boundary) will
+   still produce a rule-4b CHK.
 
 6. **Hoist post-pass assumes CHKs reference only static / cross-block
    symbols**: a CHK whose RHS references a same-block dynamic symbol
@@ -743,19 +751,33 @@ def _walk_block(
             state.hit("5b_assert_pair")
             continue
 
+        # Rules 9b and 3 — "consume the asymmetric remainder" — both
+        # run *before* rules 4 / 4b (the unpaired-assume CHKs).
+        #
+        # 9b eats an lhs-only DCE'd assignment; 3 eats a rhs-only fresh
+        # assignment. When either side has a soon-to-be-DCE'd or
+        # rwriter-introduced intermediate sitting opposite the other
+        # side's assume, eating the asymmetric assignment first lets
+        # the next dispatch pair the assumes via rule 5a (or via 5b /
+        # 1 / 2 if the next-up commands are asserts / identical /
+        # same-lhs assignments).
+        #
+        # If we let rule 4 / 4b fire first, the corresponding-side
+        # assume gets emitted as an unpaired CHK and the matching
+        # assume on the other side has nothing left to pair with —
+        # the walker emits two unpaired CHKs where one paired CHK
+        # was the right encoding. (Concretely: kev-kvault
+        # `shares_to_burn_consistency` had an orig
+        # ``assume R55 == R53`` opposite a rwriter-introduced
+        # ``TB6 = R179 == 0`` followed by the rwriter's replacement
+        # case-split assume; before the reorder, rule 4b consumed the
+        # orig assume against an unprepared rhs cursor and the CHK
+        # came back SAT.)
+
         # Rule 9b: lhs has an assignment whose LHS isn't defined in rhs
         # at all — DCE removed it. Emit verbatim, advance LHS only. (The
         # bare rule 9 only handles end-of-stream DCE; this handles the
         # mid-stream case.)
-        #
-        # IMPORTANT: 9b runs *before* rules 4 (rhs-only assume) and 3
-        # (rhs fresh assignment). When the lhs has a soon-to-be-DCE'd
-        # assignment, eating it first lets the next-up lhs assume /
-        # assert / assignment pair with the rhs's matching command via
-        # rule 5a / 5b / 1 / 2. If we let rule 4 fire first, the rhs's
-        # "replacement" assume gets emitted as a rhs-only check and the
-        # subsequent lhs assume has nothing on the rhs to pair with —
-        # the walker stalls on a structurally-fine input.
         if (
             isinstance(L, (AssignExpCmd, AssignHavocCmd))
             and L.lhs not in state.rhs_defined
@@ -763,6 +785,17 @@ def _walk_block(
             output.append(L)
             li += 1
             state.hit("9b_lhs_dce")
+            continue
+
+        # Rule 3: rhs-introduced fresh symbol. Emit verbatim, advance
+        # RHS only. Symmetric to 9b.
+        if (
+            isinstance(R, (AssignExpCmd, AssignHavocCmd))
+            and R.lhs not in state.lhs_defined
+        ):
+            output.append(R)
+            ri += 1
+            state.hit("3_fresh_rhs")
             continue
 
         # Rule 4: rhs-only assume.
@@ -813,16 +846,6 @@ def _walk_block(
             )
             li += 1
             state.hit("4b_lhs_assume")
-            continue
-
-        # Rule 3: rhs-introduced fresh symbol.
-        if (
-            isinstance(R, (AssignExpCmd, AssignHavocCmd))
-            and R.lhs not in state.lhs_defined
-        ):
-            output.append(R)
-            ri += 1
-            state.hit("3_fresh_rhs")
             continue
 
         # Rule 10: nothing matches.
