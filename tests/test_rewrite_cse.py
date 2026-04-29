@@ -291,3 +291,88 @@ def test_cse_hoists_to_common_dominator_when_rhs_uses_non_entry_var():
     assert not ubd.issues, (
         f"CSE hoist produced use-before-def: {ubd.issues}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Mid-iteration canon equivalence: when CP propagates a child arg in the
+# same iteration, the host RHS becomes canonically equal to a registered
+# canon AFTER the iteration's ``_build_rhs_index`` snapshot. The use_blocks
+# field then misses the host's block. The slow-path strict-dominator
+# computation must still account for the actual cur_block, otherwise it
+# can pick a target that doesn't dominate the use being rewritten —
+# producing use-before-def in the rewriter's output.
+
+_TCSE_MID_ITER_FIXTURE = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tt:int
+\ts:int
+\tc1:bool
+\tc2:bool
+\tX:int
+\tY:int
+\tok:bool
+}
+Program {
+\tBlock entry Succ [P_a, P_b] {
+\t\tAssignHavocCmd t
+\t\tAssignHavocCmd c1
+\t\tAssignHavocCmd c2
+\t\tAssignExpCmd s t
+\t\tJumpiCmd P_a P_b c1
+\t}
+\tBlock P_a Succ [A, other] {
+\t\tJumpiCmd A other c2
+\t}
+\tBlock A Succ [J] {
+\t\tAssignExpCmd X IntAdd(t 0x1(int))
+\t\tAssumeExpCmd Eq(X 0x0(int))
+\t\tJumpCmd J
+\t}
+\tBlock other Succ [J] {
+\t\tJumpCmd J
+\t}
+\tBlock P_b Succ [J] {
+\t\tAssignExpCmd Y IntAdd(s 0x1(int))
+\t\tAssumeExpCmd Eq(Y 0x0(int))
+\t\tJumpCmd J
+\t}
+\tBlock J Succ [] {
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_cse_slow_path_accounts_for_cur_block_via_mid_iter_canon_eq():
+    """Sibling block (P_b) becomes canonically equal to a deeper block's
+    static def (A's ``IntAdd(t, 0x1)``) only after CP propagates ``s -> t``
+    mid-iteration. The RHS index built at iter-start has use_blocks={A}
+    only; the strict-dominator of {A} alone is P_a, which does NOT
+    dominate P_b. Without including cur_block in the dominator
+    computation, CSE hoists TCSE into P_a and reads it from P_b — a
+    use-before-def regression on real Solana TAC.
+
+    The fix: include cur_block when computing the strict common
+    dominator so the chosen target dominates the use being rewritten.
+    """
+    from ctac.analysis import analyze_use_before_def, extract_def_use
+
+    tac = parse_string(_TCSE_MID_ITER_FIXTURE, path="<s>")
+    res = rewrite_program(
+        tac.program, (CSE, CP_ALIAS), symbol_sorts=tac.symbol_sorts
+    )
+
+    du = extract_def_use(res.program)
+    ubd = analyze_use_before_def(res.program, def_use=du)
+    assert not ubd.issues, (
+        f"CSE produced use-before-def at mid-iter canon match: {ubd.issues}"
+    )

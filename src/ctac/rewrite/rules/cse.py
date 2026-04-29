@@ -43,10 +43,16 @@ not yet through B796's def, the read was undefined).
 the rewriter's output can quickly tell which assignments CSE
 introduced versus the orig's.
 
-**Placement:** runs both in ``simplify_pipeline`` (picks up duplicates
-the input already has) and alongside ``ITE_PURIFY`` in the post-DCE
-phase (picks up duplicates that ITE_PURIFY itself just created by
-naming identical Ite conditions twice).
+**Placement:** runs in its own dedicated phases, never alongside
+rules that mutate registered RHSes. The CLI driver runs CSE early
+(after chain recognition, to catch input-level duplicates before
+simplification reshapes their structure) and late (after ITE_PURIFY
+etc., to fold the structurally-equal ``T<N>`` defs those rules
+emit). Isolation is load-bearing: CSE's RHS index is built once per
+iteration; if a rule alongside it (CP, range fold, bit-op canon,
+...) rewrites a registered RHS mid-iter, canon equivalence shifts
+under the snapshot. With CSE alone in its phase, the snapshot is a
+real invariant.
 """
 
 from __future__ import annotations
@@ -208,7 +214,14 @@ def _rewrite_cse(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     # - every free var of ``first_rhs`` must be defined in the
     #   target itself or in a block dominating the target (so the
     #   TCSE's RHS is well-formed under def-use).
-    target_block = _deepest_common_strict_dominator(use_blocks, ctx)
+    # The use-block set is computed once per iteration from program state at
+    # iter start. ``cur_block`` may not be in it because its RHS only became
+    # canonically equal to ``first_rhs`` after subexpression rewrites (e.g.
+    # CP propagated B217 -> TCSE21 earlier in this same iteration). Include
+    # ``cur_block`` explicitly so the strict-common-dominator computation
+    # accounts for the use site we're actually rewriting.
+    effective_uses = set(use_blocks) | {cur_block}
+    target_block = _deepest_common_strict_dominator(effective_uses, ctx)
     if target_block is None:
         return None
     if not all(
@@ -219,30 +232,39 @@ def _rewrite_cse(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
 
     # Cache hoisted aliases per RHS so multiple non-dominating uses of
     # the same canonical RHS share one TCSE<n>. The cache is keyed by
-    # canonical(rhs); the hoisted assignment becomes the new "natural"
-    # source for this canonical RHS within this iteration.
+    # canonical(rhs); the value carries (tx_name, def_block) so a later
+    # cur_block in the same iteration that wasn't part of the cache's
+    # target computation can be checked against the existing def block.
     hoisted = getattr(ctx, "_cse_hoisted", None)
     if hoisted is None:
         hoisted = {}
         ctx._cse_hoisted = hoisted  # type: ignore[attr-defined]
-    tx_name = hoisted.get(canon)
-    if tx_name is None:
-        sort = ctx.symbol_sort(first_lhs)
-        if sort is None:
-            # No sort info — can't safely emit a fresh assign. Decline
-            # rather than guess; CSE will retry next iteration once
-            # symbol_sorts is populated, or stay un-rewritten.
+    cached = hoisted.get(canon)
+    if cached is not None:
+        tx_name, cached_def_block = cached
+        # The TCSE was emitted earlier this iteration at ``cached_def_block``.
+        # Reuse only if that block strictly dominates this cur_block; else
+        # decline rather than introduce use-before-def.
+        if cached_def_block not in (
+            ctx.dominators.get(cur_block, frozenset()) - {cur_block}
+        ):
             return None
-        tx = ctx.emit_fresh_assign(
-            prefix="TCSE",
-            rhs=first_rhs,
-            sort=sort,
-            placement="block_end",
-            block_id=target_block,
-        )
-        tx_name = tx.name
-        hoisted[canon] = tx_name
-    return SymbolRef(tx_name)
+        return SymbolRef(tx_name)
+    sort = ctx.symbol_sort(first_lhs)
+    if sort is None:
+        # No sort info — can't safely emit a fresh assign. Decline
+        # rather than guess; CSE will retry next iteration once
+        # symbol_sorts is populated, or stay un-rewritten.
+        return None
+    tx = ctx.emit_fresh_assign(
+        prefix="TCSE",
+        rhs=first_rhs,
+        sort=sort,
+        placement="block_end",
+        block_id=target_block,
+    )
+    hoisted[canon] = (tx.name, target_block)
+    return SymbolRef(tx.name)
 
 
 CSE = Rule(

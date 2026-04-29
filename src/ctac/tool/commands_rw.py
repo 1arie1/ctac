@@ -6,7 +6,11 @@ from typing import Annotated, Optional
 import typer
 from rich.markup import escape
 
-from ctac.analysis import eliminate_dead_assignments
+from ctac.analysis import (
+    analyze_dsa,
+    analyze_use_before_def,
+    eliminate_dead_assignments,
+)
 from ctac.ir.models import TacProgram
 from ctac.parse import ParseError, parse_path
 from ctac.tool.tac_output import (
@@ -23,12 +27,12 @@ from ctac.rewrite.lift_dynamic_ite import lift_dynamic_ite_rhs
 from ctac.rewrite.materialize_assumes import materialize_assumes
 from ctac.rewrite.rules import (
     CP_ALIAS,
-    CSE,
     ITE_PURIFY,
     PURIFY_ASSERT,
     PURIFY_ASSUME,
     R4A_DIV_PURIFY,
     chain_recognition_pipeline,
+    cse_pipeline,
     simplify_pipeline,
 )
 from ctac.tool.cli_runtime import (
@@ -129,18 +133,28 @@ def _merge_phases(*phases: RewriteResult) -> RewriteResult:
 
 _RW_EPILOG = (
     "[bold green]Pipeline[/bold green]\n\n"
-    "[bold]1.[/bold] [bold]simplify_pipeline[/bold] — bit-op canonicalization "
+    "[bold]1.[/bold] [bold]chain recognition[/bold] — R6's ceildiv idiom + "
+    "bit-op canonicalization, before distribution rules can mangle the "
+    "chain interior.\n\n"
+    "[bold]2.[/bold] [bold]early CSE[/bold] — fold trivial duplicate static "
+    "defs the input already carries. Runs alone so the per-iteration RHS "
+    "index is a real snapshot (no rule alongside it shifts canonical "
+    "equivalence under the snapshot).\n\n"
+    "[bold]3.[/bold] [bold]simplify_pipeline[/bold] — bit-op canonicalization "
     "(N1-N4), div/ceildiv simplifications (R1-R4, R6), boolean/Ite cleanup, "
-    "CSE, copy-prop — all iterated to a fixed point.\n\n"
-    "[bold]2.[/bold] (optional) [bold]R4a div purification[/bold] — replaces "
+    "copy-prop — all iterated to a fixed point.\n\n"
+    "[bold]4.[/bold] (optional) [bold]R4a div purification[/bold] — replaces "
     "[cyan]X = Div(A, B)[/cyan] with [cyan]havoc X + euclidean bounds[/cyan] "
     "when [cyan]B[/cyan] has a non-constant positive range. Controlled by "
     "[cyan]--purify-div[/cyan] (default on).\n\n"
-    "[bold]3.[/bold] Iterated [bold]DCE[/bold] to remove the residual dead defs.\n\n"
-    "[bold]4.[/bold] (optional) [bold]Post-DCE naming phase[/bold]: "
+    "[bold]5.[/bold] Iterated [bold]DCE[/bold] to remove the residual dead defs.\n\n"
+    "[bold]6.[/bold] (optional) [bold]Post-DCE naming phase[/bold]: "
     "[cyan]--purify-ite[/cyan] (default on), "
     "[cyan]--purify-assert[/cyan] (default on), "
-    "[cyan]--purify-assume[/cyan] (default off), plus CSE + CP + another DCE sweep.\n\n"
+    "[cyan]--purify-assume[/cyan] (default off), plus CP.\n\n"
+    "[bold]7.[/bold] [bold]late CSE[/bold] — fold the structurally-equal "
+    "[cyan]T<N>[/cyan] defs the purify rules just emitted. Followed by a "
+    "CP cleanup pass and a final DCE sweep.\n\n"
     "Default output: pretty-printed TAC to stdout. With [cyan]-o FILE.tac[/cyan] "
     "emits a round-trippable [cyan].tac[/cyan] file; with "
     "[cyan]-o FILE.htac[/cyan] emits pretty-printed text to a file. Use "
@@ -245,6 +259,18 @@ def rewrite_cmd(
             "program's existing constraints. Default on."
         ),
     ),
+    validate: bool = typer.Option(
+        True,
+        "--validate/--no-validate",
+        help=(
+            "Sanity-check the rewritten program for use-before-def and DSA "
+            "shape before returning. Both are downstream invariants for "
+            "ctac smt (sea_vc encodes def-sites under DSA and rejects "
+            "use-before-def); failing loudly here saves the user a "
+            "debugging round-trip. The (possibly broken) output is still "
+            "written so the failure can be inspected. Default on."
+        ),
+    ),
 ) -> None:
     """Simplify TAC via the rewrite pipeline (div/bit-field rewrites + DCE)."""
     _ = agent
@@ -279,11 +305,25 @@ def rewrite_cmd(
         symbol_sorts=tac.symbol_sorts,
         use_int_ceil_div=ceildiv_op,
     )
+    # Phase 0.5: early CSE. Catches the trivial duplicates the input
+    # already carries (e.g. ``B205 = R29 == 0`` and ``B215 = R29 == 0``
+    # in sibling branches) before simplification mangles their shape.
+    # Runs alone — no rule alongside it mutates a registered RHS, so
+    # the per-iteration RHS index is a real snapshot. Aim is trivial
+    # repetition only; deeper commonalities are not the goal here.
+    phase_cse_early = rewrite_program(
+        phase0.program,
+        cse_pipeline,
+        max_iterations=max_iterations,
+        ite_max_depth=ite_max_depth,
+        symbol_sorts=tac.symbol_sorts,
+        use_int_ceil_div=ceildiv_op,
+    )
     # Phase 1: simplification (bit-ops, const-divisor div rules, boolean/Ite,
     # distribution, range narrowing). Operates on phase 0's output.
     # Phase 2 (optional): add R4a (div purification for non-constant divisors).
     phase1 = rewrite_program(
-        phase0.program,
+        phase_cse_early.program,
         simplify_pipeline,
         max_iterations=max_iterations,
         ite_max_depth=ite_max_depth,
@@ -299,9 +339,9 @@ def rewrite_cmd(
             symbol_sorts=tac.symbol_sorts,
             use_int_ceil_div=ceildiv_op,
         )
-        rw = _merge_phases(phase0, phase1, phase2)
+        rw = _merge_phases(phase0, phase_cse_early, phase1, phase2)
     else:
-        rw = _merge_phases(phase0, phase1)
+        rw = _merge_phases(phase0, phase_cse_early, phase1)
     # Iterate DCE to fixed point: a chain of dead defs needs multiple sweeps
     # because liveness is computed once per pass and each pass only removes
     # the directly-dead leaves.
@@ -332,9 +372,11 @@ def rewrite_cmd(
             )
     # Phase 3 (optional): after all simplification + DCE, name every remaining
     # non-trivial Ite condition as a fresh bool var, then do the same for
-    # assert predicates and (optionally) assume conditions. Pair with CSE +
-    # CP so that two expressions with identical structure collapse to one
-    # T<N> instead of producing structurally-equal defs.
+    # assert predicates and (optionally) assume conditions. CP runs in the
+    # same fixed-point so the fresh aliases get propagated; CSE runs in a
+    # dedicated late phase below to catch the duplicates ITE_PURIFY just
+    # introduced (two structurally-equal Ite conditions get distinct
+    # TB<N> defs that CSE then folds together).
     phase_rules: list = []
     if purify_ite:
         phase_rules.append(ITE_PURIFY)
@@ -343,7 +385,7 @@ def rewrite_cmd(
     if purify_assume:
         phase_rules.append(PURIFY_ASSUME)
     if phase_rules:
-        phase_rules.extend((CSE, CP_ALIAS))
+        phase_rules.append(CP_ALIAS)
         phase_ite = rewrite_program(
             program,
             tuple(phase_rules),
@@ -352,8 +394,28 @@ def rewrite_cmd(
             symbol_sorts=tac.symbol_sorts,
             use_int_ceil_div=ceildiv_op,
         )
-        rw = _merge_phases(rw, phase_ite)
-        program = phase_ite.program
+        # Late CSE: dedicated CSE-only phase to fold the structurally-equal
+        # T<N> defs that ITE_PURIFY / PURIFY_ASSERT just emitted. Followed
+        # by a small CP pass so the resulting aliases get propagated, then
+        # DCE clears the dead originals.
+        phase_cse_late = rewrite_program(
+            phase_ite.program,
+            cse_pipeline,
+            max_iterations=max_iterations,
+            ite_max_depth=ite_max_depth,
+            symbol_sorts=tac.symbol_sorts,
+            use_int_ceil_div=ceildiv_op,
+        )
+        phase_cp_cleanup = rewrite_program(
+            phase_cse_late.program,
+            (CP_ALIAS,),
+            max_iterations=max_iterations,
+            ite_max_depth=ite_max_depth,
+            symbol_sorts=tac.symbol_sorts,
+            use_int_ceil_div=ceildiv_op,
+        )
+        rw = _merge_phases(rw, phase_ite, phase_cse_late, phase_cp_cleanup)
+        program = phase_cp_cleanup.program
         # One more DCE sweep — CSE turns duplicates into aliases; CP+DCE
         # makes those aliases disappear.
         while True:
@@ -405,7 +467,42 @@ def rewrite_cmd(
         )
         if not report:
             c.print(f"# wrote {output_path}", markup=False)
-        return
+    else:
+        for ln in render_pp_lines(final_program):
+            c.print(ln, markup=False)
 
-    for ln in render_pp_lines(final_program):
-        c.print(ln, markup=False)
+    if validate:
+        ubd = analyze_use_before_def(final_program)
+        dsa = analyze_dsa(final_program)
+        if ubd.issues or dsa.issues:
+            if ubd.issues:
+                c.print(
+                    f"# rewrite error: {len(ubd.issues)} use-before-def "
+                    "issue(s) in rewriter output (this is a ctac bug)",
+                    markup=False,
+                )
+                for u_issue in ubd.issues:
+                    c.print(
+                        f"#   {u_issue.block_id}:{u_issue.cmd_index} | "
+                        f"{u_issue.symbol} | {u_issue.raw}",
+                        markup=False,
+                    )
+            if dsa.issues:
+                c.print(
+                    f"# rewrite error: {len(dsa.issues)} DSA shape issue(s) "
+                    "in rewriter output (this is a ctac bug)",
+                    markup=False,
+                )
+                for d_issue in dsa.issues:
+                    cmd_idx = (
+                        f":{d_issue.cmd_index}"
+                        if d_issue.cmd_index is not None
+                        else ""
+                    )
+                    sym = d_issue.symbol or "-"
+                    c.print(
+                        f"#   {d_issue.block_id}{cmd_idx} | "
+                        f"{d_issue.kind} | {sym} | {d_issue.detail}",
+                        markup=False,
+                    )
+            raise typer.Exit(2)

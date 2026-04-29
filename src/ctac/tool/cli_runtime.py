@@ -352,10 +352,13 @@ TYPICAL:
   ctac rw f.tac -o small.htac --plain              # write pretty-printed (.htac)
   ctac rw f.tac --no-purify-div --plain            # disable R4a
 
-PIPELINE: always runs simplify_pipeline (R1-R4, N1-N4, Ite/Bool, CSE,
-CP). `--purify-div` adds R4a (default on), `--purify-ite` runs a post-DCE
-phase to name Ite conditions (default on). Check `--report` for which
-rules fired and how often.
+PIPELINE: chain-recognition (R6) -> early CSE -> simplify_pipeline
+(R1-R4, N1-N4, Ite/Bool, CP) -> DCE -> optional purify (ITE_PURIFY,
+PURIFY_ASSERT, ...) -> late CSE -> CP cleanup -> DCE. CSE runs in its
+own phases (never alongside rules that mutate registered RHSes) so
+its per-iteration RHS index is a real snapshot. `--purify-div` adds
+R4a (default on); `--purify-ite` enables the post-DCE phase (default
+on). Check `--report` for which rules fired and how often.
 """,
     "rw-valid": """ctac rw-valid --agent
 

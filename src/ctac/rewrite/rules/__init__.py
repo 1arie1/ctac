@@ -124,12 +124,21 @@ simplify_pipeline: tuple[Rule, ...] = (
     # as an explicit Ite. ITE_COND_FOLD above collapses it whenever
     # range analysis decides `X >= 1`.
     ADD_BV_MAX_TO_ITE,
-    # CSE before CP: fold duplicate static defs to aliases, then CP propagates
-    # and DCE removes. Runs inside the fixed-point so CP's output can in turn
-    # expose new CSE opportunities on the next iteration.
-    CSE,
+    # CP propagates aliases (Y := X). CSE deliberately runs in its own
+    # phase (driven by the CLI), not here: CSE's RHS index is built once
+    # per iteration, and rules that mutate registered RHSes (CP and the
+    # simplifications above) shift canonical equivalence underneath the
+    # snapshot. Isolating CSE makes the snapshot-correctness invariant
+    # something we can actually rely on.
     CP_ALIAS,
 )
+
+# Stand-alone CSE phase. Runs CSE iteratively to fixed point with no
+# other rule alongside it, so the per-iteration RHS index is stable
+# (no other rule rewrites a registered RHS mid-iter and shifts canon
+# equivalence). Driven by the CLI early (after chain recognition) and
+# late (after ITE_PURIFY etc.) — see ``commands_rw.py``.
+cse_pipeline: tuple[Rule, ...] = (CSE,)
 
 # Full pipeline: chain recognition + simplification + purification. The
 # CLI drives these as separate phases so chain recognizers see the
@@ -215,6 +224,7 @@ __all__ = [
     "SUB_ITE_DIST_RIGHT",
     "ValidationCase",
     "all_rule_names",
+    "cse_pipeline",
     "default_pipeline",
     "purify_pipeline",
     "simplify_pipeline",

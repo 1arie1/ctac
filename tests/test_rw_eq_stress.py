@@ -29,7 +29,7 @@ import pytest
 from ctac.parse import parse_path
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.framework import RewriteResult
-from ctac.rewrite.rules import chain_recognition_pipeline, default_pipeline
+from ctac.rewrite.rules import chain_recognition_pipeline, cse_pipeline, default_pipeline
 from ctac.rw_eq import emit_equivalence_program
 from ctac.ua import split_asserts
 
@@ -60,28 +60,38 @@ def fixtures() -> list[tuple[str, Path]]:
 
 
 def _run_default_two_phase(orig_program, symbol_sorts) -> RewriteResult:
-    """Drive ``ctac rw``'s actual two-phase pipeline: chain-recognition
-    first, then general simplification. Mirrors what the CLI does.
-    Without phase 0 the chain recognizers (currently just R6) miss
-    their patterns because distribution rules in phase 1 pre-empt
-    them via bottom-up traversal."""
+    """Drive ``ctac rw``'s rewrite pipeline through chain-recognition,
+    early CSE, and general simplification. Mirrors what the CLI does
+    pre-DCE / pre-purify (those later phases aren't relevant to the
+    rule-fired structural check). CSE runs in its own dedicated phase
+    so its per-iteration RHS index is a real snapshot — no rule
+    alongside it mutates a registered RHS mid-iter and shifts canon
+    equivalence."""
     phase0 = rewrite_program(
         orig_program, chain_recognition_pipeline, symbol_sorts=symbol_sorts
     )
-    phase1 = rewrite_program(
-        phase0.program, default_pipeline, symbol_sorts=symbol_sorts
+    phase_cse = rewrite_program(
+        phase0.program, cse_pipeline, symbol_sorts=symbol_sorts
     )
-    # Merge hit counts so callers see firings from both phases.
+    phase1 = rewrite_program(
+        phase_cse.program, default_pipeline, symbol_sorts=symbol_sorts
+    )
+    # Merge hit counts so callers see firings from all phases.
     from collections import Counter
 
     merged_hits: Counter[str] = Counter(phase0.hits_by_rule)
+    merged_hits.update(phase_cse.hits_by_rule)
     merged_hits.update(phase1.hits_by_rule)
     return RewriteResult(
         program=phase1.program,
-        hits=phase0.hits + phase1.hits,
+        hits=phase0.hits + phase_cse.hits + phase1.hits,
         hits_by_rule=dict(merged_hits),
-        iterations=phase0.iterations + phase1.iterations,
-        extra_symbols=phase0.extra_symbols + phase1.extra_symbols,
+        iterations=phase0.iterations + phase_cse.iterations + phase1.iterations,
+        extra_symbols=(
+            phase0.extra_symbols
+            + phase_cse.extra_symbols
+            + phase1.extra_symbols
+        ),
     )
 
 
