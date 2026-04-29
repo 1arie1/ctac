@@ -120,7 +120,15 @@ def _expected_rules_for(rule_dir_name: str) -> set[str]:
     rule pre-empts the canonical rule's pattern, the runner reports
     "rule X did not fire on its own fixture" loud and clear instead
     of silently passing because the equivalence still happens to hold.
+
+    The ``REGRESSION/`` directory is special: fixtures there are
+    end-to-end regression cases minimised from real corpora, where
+    the salient property is "rw + rw-eq + smt produces no SAT CHK"
+    rather than any specific rule firing. No expected-rule check
+    runs for them.
     """
+    if rule_dir_name == "REGRESSION":
+        return set()
     return {_DIR_TO_RULE_NAME.get(rule_dir_name, rule_dir_name)}
 
 

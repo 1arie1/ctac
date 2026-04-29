@@ -158,6 +158,72 @@ def test_rule_4_rhs_only_assume_becomes_assert():
     assert res.asserts_emitted == 1
 
 
+# --- Dispatch-order regression: rule 3 must pre-empt rule 4 / 4b ---
+
+
+def test_rule_3_preempts_rule_4b_when_rhs_assignment_separates_paired_assumes():
+    """Regression for `shares_to_burn_consistency` SAT-CHK bug.
+
+    When the rwriter inserts a fresh intermediate (an AssignExp/Havoc
+    whose LHS the orig doesn't define) between an orig assume and the
+    rwriter's replacement assume, the walker must consume the
+    intermediate via rule 3 BEFORE attempting rule 4b on the orig
+    assume. Otherwise rule 4b fires on the orig assume against an
+    unprepared rhs cursor and emits an unpaired lhs-only-assume CHK
+    that's typically SAT — even though the rwriter's near-by
+    replacement assume would have paired correctly via rule 5a.
+
+    See `transform.py` module docstring caveat 5 and
+    `ctac-research/durable/rw-eq-walker-rules.md` for the dispatch
+    ordering rationale.
+    """
+    # orig: havoc shared symbol `a`, then assume on it.
+    orig = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd a\n"
+            "\t\tAssumeExpCmd a\n"
+            "\t}",
+            syms="a:bool",
+        ),
+        path="<o>",
+    )
+    # rw: havoc shared `a`, then introduce a rwriter-only fresh symbol
+    # `Z`, then a replacement assume that mentions `Z`. Different
+    # condition shape from orig's `assume a` so rule 5a (not rule 1)
+    # fires on the paired assumes.
+    rw = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd a\n"
+            "\t\tAssignHavocCmd Z\n"
+            "\t\tAssumeExpCmd Z\n"
+            "\t}",
+            syms="a:bool\n\tZ:bool",
+        ),
+        path="<r>",
+    )
+    res = emit_equivalence_program(orig.program, rw.program)
+    # The reordered dispatch consumes the rwriter-only `Z` via rule 3,
+    # then pairs the assumes via rule 5a.
+    assert res.rule_hits.get("3_fresh_rhs", 0) == 1, (
+        f"rule 3 must consume the rhs-only fresh assignment of Z. "
+        f"hits={dict(res.rule_hits)}"
+    )
+    assert res.rule_hits.get("5a_assume_pair", 0) == 1, (
+        f"rule 5a must pair the orig and rwrite assumes after rule 3 "
+        f"clears the rhs-only assignment. hits={dict(res.rule_hits)}"
+    )
+    assert res.rule_hits.get("4b_lhs_assume", 0) == 0, (
+        f"rule 4b must NOT fire — the orig assume has a paired "
+        f"replacement on the rhs side. hits={dict(res.rule_hits)}"
+    )
+    assert res.rule_hits.get("4_rhs_assume", 0) == 0, (
+        f"rule 4 must NOT fire — the rwrite assume pairs with orig "
+        f"via 5a after rule 3 consumes Z. hits={dict(res.rule_hits)}"
+    )
+
+
 # --- Rule 5a: both sides assume ---
 
 def test_rule_5a_both_assumes_pair_with_eq_check():
