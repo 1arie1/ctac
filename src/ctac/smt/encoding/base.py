@@ -22,6 +22,12 @@ class EncoderContext:
     (e.g. ``QF_NIA`` when no uninterpreted functions are declared). When
     False (the default), encoders emit a broader logic by default
     (``QF_UFNIA`` for sea_vc) regardless of whether UF is actually used."""
+    guard_statics: bool = False
+    """If True, guard each static-def equality by its block-reachability
+    variable: ``(=> BLK_<bid> (= lhs rhs))``. Default False emits the
+    equality unconditionally as ``(= lhs rhs)`` regardless of which
+    block the def lives in. Entry-block defs are unaffected either way
+    (the entry guard is ``true``)."""
 
 
 class SmtEncoder(Protocol):

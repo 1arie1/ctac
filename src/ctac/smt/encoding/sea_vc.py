@@ -1043,7 +1043,12 @@ class SeaVcEncoder(SmtEncoder):
                     f"static rhs of {ds.symbol} in block {ds.block_id} cmd {ds.cmd_index}"
                 ):
                     rhs, _ = emit_expr(cmd.rhs, expected_sort=symbol_sort[ds.symbol])
-                add_constraint(f"(= {lhs} {rhs})")
+                eq = f"(= {lhs} {rhs})"
+                if ctx.guard_statics:
+                    guard = block_guard(ds.block_id, entry_block_id=entry_block_id)
+                    add_constraint(_implies(guard, eq))
+                else:
+                    add_constraint(eq)
             elif isinstance(cmd, AssignHavocCmd):
                 add_havoc_range_if_bv256(ds.symbol, symbol_term[ds.symbol], block_id=ds.block_id, cmd_index=ds.cmd_index)
         static_end = len(constraints)

@@ -136,3 +136,69 @@ def test_sea_vc_unsat_core_names_tac_asserts_not_cfg() -> None:
     assert ":named" not in rendered[i_cfg:i_exit]
 
 
+TAC_NON_ENTRY_STATIC = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tcond:bool
+\tv:bv256
+\tp:bool
+}
+Program {
+\tBlock entry Succ [ok, bad] {
+\t\tAssignExpCmd cond true
+\t\tJumpiCmd ok bad cond
+\t}
+\tBlock ok Succ [] {
+\t\tAssignExpCmd v 0x42
+\t\tAssignExpCmd p Eq(v 0x42)
+\t\tAssertCmd p "v == 42"
+\t}
+\tBlock bad Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_guard_statics_off_emits_unguarded_static_eq() -> None:
+    tac = parse_string(TAC_NON_ENTRY_STATIC, path="<string>")
+    rendered = render_smt_script(build_vc(tac))
+    # `v` is single-def in block `ok` (non-entry, static). Default off:
+    # emitted as a bare equality, not wrapped in `(=> BLK_ok ...)`.
+    # sea_vc renders bv256 constants as decimal Int literals.
+    assert "(assert (= v 66))" in rendered
+    assert "(=> BLK_ok (= v 66))" not in rendered
+
+
+def test_guard_statics_on_wraps_non_entry_static_in_blk_implication() -> None:
+    tac = parse_string(TAC_NON_ENTRY_STATIC, path="<string>")
+    rendered = render_smt_script(build_vc(tac, guard_statics=True))
+    assert "(assert (=> BLK_ok (= v 66)))" in rendered
+    assert "(assert (= v 66))" not in rendered
+
+
+def test_guard_statics_on_leaves_entry_static_unguarded() -> None:
+    # Entry block guard reduces to `true`, so `_implies` short-circuits
+    # and entry-block static defs render identically with/without the flag.
+    tac = parse_string(TAC_SMOKE_OPS, path="<string>")
+    a = render_smt_script(build_vc(tac))
+    b = render_smt_script(build_vc(tac, guard_statics=True))
+    assert a == b
+
+
+def test_guard_statics_default_off_is_byte_identical() -> None:
+    tac = parse_string(TAC_NON_ENTRY_STATIC, path="<string>")
+    a = render_smt_script(build_vc(tac))
+    b = render_smt_script(build_vc(tac, guard_statics=False))
+    assert a == b
+
+

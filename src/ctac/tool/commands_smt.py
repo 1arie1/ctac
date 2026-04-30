@@ -144,6 +144,16 @@ def smt_cmd(
             "QF_UFNIA so solver tactics stay uniform across outputs."
         ),
     ),
+    guard_statics: bool = typer.Option(
+        False,
+        "--guard-statics",
+        help=(
+            "Guard each static-def equality by its block-reachability "
+            "variable: `(=> BLK_<bid> (= lhs rhs))`. Default emits "
+            "`(= lhs rhs)` unconditionally; entry-block defs are "
+            "unaffected (entry guard is `true`)."
+        ),
+    ),
     debug: bool = typer.Option(
         False,
         "--debug/--no-debug",
@@ -168,7 +178,11 @@ def smt_cmd(
         # (function-level ITE for DSA-dynamic merges; ``Select`` is
         # unchanged as function application). See sea_vc.py for shape.
         script = build_vc(
-            tac, encoding=encoding, unsat_core=unsat_core, tight_logic=tight_logic
+            tac,
+            encoding=encoding,
+            unsat_core=unsat_core,
+            tight_logic=tight_logic,
+            guard_statics=guard_statics,
         )
         smt_text = render_smt_script(script)
     except ParseError as e:

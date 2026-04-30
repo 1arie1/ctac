@@ -196,6 +196,10 @@ Prompt template:
   - Solver mode: `--run` invokes z3 and reports `sat|unsat|unknown|timeout`.
   - SAT model export: `--model <path>` writes TAC model text compatible with `ctac run --model`.
   - Unsat-core mode: `--unsat-core` names asserts and prints the core on UNSAT.
+  - Static-def guarding: `--guard-statics` wraps each static-def
+    equality in `(=> BLK_<bid> (= lhs rhs))` instead of the default
+    bare `(= lhs rhs)`. Off by default; entry-block defs are
+    unaffected (entry guard is `true`).
   - Z3 knobs: `--timeout` (seconds), `--seed`, `--tactic`, and passthrough `--z3-args`.
   - Debug mode: `--debug` prints z3 stdin/stdout/stderr and a replay command.
 
