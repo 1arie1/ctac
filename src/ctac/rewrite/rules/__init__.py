@@ -37,6 +37,7 @@ from ctac.rewrite.rules.ite_purify import ITE_PURIFY
 from ctac.rewrite.rules.purify_assert import PURIFY_ASSERT
 from ctac.rewrite.rules.purify_assume import PURIFY_ASSUME
 from ctac.rewrite.rules.range_fold import RANGE_FOLD
+from ctac.rewrite.rules.store_eq import STORE_EQ_NORM, normalize_store_eq
 from ctac.rewrite.rules.ite import (
     ADD_ITE_DIST,
     BOOL_ABSORB,
@@ -189,6 +190,7 @@ all_rule_names: tuple[str, ...] = (
     ITE_PURIFY.name,
     PURIFY_ASSERT.name,
     PURIFY_ASSUME.name,
+    STORE_EQ_NORM.name,
 )
 
 __all__ = [
@@ -219,6 +221,7 @@ __all__ = [
     "R4A_DIV_PURIFY",
     "R6_CEILDIV",
     "RANGE_FOLD",
+    "STORE_EQ_NORM",
     "SUB_BV_TO_INT",
     "SUB_ITE_DIST_LEFT",
     "SUB_ITE_DIST_RIGHT",
@@ -226,6 +229,7 @@ __all__ = [
     "all_rule_names",
     "cse_pipeline",
     "default_pipeline",
+    "normalize_store_eq",
     "purify_pipeline",
     "simplify_pipeline",
     "validation_cases",

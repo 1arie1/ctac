@@ -152,6 +152,7 @@ from ctac.analysis.defuse import extract_def_use
 from ctac.analysis.passes import analyze_dsa
 from ctac.ast.subst import subst_symbol
 from ctac.ir.models import TacBlock, TacProgram
+from ctac.rewrite.rules.store_eq import normalize_store_eq
 from ctac.rewrite.unparse import canonicalize_cmd, unparse_cmd
 from ctac.rw_eq.model import EquivContractError, EquivResult, RehavocSite
 
@@ -380,6 +381,12 @@ def _emit_eq_assert(
     """Produce the three-command shape: CHK = Eq(lhs, rhs); assert CHK."""
     chk = state.fresh_chk()
     eq_expr = ConstExpr("true") if lhs_expr == rhs_expr else _eq(lhs_expr, rhs_expr)
+    # Reduce ``Eq(Store(M, k1, v1), Store(M, k2, v2))`` to a conjunction of
+    # index/value equalities at emit time. Store-typed equality is sound but
+    # sea_vc cannot lower register-level Store, and rw-eq's contract makes
+    # the strengthening behaviorally equivalent here. See
+    # rewrite.rules.store_eq for the soundness argument.
+    eq_expr = normalize_store_eq(eq_expr) or eq_expr
     out: list[TacCmd] = [
         canonicalize_cmd(AssignExpCmd(raw="", lhs=chk, rhs=eq_expr)),
         canonicalize_cmd(
