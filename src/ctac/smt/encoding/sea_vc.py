@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Iterator
 
 from ctac.analysis import analyze_dsa, analyze_use_before_def, extract_def_use
 from ctac.analysis.symbols import canonical_symbol
@@ -96,6 +97,27 @@ def _is_pow2(n: int) -> int | None:
     if n & (n - 1) != 0:
         return None
     return n.bit_length() - 1
+
+
+def _render_expr_short(expr: TacExpr, max_len: int = 160) -> str:
+    """One-line, human-readable rendering of a TacExpr for error messages.
+
+    Mirrors the ``Op(arg, arg)`` shape of the dump rather than calling into
+    ``ctac.ast.pretty`` (keeps the encoder free of printer dependencies and
+    avoids recursive failures during error formatting). Truncated to
+    ``max_len`` so deeply-nested RHSes don't drown the diagnostic."""
+    if isinstance(expr, SymbolRef):
+        s = expr.name
+    elif isinstance(expr, ConstExpr):
+        s = expr.value
+    elif isinstance(expr, ApplyExpr):
+        args = ", ".join(_render_expr_short(a, max_len) for a in expr.args)
+        s = f"{expr.op}({args})"
+    else:
+        s = repr(expr)
+    if len(s) > max_len:
+        s = s[: max_len - 3] + "..."
+    return s
 
 
 def _or_terms(terms: list[str]) -> str:
@@ -576,6 +598,30 @@ class SeaVcEncoder(SmtEncoder):
             add_havoc_range_if_bv256(sym, nm, block_id=block_id, cmd_index=cmd_index)
             return nm
 
+        # Source-context stack for error diagnostics. Each top-level
+        # ``emit_expr`` callsite (per-command rhs/assume/assert/map-body)
+        # pushes a string describing where in the program the encoding
+        # is happening; ``SmtEncodingError`` raised from within is caught
+        # once and re-raised with that chain appended. Without this the
+        # only signal a user gets is the operator name with no pointer
+        # back to the offending TAC line.
+        source_stack: list[str] = []
+
+        @contextmanager
+        def _with_source(ctx: str) -> Iterator[None]:
+            source_stack.append(ctx)
+            try:
+                yield
+            except SmtEncodingError as e:
+                if getattr(e, "_ctac_ctx_added", False):
+                    raise
+                chain = " -> ".join(source_stack)
+                new = SmtEncodingError(f"{e}\n  while encoding {chain}")
+                new._ctac_ctx_added = True  # type: ignore[attr-defined]
+                raise new from e
+            finally:
+                source_stack.pop()
+
         def emit_expr(expr: TacExpr, *, expected_sort: str | None = None) -> tuple[str, str]:
             def to_bool(term: str, sort: str) -> str:
                 if sort == "Bool":
@@ -807,8 +853,12 @@ class SeaVcEncoder(SmtEncoder):
                     memory_apps.add((symbol_term[mem_name], idx_term))
                     return f"({symbol_term[mem_name]} {idx_term})", "Int"
 
-                raise SmtEncodingError(f"unsupported operator in sea_vc: {op}")
-            raise SmtEncodingError(f"unsupported expression node: {expr!r}")
+                raise SmtEncodingError(
+                    f"unsupported operator in sea_vc: {op} in {_render_expr_short(expr)}"
+                )
+            raise SmtEncodingError(
+                f"unsupported expression node: {_render_expr_short(expr)}"
+            )
 
         # ──────────────────────────────────────────────────────────
         # Bytemap definitions (lambda-style ``define-fun`` per map).
@@ -944,7 +994,10 @@ class SeaVcEncoder(SmtEncoder):
                             (cond, f"({block_nm} {_MAP_PARAM})")
                         )
                 else:  # AssignExpCmd
-                    body = _emit_map_body(cmd.rhs)
+                    with _with_source(
+                        f"map-body rhs of {sym} in block {b.id} cmd {ci}"
+                    ):
+                        body = _emit_map_body(cmd.rhs)
                     if is_dynamic:
                         block_nm = f"{nm}_at_{sanitize_ident(b.id)}"
                         map_section_lines.append(
@@ -986,7 +1039,10 @@ class SeaVcEncoder(SmtEncoder):
             cmd = b.commands[ds.cmd_index]
             if isinstance(cmd, AssignExpCmd):
                 lhs = symbol_term[ds.symbol]
-                rhs, _ = emit_expr(cmd.rhs, expected_sort=symbol_sort[ds.symbol])
+                with _with_source(
+                    f"static rhs of {ds.symbol} in block {ds.block_id} cmd {ds.cmd_index}"
+                ):
+                    rhs, _ = emit_expr(cmd.rhs, expected_sort=symbol_sort[ds.symbol])
                 add_constraint(f"(= {lhs} {rhs})")
             elif isinstance(cmd, AssignHavocCmd):
                 add_havoc_range_if_bv256(ds.symbol, symbol_term[ds.symbol], block_id=ds.block_id, cmd_index=ds.cmd_index)
@@ -1024,7 +1080,10 @@ class SeaVcEncoder(SmtEncoder):
                                     if extra_preds:
                                         cond_expr = ApplyExpr("LAnd", (cond_expr, *extra_preds))
 
-                    cond, s = emit_expr(cond_expr, expected_sort="Bool")
+                    with _with_source(
+                        f"assume condition in block {block.id} cmd {idx}"
+                    ):
+                        cond, s = emit_expr(cond_expr, expected_sort="Bool")
                     if s != "Bool":
                         raise SmtEncodingError("Assume condition must be Bool")
                     add_constraint(_implies(guard, cond))
@@ -1049,7 +1108,10 @@ class SeaVcEncoder(SmtEncoder):
                 b = block_by_id(program, row.block_id)
                 cmd = b.commands[row.cmd_index]
                 if isinstance(cmd, AssignExpCmd):
-                    rhs, _ = emit_expr(cmd.rhs, expected_sort=symbol_sort[sym])
+                    with _with_source(
+                        f"dynamic rhs of {sym} in block {row.block_id} cmd {row.cmd_index}"
+                    ):
+                        rhs, _ = emit_expr(cmd.rhs, expected_sort=symbol_sort[sym])
                 elif isinstance(cmd, AssignHavocCmd):
                     rhs = declare_havoc(sym, row.block_id, row.cmd_index)
                 else:
@@ -1098,7 +1160,11 @@ class SeaVcEncoder(SmtEncoder):
 
         # Exit objective bound to assert block and failing assert predicate.
         assert_guard = block_guard(ctx.assert_site.block_id, entry_block_id=entry_block_id)
-        assert_cond, assert_sort = emit_expr(assert_expr, expected_sort="Bool")
+        with _with_source(
+            f"assert predicate in block {ctx.assert_site.block_id} "
+            f"cmd {ctx.assert_site.cmd_index}"
+        ):
+            assert_cond, assert_sort = emit_expr(assert_expr, expected_sort="Bool")
         if assert_sort != "Bool":
             raise SmtEncodingError("Assert predicate must lower to Bool")
         exit_rhs = _and_terms([f"(not {assert_cond})", assert_guard])
