@@ -28,6 +28,12 @@ class EncoderContext:
     equality unconditionally as ``(= lhs rhs)`` regardless of which
     block the def lives in. Entry-block defs are unaffected either way
     (the entry guard is ``true``)."""
+    cfg_encoding: str = "bwd0"
+    """Which CFG-constraint encoding strategy to use. ``bwd0`` (default)
+    emits the historical edge-feasibility OR-of-ANDs plus block-level
+    existence plus AMO over predecessors. ``bwd1`` emits per-edge
+    clausal implications (sound under the same AMO). See
+    ``ctac.smt.cfg.CFG_ENCODERS`` for the registry."""
 
 
 class SmtEncoder(Protocol):

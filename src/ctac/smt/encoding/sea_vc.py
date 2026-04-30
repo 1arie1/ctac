@@ -18,16 +18,16 @@ from ctac.ast.nodes import (
     SymbolRef,
     TacExpr,
 )
+from ctac.smt.cfg import CFG_ENCODERS, build_cfg_input
 from ctac.smt.encoding.base import EncoderContext, SmtEncodingError, SmtEncoder
 from ctac.smt.encoding.path_skeleton import (
     block_by_id,
     block_guard,
     blk_var_name,
-    predecessor_edges,
     sanitize_ident,
 )
 from ctac.smt.model import SmtDeclaration, SmtScript
-from ctac.smt.util import and_terms, at_most_one_terms, implies, or_terms
+from ctac.smt.util import and_terms, implies, or_terms
 from ctac.ast.bit_mask import (
     high_mask_clear_low_k as _is_high_mask_clear_low_k,
     low_mask_width as _is_low_mask,
@@ -1139,26 +1139,19 @@ class SeaVcEncoder(SmtEncoder):
             add_constraint(f"(= {symbol_term[sym]} {value})")
         dynamic_end = len(constraints)
 
-        # CFG predecessor constraints.
-        preds = predecessor_edges(program, symbol_term_by_name=symbol_term)
-        for block in program.blocks:
-            if block.id == entry_block_id:
-                continue
-            lhs = blk_var_name(block.id)
-            edge_terms: list[str] = []
-            pred_block_terms: list[str] = []
-            for pe in preds.get(block.id, []):
-                pred_guard = block_guard(pe.pred_block_id, entry_block_id=entry_block_id)
-                edge_terms.append(and_terms([pred_guard, pe.branch_cond]))
-                pred_block_terms.append(pred_guard)
-            # Edge-level predecessor feasibility (with branch conditions).
-            add_constraint(implies(lhs, or_terms(edge_terms)))
-            # Block-level predecessor existence (without edge conditions), to pair
-            # with exclusivity over the same predecessor-block variables.
-            add_constraint(implies(lhs, or_terms(pred_block_terms)))
-            # Exclusivity is over predecessor blocks, not edge predicates.
-            for amo in at_most_one_terms(pred_block_terms):
-                add_constraint(implies(lhs, amo))
+        # CFG predecessor constraints — dispatched through smt.cfg
+        # so the strategy can be swapped from the CLI without
+        # reaching into encode().
+        cfg_input = build_cfg_input(
+            program, entry_block_id=entry_block_id, symbol_term=symbol_term
+        )
+        cfg_encoder = CFG_ENCODERS.get(ctx.cfg_encoding)
+        if cfg_encoder is None:
+            raise SmtEncodingError(
+                f"unknown cfg_encoding {ctx.cfg_encoding!r}; "
+                f"available: {', '.join(sorted(CFG_ENCODERS))}"
+            )
+        cfg_encoder(cfg_input, add_constraint)
         cfg_end = len(constraints)
 
         # Exit objective bound to assert block and failing assert predicate.

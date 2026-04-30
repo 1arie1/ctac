@@ -21,6 +21,7 @@ from ctac.tool.cli_runtime import (
     VERIFY_PANEL,
     agent_option,
     app,
+    complete_choices,
     complete_smt_encodings,
     console,
     plain_requested,
@@ -154,6 +155,19 @@ def smt_cmd(
             "unaffected (entry guard is `true`)."
         ),
     ),
+    cfg_encoding: Annotated[
+        str,
+        typer.Option(
+            "--cfg-encoding",
+            help=(
+                "CFG-constraint encoding strategy. bwd0 (default): "
+                "edge-feasibility OR-of-ANDs. bwd1: per-edge clausal "
+                "implications. Both share block-existence + AMO; bwd1 "
+                "is sound under the same AMO."
+            ),
+            autocompletion=complete_choices(["bwd0", "bwd1"]),
+        ),
+    ] = "bwd0",
     debug: bool = typer.Option(
         False,
         "--debug/--no-debug",
@@ -183,6 +197,7 @@ def smt_cmd(
             unsat_core=unsat_core,
             tight_logic=tight_logic,
             guard_statics=guard_statics,
+            cfg_encoding=cfg_encoding,
         )
         smt_text = render_smt_script(script)
     except ParseError as e:

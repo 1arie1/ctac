@@ -33,6 +33,7 @@ def build_vc(
     unsat_core: bool = False,
     tight_logic: bool = False,
     guard_statics: bool = False,
+    cfg_encoding: str = "bwd0",
 ) -> SmtScript:
     # Pre-pass: break any critical edges so sea_vc's predecessor
     # exclusivity stays sound. Idempotent when the input is already clean.
@@ -47,6 +48,7 @@ def build_vc(
             unsat_core=unsat_core,
             tight_logic=tight_logic,
             guard_statics=guard_statics,
+            cfg_encoding=cfg_encoding,
         )
     )
 

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 
+import pytest
+
 from ctac.parse import parse_string
 from ctac.smt import build_vc, render_smt_script
+from ctac.smt.encoding.base import SmtEncodingError
 
 TAC_ASSERT_FAIL_VC = """TACSymbolTable {
 \tUserDefined {
@@ -200,5 +203,78 @@ def test_guard_statics_default_off_is_byte_identical() -> None:
     a = render_smt_script(build_vc(tac))
     b = render_smt_script(build_vc(tac, guard_statics=False))
     assert a == b
+
+
+# CFG encoding strategies (bwd0 default, bwd1 alternative). The
+# fixture below has a non-entry mid block with a conditional branch
+# to two leaves; the `then` leaf has a single non-entry predecessor
+# whose edge condition is `c`, which is what differentiates bwd0
+# (`(=> BLK_then (and BLK_mid c))`) from bwd1 (per-edge:
+# `(=> (and BLK_then BLK_mid) c)`).
+TAC_DIAMOND_CFG = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tc:bool
+\tp:bool
+}
+Program {
+\tBlock entry Succ [mid] {
+\t\tAssignExpCmd c true
+\t\tJumpCmd mid
+\t}
+\tBlock mid Succ [thn, els] {
+\t\tJumpiCmd thn els c
+\t}
+\tBlock thn Succ [] {
+\t\tAssignExpCmd p true
+\t\tAssertCmd p "ok"
+\t}
+\tBlock els Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_cfg_encoding_default_is_bwd0_and_byte_identical() -> None:
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    a = render_smt_script(build_vc(tac))
+    b = render_smt_script(build_vc(tac, cfg_encoding="bwd0"))
+    assert a == b
+
+
+def test_cfg_encoding_bwd0_emits_or_of_ands_edge_feasibility() -> None:
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="bwd0"))
+    # bwd0: edge-feasibility OR-of-ANDs. `thn` has one predecessor
+    # `mid` with branch condition `c`, so we get the AND on the rhs
+    # of the implication.
+    assert "(=> BLK_thn (and BLK_mid c))" in rendered
+    # bwd1's per-edge clausal form must NOT appear.
+    assert "(=> (and BLK_thn BLK_mid) c)" not in rendered
+
+
+def test_cfg_encoding_bwd1_emits_per_edge_implications() -> None:
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="bwd1"))
+    # bwd1: per-edge clausal `(=> (and BLK_S BLK_P) cond)`.
+    assert "(=> (and BLK_thn BLK_mid) c)" in rendered
+    # bwd0's edge-feasibility OR-of-ANDs must NOT appear.
+    assert "(=> BLK_thn (and BLK_mid c))" not in rendered
+
+
+def test_cfg_encoding_unknown_value_rejected() -> None:
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    with pytest.raises(SmtEncodingError, match="unknown cfg_encoding"):
+        build_vc(tac, cfg_encoding="bogus")
 
 
