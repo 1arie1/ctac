@@ -293,3 +293,98 @@ def test_two_separate_bytemaps_each_declared():
     assert "(declare-fun M2 (Int) Int)" in out
     assert "(M1 16)" in out
     assert "(M2 32)" in out
+
+
+def test_select_on_store_chain_emits_axiom_on_origin_uf_only():
+    """A Select on a Store-defined map gets its bv256 axiom on the
+    origin UF (M0), not on the chain top (M1). The stored value V
+    already carries its own bv256 bound from its scalar def site;
+    re-axiomatizing ``(M1 idx)`` would expand and re-bound V too."""
+    src = _wrap(
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd M0\n"
+        "\t\tAssignHavocCmd K\n"
+        "\t\tAssignHavocCmd V\n"
+        "\t\tAssignHavocCmd I\n"
+        "\t\tAssignExpCmd M1 Store(M0 K V)\n"
+        "\t\tAssignExpCmd R0 Select(M1 I)\n"
+        "\t\tAssertCmd false \"boom\"\n"
+        "\t}",
+        "K:bv256\n\tV:bv256\n\tI:bv256\n\tR0:bv256\n\tM0:bytemap\n\tM1:bytemap",
+    )
+    out = _render(src)
+    # Axiom is pushed down to the origin UF M0.
+    assert "(assert (<= 0 (M0 I) BV256_MAX))" in out
+    # No axiom on the define-fun chain top M1 (which would expand).
+    assert "(assert (<= 0 (M1 I) BV256_MAX))" not in out
+
+
+def test_select_with_known_hit_emits_no_leaf_axiom():
+    """When the index syntactically equals the store key, the access
+    is a known hit on V — and V already carries its own bv256 bound,
+    so no leaf axiom is needed for that Select."""
+    src = _wrap(
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd M0\n"
+        "\t\tAssignHavocCmd V\n"
+        "\t\tAssignExpCmd M1 Store(M0 0xa V)\n"
+        "\t\tAssignExpCmd R0 Select(M1 0xa)\n"
+        "\t\tAssertCmd false \"boom\"\n"
+        "\t}",
+        "V:bv256\n\tR0:bv256\n\tM0:bytemap\n\tM1:bytemap",
+    )
+    out = _render(src)
+    # Known hit: no leaf axiom on M0, no axiom on M1.
+    assert "(<= 0 (M0 10)" not in out
+    assert "(<= 0 (M1 10)" not in out
+
+
+def test_select_on_ite_of_maps_axiomatizes_both_branches():
+    """``M2 = Ite(C, M0, M1); R = Select(M2, idx)`` walks both branches
+    and emits leaf axioms on M0 and M1."""
+    src = _wrap(
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd M0\n"
+        "\t\tAssignHavocCmd M1\n"
+        "\t\tAssignHavocCmd C\n"
+        "\t\tAssignHavocCmd I\n"
+        "\t\tAssignExpCmd M2 Ite(C M0 M1)\n"
+        "\t\tAssignExpCmd R0 Select(M2 I)\n"
+        "\t\tAssertCmd false \"boom\"\n"
+        "\t}",
+        "C:bool\n\tI:bv256\n\tR0:bv256\n\tM0:bytemap\n\tM1:bytemap\n\tM2:bytemap",
+    )
+    out = _render(src)
+    assert "(assert (<= 0 (M0 I) BV256_MAX))" in out
+    assert "(assert (<= 0 (M1 I) BV256_MAX))" in out
+    assert "(assert (<= 0 (M2 I) BV256_MAX))" not in out
+
+
+def test_two_selects_converging_on_same_leaf_dedup():
+    """Two Selects on different chain-tops that bottom out in the same
+    origin UF and use the same idx emit one leaf axiom, not two."""
+    src = _wrap(
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd M0\n"
+        "\t\tAssignHavocCmd K1\n"
+        "\t\tAssignHavocCmd V1\n"
+        "\t\tAssignHavocCmd K2\n"
+        "\t\tAssignHavocCmd V2\n"
+        "\t\tAssignHavocCmd I\n"
+        "\t\tAssignExpCmd M1 Store(M0 K1 V1)\n"
+        "\t\tAssignExpCmd M2 Store(M0 K2 V2)\n"
+        "\t\tAssignExpCmd R0 Select(M1 I)\n"
+        "\t\tAssignExpCmd R1 Select(M2 I)\n"
+        "\t\tAssertCmd false \"boom\"\n"
+        "\t}",
+        (
+            "K1:bv256\n\tK2:bv256\n\tV1:bv256\n\tV2:bv256\n\t"
+            "I:bv256\n\tR0:bv256\n\tR1:bv256\n\t"
+            "M0:bytemap\n\tM1:bytemap\n\tM2:bytemap"
+        ),
+    )
+    out = _render(src)
+    # Exactly one axiom for (M0 I) — both Selects converge here.
+    assert out.count("(assert (<= 0 (M0 I) BV256_MAX))") == 1
+    assert "(assert (<= 0 (M1 I) BV256_MAX))" not in out
+    assert "(assert (<= 0 (M2 I) BV256_MAX))" not in out

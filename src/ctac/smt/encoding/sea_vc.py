@@ -488,7 +488,8 @@ class SeaVcEncoder(SmtEncoder):
             raise SmtEncodingError(f"DSA partition violated for symbol(s): {bad}")
 
         uf_apps: dict[str, set[tuple[str, ...]]] = defaultdict(set)
-        memory_apps: set[tuple[str, str]] = set()
+        leaf_apps: set[tuple[str, str]] = set()
+        leaf_visited: set[tuple[str, str]] = set()
         constraints: list[str] = []
         block_pos = {b.id: i for i, b in enumerate(program.blocks)}
         # If a havoc is immediately followed by a range-refining assume over the same
@@ -844,13 +845,17 @@ class SeaVcEncoder(SmtEncoder):
                             f"Select on non-memory symbol: {mem_name!r}"
                         )
                     idx_term, _ = emit_expr(idx, expected_sort="Int")
-                    # Bytemap cells are bv256-valued in TAC, but the SMT UF
-                    # has sort ``Int -> Int`` with no domain constraint —
-                    # z3 is free to pick negative or >BV256_MAX values that
-                    # satisfy the Int-level VC but can't replay through a
-                    # bv256 register. Track each application so we can emit
-                    # a per-app range axiom below.
-                    memory_apps.add((symbol_term[mem_name], idx_term))
+                    # Bytemap cells are bv256-valued in TAC, but the SMT
+                    # UF has sort ``Int -> Int`` with no domain
+                    # constraint — z3 is free to pick negative or
+                    # >BV256_MAX values that satisfy the Int-level VC
+                    # but can't replay through a bv256 register. The
+                    # axiom is only load-bearing on the leaf UF maps at
+                    # the bottom of M's chain (stored values carry
+                    # their own scalar bv256 bound), so push the walk
+                    # down to leaves rather than axiomatizing
+                    # ``(M idx)`` directly.
+                    _collect_leaves(mem, idx_term)
                     return f"({symbol_term[mem_name]} {idx_term})", "Int"
 
                 raise SmtEncodingError(
@@ -876,6 +881,12 @@ class SeaVcEncoder(SmtEncoder):
         # ──────────────────────────────────────────────────────────
 
         _MAP_PARAM = "idx"
+
+        def _per_block_havoc_name(map_term: str, block_id: str) -> str:
+            """Internal name for the per-block havoc body of a DSA-dynamic
+            map. Both the map-section emit and the leaf-axiom collector
+            use this helper so the names cannot drift."""
+            return f"{map_term}_at_{sanitize_ident(block_id)}"
 
         def _is_map_branch(expr: TacExpr) -> bool:
             """Sub-expression usable as a branch in a map ``define-fun``
@@ -960,6 +971,59 @@ class SeaVcEncoder(SmtEncoder):
                 f"map body has unsupported shape: {expr!r}"
             )
 
+        def _collect_leaves(map_expr: TacExpr, idx_term: str) -> None:
+            """Walk down to leaf UF maps and record per-application
+            range-axiom keys.
+
+            The bv256-range axiom on `(M idx)` is only load-bearing on
+            the *leaf* uninterpreted maps at the bottom of M's
+            Store/Ite chain. Stored values are bv256-bounded by their
+            own scalar def-site axioms, so we skip them. When the
+            store key matches the access index syntactically, the
+            access is known to hit the stored value — no descent into
+            ``m_old`` is needed for that path.
+
+            ``leaf_visited`` is shared across all calls in this encode
+            session and keyed on ``(map_symbol_name, idx_term)`` to
+            avoid re-walking deep chains across multiple Selects with
+            the same index."""
+            if isinstance(map_expr, SymbolRef):
+                m_name = canonical_symbol(map_expr.name, strip_var_suffixes=True)
+                cache_key = (m_name, idx_term)
+                if cache_key in leaf_visited:
+                    return
+                leaf_visited.add(cache_key)
+                if m_name not in maps_with_store_def:
+                    leaf_apps.add((symbol_term[m_name], idx_term))
+                    return
+                for ds in du.definitions_by_symbol.get(m_name, ()):
+                    cmd = block_by_id(program, ds.block_id).commands[ds.cmd_index]
+                    if isinstance(cmd, AssignHavocCmd):
+                        block_nm = _per_block_havoc_name(symbol_term[m_name], ds.block_id)
+                        leaf_apps.add((block_nm, idx_term))
+                    elif isinstance(cmd, AssignExpCmd):
+                        _collect_leaves(cmd.rhs, idx_term)
+                return
+            if isinstance(map_expr, ApplyExpr):
+                if map_expr.op == "Store" and len(map_expr.args) == 3:
+                    m_old, k, _v = map_expr.args
+                    k_term, _ = emit_expr(k, expected_sort="Int")
+                    if k_term == idx_term:
+                        # Known hit: the stored value covers this
+                        # access; its own scalar bv256 bound suffices.
+                        return
+                    _collect_leaves(m_old, idx_term)
+                    return
+                if map_expr.op == "Ite" and len(map_expr.args) == 3:
+                    _c, t_arg, f_arg = map_expr.args
+                    _collect_leaves(t_arg, idx_term)
+                    _collect_leaves(f_arg, idx_term)
+                    return
+            raise SmtEncodingError(
+                f"leaf-axiom walk: unsupported map shape "
+                f"{_render_expr_short(map_expr)}"
+            )
+
         # Walk all program defs in order; emit map definitions
         # alongside their natural program position (so cross-map
         # references — the body of M_n that uses M_{n-1} — see
@@ -985,7 +1049,7 @@ class SeaVcEncoder(SmtEncoder):
                 if isinstance(cmd, AssignHavocCmd):
                     # Dynamic-side havoc-def of a map: the per-block
                     # body is a fresh declared UF.
-                    block_nm = f"{nm}_at_{sanitize_ident(b.id)}"
+                    block_nm = _per_block_havoc_name(nm, b.id)
                     map_section_lines.append(
                         f"(declare-fun {block_nm} (Int) Int)"
                     )
@@ -999,7 +1063,7 @@ class SeaVcEncoder(SmtEncoder):
                     ):
                         body = _emit_map_body(cmd.rhs)
                     if is_dynamic:
-                        block_nm = f"{nm}_at_{sanitize_ident(b.id)}"
+                        block_nm = _per_block_havoc_name(nm, b.id)
                         map_section_lines.append(
                             f"(define-fun {block_nm} (({_MAP_PARAM} Int)) Int {body})"
                         )
@@ -1301,17 +1365,21 @@ class SeaVcEncoder(SmtEncoder):
             for args in sorted(uf_apps[uf]):
                 out_lines.append(f"(assert ({axiom_fun_name} {' '.join(args)}))")
 
-        # Memory cells are bv256-valued. Without a per-application range
-        # axiom, z3 can pick negative or >BV256_MAX values that satisfy the
-        # Int-level VC but can't be loaded back into a bv256 register, which
-        # breaks model replay through ``ctac run``. One ``0 <= M(idx) <=
-        # BV256_MAX`` per unique application is enough.
-        if memory_apps:
+        # Memory cells are bv256-valued. Without a per-application
+        # range axiom, z3 can pick negative or >BV256_MAX values that
+        # satisfy the Int-level VC but can't be loaded back into a
+        # bv256 register, which breaks model replay through
+        # ``ctac run``. The axiom is emitted on *leaf* UF maps only
+        # (the bottoms of Store/Ite chains): chain tops are define-funs
+        # that would expand on application, re-bounding stored values
+        # whose scalar bv256 bound already covers them. Stored slots
+        # are skipped during the walk for the same reason.
+        if leaf_apps:
             if not printed_axiom_banner:
                 emit_banner("Axiom Instantiations")
                 printed_axiom_banner = True
-            out_lines.append("; memory bv256-range axioms (one per Select application)")
-            for mem_name, idx_term in sorted(memory_apps):
+            out_lines.append("; memory bv256-range axioms (one per leaf-UF application)")
+            for mem_name, idx_term in sorted(leaf_apps):
                 out_lines.append(
                     f"(assert (<= 0 ({mem_name} {idx_term}) BV256_MAX))"
                 )
