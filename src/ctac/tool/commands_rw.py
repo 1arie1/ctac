@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import contextlib
+import json
+import sys
+from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Iterator, Optional, TextIO
 
 import typer
 from rich.markup import escape
@@ -22,7 +26,7 @@ from collections import Counter
 from dataclasses import replace
 
 from ctac.rewrite import rewrite_program
-from ctac.rewrite.framework import RewriteResult, RuleHit
+from ctac.rewrite.framework import RewriteResult, RuleHit, TraceEntry, TraceSink
 from ctac.rewrite.lift_dynamic_ite import lift_dynamic_ite_rhs
 from ctac.rewrite.materialize_assumes import materialize_assumes
 from ctac.rewrite.rules import (
@@ -99,6 +103,35 @@ def _print_report(
 
 def _command_count(program: TacProgram) -> int:
     return sum(len(b.commands) for b in program.blocks)
+
+
+@contextlib.contextmanager
+def _open_trace_file(path: Path | None) -> Iterator[TextIO | None]:
+    """Yield a writable text stream for ``--trace``, or ``None`` if disabled.
+
+    ``path == Path("-")`` writes to stdout (idiomatic for shell pipes); any
+    other path is opened for writing. Done as a context manager so the file
+    closes deterministically even when a phase raises."""
+    if path is None:
+        yield None
+        return
+    if str(path) == "-":
+        # Don't close stdout — caller didn't open it.
+        yield sys.stdout
+        return
+    with path.open("w") as fh:
+        yield fh
+
+
+def _make_trace_sink(fh: TextIO | None) -> TraceSink | None:
+    if fh is None:
+        return None
+
+    def sink(entry: TraceEntry) -> None:
+        # JSONL: one record per line, sorted keys for stable diffs in tests.
+        fh.write(json.dumps(asdict(entry), sort_keys=True) + "\n")
+
+    return sink
 
 
 def _merge_phases(*phases: RewriteResult) -> RewriteResult:
@@ -271,6 +304,19 @@ def rewrite_cmd(
             "written so the failure can be inspected. Default on."
         ),
     ),
+    trace: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--trace",
+            help=(
+                "Write a JSONL rule-fire trace to PATH (use ``-`` for stdout). "
+                "One record per fire: {phase, iteration, block_id, cmd_index, "
+                "host_kind, host_lhs, path, rule, before, after}. Covers "
+                "rule-driven phases only — DCE, ITE-purification's "
+                "restructuring, and materialize-assumes don't appear."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Simplify TAC via the rewrite pipeline (div/bit-field rewrites + DCE)."""
     _ = agent
@@ -291,151 +337,167 @@ def rewrite_cmd(
         c.print(f"# input warning: {w}", markup=False)
 
     before_count = _command_count(tac.program)
-    # Phase 0: chain recognition (R6's ceildiv idiom + bit-op
-    # canonicalization). Runs in isolation so distribution rules can't
-    # rewrite chain-interior expressions before R6 sees them. Without
-    # this, SUB_ITE_DIST_RIGHT etc. (in simplify_pipeline) fire on the
-    # chain's `Sub(R_high, Ite(...))` before R6 can match the outer
-    # IntAdd, silently disabling R6.
-    phase0 = rewrite_program(
-        tac.program,
-        chain_recognition_pipeline,
-        max_iterations=max_iterations,
-        ite_max_depth=ite_max_depth,
-        symbol_sorts=tac.symbol_sorts,
-        use_int_ceil_div=ceildiv_op,
-    )
-    # Phase 0.5: early CSE. Catches the trivial duplicates the input
-    # already carries (e.g. ``B205 = R29 == 0`` and ``B215 = R29 == 0``
-    # in sibling branches) before simplification mangles their shape.
-    # Runs alone — no rule alongside it mutates a registered RHS, so
-    # the per-iteration RHS index is a real snapshot. Aim is trivial
-    # repetition only; deeper commonalities are not the goal here.
-    phase_cse_early = rewrite_program(
-        phase0.program,
-        cse_pipeline,
-        max_iterations=max_iterations,
-        ite_max_depth=ite_max_depth,
-        symbol_sorts=tac.symbol_sorts,
-        use_int_ceil_div=ceildiv_op,
-    )
-    # Phase 1: simplification (bit-ops, const-divisor div rules, boolean/Ite,
-    # distribution, range narrowing). Operates on phase 0's output.
-    # Phase 2 (optional): add R4a (div purification for non-constant divisors).
-    phase1 = rewrite_program(
-        phase_cse_early.program,
-        simplify_pipeline,
-        max_iterations=max_iterations,
-        ite_max_depth=ite_max_depth,
-        symbol_sorts=tac.symbol_sorts,
-        use_int_ceil_div=ceildiv_op,
-    )
-    if purify_div:
-        phase2 = rewrite_program(
-            phase1.program,
-            simplify_pipeline + (R4A_DIV_PURIFY,),
+    with _open_trace_file(trace) as trace_fh:
+        trace_sink = _make_trace_sink(trace_fh)
+        # Phase 0: chain recognition (R6's ceildiv idiom + bit-op
+        # canonicalization). Runs in isolation so distribution rules can't
+        # rewrite chain-interior expressions before R6 sees them. Without
+        # this, SUB_ITE_DIST_RIGHT etc. (in simplify_pipeline) fire on the
+        # chain's `Sub(R_high, Ite(...))` before R6 can match the outer
+        # IntAdd, silently disabling R6.
+        phase0 = rewrite_program(
+            tac.program,
+            chain_recognition_pipeline,
             max_iterations=max_iterations,
             ite_max_depth=ite_max_depth,
             symbol_sorts=tac.symbol_sorts,
             use_int_ceil_div=ceildiv_op,
+            phase="chain",
+            trace_sink=trace_sink,
         )
-        rw = _merge_phases(phase0, phase_cse_early, phase1, phase2)
-    else:
-        rw = _merge_phases(phase0, phase_cse_early, phase1)
-    # Iterate DCE to fixed point: a chain of dead defs needs multiple sweeps
-    # because liveness is computed once per pass and each pass only removes
-    # the directly-dead leaves.
-    program = rw.program
-    total_removed = 0
-    while True:
-        dce = eliminate_dead_assignments(program)
-        total_removed += len(dce.removed)
-        if not dce.removed:
-            break
-        program = dce.program
-    # Lift dynamic ``Ite``-RHS assignments out of their host block as
-    # static T-defs *before* the first dynamic in the block. This
-    # gives ITE_PURIFY a clean static prefix to insert ``TB<N>`` defs
-    # into; without it, blocks with multiple dynamics would have a TB
-    # land between two dynamics and break sea_vc's
-    # ``(static)*(dynamic)*term`` shape invariant. Skipped when
-    # purify_ite is off (no consumer for the lifted T-defs).
-    lift_hits = 0
-    if purify_ite:
-        lres = lift_dynamic_ite_rhs(program, symbol_sorts=tac.symbol_sorts)
-        program = lres.program
-        lift_hits = lres.hits
-        if lres.extra_symbols:
-            rw = replace(
-                rw,
-                extra_symbols=rw.extra_symbols + lres.extra_symbols,
-            )
-    # Phase 3 (optional): after all simplification + DCE, name every remaining
-    # non-trivial Ite condition as a fresh bool var, then do the same for
-    # assert predicates and (optionally) assume conditions. CP runs in the
-    # same fixed-point so the fresh aliases get propagated; CSE runs in a
-    # dedicated late phase below to catch the duplicates ITE_PURIFY just
-    # introduced (two structurally-equal Ite conditions get distinct
-    # TB<N> defs that CSE then folds together).
-    phase_rules: list = []
-    if purify_ite:
-        phase_rules.append(ITE_PURIFY)
-    if purify_assert:
-        phase_rules.append(PURIFY_ASSERT)
-    if purify_assume:
-        phase_rules.append(PURIFY_ASSUME)
-    if phase_rules:
-        phase_rules.append(CP_ALIAS)
-        phase_ite = rewrite_program(
-            program,
-            tuple(phase_rules),
-            max_iterations=max_iterations,
-            ite_max_depth=ite_max_depth,
-            symbol_sorts=tac.symbol_sorts,
-            use_int_ceil_div=ceildiv_op,
-        )
-        # Late CSE: dedicated CSE-only phase to fold the structurally-equal
-        # T<N> defs that ITE_PURIFY / PURIFY_ASSERT just emitted. Followed
-        # by a small CP pass so the resulting aliases get propagated, then
-        # DCE clears the dead originals.
-        phase_cse_late = rewrite_program(
-            phase_ite.program,
+        # Phase 0.5: early CSE. Catches the trivial duplicates the input
+        # already carries (e.g. ``B205 = R29 == 0`` and ``B215 = R29 == 0``
+        # in sibling branches) before simplification mangles their shape.
+        # Runs alone — no rule alongside it mutates a registered RHS, so
+        # the per-iteration RHS index is a real snapshot. Aim is trivial
+        # repetition only; deeper commonalities are not the goal here.
+        phase_cse_early = rewrite_program(
+            phase0.program,
             cse_pipeline,
             max_iterations=max_iterations,
             ite_max_depth=ite_max_depth,
             symbol_sorts=tac.symbol_sorts,
             use_int_ceil_div=ceildiv_op,
+            phase="cse-early",
+            trace_sink=trace_sink,
         )
-        phase_cp_cleanup = rewrite_program(
-            phase_cse_late.program,
-            (CP_ALIAS,),
+        # Phase 1: simplification (bit-ops, const-divisor div rules, boolean/Ite,
+        # distribution, range narrowing). Operates on phase 0's output.
+        # Phase 2 (optional): add R4a (div purification for non-constant divisors).
+        phase1 = rewrite_program(
+            phase_cse_early.program,
+            simplify_pipeline,
             max_iterations=max_iterations,
             ite_max_depth=ite_max_depth,
             symbol_sorts=tac.symbol_sorts,
             use_int_ceil_div=ceildiv_op,
+            phase="simplify",
+            trace_sink=trace_sink,
         )
-        rw = _merge_phases(rw, phase_ite, phase_cse_late, phase_cp_cleanup)
-        program = phase_cp_cleanup.program
-        # One more DCE sweep — CSE turns duplicates into aliases; CP+DCE
-        # makes those aliases disappear.
+        if purify_div:
+            phase2 = rewrite_program(
+                phase1.program,
+                simplify_pipeline + (R4A_DIV_PURIFY,),
+                max_iterations=max_iterations,
+                ite_max_depth=ite_max_depth,
+                symbol_sorts=tac.symbol_sorts,
+                use_int_ceil_div=ceildiv_op,
+                phase="simplify-r4a",
+                trace_sink=trace_sink,
+            )
+            rw = _merge_phases(phase0, phase_cse_early, phase1, phase2)
+        else:
+            rw = _merge_phases(phase0, phase_cse_early, phase1)
+        # Iterate DCE to fixed point: a chain of dead defs needs multiple sweeps
+        # because liveness is computed once per pass and each pass only removes
+        # the directly-dead leaves.
+        program = rw.program
+        total_removed = 0
         while True:
             dce = eliminate_dead_assignments(program)
             total_removed += len(dce.removed)
             if not dce.removed:
                 break
             program = dce.program
-    # Final phase (gated): selectively materialize range-derived
-    # assumes around uses of axiomatized operators (today: IntCeilDiv).
-    # Runs LAST so range analysis sees the post-rewrite program; the
-    # output flows directly into ctac rw-eq, which validates each
-    # materialized assume against the orig program's constraints.
-    materialize_hits: dict[str, int] = {}
-    if materialize_assumes_flag:
-        mres = materialize_assumes(program, symbol_sorts=tac.symbol_sorts)
-        program = mres.program
-        materialize_hits = mres.hits
-    final_program = program
-    after_count = _command_count(final_program)
+        # Lift dynamic ``Ite``-RHS assignments out of their host block as
+        # static T-defs *before* the first dynamic in the block. This
+        # gives ITE_PURIFY a clean static prefix to insert ``TB<N>`` defs
+        # into; without it, blocks with multiple dynamics would have a TB
+        # land between two dynamics and break sea_vc's
+        # ``(static)*(dynamic)*term`` shape invariant. Skipped when
+        # purify_ite is off (no consumer for the lifted T-defs).
+        lift_hits = 0
+        if purify_ite:
+            lres = lift_dynamic_ite_rhs(program, symbol_sorts=tac.symbol_sorts)
+            program = lres.program
+            lift_hits = lres.hits
+            if lres.extra_symbols:
+                rw = replace(
+                    rw,
+                    extra_symbols=rw.extra_symbols + lres.extra_symbols,
+                )
+        # Phase 3 (optional): after all simplification + DCE, name every remaining
+        # non-trivial Ite condition as a fresh bool var, then do the same for
+        # assert predicates and (optionally) assume conditions. CP runs in the
+        # same fixed-point so the fresh aliases get propagated; CSE runs in a
+        # dedicated late phase below to catch the duplicates ITE_PURIFY just
+        # introduced (two structurally-equal Ite conditions get distinct
+        # TB<N> defs that CSE then folds together).
+        phase_rules: list = []
+        if purify_ite:
+            phase_rules.append(ITE_PURIFY)
+        if purify_assert:
+            phase_rules.append(PURIFY_ASSERT)
+        if purify_assume:
+            phase_rules.append(PURIFY_ASSUME)
+        if phase_rules:
+            phase_rules.append(CP_ALIAS)
+            phase_ite = rewrite_program(
+                program,
+                tuple(phase_rules),
+                max_iterations=max_iterations,
+                ite_max_depth=ite_max_depth,
+                symbol_sorts=tac.symbol_sorts,
+                use_int_ceil_div=ceildiv_op,
+                phase="purify",
+                trace_sink=trace_sink,
+            )
+            # Late CSE: dedicated CSE-only phase to fold the structurally-equal
+            # T<N> defs that ITE_PURIFY / PURIFY_ASSERT just emitted. Followed
+            # by a small CP pass so the resulting aliases get propagated, then
+            # DCE clears the dead originals.
+            phase_cse_late = rewrite_program(
+                phase_ite.program,
+                cse_pipeline,
+                max_iterations=max_iterations,
+                ite_max_depth=ite_max_depth,
+                symbol_sorts=tac.symbol_sorts,
+                use_int_ceil_div=ceildiv_op,
+                phase="cse-late",
+                trace_sink=trace_sink,
+            )
+            phase_cp_cleanup = rewrite_program(
+                phase_cse_late.program,
+                (CP_ALIAS,),
+                max_iterations=max_iterations,
+                ite_max_depth=ite_max_depth,
+                symbol_sorts=tac.symbol_sorts,
+                use_int_ceil_div=ceildiv_op,
+                phase="cp-cleanup",
+                trace_sink=trace_sink,
+            )
+            rw = _merge_phases(rw, phase_ite, phase_cse_late, phase_cp_cleanup)
+            program = phase_cp_cleanup.program
+            # One more DCE sweep — CSE turns duplicates into aliases; CP+DCE
+            # makes those aliases disappear.
+            while True:
+                dce = eliminate_dead_assignments(program)
+                total_removed += len(dce.removed)
+                if not dce.removed:
+                    break
+                program = dce.program
+        # Final phase (gated): selectively materialize range-derived
+        # assumes around uses of axiomatized operators (today: IntCeilDiv).
+        # Runs LAST so range analysis sees the post-rewrite program; the
+        # output flows directly into ctac rw-eq, which validates each
+        # materialized assume against the orig program's constraints.
+        materialize_hits: dict[str, int] = {}
+        if materialize_assumes_flag:
+            mres = materialize_assumes(program, symbol_sorts=tac.symbol_sorts)
+            program = mres.program
+            materialize_hits = mres.hits
+        final_program = program
+        after_count = _command_count(final_program)
 
     for w in dict.fromkeys(rw.warnings):
         c.print(f"# rewrite warning: {w}", markup=False)

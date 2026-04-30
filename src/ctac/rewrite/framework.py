@@ -26,6 +26,7 @@ from ctac.ast.nodes import (
     TacCmd,
     TacExpr,
 )
+from ctac.ast.pretty import RawPrettyPrinter
 from ctac.ir.models import TacBlock, TacProgram
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.unparse import canonicalize_cmd
@@ -53,6 +54,33 @@ class RuleHit:
     iteration: int
 
 
+@dataclass(frozen=True)
+class TraceEntry:
+    """One record per successful rule fire — emitted to ``trace_sink``.
+
+    ``path`` is the tuple of ``ApplyExpr.args`` indices traversed from the
+    host-cmd's top-level expression down to the sub-expression the rule
+    fired on (``()`` means the top of the host RHS / condition / predicate).
+    ``before`` and ``after`` are the rendered sub-expression snapshots at
+    the firing point — multi-fire chains produce successive entries where
+    each ``before`` equals the previous ``after``."""
+
+    phase: str
+    iteration: int
+    block_id: str
+    cmd_index: int
+    host_kind: str  # "assign" | "assume" | "assert"
+    host_lhs: str | None  # AssignExpCmd.lhs; None for assume/assert
+    path: tuple[int, ...]
+    rule: str
+    before: str
+    after: str
+
+
+TraceSink = Callable[[TraceEntry], None]
+TraceEmit = Callable[[str, TacExpr, TacExpr, tuple[int, ...]], None]
+
+
 @dataclass
 class RewriteResult:
     program: TacProgram
@@ -78,6 +106,8 @@ def _apply_rules_at(
     hit_sink: list[str],
     *,
     at_top: bool,
+    trace_emit: TraceEmit | None = None,
+    path: tuple[int, ...] = (),
 ) -> TacExpr:
     """Try each rule at the top until none fires. Does not descend into children."""
     while True:
@@ -93,6 +123,11 @@ def _apply_rules_at(
             if new_expr is expr or new_expr == expr:
                 continue
             hit_sink.append(rule.name)
+            if trace_emit is not None:
+                # Snapshot before/after at the firing point — successive
+                # fires at the same path produce a chain where each
+                # ``before`` equals the previous ``after``.
+                trace_emit(rule.name, expr, new_expr, path)
             expr = new_expr
             fired = True
             # After a rule fires, the expression we hold is fresh — ensure the
@@ -110,6 +145,8 @@ def _rewrite_expr(
     hit_sink: list[str],
     *,
     at_top: bool = True,
+    trace_emit: TraceEmit | None = None,
+    path: tuple[int, ...] = (),
 ) -> TacExpr:
     """Bottom-up: rewrite children, then try rules at the top.
 
@@ -120,14 +157,27 @@ def _rewrite_expr(
     if isinstance(expr, ApplyExpr):
         new_args: list[TacExpr] = []
         any_changed = False
-        for arg in expr.args:
-            new_arg = _rewrite_expr(arg, rules, ctx, hit_sink, at_top=False)
+        for i, arg in enumerate(expr.args):
+            # Skip the per-descent tuple alloc when no trace sink is wired —
+            # debug-flag overhead must not move the no-trace hot path.
+            sub_path = path + (i,) if trace_emit is not None else path
+            new_arg = _rewrite_expr(
+                arg,
+                rules,
+                ctx,
+                hit_sink,
+                at_top=False,
+                trace_emit=trace_emit,
+                path=sub_path,
+            )
             new_args.append(new_arg)
             if new_arg is not arg:
                 any_changed = True
         if any_changed:
             expr = replace(expr, args=tuple(new_args))
-    return _apply_rules_at(expr, rules, ctx, hit_sink, at_top=at_top)
+    return _apply_rules_at(
+        expr, rules, ctx, hit_sink, at_top=at_top, trace_emit=trace_emit, path=path
+    )
 
 
 def _splice_into_entry_block(
@@ -196,6 +246,8 @@ def rewrite_program(
     ite_max_depth: int = 4,
     symbol_sorts: dict[str, str] | None = None,
     use_int_ceil_div: bool = True,
+    phase: str = "",
+    trace_sink: TraceSink | None = None,
 ) -> RewriteResult:
     """Run ``rules`` over ``program`` to fixed point.
 
@@ -224,6 +276,12 @@ def rewrite_program(
     iteration = 0
     extra_symbols: list[tuple[str, str]] = []
     fresh_counter = 0
+    # One printer instance shared across all trace emissions; keeps
+    # var-suffixes intact (`R832:61`) so the trace correlates byte-exact
+    # with the dump.
+    trace_printer = (
+        RawPrettyPrinter(strip_var_suffixes=False) if trace_sink is not None else None
+    )
 
     while iteration < max_iterations:
         iteration += 1
@@ -244,19 +302,59 @@ def rewrite_program(
                 ctx.set_position(block.id, idx)
                 cmd_hits: list[str] = []
                 new_cmd: TacCmd = cmd
+
+                def _make_emit(host_kind: str, host_lhs: str | None) -> TraceEmit | None:
+                    if trace_sink is None or trace_printer is None:
+                        return None
+                    cur_iter = iteration
+                    block_id = block.id
+                    cmd_idx = idx
+
+                    def emit(
+                        rule_name: str,
+                        before_expr: TacExpr,
+                        after_expr: TacExpr,
+                        path: tuple[int, ...],
+                    ) -> None:
+                        trace_sink(
+                            TraceEntry(
+                                phase=phase,
+                                iteration=cur_iter,
+                                block_id=block_id,
+                                cmd_index=cmd_idx,
+                                host_kind=host_kind,
+                                host_lhs=host_lhs,
+                                path=tuple(path),
+                                rule=rule_name,
+                                before=trace_printer.print_expr(before_expr),
+                                after=trace_printer.print_expr(after_expr),
+                            )
+                        )
+
+                    return emit
+
                 if isinstance(cmd, AssignExpCmd):
                     ctx.set_host_cmd(cmd, at_top=True)
-                    new_rhs = _rewrite_expr(cmd.rhs, rules_tuple, ctx, cmd_hits)
+                    emit = _make_emit("assign", cmd.lhs)
+                    new_rhs = _rewrite_expr(
+                        cmd.rhs, rules_tuple, ctx, cmd_hits, trace_emit=emit
+                    )
                     if new_rhs is not cmd.rhs:
                         new_cmd = replace(cmd, rhs=new_rhs)
                 elif isinstance(cmd, AssumeExpCmd):
                     ctx.set_host_cmd(cmd, at_top=True)
-                    new_cond = _rewrite_expr(cmd.condition, rules_tuple, ctx, cmd_hits)
+                    emit = _make_emit("assume", None)
+                    new_cond = _rewrite_expr(
+                        cmd.condition, rules_tuple, ctx, cmd_hits, trace_emit=emit
+                    )
                     if new_cond is not cmd.condition:
                         new_cmd = replace(cmd, condition=new_cond)
                 elif isinstance(cmd, AssertCmd):
                     ctx.set_host_cmd(cmd, at_top=True)
-                    new_pred = _rewrite_expr(cmd.predicate, rules_tuple, ctx, cmd_hits)
+                    emit = _make_emit("assert", None)
+                    new_pred = _rewrite_expr(
+                        cmd.predicate, rules_tuple, ctx, cmd_hits, trace_emit=emit
+                    )
                     if new_pred is not cmd.predicate:
                         new_cmd = replace(cmd, predicate=new_pred)
                 else:
