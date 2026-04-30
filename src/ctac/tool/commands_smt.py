@@ -97,7 +97,8 @@ def smt_cmd(
     run: bool = typer.Option(
         False,
         "--run/--no-run",
-        help="Run Z3 on the generated SMT-LIB instance.",
+        "--solve/--no-solve",
+        help="Run Z3 on the generated SMT-LIB instance (--solve is an alias to disambiguate from `ctac run`).",
     ),
     z3_path: Annotated[
         str,
