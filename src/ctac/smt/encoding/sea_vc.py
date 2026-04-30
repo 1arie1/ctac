@@ -27,6 +27,7 @@ from ctac.smt.encoding.path_skeleton import (
     sanitize_ident,
 )
 from ctac.smt.model import SmtDeclaration, SmtScript
+from ctac.smt.util import and_terms, at_most_one_terms, implies, or_terms
 from ctac.ast.bit_mask import (
     high_mask_clear_low_k as _is_high_mask_clear_low_k,
     low_mask_width as _is_low_mask,
@@ -120,73 +121,6 @@ def _render_expr_short(expr: TacExpr, max_len: int = 160) -> str:
     return s
 
 
-def _or_terms(terms: list[str]) -> str:
-    uniq: list[str] = []
-    seen: set[str] = set()
-    for t in terms:
-        if t in seen:
-            continue
-        seen.add(t)
-        uniq.append(t)
-    if not uniq:
-        return "false"
-    if "true" in uniq:
-        return "true"
-    uniq = [t for t in uniq if t != "false"]
-    if not uniq:
-        return "false"
-    if len(uniq) == 1:
-        return uniq[0]
-    return f"(or {' '.join(uniq)})"
-
-
-def _and_terms(terms: list[str]) -> str:
-    if not terms:
-        return "true"
-    out: list[str] = []
-    seen: set[str] = set()
-    for t in terms:
-        if t in seen:
-            continue
-        seen.add(t)
-        out.append(t)
-    if "false" in out:
-        return "false"
-    out = [t for t in out if t != "true"]
-    if not out:
-        return "true"
-    if len(out) == 1:
-        return out[0]
-    return f"(and {' '.join(out)})"
-
-
-def _implies(lhs: str, rhs: str) -> str:
-    if lhs == "true":
-        return rhs
-    if lhs == "false":
-        return "true"
-    if rhs == "true":
-        return "true"
-    return f"(=> {lhs} {rhs})"
-
-
-def _at_most_one_terms(terms: list[str]) -> list[str]:
-    uniq: list[str] = []
-    seen: set[str] = set()
-    for t in terms:
-        if t == "false" or t in seen:
-            continue
-        seen.add(t)
-        uniq.append(t)
-    if len(uniq) <= 1:
-        return []
-    out: list[str] = []
-    for i in range(len(uniq)):
-        for j in range(i + 1, len(uniq)):
-            out.append(f"(or (not {uniq[i]}) (not {uniq[j]}))")
-    return out
-
-
 def _simplify_ite(cond: str, then_term: str, else_term: str, *, sort: str) -> str:
     if then_term == else_term:
         return then_term
@@ -202,13 +136,13 @@ def _simplify_ite(cond: str, then_term: str, else_term: str, *, sort: str) -> st
         return f"(not {cond})"
     if sort == "Bool":
         if then_term == "true":
-            return _or_terms([cond, else_term])
+            return or_terms([cond, else_term])
         if else_term == "false":
-            return _and_terms([cond, then_term])
+            return and_terms([cond, then_term])
         if then_term == "false":
-            return _and_terms([f"(not {cond})", else_term])
+            return and_terms([f"(not {cond})", else_term])
         if else_term == "true":
-            return _or_terms([f"(not {cond})", then_term])
+            return or_terms([f"(not {cond})", then_term])
     return f"(ite {cond} {then_term} {else_term})"
 
 
@@ -686,7 +620,7 @@ class SeaVcEncoder(SmtEncoder):
                     for arg in expr.args:
                         a, s = emit_expr(arg, expected_sort="Bool")
                         terms.append(to_bool(a, s))
-                    return (_and_terms(terms) if smt == "and" else _or_terms(terms)), "Bool"
+                    return (and_terms(terms) if smt == "and" else or_terms(terms)), "Bool"
                 if op in {"Eq", "Ne", "Neq"}:
                     a1, _ = emit_expr(expr.args[0])
                     a2, _ = emit_expr(expr.args[1])
@@ -1110,7 +1044,7 @@ class SeaVcEncoder(SmtEncoder):
                 eq = f"(= {lhs} {rhs})"
                 if ctx.guard_statics:
                     guard = block_guard(ds.block_id, entry_block_id=entry_block_id)
-                    add_constraint(_implies(guard, eq))
+                    add_constraint(implies(guard, eq))
                 else:
                     add_constraint(eq)
             elif isinstance(cmd, AssignHavocCmd):
@@ -1155,7 +1089,7 @@ class SeaVcEncoder(SmtEncoder):
                         cond, s = emit_expr(cond_expr, expected_sort="Bool")
                     if s != "Bool":
                         raise SmtEncodingError("Assume condition must be Bool")
-                    add_constraint(_implies(guard, cond))
+                    add_constraint(implies(guard, cond))
             if has_assume_in_block:
                 remaining_blocks = program.blocks[program.blocks.index(block) + 1 :]
                 if any(any(isinstance(c, AssumeExpCmd) for c in b.commands) for b in remaining_blocks):
@@ -1192,7 +1126,7 @@ class SeaVcEncoder(SmtEncoder):
 
             cases: list[tuple[str, str]] = []
             for rhs, conds in grouped_conds.items():
-                cond = _or_terms(conds)
+                cond = or_terms(conds)
                 if cond == "false":
                     continue
                 cases.append((cond, rhs))
@@ -1215,16 +1149,16 @@ class SeaVcEncoder(SmtEncoder):
             pred_block_terms: list[str] = []
             for pe in preds.get(block.id, []):
                 pred_guard = block_guard(pe.pred_block_id, entry_block_id=entry_block_id)
-                edge_terms.append(_and_terms([pred_guard, pe.branch_cond]))
+                edge_terms.append(and_terms([pred_guard, pe.branch_cond]))
                 pred_block_terms.append(pred_guard)
             # Edge-level predecessor feasibility (with branch conditions).
-            add_constraint(_implies(lhs, _or_terms(edge_terms)))
+            add_constraint(implies(lhs, or_terms(edge_terms)))
             # Block-level predecessor existence (without edge conditions), to pair
             # with exclusivity over the same predecessor-block variables.
-            add_constraint(_implies(lhs, _or_terms(pred_block_terms)))
+            add_constraint(implies(lhs, or_terms(pred_block_terms)))
             # Exclusivity is over predecessor blocks, not edge predicates.
-            for amo in _at_most_one_terms(pred_block_terms):
-                add_constraint(_implies(lhs, amo))
+            for amo in at_most_one_terms(pred_block_terms):
+                add_constraint(implies(lhs, amo))
         cfg_end = len(constraints)
 
         # Exit objective bound to assert block and failing assert predicate.
@@ -1236,8 +1170,8 @@ class SeaVcEncoder(SmtEncoder):
             assert_cond, assert_sort = emit_expr(assert_expr, expected_sort="Bool")
         if assert_sort != "Bool":
             raise SmtEncodingError("Assert predicate must lower to Bool")
-        exit_rhs = _and_terms([f"(not {assert_cond})", assert_guard])
-        add_constraint(_implies("BLK_EXIT", exit_rhs))
+        exit_rhs = and_terms([f"(not {assert_cond})", assert_guard])
+        add_constraint(implies("BLK_EXIT", exit_rhs))
         add_constraint("BLK_EXIT")
         exit_end = len(constraints)
 
