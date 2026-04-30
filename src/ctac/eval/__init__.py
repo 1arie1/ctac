@@ -5,6 +5,7 @@ from ctac.eval.interpreter import (
     RunConfig,
     RunEvent,
     RunResult,
+    UnknownValueError,
     run_program,
     value_to_text,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "RunConfig",
     "RunEvent",
     "RunResult",
+    "UnknownValueError",
     "Value",
     "run_program",
     "value_to_text",

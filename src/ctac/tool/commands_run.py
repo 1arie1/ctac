@@ -19,7 +19,6 @@ from ctac.ast.run_format import (
     strip_meta_suffix,
     values_equal,
 )
-from ctac.analysis import BytemapCapability, classify_bytemap_usage
 from ctac.eval import MemoryModel, RunConfig, Value, parse_model_path, run_program, value_to_text
 from ctac.parse import ParseError, parse_path
 from ctac.tool.cli_runtime import (
@@ -43,7 +42,13 @@ _RUN_EPILOG = (
     "behavior is controlled by "
     "[cyan]--havoc-mode zero|random|ask[/cyan] (default [cyan]zero[/cyan]), "
     "or replayed from a model via [cyan]--model[/cyan]. Bytemap symbols load "
-    "from memory entries in the model and feed [cyan]Select[/cyan] lookups.\n\n"
+    "from memory entries in the model when present; [cyan]Store[/cyan] "
+    "produces a fresh map, [cyan]Ite[/cyan] picks the taken branch lazily. "
+    "When concrete eval can't proceed (e.g. a [cyan]Select[/cyan] on a "
+    "bytemap with no model entries), the LHS scalar of the surrounding "
+    "[cyan]AssignExpCmd[/cyan] falls back to the model's value for that "
+    "name; [cyan]assert[/cyan]s on unknown predicates are reported as "
+    "[cyan]inconclusive[/cyan].\n\n"
     "[bold green]Exit codes[/bold green]  [cyan]0[/cyan] ok, [cyan]2[/cyan] "
     "stopped (assume failed), [cyan]3[/cyan] error/max_steps.\n\n"
     "[bold green]Examples[/bold green]\n\n"
@@ -153,16 +158,6 @@ def run(
         else:
             c.print(f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
-
-    capability = classify_bytemap_usage(tac.program, tac.symbol_sorts)
-    if capability is BytemapCapability.BYTEMAP_RW:
-        msg = (
-            f"executing bytemap writes (Store) is not yet supported; "
-            f"input classified as {capability.value}. "
-            f"bytemap-free and bytemap-ro are supported."
-        )
-        c.print(f"input error: {msg}" if plain else f"[red]input error:[/red] {msg}")
-        raise typer.Exit(1)
 
     hm = havoc_mode.strip().lower()
     if hm not in ("zero", "random", "ask"):
@@ -296,6 +291,8 @@ def run(
         ask_value=ask_cb,
         strip_var_suffixes=strip_var_suffixes,
         memory_store=dict(model_memory),
+        symbol_sorts=dict(tac.symbol_sorts),
+        model_values=dict(model_values),
     )
     res = run_program(tac.program, config=rcfg, pretty_cmd=pp_backend.print_cmd)
 

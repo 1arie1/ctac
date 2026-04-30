@@ -1,10 +1,13 @@
-"""Tests for bytemap-ro support in the interpreter + model parser."""
+"""Tests for bytemap-ro / bytemap-rw support in the interpreter + model parser."""
 
 from __future__ import annotations
 
+import pytest
+
 from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef
-from ctac.eval import MemoryModel, RunConfig, parse_model_text, run_program
+from ctac.eval import MemoryModel, RunConfig, UnknownValueError, parse_model_text, run_program
 from ctac.eval.interpreter import Evaluator
+from ctac.eval.types import Value
 from ctac.parse import parse_string
 
 
@@ -49,12 +52,13 @@ def test_select_missing_index_returns_default():
     assert v.data == 0
 
 
-def test_select_on_unknown_memory_returns_zero():
-    """No model entry for the memory → reads yield 0."""
+def test_select_on_unknown_memory_raises():
+    """No model entry for the memory → raises UnknownValueError so callers
+    can fall back to the model's value for the LHS scalar."""
     ev = Evaluator({}, normalize_symbol=lambda s: s, memory_store={})
     expr = ApplyExpr("Select", (SymbolRef("M99"), ConstExpr("42")))
-    v = ev.eval_expr(expr)
-    assert v.data == 0
+    with pytest.raises(UnknownValueError):
+        ev.eval_expr(expr)
 
 
 def test_parse_tac_model_reads_memory_entries():
@@ -199,25 +203,256 @@ def test_interpreter_consumes_model_memory_via_runconfig():
     assert res.final_store["R0"].data == 393216
 
 
-def test_ctac_run_rejects_bytemap_rw(tmp_path):
+def _bm_evaluator(memory: dict[str, MemoryModel] | None = None,
+                  store: dict[str, Value] | None = None,
+                  symbol_sorts: dict[str, str] | None = None,
+                  model_values: dict[str, Value] | None = None) -> Evaluator:
+    return Evaluator(
+        store or {},
+        normalize_symbol=lambda s: s.split(":", 1)[0],
+        memory_store=memory or {},
+        symbol_sorts=symbol_sorts or {},
+        model_values=model_values or {},
+    )
+
+
+def test_store_then_select_round_trip():
+    ev = _bm_evaluator(memory={"M0": MemoryModel(entries={}, default=0)})
+    new_mm = ev._eval_bytemap_expr(
+        ApplyExpr("Store", (SymbolRef("M0"), ConstExpr("0x10"), ConstExpr("0x42")))
+    )
+    ev.memory_store["M1"] = new_mm
+    assert ev.eval_expr(ApplyExpr("Select", (SymbolRef("M1"), ConstExpr("0x10")))).data == 0x42
+    assert ev.eval_expr(ApplyExpr("Select", (SymbolRef("M1"), ConstExpr("0x99")))).data == 0
+    # Source map unchanged.
+    assert ev.eval_expr(ApplyExpr("Select", (SymbolRef("M0"), ConstExpr("0x10")))).data == 0
+
+
+def test_chained_stores_independent_links():
+    ev = _bm_evaluator(memory={"M0": MemoryModel(entries={}, default=0)})
+    ev.memory_store["M1"] = ev._eval_bytemap_expr(
+        ApplyExpr("Store", (SymbolRef("M0"), ConstExpr("5"), ConstExpr("7")))
+    )
+    ev.memory_store["M2"] = ev._eval_bytemap_expr(
+        ApplyExpr("Store", (SymbolRef("M1"), ConstExpr("9"), ConstExpr("11")))
+    )
+    assert ev.eval_expr(ApplyExpr("Select", (SymbolRef("M2"), ConstExpr("5")))).data == 7
+    assert ev.eval_expr(ApplyExpr("Select", (SymbolRef("M2"), ConstExpr("9")))).data == 11
+    # M1 was not mutated by the M2 update.
+    assert ev.eval_expr(ApplyExpr("Select", (SymbolRef("M1"), ConstExpr("9")))).data == 0
+
+
+def test_store_does_not_mutate_source_entries_dict():
+    src = MemoryModel(entries={1: 2}, default=0)
+    ev = _bm_evaluator(memory={"M0": src})
+    new_mm = ev._eval_bytemap_expr(
+        ApplyExpr("Store", (SymbolRef("M0"), ConstExpr("3"), ConstExpr("4")))
+    )
+    assert dict(src.entries) == {1: 2}
+    assert new_mm.entries == {1: 2, 3: 4}
+
+
+def test_lazy_ite_does_not_force_unchosen_branch():
+    """Eager Ite would force both branches; lazy Ite must not."""
+    ev = _bm_evaluator()
+    # The else branch references an unknown symbol — eager eval would
+    # raise UnknownValueError. Lazy eval should pick `then` and skip it.
+    expr = ApplyExpr(
+        "Ite",
+        (
+            ConstExpr("true"),
+            ConstExpr("0x42"),
+            ApplyExpr("Select", (SymbolRef("M_unknown"), ConstExpr("0"))),
+        ),
+    )
+    assert ev.eval_expr(expr).data == 0x42
+
+
+def test_lazy_ite_over_bytemaps():
+    M_a = MemoryModel(entries={1: 100}, default=0)
+    ev = _bm_evaluator(memory={"M_a": M_a})
+    # cond=true → pick M_a (known); cond=false → recurse on M_b (unknown) → raise.
+    chose_a = ev._eval_bytemap_expr(
+        ApplyExpr("Ite", (ConstExpr("true"), SymbolRef("M_a"), SymbolRef("M_b")))
+    )
+    assert chose_a.entries == {1: 100}
+    with pytest.raises(UnknownValueError):
+        ev._eval_bytemap_expr(
+            ApplyExpr("Ite", (ConstExpr("false"), SymbolRef("M_a"), SymbolRef("M_b")))
+        )
+
+
+_RW = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR0:bv256
+\tM0:bytemap
+\tM1:bytemap
+}
+Program {
+\tBlock e Succ [] {
+\t\tAssignHavocCmd M0
+\t\tAssignExpCmd M1 Store(M0 0x10 0x42)
+\t\tAssignExpCmd R0 Select(M1 0x10)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_run_program_executes_store_with_modeled_source_map():
+    tac = parse_string(_RW, path="<rw>")
+    cfg = RunConfig(
+        memory_store={"M0": MemoryModel(entries={}, default=0)},
+        symbol_sorts=tac.symbol_sorts,
+    )
+    res = run_program(tac.program, config=cfg)
+    assert res.status == "done"
+    assert res.final_store["R0"].data == 0x42
+    # M1 lives in memory_store, never in scalar store.
+    assert "M1" not in res.final_store
+
+
+def test_run_program_falls_back_to_model_when_select_unknown():
+    """Source bytemap not in memory_store → Select propagates Unknown →
+    the assigned scalar LHS is taken from model_values."""
+    tac = parse_string(_RW, path="<rw>")
+    cfg = RunConfig(
+        # No M0 entry — M0 stays unknown after havoc; M1 = Store(M0,…) is
+        # also unknown; Select(M1, 0x10) raises.
+        symbol_sorts=tac.symbol_sorts,
+        model_values={"R0": Value("bv", 0xCAFE)},
+    )
+    res = run_program(tac.program, config=cfg)
+    assert res.status == "done"
+    assert res.final_store["R0"].data == 0xCAFE
+    assert "M1" not in res.final_store
+    notes = [e.note for e in res.events]
+    assert "bytemap unknown" in notes
+    assert "from model" in notes
+
+
+def test_run_program_unknown_without_model_drops_lhs():
+    tac = parse_string(_RW, path="<rw>")
+    cfg = RunConfig(symbol_sorts=tac.symbol_sorts)
+    res = run_program(tac.program, config=cfg)
+    assert res.status == "done"
+    assert "R0" not in res.final_store
+    notes = [e.note for e in res.events]
+    assert "unknown" in notes
+
+
+_RW_PARTIAL = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR0:bv256
+\tR1:bv256
+\tR2:bv256
+\tM0:bytemap
+}
+Program {
+\tBlock e Succ [] {
+\t\tAssignHavocCmd M0
+\t\tAssignExpCmd R0 Select(M0 0x10)
+\t\tAssignExpCmd R1 Select(M0 0x20)
+\t\tAssignExpCmd R2 Add(R0 R1)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_run_program_unknown_propagates_through_arithmetic():
+    """`Add(Select(M_u, i1), Select(M_u, i2))` — both halves Unknown — and
+    the model has only the resulting R2; verify each scalar is taken from
+    the model on its own AssignExpCmd via the fallback path."""
+    tac = parse_string(_RW_PARTIAL, path="<rwp>")
+    cfg = RunConfig(
+        symbol_sorts=tac.symbol_sorts,
+        model_values={
+            "R0": Value("bv", 1),
+            "R1": Value("bv", 2),
+            "R2": Value("bv", 3),
+        },
+    )
+    res = run_program(tac.program, config=cfg)
+    assert res.status == "done"
+    assert res.final_store["R0"].data == 1
+    assert res.final_store["R1"].data == 2
+    assert res.final_store["R2"].data == 3
+
+
+def test_assert_on_unknown_is_inconclusive():
+    src = _wrap(
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd M0\n"
+        "\t\tAssignExpCmd B0 Eq(Select(M0 0x10) 0x42)\n"
+        "\t\tAssertCmd B0 \"check\"\n"
+        "\t}",
+        "B0:bool\n\tM0:bytemap",
+    )
+    tac = parse_string(src, path="<a>")
+    cfg = RunConfig(symbol_sorts=tac.symbol_sorts)
+    res = run_program(tac.program, config=cfg)
+    assert res.assert_ok == 0
+    assert res.assert_fail == 0
+    assert any(e.note == "inconclusive" for e in res.events)
+
+
+def test_ctac_run_executes_bytemap_rw(tmp_path):
+    """The CLI no longer rejects bytemap-rw input."""
     from typer.testing import CliRunner
 
     from ctac.tool.main import app
 
-    src = _wrap(
-        "\tBlock e Succ [] {\n"
-        "\t\tAssignHavocCmd M16\n"
-        "\t\tAssignExpCmd M16 Store(M16 0x10 0x42)\n"
-        "\t\tAssignExpCmd R0 Select(M16 0x10)\n"
-        "\t}",
-        "R0:bv256\n\tM16:bytemap",
-    )
     p = tmp_path / "rw.tac"
-    p.write_text(src)
+    p.write_text(_RW)
     runner = CliRunner()
     result = runner.invoke(app, ["run", str(p), "--plain"])
-    assert result.exit_code == 1, result.output
-    assert "bytemap-rw" in result.output
+    # No model → R0 ends Unknown → final state has no R0 mismatch fail.
+    assert "input error" not in result.output
+    # Exit code: 0 ok, 2 stopped (assume), 3 error/max_steps. Either 0 or
+    # 3 is acceptable on a model-less run.
+    assert result.exit_code in (0, 2, 3), result.output
+
+
+def test_ctac_run_executes_bytemap_rw_with_model_fallback(tmp_path):
+    """End-to-end: source map absent → Select propagates Unknown → model
+    fills the scalar LHS at the AssignExpCmd."""
+    from typer.testing import CliRunner
+
+    from ctac.tool.main import app
+
+    tac_path = tmp_path / "rw.tac"
+    tac_path.write_text(_RW)
+    model_path = tmp_path / "rw.tacmodel"
+    model_path.write_text(
+        "TAC model begin\n"
+        "R0:bv256 --> 0xcafe\n"
+        "TAC model end\n"
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["run", str(tac_path), "--model", str(model_path), "--plain"]
+    )
+    assert "input error" not in result.output
+    assert result.exit_code in (0, 2, 3), result.output
 
 
 _CLI_BM_TAC = """TACSymbolTable {

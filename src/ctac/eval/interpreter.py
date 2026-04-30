@@ -11,6 +11,7 @@ from typing import Callable, Literal
 from ctac.ir.models import TacBlock, TacProgram
 from ctac.builtins import is_known_builtin_function_symbol
 from ctac.eval.constants import MOD_256, SIGN_BIT_256
+from ctac.eval.model import MemoryModel
 from ctac.eval.types import HavocMode, Value, ValueKind
 from ctac.ast.nodes import (
     AnnotationCmd,
@@ -34,6 +35,17 @@ from ctac.ast.nodes import (
 _META_SUFFIX_RE = re.compile(r":\d+$")
 
 
+class UnknownValueError(Exception):
+    """Signals that an expression cannot be evaluated concretely.
+
+    Raised when the interpreter hits a `Select` on an unknown bytemap or
+    an `_eval_bytemap_expr` chain rooted at a name with no entry in
+    `memory_store`. Propagates through arithmetic / boolean operators
+    untouched (operands raise before the op runs); the command loop
+    catches it at `AssignExpCmd` and falls back to `model_values[lhs]`.
+    """
+
+
 @dataclass
 class RunConfig:
     entry_block: str | None = None
@@ -46,6 +58,10 @@ class RunConfig:
     # has ``.entries`` (index -> value) and ``.default``. ``Select(M,
     # idx)`` looks up ``entries[idx]``, falling back to ``default``.
     memory_store: dict[str, "object"] = field(default_factory=dict)
+    # Sort table from the parser; used to detect bytemap/ghostmap LHS.
+    symbol_sorts: dict[str, str] = field(default_factory=dict)
+    # Model values consulted at AssignExpCmd when concrete eval fails.
+    model_values: dict[str, Value] = field(default_factory=dict)
 
 
 @dataclass
@@ -105,31 +121,44 @@ def _typed_const_kind(tag: str) -> ValueKind:
     return "bv"
 
 
+def _parse_signed_hex_or_dec(base: str) -> int:
+    """Parse ``0x...``, ``0x-...``, ``-0x...``, or a decimal literal.
+
+    The Certora TAC printer emits negative hex constants as ``0x-N`` (sign
+    *after* the radix prefix). ``int(..., 16)`` doesn't accept that shape,
+    so normalize to the standard ``-0x...`` form first.
+    """
+    s = base.strip()
+    sl = s.lower()
+    if sl.startswith("0x-") or sl.startswith("0x+"):
+        return int(s[0:2] + s[3:], 16) * (-1 if s[2] == "-" else 1)
+    if sl.startswith(("0x", "-0x", "+0x")):
+        return int(s, 16)
+    return int(s, 10)
+
+
 def _parse_const(s: str) -> Value:
     t = s.strip()
     if t == "true":
         return Value("bool", True)
     if t == "false":
         return Value("bool", False)
-    # typed numeric constant, e.g. 0x100(int)
+    # typed numeric constant, e.g. 0x100(int) or 0x-48(int)
     if t.endswith(")") and "(" in t:
         lp = t.rfind("(")
         rp = t.rfind(")")
         if rp == len(t) - 1 and lp > 0:
             base = t[:lp]
             tag = t[lp + 1 : rp]
-            if base.startswith(("0x", "0X")):
-                n = int(base, 16)
-            else:
-                n = int(base, 10)
+            n = _parse_signed_hex_or_dec(base)
             k = _typed_const_kind(tag)
             if k == "bv":
                 return Value("bv", n % MOD_256)
             if k == "bool":
                 return Value("bool", bool(n))
             return Value("int", n)
-    if t.startswith(("0x", "0X")):
-        return Value("bv", int(t, 16) % MOD_256)
+    if t.startswith(("0x", "0X", "-0x", "-0X")):
+        return Value("bv", _parse_signed_hex_or_dec(t) % MOD_256)
     return Value("int", int(t, 10))
 
 
@@ -270,21 +299,31 @@ class Evaluator:
         *,
         normalize_symbol: Callable[[str], str],
         memory_store: dict[str, object] | None = None,
+        symbol_sorts: dict[str, str] | None = None,
+        model_values: dict[str, Value] | None = None,
     ):
         self.store = store
         self._normalize_symbol = normalize_symbol
         self.memory_store = memory_store if memory_store is not None else {}
+        self._symbol_sorts = symbol_sorts if symbol_sorts is not None else {}
+        self.model_values = model_values if model_values is not None else {}
 
     def get_symbol(self, name: str) -> Value:
         key = self._normalize_symbol(name)
-        if key not in self.store:
-            k = infer_kind(key)
-            self.store[key] = _mk_bool(False) if k == "bool" else (_mk_int(0) if k == "int" else _mk_bv(0))
-        return self.store[key]
+        if key in self.store:
+            return self.store[key]
+        v = self.model_values.get(key)
+        if v is not None:
+            return v
+        raise UnknownValueError(f"no value for {key!r}")
 
     def peek_symbol(self, name: str) -> Value | None:
         key = self._normalize_symbol(name)
         return self.store.get(key)
+
+    def _is_bytemap_name(self, name: str) -> bool:
+        sort = self._symbol_sorts.get(self._normalize_symbol(name))
+        return sort in ("bytemap", "ghostmap")
 
     def _eval_select(self, expr: ApplyExpr) -> Value:
         if len(expr.args) != 2 or not isinstance(expr.args[0], SymExpr):
@@ -293,12 +332,36 @@ class Evaluator:
         idx = _as_int(self.eval_expr(expr.args[1]))
         mem = self.memory_store.get(mem_name)
         if mem is None:
-            # No model / unhavoced bytemap: return the zero default.
-            return _mk_bv(0)
+            raise UnknownValueError(f"select on unknown bytemap {mem_name!r}")
         default = getattr(mem, "default", 0)
         entries = getattr(mem, "entries", None) or {}
         val = entries.get(idx, default)
         return _mk_bv(val % MOD_256)
+
+    def _eval_bytemap_expr(self, expr: TacExpr) -> MemoryModel:
+        if isinstance(expr, SymExpr):
+            name = self._normalize_symbol(expr.name)
+            mm = self.memory_store.get(name)
+            if mm is None:
+                raise UnknownValueError(f"unknown bytemap {name!r}")
+            # ``MemoryModel`` is frozen; sharing the instance is safe.
+            return mm  # type: ignore[return-value]
+        if isinstance(expr, ApplyExpr):
+            if expr.op == "Store" and len(expr.args) == 3:
+                old = self._eval_bytemap_expr(expr.args[0])
+                k = _as_int(self.eval_expr(expr.args[1]))
+                v = _as_int(self.eval_expr(expr.args[2]))
+                return MemoryModel(
+                    entries={**old.entries, k: v}, default=old.default
+                )
+            if expr.op == "Ite" and len(expr.args) == 3:
+                cond = self.eval_expr(expr.args[0])
+                chosen = expr.args[1] if _as_bool(cond) else expr.args[2]
+                return self._eval_bytemap_expr(chosen)
+        raise ValueError(
+            f"unsupported bytemap expression: {type(expr).__name__}"
+            f" {getattr(expr, 'op', '')}"
+        )
 
     def eval_expr(self, expr: TacExpr) -> Value:
         if isinstance(expr, ConstExpr):
@@ -310,13 +373,16 @@ class Evaluator:
             # fallback — the memory arg is a SymbolRef, not a Value.
             if expr.op == "Select":
                 return self._eval_select(expr)
+            # Ite is dispatched lazily so the unchosen branch is not
+            # forced — necessary when one branch is genuinely unknown
+            # (e.g., DSA-merged bytemap operands at the SymExpr level).
+            if expr.op == "Ite" and len(expr.args) == 3:
+                cond = self.eval_expr(expr.args[0])
+                return self.eval_expr(expr.args[1] if _as_bool(cond) else expr.args[2])
             return self._eval_apply(expr.op, [self.eval_expr(a) for a in expr.args], expr)
         raise TypeError(f"unsupported expr node: {type(expr).__name__}")
 
     def _eval_apply(self, op: str, args: list[Value], whole: ApplyExpr) -> Value:
-        if op == "Ite" and len(args) == 3:
-            return args[1] if _as_bool(args[0]) else args[2]
-
         if op == "Apply" and len(args) >= 2 and isinstance(whole.args[0], SymExpr):
             fn = whole.args[0].name
             if is_known_builtin_function_symbol(fn):
@@ -429,7 +495,15 @@ def run_program(
 
     store = {normalize_symbol(k): v for k, v in cfg.initial_store.items()}
     memory_store = {normalize_symbol(k): v for k, v in cfg.memory_store.items()}
-    ev = Evaluator(store, normalize_symbol=normalize_symbol, memory_store=memory_store)
+    symbol_sorts = {normalize_symbol(k): v for k, v in cfg.symbol_sorts.items()}
+    model_values = {normalize_symbol(k): v for k, v in cfg.model_values.items()}
+    ev = Evaluator(
+        store,
+        normalize_symbol=normalize_symbol,
+        memory_store=memory_store,
+        symbol_sorts=symbol_sorts,
+        model_values=model_values,
+    )
     blocks_by_id = program.block_by_id()
     entry = cfg.entry_block or _default_entry(program)
     if entry is None:
@@ -495,19 +569,51 @@ def run_program(
                 rendered = ""
 
             if isinstance(cmd, AssignExpCmd):
-                val = ev.eval_expr(cmd.rhs)
-                ev.store[normalize_symbol(cmd.lhs)] = val
-                events.append(RunEvent(current, cmd, rendered, value=val))
+                lhs_key = normalize_symbol(cmd.lhs)
+                is_bm = ev._is_bytemap_name(cmd.lhs)
+                try:
+                    if is_bm:
+                        mm = ev._eval_bytemap_expr(cmd.rhs)
+                        ev.memory_store[lhs_key] = mm
+                        events.append(RunEvent(current, cmd, rendered, note="bytemap update"))
+                    else:
+                        val = ev.eval_expr(cmd.rhs)
+                        ev.store[lhs_key] = val
+                        events.append(RunEvent(current, cmd, rendered, value=val))
+                except UnknownValueError:
+                    if is_bm:
+                        # Source map is unknown; drop the LHS so downstream
+                        # reads also go Unknown and fall back to the model.
+                        ev.memory_store.pop(lhs_key, None)
+                        events.append(RunEvent(current, cmd, rendered, note="bytemap unknown"))
+                    else:
+                        v = ev.model_values.get(lhs_key)
+                        if v is not None:
+                            ev.store[lhs_key] = v
+                            events.append(RunEvent(current, cmd, rendered, value=v, note="from model"))
+                        else:
+                            ev.store.pop(lhs_key, None)
+                            events.append(RunEvent(current, cmd, rendered, note="unknown"))
                 continue
 
             if isinstance(cmd, AssignHavocCmd):
+                lhs_key = normalize_symbol(cmd.lhs)
+                if ev._is_bytemap_name(cmd.lhs):
+                    # Preserve any model-supplied bytemap; if absent the
+                    # name simply stays unknown until something assigns it.
+                    events.append(RunEvent(current, cmd, rendered, note="havoc bytemap"))
+                    continue
                 v = _havoc_value(cmd.lhs, cfg.havoc_mode, cfg.ask_value)
-                ev.store[normalize_symbol(cmd.lhs)] = v
+                ev.store[lhs_key] = v
                 events.append(RunEvent(current, cmd, rendered, value=v))
                 continue
 
             if isinstance(cmd, AssumeExpCmd):
-                cond = ev.eval_expr(cmd.condition)
+                try:
+                    cond = ev.eval_expr(cmd.condition)
+                except UnknownValueError:
+                    events.append(RunEvent(current, cmd, rendered, note="cond unknown -> assume"))
+                    continue
                 ok = _as_bool(cond)
                 if ok:
                     events.append(RunEvent(current, cmd, rendered, note="true", color="green"))
@@ -520,7 +626,11 @@ def run_program(
                 continue
 
             if isinstance(cmd, AssertCmd):
-                pred = ev.eval_expr(cmd.predicate)
+                try:
+                    pred = ev.eval_expr(cmd.predicate)
+                except UnknownValueError:
+                    events.append(RunEvent(current, cmd, rendered, note="inconclusive", color="yellow"))
+                    continue
                 ok = _as_bool(pred)
                 if ok:
                     assert_ok += 1
@@ -531,13 +641,18 @@ def run_program(
                 continue
 
             if isinstance(cmd, JumpiCmd):
-                cv = ev.get_symbol(cmd.condition)
-                take_then = _as_bool(cv)
-                next_block = cmd.then_target if take_then else cmd.else_target
-                note = next_block
                 cond_txt = canonical_symbol(cmd.condition, strip_var_suffixes=cfg.strip_var_suffixes)
                 shown = rendered or f"if {cond_txt} goto {cmd.then_target} else {cmd.else_target}"
-                events.append(RunEvent(current, cmd, shown, note=note, color="green"))
+                try:
+                    cv = ev.get_symbol(cmd.condition)
+                    take_then = _as_bool(cv)
+                    next_block = cmd.then_target if take_then else cmd.else_target
+                    events.append(RunEvent(current, cmd, shown, note=next_block, color="green"))
+                except UnknownValueError:
+                    next_block = cmd.then_target
+                    events.append(
+                        RunEvent(current, cmd, shown, note=f"cond unknown -> {next_block}", color="yellow")
+                    )
                 break
 
             if isinstance(cmd, JumpCmd):
@@ -578,8 +693,20 @@ def run_program(
                             else:
                                 events.append(RunEvent(current, cmd, f"  {tag}", value=v, color="cyan"))
                         elif isinstance(sym_ref, SymbolRef):
-                            v = ev.get_symbol(sym_ref.name)
-                            events.append(RunEvent(current, cmd, f"  {tag}", value=v, color="cyan"))
+                            try:
+                                v = ev.get_symbol(sym_ref.name)
+                            except UnknownValueError:
+                                events.append(
+                                    RunEvent(
+                                        current,
+                                        cmd,
+                                        f"  {tag}",
+                                        note=f"unknown: {sym_ref.name}",
+                                        color="yellow",
+                                    )
+                                )
+                            else:
+                                events.append(RunEvent(current, cmd, f"  {tag}", value=v, color="cyan"))
                         else:
                             sym = str(sym_ref)
                             v = ev.peek_symbol(sym)
@@ -612,8 +739,22 @@ def run_program(
                             if isinstance(high_ref, SymbolRef)
                             else str(high_ref)
                         )
-                        low = ev.peek_symbol(low_name) if low_is_weak else ev.get_symbol(low_name)
-                        high = ev.peek_symbol(high_name) if high_is_weak else ev.get_symbol(high_name)
+                        low: Value | None = None
+                        high: Value | None = None
+                        try:
+                            low = ev.peek_symbol(low_name) if low_is_weak else ev.get_symbol(low_name)
+                            high = ev.peek_symbol(high_name) if high_is_weak else ev.get_symbol(high_name)
+                        except UnknownValueError as e:
+                            events.append(
+                                RunEvent(
+                                    current,
+                                    cmd,
+                                    f"  {tag}",
+                                    note=f"unknown: {e}",
+                                    color="yellow",
+                                )
+                            )
+                            continue
                         if (low_is_weak and low is None) or (high_is_weak and high is None):
                             missing: list[str] = []
                             if low_is_weak and low is None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ctac.eval import RunConfig, run_program
+from ctac.eval import RunConfig, Value, run_program
 from ctac.parse import parse_string
 
 
@@ -163,8 +163,12 @@ def test_run_assume_false_stops() -> None:
 
 def test_run_assert_fail_does_not_stop() -> None:
     tac = parse_string(RUN_TAC, path="<string>")
-    # force branch to "fail" by overriding B1 in initial store and bypassing assignment by entry choice
-    res = run_program(tac.program, config=RunConfig(entry_block="fail"))
+    # Force branch to "fail" by entering there directly with B1=false so
+    # the assert in that block deterministically fails.
+    res = run_program(
+        tac.program,
+        config=RunConfig(entry_block="fail", initial_store={"B1": Value("bool", False)}),
+    )
     assert res.assert_fail == 1
     # assert failure itself does not stop; this run later stops on end-block assume.
     assert res.steps >= 2
@@ -179,7 +183,15 @@ def test_run_symbol_suffix_reads_use_same_register() -> None:
 
 def test_run_symbol_suffix_reads_can_be_kept_distinct() -> None:
     tac = parse_string(SUFFIX_REF_TAC, path="<string>")
-    res = run_program(tac.program, config=RunConfig(strip_var_suffixes=False))
+    # With suffix-keeping, ``R1:5`` is a distinct symbol from ``R1``;
+    # seed it so the read resolves and the assume can fail concretely.
+    res = run_program(
+        tac.program,
+        config=RunConfig(
+            strip_var_suffixes=False,
+            initial_store={"R1:5": Value("bv", 0x10)},
+        ),
+    )
     assert res.status == "stopped"
     assert "assume failed" in res.reason
 
