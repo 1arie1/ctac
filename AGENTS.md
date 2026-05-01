@@ -98,6 +98,41 @@ Prompt template:
     - `ctac search f.tac '0x[0-9a-f]+' --plain --count-by-match`
       - Frequency table of distinct hex constants.
 
+- `ctac slice <file> -c <SPEC> --plain`
+  - Backward static slice through data and control dependences.
+    Pure display filter (slices are not encodable; for that, use the
+    upcoming `sem-slice`).
+  - Criterion forms:
+    - `SYM` — every def of canonical SYM (in DSA usually a single
+      point; for dynamic registers, all sibling defs).
+    - `SYM@BLK` — def(s) of SYM in block BLK (disambiguates dynamic
+      registers).
+    - `BLK:assert` — the last `AssertCmd` in BLK.
+    - `BLK` — every cmd in BLK as a seed.
+  - We deliberately do NOT expose `BLK:IDX` — annotations occupy
+    command slots, so cmd indices are unstable for users.
+  - Key flags:
+    - `--data/--no-data`, `--control/--no-control` — toggle the
+      dependence kinds independently.
+    - `--depth N` — bound on slicing rounds (`0` = seeds only).
+    - `--show pp|points|stats|json` — output mode. `pp` (default) is
+      a sliced htac the VSCode plugin can render.
+    - `--mark drop|elide|gray` — how non-selected commands render.
+      `drop` (default) hides them; `elide` collapses runs to `...`;
+      `gray` shows them dimmed (or `# ` prefixed under `--plain`).
+    - `--include-weak` — include `AnnotationCmd` weak refs.
+    - Pre-slice `--from/--to/--only/--id-contains/--id-regex/--cmd-contains/--exclude` (same shape as `pp`).
+  - Useful examples:
+    - `ctac slice f.tac -c B1054 --plain` — backward slice rooted at
+      a boolean assertion variable; bytemap chains
+      (`Select(M ...) -> Store(M' ...)`) fall out automatically.
+    - `ctac slice f.tac -c B1054 --no-control --plain` — data-only
+      chain; cleaner view of the bytemap pipeline.
+    - `ctac slice f.tac -c <blk>:assert --plain` — slice from the
+      assert in a block.
+    - `ctac slice f.tac -c M1031 --show stats --plain` — heat-map
+      "how many cmds touch this bytemap?".
+
 - `ctac cfg-match <left> <right> --plain`
   - Coarse block mapping across programs.
   - Key flags:

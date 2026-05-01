@@ -173,6 +173,49 @@ TYPICAL:
 FILTERS: identical shape to `ctac cfg`. Combine with `--cmd-contains`
 to zero in on assumes/asserts involving a symbol.
 """,
+    "slice": """ctac slice --agent
+
+Backward static slice through data and control dependences. Pure
+display filter (slices need not be encodable). Output is valid htac
+so the VSCode plugin renders it; for analysis, prefer `ctac sem-slice`
+(separate command, when available).
+
+WHY BEAT MANUAL: tracing `B1054` back through `Le(R618 R1053)` -> ...
+-> `Select(M1031 0x...)` -> the bytemap `Store` chain by hand is
+tens of `grep` invocations. `slice` follows the def-use closure plus
+control dependence in one pass.
+
+CRITERION FORMS:
+  SYM            every def of canonical SYM (in DSA, usually one
+                 point; for dynamic registers, all sibling defs)
+  SYM@BLK        the def(s) of SYM in block BLK (disambiguates
+                 dynamic registers)
+  BLK:assert     the last AssertCmd in BLK
+  BLK            every cmd in BLK as a seed
+
+We deliberately do NOT expose `BLK:IDX` — annotations occupy command
+slots, so cmd indices are unstable for users. Use SYM/SYM@BLK.
+
+TYPICAL:
+  ctac slice f.tac -c B1054 --plain                    # full backward slice
+  ctac slice f.tac -c B1054 --no-control --plain       # data-only chain
+  ctac slice f.tac -c 19_1_0_0_0_0:assert --plain      # from the assert
+  ctac slice f.tac -c R10@5_2_0 -c R11@7_0_1 --plain   # multi-seed
+  ctac slice f.tac -c M1031 --show stats --plain       # bytemap heat-map
+  ctac slice f.tac -c B1054 --depth 1 --plain          # one hop only
+
+OUTPUT MODES (`--show`):
+  pp     sliced htac (default; readable, valid htac)
+  points machine-friendly `BLK:cmd_idx` lines
+  stats  selected_cmds / total_cmds / rounds
+  json   full SliceResult
+
+`--mark drop` (default) hides non-selected cmds; `elide` collapses
+into `...`; `gray` keeps them as `# ` prefixed comments under --plain.
+
+FILTERS: same `--from/--to/--only/...` shape as `pp`/`cfg`. They
+pre-scope the program before the slice runs (helpful on 30k-line dumps).
+""",
     "search": """ctac search --agent
 
 Pattern search inside parsed TAC commands (regex by default; `--literal`

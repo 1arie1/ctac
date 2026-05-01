@@ -14,6 +14,13 @@ from ctac.analysis.passes import (
     eliminate_useless_assumes,
     remove_true_asserts,
 )
+from ctac.analysis.slice import (
+    SliceConfig,
+    SliceCriterion,
+    SliceCriterionError,
+    SliceResult,
+    compute_slice,
+)
 from ctac.analysis.symbols import (
     SymbolKind,
     classify_sort,
@@ -22,6 +29,10 @@ from ctac.analysis.symbols import (
 
 __all__ = [
     "BytemapCapability",
+    "SliceConfig",
+    "SliceCriterion",
+    "SliceCriterionError",
+    "SliceResult",
     "SymbolKind",
     "analyze_control_dependence",
     "analyze_dsa",
@@ -30,6 +41,7 @@ __all__ = [
     "analyze_use_before_def",
     "classify_bytemap_usage",
     "classify_sort",
+    "compute_slice",
     "eliminate_dead_assignments",
     "eliminate_useless_assumes",
     "extract_def_use",
