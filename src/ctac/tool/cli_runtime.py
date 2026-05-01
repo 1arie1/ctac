@@ -512,6 +512,17 @@ INPUTS: `--model` accepts both TAC-format models (from `ctac smt
 --model`) and raw SMT-LIB models (z3 stdout). Bytemap entries in both
 formats load into memory for `Select` lookups.
 
+DEFAULT-VALUE SENTINEL: when a havoc'd symbol is not covered by
+`--model` (or `--fallback`), the interpreter substitutes the
+unconstrained-default sentinel `12345678` (decimal-grouped as
+`1234_5678`, hex `0xbc614e`). In `--trace`, that line is tagged with
+a trailing `(default)` marker so it is unambiguous which values came
+from the SMT model and which are filler. Treat `(default)` values as
+arbitrary: do not cite them when reasoning about Ite arms, asserts,
+or branch conditions. The summary line `# model havoc:
+hits=K, fallback_hits=K, sentinel_fallback=K (value=12345678)`
+counts how many of each kind occurred.
+
 STATUS CODES: 0 ok, 2 assume-failed/stopped, 3 error/max_steps.
 """,
     "smt": """ctac smt --agent
