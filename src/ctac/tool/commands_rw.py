@@ -32,6 +32,7 @@ from ctac.rewrite.materialize_assumes import materialize_assumes
 from ctac.rewrite.rules import (
     CP_ALIAS,
     ITE_PURIFY,
+    ITE_SAME,
     PURIFY_ASSERT,
     PURIFY_ASSUME,
     R4A_DIV_PURIFY,
@@ -477,9 +478,17 @@ def rewrite_cmd(
                     phase="cse-late",
                     trace_sink=trace_sink,
                 )
+                # CP_ALIAS + ITE_SAME together: CP propagates the
+                # `Mn = SymbolRef(T)` aliases CSE just emitted; ITE_SAME
+                # collapses any `Ite(c, X, X)` that emerges once both
+                # arms of an Ite-of-maps Reachability merge propagate
+                # to the same hoisted TCSE. Both rules emit only
+                # SymbolRef RHSes — they don't shift compound-RHS
+                # canonical equivalence — so the CSE snapshot invariant
+                # in the next loop iteration's cse-late phase is fine.
                 phase_cp_cleanup = rewrite_program(
                     phase_cse_late.program,
-                    (CP_ALIAS,),
+                    (CP_ALIAS, ITE_SAME),
                     max_iterations=max_iterations,
                     ite_max_depth=ite_max_depth,
                     symbol_sorts=tac.symbol_sorts,
