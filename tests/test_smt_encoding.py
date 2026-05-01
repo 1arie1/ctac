@@ -356,26 +356,76 @@ Metas {
     assert "(=> BLK_a BLK_b1)" in rendered
 
 
-def test_cfg_encoding_bwd_edge_declares_edge_vars_skips_entry() -> None:
+def test_cfg_encoding_bwd_edge_skips_edge_vars_at_single_pred_blocks() -> None:
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
     rendered = render_smt_script(build_vc(tac, cfg_encoding="bwd-edge"))
-    # Entry block is skipped; mid is the only non-entry block with
-    # in-edges from entry. thn/els each have one in-edge from mid.
-    assert "(declare-const e_0_1 Bool)" in rendered
-    assert "(declare-const e_1_2 Bool)" in rendered
+    # Every non-entry block in TAC_DIAMOND_CFG has exactly one
+    # predecessor, so all edge vars are elided — block guards are
+    # used directly. (mid's pred is entry whose guard is "true", so
+    # mid's two bwd-edge constraints both collapse to (assert true);
+    # thn / els have non-trivial branch conditions that survive.)
+    assert "declare-const e_" not in rendered
+    # thn / els's only in-edges from mid carry the JumpiCmd condition.
+    assert "(=> BLK_thn BLK_mid)" in rendered
+    assert "(=> BLK_thn c)" in rendered
+    assert "(=> BLK_els BLK_mid)" in rendered
+    assert "(=> BLK_els (not c))" in rendered
+
+
+# Fixture with a true merge: entry -> a -> join, entry -> b -> join.
+# `join` has two predecessors so bwd-edge MUST introduce edge
+# variables there. (Critical edges are split by the pre-pass; this
+# layout has a / b as the intermediate non-critical step.)
+TAC_BWD_EDGE_MERGE = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tc:bool
+\tp:bool
+}
+Program {
+\tBlock entry Succ [a, b] {
+\t\tAssignExpCmd c true
+\t\tJumpiCmd a b c
+\t}
+\tBlock a Succ [join] {
+\t\tJumpCmd join
+\t}
+\tBlock b Succ [join] {
+\t\tJumpCmd join
+\t}
+\tBlock join Succ [] {
+\t\tAssignExpCmd p true
+\t\tAssertCmd p "ok"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_cfg_encoding_bwd_edge_emits_edge_vars_at_merge_blocks() -> None:
+    """At a merge block (multi-pred), bwd-edge introduces fresh
+    edge variables and emits the iff/AMO/bidirectional shape."""
+    tac = parse_string(TAC_BWD_EDGE_MERGE, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="bwd-edge"))
+    # Block index order: entry=0, a=1, b=2, join=3. join has two
+    # in-edges from a (e_1_3) and b (e_2_3) — both must be declared.
     assert "(declare-const e_1_3 Bool)" in rendered
-    # Biconditional block-existence per non-entry block over its
-    # in-edges. mid has one in-edge (e_0_1).
-    assert "(= BLK_mid e_0_1)" in rendered
-    # thn has one in-edge (e_1_2); els has one (e_1_3).
-    assert "(= BLK_thn e_1_2)" in rendered
-    assert "(= BLK_els e_1_3)" in rendered
-    # Per-edge guard on edge variable.
-    assert "(=> e_1_2 c)" in rendered
-    assert "(=> e_1_3 (not c))" in rendered
-    # Bidirectional: e_1_2 => BLK_mid (the predecessor).
-    assert "(=> e_1_2 BLK_mid)" in rendered
-    assert "(=> e_1_3 BLK_mid)" in rendered
+    assert "(declare-const e_2_3 Bool)" in rendered
+    # Single-pred blocks (a, b) have their edge vars elided.
+    assert "(declare-const e_0_1 Bool)" not in rendered
+    assert "(declare-const e_0_2 Bool)" not in rendered
+    # join's biconditional + bidirectional + edge guards.
+    assert "(= BLK_join (or e_1_3 e_2_3))" in rendered
+    assert "(=> e_1_3 BLK_a)" in rendered
+    assert "(=> e_2_3 BLK_b)" in rendered
 
 
 def test_cfg_encoding_all_strategies_close_unsat_on_simple_program() -> None:
