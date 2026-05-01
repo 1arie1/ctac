@@ -507,6 +507,11 @@ class SeaVcEncoder(SmtEncoder):
                 return
             constraints.append(expr)
 
+        def _symbol_is_bv256(sym: str) -> bool:
+            base = _BASE_SYMBOL.sub(r"\1", sym)
+            raw = (raw_sorts.get(sym) or raw_sorts.get(base) or "").lower()
+            return raw == "bv256"
+
         def add_havoc_range_if_bv256(
             sym: str,
             term: str,
@@ -514,14 +519,44 @@ class SeaVcEncoder(SmtEncoder):
             block_id: str | None = None,
             cmd_index: int | None = None,
         ) -> None:
-            base = _BASE_SYMBOL.sub(r"\1", sym)
-            raw = (raw_sorts.get(sym) or raw_sorts.get(base) or "").lower()
-            if raw == "bv256":
-                if block_id is not None and cmd_index is not None and (block_id, cmd_index) in havoc_refine_bounds:
-                    # Refined sites merge any remaining domain side into the
-                    # immediately following assume instead of standalone asserts.
-                    return
-                add_constraint(f"(<= 0 {term} BV256_MAX)")
+            if not _symbol_is_bv256(sym):
+                return
+            if block_id is not None and cmd_index is not None and (block_id, cmd_index) in havoc_refine_bounds:
+                # Refined sites merge any remaining domain side into the
+                # immediately following assume instead of standalone asserts.
+                return
+            add_constraint(f"(<= 0 {term} BV256_MAX)")
+
+        def _rhs_is_top_level_narrow(rhs: TacExpr) -> bool:
+            """True when ``rhs`` is ``Apply(safe_math_narrow_bvN:bif, ...)``.
+
+            This is the canonical "checked narrow" pattern. The current
+            encoder treats the narrow as identity on the inner expression
+            (so the LHS inherits the inner's unbounded ``Int``); with
+            ``--narrow-range`` we recover the LHS's bv-domain via an
+            explicit range axiom.
+            """
+            if not isinstance(rhs, ApplyExpr):
+                return False
+            if rhs.op != "Apply" or not rhs.args:
+                return False
+            head = rhs.args[0]
+            if not isinstance(head, SymbolRef):
+                return False
+            return _SAFE_MATH_NARROW_BIF.fullmatch(head.name) is not None
+
+        def add_narrow_range_if_bv256(sym: str, term: str) -> None:
+            """Emit the LHS bv256 range axiom for a narrow assignment.
+
+            ``--narrow-range`` opt-in. Symbols whose declared sort is
+            not ``bv256`` are silent (a future change can generalize to
+            arbitrary bv widths once the rest of the encoder grows
+            non-bv256 support)."""
+            if not ctx.narrow_range:
+                return
+            if not _symbol_is_bv256(sym):
+                return
+            add_constraint(f"(<= 0 {term} BV256_MAX)")
 
         def declare_havoc(sym: str, block_id: str, cmd_index: int) -> str:
             nonlocal havoc_counter
@@ -1047,6 +1082,8 @@ class SeaVcEncoder(SmtEncoder):
                     add_constraint(implies(guard, eq))
                 else:
                     add_constraint(eq)
+                if _rhs_is_top_level_narrow(cmd.rhs):
+                    add_narrow_range_if_bv256(ds.symbol, lhs)
             elif isinstance(cmd, AssignHavocCmd):
                 add_havoc_range_if_bv256(ds.symbol, symbol_term[ds.symbol], block_id=ds.block_id, cmd_index=ds.cmd_index)
         static_end = len(constraints)

@@ -48,6 +48,14 @@ class EncoderContext:
       block existence becomes a biconditional over edge vars
       (sound on diamond CFGs because edge vars decouple parents).
     ``bwd-edge`` — predecessor analog of ``fwd-edge``."""
+    narrow_range: bool = False
+    """If True, every static or dynamic ``AssignExpCmd`` whose RHS is a
+    top-level ``Apply(safe_math_narrow_bvN:bif, ...)`` gets an extra
+    range axiom on its LHS, derived from the LHS's declared bv-width.
+    Currently only ``bv256`` LHS values are constrained (matching the
+    havoc-range handler); other bv widths are silent. Default False
+    preserves the historical encoding, which discards the narrow and
+    leaves the LHS unconstrained beyond its sort."""
 
 
 class SmtEncoder(Protocol):

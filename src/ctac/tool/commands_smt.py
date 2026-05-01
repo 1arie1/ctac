@@ -183,6 +183,18 @@ def smt_cmd(
             ),
         ),
     ] = "bwd0",
+    narrow_range: bool = typer.Option(
+        False,
+        "--narrow-range",
+        help=(
+            "For every static `R = Apply(safe_math_narrow_bvN:bif, ...)` "
+            "assignment, emit an in-range axiom `(<= 0 R BV256_MAX)` "
+            "based on the LHS's declared sort. The encoder otherwise "
+            "treats narrow as identity on the inner expression, leaving "
+            "the LHS unbounded. Currently only bv256 LHS values get the "
+            "axiom; other bv widths are silent. Default off."
+        ),
+    ),
     debug: bool = typer.Option(
         False,
         "--debug/--no-debug",
@@ -214,6 +226,7 @@ def smt_cmd(
             guard_statics=guard_statics,
             guard_dynamics=guard_dynamics,
             cfg_encoding=cfg_encoding,
+            narrow_range=narrow_range,
         )
         smt_text = render_smt_script(script)
     except ParseError as e:
