@@ -189,7 +189,7 @@ def encode_fwd(inp: CfgEncodeInput, emit: CfgEmit) -> None:
 def encode_fwd_edge(inp: CfgEncodeInput, emit: CfgEmit) -> None:
     """Forward encoding with per-edge Bool variables.
 
-    Per non-terminal block i:
+    Per non-terminal block i with multiple successors:
       * block existence (iff over edges):
           ``BLK_i ⇔ ⋁_j e_{i→j}``
       * at-most-one over outgoing edges of i
@@ -199,6 +199,11 @@ def encode_fwd_edge(inp: CfgEncodeInput, emit: CfgEmit) -> None:
                                         is implied by the iff)
           ``e_{i→j} => c``             (guard on edge variable)
 
+    Per non-terminal block i with **a single successor j**, the edge
+    variable degenerates to ``BLK_i`` (``BLK_i ⇔ e_{i→j}`` makes them
+    equivalent and AMO is vacuous), so we skip the declaration and
+    emit only ``BLK_i => BLK_j`` and ``BLK_i => cond`` directly.
+
     Edge variables decouple the multi-parent ambiguity that makes
     a block-only forward iff unsound. With edge vars, the iff is
     sound because each edge fires independently."""
@@ -207,6 +212,13 @@ def encode_fwd_edge(inp: CfgEncodeInput, emit: CfgEmit) -> None:
         out_edges = inp.succs_of(i)
         if not out_edges:
             continue
+        i_guard = inp.block_guards[i]
+        if len(out_edges) == 1:
+            # Single successor: e_{i→j} ≡ BLK_i; substitute directly.
+            (e,) = out_edges
+            emit.add_constraint(implies(i_guard, inp.block_guards[e.succ]))
+            emit.add_constraint(implies(i_guard, e.branch_cond))
+            continue
         edge_vars: list[str] = []
         for e in out_edges:
             ev = _edge_var(e.pred, e.succ)
@@ -214,7 +226,6 @@ def encode_fwd_edge(inp: CfgEncodeInput, emit: CfgEmit) -> None:
                 emit.add_decl(ev, "Bool")
                 declared.add(ev)
             edge_vars.append(ev)
-        i_guard = inp.block_guards[i]
         emit.add_constraint(iff(i_guard, or_terms(edge_vars)))
         for amo in at_most_one_terms(edge_vars):
             emit.add_constraint(implies(i_guard, amo))

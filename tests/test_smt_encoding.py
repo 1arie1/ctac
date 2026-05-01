@@ -295,10 +295,12 @@ def test_cfg_encoding_fwd_emits_one_way_block_existence() -> None:
 def test_cfg_encoding_fwd_edge_declares_edge_vars_and_uses_iff() -> None:
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
     rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edge"))
-    # Edge vars get declared. Block indices in TAC_DIAMOND_CFG order:
-    # entry=0, mid=1, thn=2, els=3. Out-edges from entry to mid, and
-    # from mid to thn / els.
-    assert "(declare-const e_0_1 Bool)" in rendered
+    # Edge vars get declared only at branching blocks. Block indices
+    # in TAC_DIAMOND_CFG order: entry=0, mid=1, thn=2, els=3. entry
+    # has a single successor (mid) so e_0_1 is elided — BLK_entry is
+    # used directly. mid has two successors so e_1_2 / e_1_3 are
+    # declared as usual.
+    assert "(declare-const e_0_1 Bool)" not in rendered
     assert "(declare-const e_1_2 Bool)" in rendered
     assert "(declare-const e_1_3 Bool)" in rendered
     # Biconditional block-existence over edge vars at mid (which has
@@ -311,6 +313,47 @@ def test_cfg_encoding_fwd_edge_declares_edge_vars_and_uses_iff() -> None:
     # Bidirectional: e_1_2 => BLK_thn.
     assert "(=> e_1_2 BLK_thn)" in rendered
     assert "(=> e_1_3 BLK_els)" in rendered
+
+
+def test_cfg_encoding_fwd_edge_single_successor_elides_edge_var() -> None:
+    """When a block has exactly one successor, the edge variable
+    e_{i→j} is redundant with BLK_i (BLK_i ⇔ e_{i→j} forces them
+    equivalent under vacuous AMO). The encoder emits BLK_i => BLK_j
+    and BLK_i => cond directly without introducing the edge var."""
+    src = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tb:bool
+}
+Program {
+\tBlock entry Succ [a] {
+\t\tAssignExpCmd b true
+\t\tJumpCmd a
+\t}
+\tBlock a Succ [b1] {
+\t\tJumpCmd b1
+\t}
+\tBlock b1 Succ [] {
+\t\tAssertCmd b "ok"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    tac = parse_string(src, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edge"))
+    # No edge variables declared: every non-terminal has one successor.
+    assert "declare-const e_" not in rendered
+    # BLK_a (the only single-successor non-entry, non-terminal block)
+    # implies BLK_b1 directly (BLK_a is its own "edge" to b1).
+    assert "(=> BLK_a BLK_b1)" in rendered
 
 
 def test_cfg_encoding_bwd_edge_declares_edge_vars_skips_entry() -> None:
