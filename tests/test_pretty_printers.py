@@ -341,6 +341,31 @@ def test_human_renders_small_negative_as_plain_decimal() -> None:
     assert format_value_human_single(Value("int", -1234)) == "-1234"
 
 
+def test_human_renders_sbf_region_address_as_hex() -> None:
+    """bv constants in [0x2_0000_0000, 0x6_0000_0000) render as plain
+    hex — they're SBF VM region pointers (stack 0x2.., heap 0x3..,
+    input 0x4.., 0x5..) where the region prefix is far more legible
+    in hex than in 4-digit-grouped decimal."""
+    from ctac.eval.value_format import Value, format_value_human_single
+
+    assert format_value_human_single(Value("bv", 0x300000658)) == "0x300000658"
+    assert format_value_human_single(Value("bv", 0x300000120)) == "0x300000120"
+    assert format_value_human_single(Value("bv", 0x400000048)) == "0x400000048"
+    assert format_value_human_single(Value("bv", 0x500000000)) == "0x500000000"
+    assert format_value_human_single(Value("bv", 0x5FFFFFFF8)) == "0x5fffffff8"
+
+    # An exact power-of-two label still wins inside the range; the
+    # SBF override sits *after* the pow2-near check.
+    assert format_value_human_single(Value("bv", 0x200000000)) == "[2^33]"
+
+    # Just past the upper bound: falls back to the decimal default.
+    assert format_value_human_single(Value("bv", 0x600000000)) == "257_6980_3776"
+
+    # Below the range: the program region (0x1_0000_0000) still
+    # renders as a pow2 label, untouched by this override.
+    assert format_value_human_single(Value("bv", 0x100000000)) == "[2^32]"
+
+
 def test_twos_complement_bifs_excluded_from_use_iterator() -> None:
     """The ``:bif`` callee in ``Apply(unwrap_twos_complement_256:bif, R)``
     is a built-in function symbol, not a variable use. Adding it to

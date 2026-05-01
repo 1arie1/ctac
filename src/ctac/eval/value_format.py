@@ -128,6 +128,14 @@ def _is_zero_extended(u: int, width: int) -> bool:
     return (u >> width) == 0
 
 
+_SBF_REGION_LO = 0x2_0000_0000
+_SBF_REGION_HI = 0x6_0000_0000
+
+
+def _is_sbf_region_address(u: int) -> bool:
+    return _SBF_REGION_LO <= u < _SBF_REGION_HI
+
+
 def _is_sign_extended(u: int, width: int) -> bool:
     low_mask = (1 << width) - 1
     low = u & low_mask
@@ -263,6 +271,8 @@ def format_value_human_single(v: Value) -> str:
     p10 = _pow10_family_label(u)
     if _is_exact_family_label(p10) and u >= 10_000:
         return f"[{p10}]"
+    if _is_sbf_region_address(u):
+        return hex(u)
     if _is_zero_extended(u, 64):
         return _format_dec_10k(u)
     return hex(u)
