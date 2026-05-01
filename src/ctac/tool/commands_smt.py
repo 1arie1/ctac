@@ -160,12 +160,16 @@ def smt_cmd(
         typer.Option(
             "--cfg-encoding",
             help=(
-                "CFG-constraint encoding strategy. bwd0 (default): "
-                "edge-feasibility OR-of-ANDs. bwd1: per-edge clausal "
-                "implications. Both share block-existence + AMO; bwd1 "
-                "is sound under the same AMO."
+                "CFG-constraint encoding strategy. "
+                "bwd0 (default): predecessor-oriented edge-feasibility "
+                "OR-of-ANDs. bwd1: per-edge clausal implications "
+                "(predecessor). fwd: successor-oriented one-way "
+                "implication. fwd-edge / bwd-edge: per-edge Bool "
+                "variables with biconditional block-existence."
             ),
-            autocompletion=complete_choices(["bwd0", "bwd1"]),
+            autocompletion=complete_choices(
+                ["bwd0", "bwd1", "fwd", "fwd-edge", "bwd-edge"]
+            ),
         ),
     ] = "bwd0",
     debug: bool = typer.Option(

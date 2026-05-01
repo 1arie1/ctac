@@ -200,10 +200,15 @@ Prompt template:
     equality in `(=> BLK_<bid> (= lhs rhs))` instead of the default
     bare `(= lhs rhs)`. Off by default; entry-block defs are
     unaffected (entry guard is `true`).
-  - CFG-constraint encoding: `--cfg-encoding {bwd0,bwd1}` selects
-    the predecessor-constraint shape. `bwd0` (default) emits
-    edge-feasibility OR-of-ANDs; `bwd1` emits per-edge clausal
-    implications (sound under the same AMO).
+  - CFG-constraint encoding: `--cfg-encoding
+    {bwd0,bwd1,fwd,fwd-edge,bwd-edge}` selects the
+    constraint shape over block-reachability variables.
+    `bwd0` (default) — predecessor-oriented edge-feasibility
+    OR-of-ANDs. `bwd1` — predecessor per-edge clausal
+    implications (sound under AMO). `fwd` — successor
+    one-way implications. `fwd-edge` / `bwd-edge` — introduce
+    per-edge Bool variables `e_<i>_<j>` and use a biconditional
+    block-existence over those variables.
   - Z3 knobs: `--timeout` (seconds), `--seed`, `--tactic`, and passthrough `--z3-args`.
   - Debug mode: `--debug` prints z3 stdin/stdout/stderr and a replay command.
 

@@ -15,7 +15,7 @@ from typing import Callable
 
 from ctac.ir.models import TacProgram
 from ctac.smt.encoding.path_skeleton import block_guard, predecessor_edges
-from ctac.smt.util import and_terms, at_most_one_terms, implies, or_terms
+from ctac.smt.util import and_terms, at_most_one_terms, iff, implies, or_terms
 
 
 @dataclass(frozen=True)
@@ -89,10 +89,24 @@ def build_cfg_input(
     )
 
 
-CfgEncoder = Callable[["CfgEncodeInput", Callable[[str], None]], None]
+@dataclass
+class CfgEmit:
+    """Sink object for CFG encoders: receives constraints and any
+    auxiliary declarations (e.g. per-edge Bool vars introduced by
+    edge-variable encoders)."""
+
+    add_constraint: Callable[[str], None]
+    add_decl: Callable[[str, str], None]   # (name, sort)
 
 
-def encode_bwd0(inp: CfgEncodeInput, add_constraint: Callable[[str], None]) -> None:
+CfgEncoder = Callable[["CfgEncodeInput", "CfgEmit"], None]
+
+
+def _edge_var(pred: int, succ: int) -> str:
+    return f"e_{pred}_{succ}"
+
+
+def encode_bwd0(inp: CfgEncodeInput, emit: CfgEmit) -> None:
     """Default encoding (matches the historical sea_vc shape).
 
     Per non-entry block S:
@@ -108,13 +122,13 @@ def encode_bwd0(inp: CfgEncodeInput, add_constraint: Callable[[str], None]) -> N
             and_terms([inp.block_guards[e.pred], e.branch_cond]) for e in in_edges
         ]
         pred_block_terms = [inp.block_guards[e.pred] for e in in_edges]
-        add_constraint(implies(s_guard, or_terms(edge_terms)))
-        add_constraint(implies(s_guard, or_terms(pred_block_terms)))
+        emit.add_constraint(implies(s_guard, or_terms(edge_terms)))
+        emit.add_constraint(implies(s_guard, or_terms(pred_block_terms)))
         for amo in at_most_one_terms(pred_block_terms):
-            add_constraint(implies(s_guard, amo))
+            emit.add_constraint(implies(s_guard, amo))
 
 
-def encode_bwd1(inp: CfgEncodeInput, add_constraint: Callable[[str], None]) -> None:
+def encode_bwd1(inp: CfgEncodeInput, emit: CfgEmit) -> None:
     """Per-edge clausal implications, equivalent to bwd0 under AMO.
 
     Per non-entry block S:
@@ -134,15 +148,126 @@ def encode_bwd1(inp: CfgEncodeInput, add_constraint: Callable[[str], None]) -> N
         in_edges = inp.preds_of(s)
         pred_block_terms = [inp.block_guards[e.pred] for e in in_edges]
         for e in in_edges:
-            add_constraint(
+            emit.add_constraint(
                 implies(and_terms([s_guard, inp.block_guards[e.pred]]), e.branch_cond)
             )
-        add_constraint(implies(s_guard, or_terms(pred_block_terms)))
+        emit.add_constraint(implies(s_guard, or_terms(pred_block_terms)))
         for amo in at_most_one_terms(pred_block_terms):
-            add_constraint(implies(s_guard, amo))
+            emit.add_constraint(implies(s_guard, amo))
+
+
+def encode_fwd(inp: CfgEncodeInput, emit: CfgEmit) -> None:
+    """Block-only forward encoding (forward analog of bwd1).
+
+    Per non-terminal block i (i.e. ``succs_of(i)`` non-empty):
+      * block-level existence: ``BLK_i => ⋁_j BLK_succ_j``
+      * at-most-one over successor blocks (pairwise)
+      * for each successor j with branch condition c:
+          ``(BLK_i ∧ BLK_j) => c``
+
+    Block existence is one-way ``=>`` (not iff): a node may have
+    multiple parents in the CFG, so ``BLK_i ⇔ ⋁ BLK_succ`` would
+    be over-tight (a successor reachable via a different parent
+    would force this block reachable too). Use ``fwd-edge`` if a
+    biconditional is desired — edge variables decouple the
+    multi-parent ambiguity and make the iff sound."""
+    for i in range(len(inp.block_ids)):
+        out_edges = inp.succs_of(i)
+        if not out_edges:
+            continue
+        i_guard = inp.block_guards[i]
+        succ_block_terms = [inp.block_guards[e.succ] for e in out_edges]
+        emit.add_constraint(implies(i_guard, or_terms(succ_block_terms)))
+        for amo in at_most_one_terms(succ_block_terms):
+            emit.add_constraint(implies(i_guard, amo))
+        for e in out_edges:
+            emit.add_constraint(
+                implies(and_terms([i_guard, inp.block_guards[e.succ]]), e.branch_cond)
+            )
+
+
+def encode_fwd_edge(inp: CfgEncodeInput, emit: CfgEmit) -> None:
+    """Forward encoding with per-edge Bool variables.
+
+    Per non-terminal block i:
+      * block existence (iff over edges):
+          ``BLK_i ⇔ ⋁_j e_{i→j}``
+      * at-most-one over outgoing edges of i
+      * for each outgoing edge (i → j) with cond c:
+          ``e_{i→j} => BLK_j``         (bidirectional half;
+                                        the other half ``e ⇒ BLK_i``
+                                        is implied by the iff)
+          ``e_{i→j} => c``             (guard on edge variable)
+
+    Edge variables decouple the multi-parent ambiguity that makes
+    a block-only forward iff unsound. With edge vars, the iff is
+    sound because each edge fires independently."""
+    declared: set[str] = set()
+    for i in range(len(inp.block_ids)):
+        out_edges = inp.succs_of(i)
+        if not out_edges:
+            continue
+        edge_vars: list[str] = []
+        for e in out_edges:
+            ev = _edge_var(e.pred, e.succ)
+            if ev not in declared:
+                emit.add_decl(ev, "Bool")
+                declared.add(ev)
+            edge_vars.append(ev)
+        i_guard = inp.block_guards[i]
+        emit.add_constraint(iff(i_guard, or_terms(edge_vars)))
+        for amo in at_most_one_terms(edge_vars):
+            emit.add_constraint(implies(i_guard, amo))
+        for e, ev in zip(out_edges, edge_vars):
+            emit.add_constraint(implies(ev, inp.block_guards[e.succ]))
+            emit.add_constraint(implies(ev, e.branch_cond))
+
+
+def encode_bwd_edge(inp: CfgEncodeInput, emit: CfgEmit) -> None:
+    """Backward encoding with per-edge Bool variables (analog of
+    bwd1 with the edge variables of fwd-edge).
+
+    Per non-entry block j:
+      * block existence (iff over edges):
+          ``BLK_j ⇔ ⋁_i e_{i→j}``
+      * at-most-one over incoming edges of j
+      * for each incoming edge (i → j) with cond c:
+          ``e_{i→j} => BLK_i``         (bidirectional half;
+                                        ``e ⇒ BLK_j`` implied by iff)
+          ``e_{i→j} => c``             (guard on edge variable)
+
+    Entry block has no in-edges and is skipped (its guard is
+    ``"true"`` by convention)."""
+    declared: set[str] = set()
+    for j in range(len(inp.block_ids)):
+        if j == inp.entry:
+            continue
+        in_edges = inp.preds_of(j)
+        if not in_edges:
+            # Non-entry block with no predecessors — unreachable
+            # by construction. Leave its block guard unconstrained
+            # by this encoder; other parts of the formula handle it.
+            continue
+        edge_vars: list[str] = []
+        for e in in_edges:
+            ev = _edge_var(e.pred, e.succ)
+            if ev not in declared:
+                emit.add_decl(ev, "Bool")
+                declared.add(ev)
+            edge_vars.append(ev)
+        j_guard = inp.block_guards[j]
+        emit.add_constraint(iff(j_guard, or_terms(edge_vars)))
+        for amo in at_most_one_terms(edge_vars):
+            emit.add_constraint(implies(j_guard, amo))
+        for e, ev in zip(in_edges, edge_vars):
+            emit.add_constraint(implies(ev, inp.block_guards[e.pred]))
+            emit.add_constraint(implies(ev, e.branch_cond))
 
 
 CFG_ENCODERS: dict[str, CfgEncoder] = {
     "bwd0": encode_bwd0,
     "bwd1": encode_bwd1,
+    "fwd": encode_fwd,
+    "fwd-edge": encode_fwd_edge,
+    "bwd-edge": encode_bwd_edge,
 }

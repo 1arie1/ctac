@@ -29,11 +29,18 @@ class EncoderContext:
     block the def lives in. Entry-block defs are unaffected either way
     (the entry guard is ``true``)."""
     cfg_encoding: str = "bwd0"
-    """Which CFG-constraint encoding strategy to use. ``bwd0`` (default)
-    emits the historical edge-feasibility OR-of-ANDs plus block-level
-    existence plus AMO over predecessors. ``bwd1`` emits per-edge
-    clausal implications (sound under the same AMO). See
-    ``ctac.smt.cfg.CFG_ENCODERS`` for the registry."""
+    """Which CFG-constraint encoding strategy to use. Five strategies
+    ship today (``ctac.smt.cfg.CFG_ENCODERS``):
+    ``bwd0`` (default) — predecessor-oriented edge-feasibility
+      OR-of-ANDs + block-level existence + AMO. Historical sea_vc shape.
+    ``bwd1`` — predecessor-oriented per-edge clausal implications,
+      sound under the same AMO.
+    ``fwd`` — successor-oriented one-way implication
+      (``BLK_i => ⋁ BLK_succ``) + AMO over successors + per-edge guard.
+    ``fwd-edge`` — like ``fwd`` but introduces per-edge Bool variables;
+      block existence becomes a biconditional over edge vars
+      (sound on diamond CFGs because edge vars decouple parents).
+    ``bwd-edge`` — predecessor analog of ``fwd-edge``."""
 
 
 class SmtEncoder(Protocol):

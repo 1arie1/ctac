@@ -18,7 +18,7 @@ from ctac.ast.nodes import (
     SymbolRef,
     TacExpr,
 )
-from ctac.smt.cfg import CFG_ENCODERS, build_cfg_input
+from ctac.smt.cfg import CFG_ENCODERS, CfgEmit, build_cfg_input
 from ctac.smt.encoding.base import EncoderContext, SmtEncodingError, SmtEncoder
 from ctac.smt.encoding.path_skeleton import (
     block_by_id,
@@ -1151,7 +1151,11 @@ class SeaVcEncoder(SmtEncoder):
                 f"unknown cfg_encoding {ctx.cfg_encoding!r}; "
                 f"available: {', '.join(sorted(CFG_ENCODERS))}"
             )
-        cfg_encoder(cfg_input, add_constraint)
+        cfg_emit = CfgEmit(
+            add_constraint=add_constraint,
+            add_decl=lambda name, sort: decls.append(SmtDeclaration(name=name, sort=sort)),
+        )
+        cfg_encoder(cfg_input, cfg_emit)
         cfg_end = len(constraints)
 
         # Exit objective bound to assert block and failing assert predicate.

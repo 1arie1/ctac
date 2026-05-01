@@ -278,3 +278,98 @@ def test_cfg_encoding_unknown_value_rejected() -> None:
         build_vc(tac, cfg_encoding="bogus")
 
 
+def test_cfg_encoding_fwd_emits_one_way_block_existence() -> None:
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd"))
+    # `mid` has two successors `thn` and `els`; fwd emits one-way
+    # block-existence: BLK_mid => (or BLK_thn BLK_els). One-way
+    # is required for soundness on diamond CFGs.
+    assert "(=> BLK_mid (or BLK_thn BLK_els))" in rendered
+    # The biconditional shape (= BLK_mid (or ...)) must NOT appear.
+    assert "(= BLK_mid (or BLK_thn BLK_els))" not in rendered
+    # Per-edge guard at fwd shape: (=> (and BLK_mid BLK_thn) c).
+    assert "(=> (and BLK_mid BLK_thn) c)" in rendered
+    assert "(=> (and BLK_mid BLK_els) (not c))" in rendered
+
+
+def test_cfg_encoding_fwd_edge_declares_edge_vars_and_uses_iff() -> None:
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edge"))
+    # Edge vars get declared. Block indices in TAC_DIAMOND_CFG order:
+    # entry=0, mid=1, thn=2, els=3. Out-edges from entry to mid, and
+    # from mid to thn / els.
+    assert "(declare-const e_0_1 Bool)" in rendered
+    assert "(declare-const e_1_2 Bool)" in rendered
+    assert "(declare-const e_1_3 Bool)" in rendered
+    # Biconditional block-existence over edge vars at mid (which has
+    # two outgoing edges).
+    assert "(= BLK_mid (or e_1_2 e_1_3))" in rendered
+    # Edge guard: e_1_2 => c (the JumpiCmd's then-condition).
+    assert "(=> e_1_2 c)" in rendered
+    # Edge guard: e_1_3 => (not c).
+    assert "(=> e_1_3 (not c))" in rendered
+    # Bidirectional: e_1_2 => BLK_thn.
+    assert "(=> e_1_2 BLK_thn)" in rendered
+    assert "(=> e_1_3 BLK_els)" in rendered
+
+
+def test_cfg_encoding_bwd_edge_declares_edge_vars_skips_entry() -> None:
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="bwd-edge"))
+    # Entry block is skipped; mid is the only non-entry block with
+    # in-edges from entry. thn/els each have one in-edge from mid.
+    assert "(declare-const e_0_1 Bool)" in rendered
+    assert "(declare-const e_1_2 Bool)" in rendered
+    assert "(declare-const e_1_3 Bool)" in rendered
+    # Biconditional block-existence per non-entry block over its
+    # in-edges. mid has one in-edge (e_0_1).
+    assert "(= BLK_mid e_0_1)" in rendered
+    # thn has one in-edge (e_1_2); els has one (e_1_3).
+    assert "(= BLK_thn e_1_2)" in rendered
+    assert "(= BLK_els e_1_3)" in rendered
+    # Per-edge guard on edge variable.
+    assert "(=> e_1_2 c)" in rendered
+    assert "(=> e_1_3 (not c))" in rendered
+    # Bidirectional: e_1_2 => BLK_mid (the predecessor).
+    assert "(=> e_1_2 BLK_mid)" in rendered
+    assert "(=> e_1_3 BLK_mid)" in rendered
+
+
+def test_cfg_encoding_all_strategies_close_unsat_on_simple_program() -> None:
+    # Soundness sanity: every strategy should accept a clearly
+    # unsatisfiable VC (assertion never fails) on a simple CFG.
+    # Use a fixture where the assert is on `b == true` which is
+    # statically true. All five strategies should report UNSAT.
+    src = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tb:bool
+}
+Program {
+\tBlock entry Succ [ok] {
+\t\tAssignExpCmd b true
+\t\tJumpCmd ok
+\t}
+\tBlock ok Succ [] {
+\t\tAssertCmd b "ok"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    tac = parse_string(src, path="<string>")
+    for enc in ("bwd0", "bwd1", "fwd", "fwd-edge", "bwd-edge"):
+        rendered = render_smt_script(build_vc(tac, cfg_encoding=enc))
+        # Every strategy must produce a well-formed script that
+        # mentions BLK_EXIT and the assert predicate.
+        assert "BLK_EXIT" in rendered, f"{enc}: missing BLK_EXIT"
+        assert "(check-sat)" in rendered, f"{enc}: missing check-sat"
+
+

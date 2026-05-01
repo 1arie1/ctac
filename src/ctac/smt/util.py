@@ -57,6 +57,28 @@ def implies(lhs: str, rhs: str) -> str:
     return f"(=> {lhs} {rhs})"
 
 
+def not_term(term: str) -> str:
+    if term == "true":
+        return "false"
+    if term == "false":
+        return "true"
+    return f"(not {term})"
+
+
+def iff(lhs: str, rhs: str) -> str:
+    if lhs == rhs:
+        return "true"
+    if lhs == "true":
+        return rhs
+    if rhs == "true":
+        return lhs
+    if lhs == "false":
+        return not_term(rhs)
+    if rhs == "false":
+        return not_term(lhs)
+    return f"(= {lhs} {rhs})"
+
+
 def at_most_one_terms(terms: list[str]) -> list[str]:
     """Pairwise at-most-one over a list of Bool-valued terms.
 
