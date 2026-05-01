@@ -97,16 +97,22 @@ def test_rw_no_purify_ite_disables_tb_naming():
     assert "ITE_PURIFY:" not in disabled.output
 
 
-def test_rw_purify_ite_introduces_tb_symbols_in_output(tmp_path):
-    """Default `--purify-ite` run emits `TB<N>:bool` declarations in the written TAC."""
+def test_rw_purify_ite_output_round_trips(tmp_path):
+    """Default `--purify-ite` run produces output that re-parses cleanly.
+
+    Originally pinned ``TB0:bool`` in the symbol table as a stand-in
+    for "ITE_PURIFY introduced TB names". The cascading late
+    CSE/CP/DCE loop now folds TBs whose RHS coincides (after
+    propagation) with another static def, so on some targets every
+    TB gets absorbed before reaching the output file. ITE_PURIFY's
+    firing is independently pinned by
+    ``test_rw_no_purify_ite_disables_tb_naming`` via the report;
+    here we just guarantee the writer round-trips its own output."""
     runner = CliRunner()
     src = _require_target(TARGET_TAC)
     out = tmp_path / "rw_ite.tac"
     result = runner.invoke(app, ["rw", str(src), "-o", str(out), "--plain"])
     assert result.exit_code == 0, result.output
-    text = out.read_text()
-    assert "TB0:bool" in text
-    # Re-parses cleanly (round-trip).
     reparsed = parse_path(out)
     assert reparsed.program.blocks
 

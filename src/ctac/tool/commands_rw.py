@@ -456,36 +456,57 @@ def rewrite_cmd(
             # T<N> defs that ITE_PURIFY / PURIFY_ASSERT just emitted. Followed
             # by a small CP pass so the resulting aliases get propagated, then
             # DCE clears the dead originals.
-            phase_cse_late = rewrite_program(
-                phase_ite.program,
-                cse_pipeline,
-                max_iterations=max_iterations,
-                ite_max_depth=ite_max_depth,
-                symbol_sorts=tac.symbol_sorts,
-                use_int_ceil_div=ceildiv_op,
-                phase="cse-late",
-                trace_sink=trace_sink,
-            )
-            phase_cp_cleanup = rewrite_program(
-                phase_cse_late.program,
-                (CP_ALIAS,),
-                max_iterations=max_iterations,
-                ite_max_depth=ite_max_depth,
-                symbol_sorts=tac.symbol_sorts,
-                use_int_ceil_div=ceildiv_op,
-                phase="cp-cleanup",
-                trace_sink=trace_sink,
-            )
-            rw = _merge_phases(rw, phase_ite, phase_cse_late, phase_cp_cleanup)
-            program = phase_cp_cleanup.program
-            # One more DCE sweep — CSE turns duplicates into aliases; CP+DCE
-            # makes those aliases disappear.
+            #
+            # Cascading-collapse loop: each (CSE, CP, DCE) round can expose
+            # new structural matches one chain layer deeper — CSE introduces
+            # `Mn = SymbolRef(T)`, CP propagates `Mn -> T` into downstream
+            # RHSes, DCE clears the alias. Once the now-propagated RHSes
+            # match in shape, the next round folds them. Without the outer
+            # loop, deep Store / arithmetic chains hoisted over a forked
+            # control-flow region only collapse one level per `ctac rw`
+            # invocation. Loop until none of CSE / CP / DCE make progress.
+            phase_ite_merged = phase_ite
             while True:
-                dce = eliminate_dead_assignments(program)
-                total_removed += len(dce.removed)
-                if not dce.removed:
+                phase_cse_late = rewrite_program(
+                    program,
+                    cse_pipeline,
+                    max_iterations=max_iterations,
+                    ite_max_depth=ite_max_depth,
+                    symbol_sorts=tac.symbol_sorts,
+                    use_int_ceil_div=ceildiv_op,
+                    phase="cse-late",
+                    trace_sink=trace_sink,
+                )
+                phase_cp_cleanup = rewrite_program(
+                    phase_cse_late.program,
+                    (CP_ALIAS,),
+                    max_iterations=max_iterations,
+                    ite_max_depth=ite_max_depth,
+                    symbol_sorts=tac.symbol_sorts,
+                    use_int_ceil_div=ceildiv_op,
+                    phase="cp-cleanup",
+                    trace_sink=trace_sink,
+                )
+                phase_ite_merged = _merge_phases(
+                    phase_ite_merged, phase_cse_late, phase_cp_cleanup
+                )
+                program = phase_cp_cleanup.program
+                round_dce_removed = 0
+                while True:
+                    dce = eliminate_dead_assignments(program)
+                    round_dce_removed += len(dce.removed)
+                    if not dce.removed:
+                        break
+                    program = dce.program
+                total_removed += round_dce_removed
+                round_progress = (
+                    phase_cse_late.total_hits
+                    + phase_cp_cleanup.total_hits
+                    + round_dce_removed
+                )
+                if round_progress == 0:
                     break
-                program = dce.program
+            rw = _merge_phases(rw, phase_ite_merged)
         # Final phase (gated): selectively materialize range-derived
         # assumes around uses of axiomatized operators (today: IntCeilDiv).
         # Runs LAST so range analysis sees the post-rewrite program; the

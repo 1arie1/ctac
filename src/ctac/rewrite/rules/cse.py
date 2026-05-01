@@ -92,9 +92,28 @@ def _iter_free_symbols(expr: TacExpr):
 def _build_rhs_index(
     ctx: RewriteCtx,
 ) -> dict[TacExpr, tuple[str, str, TacExpr, frozenset[str]]]:
-    """Map canonicalized static ``AssignExpCmd`` RHS -> (first lhs in
-    program order, that def's block id, the original RHS expression,
-    set of block ids where the canonical RHS appears as a static def).
+    """Map canonicalized static ``AssignExpCmd`` RHS -> (canonical lhs,
+    that def's block id, the original RHS expression, set of block
+    ids where the canonical RHS appears as a static def).
+
+    Canonical-first-def selection is **dominance-preferring**: when
+    multiple static defs share a canonical RHS, we keep the one whose
+    block dominates as many of the others as possible. Concretely, as
+    we walk in file order, a later def replaces the existing first
+    iff its block strictly dominates the existing first's block. This
+    is the right choice because the fast path returns
+    ``SymbolRef(first_lhs)`` — for that to be in scope at any other
+    use site, ``first_block`` must dominate the use, and the
+    deepest-up dominator covers the most uses.
+
+    Without dominance preference (file-order ``setdefault``), a
+    hoisted ``TCSE`` placed in an upstream block can fail to absorb
+    its file-order-earlier-but-CFG-later sibling: the upstream
+    ``TCSE`` would be the dominating def we want to alias to, but the
+    downstream original keeps the canonical seat and stays
+    un-aliased. That stalls multi-iteration CSE cascades through
+    Store chains hoisted on dynamic bases (the motivating case:
+    request_elevation_group/base.rw.tac).
 
     The first three drive the dominance split / TCSE construction;
     the use-block set lets the slow path compute the deepest common
@@ -112,7 +131,15 @@ def _build_rhs_index(
             if lhs not in ctx.static_symbols:
                 continue
             canon = _canonical(cmd.rhs)
-            first.setdefault(canon, (lhs, block.id, cmd.rhs))
+            existing = first.get(canon)
+            if existing is None:
+                first[canon] = (lhs, block.id, cmd.rhs)
+            else:
+                ex_block = existing[1]
+                if block.id != ex_block and block.id in ctx.dominators.get(
+                    ex_block, frozenset()
+                ):
+                    first[canon] = (lhs, block.id, cmd.rhs)
             use_blocks.setdefault(canon, set()).add(block.id)
     return {k: (*first[k], frozenset(use_blocks[k])) for k in first}
 
