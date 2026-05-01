@@ -12,6 +12,7 @@ from ctac.rewrite.rules import (
     EQ_ITE_DIST,
     ITE_BOOL,
     ITE_SAME,
+    ITE_SHARED_LEAF,
 )
 
 
@@ -66,6 +67,131 @@ def test_ite_same_branches():
     res = rewrite_program(tac.program, (ITE_SAME,))
     assert res.hits_by_rule == {"IteSame": 1}
     assert _assume_cond(res.program) == SymbolRef("R1")
+
+
+def test_ite_shared_leaf_shape1_outer_then_eq_inner_else():
+    """``Ite(c, X, Ite(c', Y, X))`` -> ``Ite(¬c ∧ c', Y, X)``.
+
+    Motivating shape: 3-pred SSA φ-merge where preds 1 and 3 carry the
+    same map and pred 2 differs. The outer-then equals the inner-else;
+    rule re-gates on the path that produces the odd value."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssumeExpCmd Eq(Ite(B0 R0 Ite(B1 R1 R0)) R0)",
+            syms="B0:bool\n\tB1:bool\n\tR0:bv256\n\tR1:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ITE_SHARED_LEAF,))
+    assert res.hits_by_rule == {"IteSharedLeaf": 1}
+    cond = _assume_cond(res.program)
+    # Top-level: Eq(Ite(¬B0 ∧ B1, R1, R0), R0)
+    assert isinstance(cond, ApplyExpr) and cond.op == "Eq"
+    ite = cond.args[0]
+    assert isinstance(ite, ApplyExpr) and ite.op == "Ite"
+    new_cond = ite.args[0]
+    assert new_cond == ApplyExpr(
+        "LAnd",
+        (ApplyExpr("LNot", (SymbolRef("B0"),)), SymbolRef("B1")),
+    )
+    assert ite.args[1] == SymbolRef("R1")
+    assert ite.args[2] == SymbolRef("R0")
+
+
+def test_ite_shared_leaf_shape2_outer_then_eq_inner_then():
+    """``Ite(c, X, Ite(c', X, Y))`` -> ``Ite(c ∨ c', X, Y)``."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssumeExpCmd Eq(Ite(B0 R0 Ite(B1 R0 R1)) R0)",
+            syms="B0:bool\n\tB1:bool\n\tR0:bv256\n\tR1:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ITE_SHARED_LEAF,))
+    assert res.hits_by_rule == {"IteSharedLeaf": 1}
+    cond = _assume_cond(res.program)
+    ite = cond.args[0]
+    assert isinstance(ite, ApplyExpr) and ite.op == "Ite"
+    assert ite.args[0] == ApplyExpr("LOr", (SymbolRef("B0"), SymbolRef("B1")))
+    assert ite.args[1] == SymbolRef("R0")
+    assert ite.args[2] == SymbolRef("R1")
+
+
+def test_ite_shared_leaf_shape3_outer_else_eq_inner_then():
+    """``Ite(c, Ite(c', X, Y), X)`` -> ``Ite(c ∧ ¬c', Y, X)``."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssumeExpCmd Eq(Ite(B0 Ite(B1 R0 R1) R0) R0)",
+            syms="B0:bool\n\tB1:bool\n\tR0:bv256\n\tR1:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ITE_SHARED_LEAF,))
+    assert res.hits_by_rule == {"IteSharedLeaf": 1}
+    cond = _assume_cond(res.program)
+    ite = cond.args[0]
+    assert isinstance(ite, ApplyExpr) and ite.op == "Ite"
+    assert ite.args[0] == ApplyExpr(
+        "LAnd",
+        (SymbolRef("B0"), ApplyExpr("LNot", (SymbolRef("B1"),))),
+    )
+    assert ite.args[1] == SymbolRef("R1")
+    assert ite.args[2] == SymbolRef("R0")
+
+
+def test_ite_shared_leaf_shape4_outer_else_eq_inner_else():
+    """``Ite(c, Ite(c', X, Y), Y)`` -> ``Ite(c ∧ c', X, Y)``."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssumeExpCmd Eq(Ite(B0 Ite(B1 R0 R1) R1) R0)",
+            syms="B0:bool\n\tB1:bool\n\tR0:bv256\n\tR1:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ITE_SHARED_LEAF,))
+    assert res.hits_by_rule == {"IteSharedLeaf": 1}
+    cond = _assume_cond(res.program)
+    ite = cond.args[0]
+    assert isinstance(ite, ApplyExpr) and ite.op == "Ite"
+    assert ite.args[0] == ApplyExpr("LAnd", (SymbolRef("B0"), SymbolRef("B1")))
+    assert ite.args[1] == SymbolRef("R0")
+    assert ite.args[2] == SymbolRef("R1")
+
+
+def test_ite_shared_leaf_no_match_three_distinct_arms():
+    """Three genuinely distinct values: rule should not fire."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssumeExpCmd Eq(Ite(B0 R0 Ite(B1 R1 R2)) R0)",
+            syms="B0:bool\n\tB1:bool\n\tR0:bv256\n\tR1:bv256\n\tR2:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ITE_SHARED_LEAF,))
+    assert res.hits_by_rule == {}
+
+
+def test_ite_shared_leaf_cascade_handles_multiple_matches():
+    """``Ite(c1, X, Ite(c2, X, Ite(c3, X, Y)))`` — three then-arms all X.
+    Bottom-up walk: innermost has no nested Ite; middle matches shape 2
+    (X==inner-then), folds to ``Ite(c2 ∨ c3, X, Y)``; outer then matches
+    shape 2 again, folding to ``Ite(c1 ∨ c2 ∨ c3, X, Y)``. Two hits in
+    one walk. Pin >=2 to confirm the cascade is bottom-up not single-shot."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssumeExpCmd Eq(Ite(B0 R0 Ite(B1 R0 Ite(B2 R0 R1))) R0)",
+            syms="B0:bool\n\tB1:bool\n\tB2:bool\n\tR0:bv256\n\tR1:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ITE_SHARED_LEAF,))
+    assert res.hits_by_rule.get("IteSharedLeaf", 0) >= 2
+    # Final form should be a 2-arm Ite gated by an LOr-of-conditions.
+    cond = _assume_cond(res.program)
+    ite = cond.args[0]
+    assert isinstance(ite, ApplyExpr) and ite.op == "Ite"
+    assert ite.args[1] == SymbolRef("R0")
+    assert ite.args[2] == SymbolRef("R1")
 
 
 def test_ite_bool_true_false():

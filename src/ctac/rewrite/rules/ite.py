@@ -165,6 +165,60 @@ def _rewrite_ite_same(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
     return None
 
 
+def _rewrite_ite_shared_leaf(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
+    """Collapse a 3-arm Ite where the inner Ite shares a leaf with the outer.
+
+    Four shapes, all type-agnostic (apply to bool, bv, int, bytemap RHSes
+    alike). Soundness verified via z3: each form is propositionally
+    equivalent to its rewrite under every assignment to (c, c', X, Y).
+
+    * ``Ite(c, X, Ite(c', Y, X))`` -> ``Ite(¬c ∧ c', Y, X)``
+    * ``Ite(c, X, Ite(c', X, Y))`` -> ``Ite(c ∨ c', X, Y)``
+    * ``Ite(c, Ite(c', X, Y), X)`` -> ``Ite(c ∧ ¬c', Y, X)``
+    * ``Ite(c, Ite(c', X, Y), Y)`` -> ``Ite(c ∧ c', X, Y)``
+
+    Motivating case: SSA φ-merges over Reachability flags at join blocks
+    with N>2 predecessors. When N-1 predecessors carry the same map
+    value (the common case for a join after an inlined function call
+    that doesn't modify the map on most arms), the nested-Ite encoding
+    has the outer-then == inner-else (or symmetric) shape, and one
+    layer collapses. Encoder-side ``_simplify_ite`` only handles the
+    ``Ite(c, X, X)`` collapse (covered by ``IteSame``); this rule is
+    the next-deepest structural simplification."""
+    if not _is_ite(expr):
+        return None
+    assert isinstance(expr, ApplyExpr)
+    cond, then, els = expr.args
+
+    # Nested Ite in else arm: shapes 1 and 2.
+    if _is_ite(els):
+        assert isinstance(els, ApplyExpr)
+        c2, then2, els2 = els.args
+        # Shape 1: Ite(c, X, Ite(c', Y, X)) -> Ite(¬c ∧ c', Y, X)
+        if then == els2:
+            new_cond = ApplyExpr("LAnd", (ApplyExpr("LNot", (cond,)), c2))
+            return ApplyExpr("Ite", (new_cond, then2, then))
+        # Shape 2: Ite(c, X, Ite(c', X, Y)) -> Ite(c ∨ c', X, Y)
+        if then == then2:
+            new_cond = ApplyExpr("LOr", (cond, c2))
+            return ApplyExpr("Ite", (new_cond, then, els2))
+
+    # Nested Ite in then arm: shapes 3 and 4.
+    if _is_ite(then):
+        assert isinstance(then, ApplyExpr)
+        c2, then2, els2 = then.args
+        # Shape 3: Ite(c, Ite(c', X, Y), X) -> Ite(c ∧ ¬c', Y, X)
+        if els == then2:
+            new_cond = ApplyExpr("LAnd", (cond, ApplyExpr("LNot", (c2,))))
+            return ApplyExpr("Ite", (new_cond, els2, els))
+        # Shape 4: Ite(c, Ite(c', X, Y), Y) -> Ite(c ∧ c', X, Y)
+        if els == els2:
+            new_cond = ApplyExpr("LAnd", (cond, c2))
+            return ApplyExpr("Ite", (new_cond, then2, els))
+
+    return None
+
+
 def _rewrite_ite_bool(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
     """Collapse Ite whose branches include a ``true`` / ``false`` literal."""
     if not _is_ite(expr):
@@ -346,6 +400,15 @@ ITE_SAME = Rule(
     name="IteSame",
     fn=_rewrite_ite_same,
     description="Ite(c, X, X) -> X.",
+)
+ITE_SHARED_LEAF = Rule(
+    name="IteSharedLeaf",
+    fn=_rewrite_ite_shared_leaf,
+    description=(
+        "Collapse 3-arm Ite where one inner-Ite leaf equals the outer's "
+        "other arm: Ite(c, X, Ite(c', Y, X)) -> Ite(¬c ∧ c', Y, X), and "
+        "the three other symmetric shapes."
+    ),
 )
 ITE_BOOL = Rule(
     name="IteBool",

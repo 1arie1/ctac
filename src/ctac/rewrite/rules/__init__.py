@@ -47,6 +47,7 @@ from ctac.rewrite.rules.ite import (
     ITE_BOOL,
     ITE_COND_FOLD,
     ITE_SAME,
+    ITE_SHARED_LEAF,
     SUB_ITE_DIST_LEFT,
     SUB_ITE_DIST_RIGHT,
 )
@@ -101,6 +102,7 @@ simplify_pipeline: tuple[Rule, ...] = (
     SUB_ITE_DIST_LEFT,
     SUB_ITE_DIST_RIGHT,
     ITE_SAME,
+    ITE_SHARED_LEAF,
     ITE_BOOL,
     # Range-driven Ite folding: decide `cond` via interval inference
     # and collapse to the then/else branch. Paired with ADD_BV_MAX_TO_ITE
@@ -176,6 +178,7 @@ all_rule_names: tuple[str, ...] = (
     SUB_ITE_DIST_LEFT.name,
     SUB_ITE_DIST_RIGHT.name,
     ITE_SAME.name,
+    ITE_SHARED_LEAF.name,
     ITE_BOOL.name,
     ITE_COND_FOLD.name,
     BOOL_ABSORB.name,
@@ -207,6 +210,7 @@ __all__ = [
     "ITE_COND_FOLD",
     "ITE_PURIFY",
     "ITE_SAME",
+    "ITE_SHARED_LEAF",
     "MUL_BV_TO_INT",
     "N1_SHIFTED_BWAND",
     "N2_LOW_MASK",

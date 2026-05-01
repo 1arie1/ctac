@@ -33,6 +33,7 @@ from ctac.rewrite.rules import (
     CP_ALIAS,
     ITE_PURIFY,
     ITE_SAME,
+    ITE_SHARED_LEAF,
     PURIFY_ASSERT,
     PURIFY_ASSUME,
     R4A_DIV_PURIFY,
@@ -478,17 +479,22 @@ def rewrite_cmd(
                     phase="cse-late",
                     trace_sink=trace_sink,
                 )
-                # CP_ALIAS + ITE_SAME together: CP propagates the
-                # `Mn = SymbolRef(T)` aliases CSE just emitted; ITE_SAME
-                # collapses any `Ite(c, X, X)` that emerges once both
-                # arms of an Ite-of-maps Reachability merge propagate
-                # to the same hoisted TCSE. Both rules emit only
-                # SymbolRef RHSes — they don't shift compound-RHS
-                # canonical equivalence — so the CSE snapshot invariant
-                # in the next loop iteration's cse-late phase is fine.
+                # CP_ALIAS + ITE_SAME + ITE_SHARED_LEAF together: CP
+                # propagates the `Mn = SymbolRef(T)` aliases CSE just
+                # emitted; ITE_SAME collapses any `Ite(c, X, X)` that
+                # emerges once both arms of an Ite-of-maps Reachability
+                # merge propagate to the same hoisted TCSE;
+                # ITE_SHARED_LEAF folds the common 3-arm-with-shared-
+                # leaf shape that arises when an SSA φ-merge has N>2
+                # predecessors and N-1 of them carry the same map
+                # value. ITE_SHARED_LEAF is structurally a compound-RHS
+                # mutator, so it doesn't co-locate with CSE; it's safe
+                # in the cleanup phase where CSE doesn't run, and the
+                # next loop iteration's cse-late phase rebuilds its
+                # snapshot from scratch.
                 phase_cp_cleanup = rewrite_program(
                     phase_cse_late.program,
-                    (CP_ALIAS, ITE_SAME),
+                    (CP_ALIAS, ITE_SAME, ITE_SHARED_LEAF),
                     max_iterations=max_iterations,
                     ite_max_depth=ite_max_depth,
                     symbol_sorts=tac.symbol_sorts,
