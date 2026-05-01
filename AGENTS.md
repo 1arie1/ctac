@@ -200,6 +200,11 @@ Prompt template:
     equality in `(=> BLK_<bid> (= lhs rhs))` instead of the default
     bare `(= lhs rhs)`. Off by default; entry-block defs are
     unaffected (entry guard is `true`).
+  - Dynamic-def guarding: `--guard-dynamics` encodes each dynamic
+    (DSA-merged) assignment as a per-defining-block guarded
+    equality `(=> BLK_<bid> (= lhs rhs))` instead of the default
+    `(= lhs (ite cond rhs ...))` ITE-merge form. One assertion per
+    defining block (deduped by RHS) vs. one assertion per symbol.
   - CFG-constraint encoding: `--cfg-encoding
     {bwd0,bwd1,fwd,fwd-edge,bwd-edge}` selects the
     constraint shape over block-reachability variables.

@@ -28,6 +28,13 @@ class EncoderContext:
     equality unconditionally as ``(= lhs rhs)`` regardless of which
     block the def lives in. Entry-block defs are unaffected either way
     (the entry guard is ``true``)."""
+    guard_dynamics: bool = False
+    """If True, encode each dynamic (DSA-merged) assignment as a
+    block-guarded equality: ``(=> BLK_<bid> (= lhs rhs))`` per
+    definition site. Default False merges the per-block defs into a
+    single ``(= lhs (ite cond rhs ...))`` term selected by block
+    guards. The guard form produces one assertion per defining block
+    (deduped by RHS); the ITE form produces one assertion per symbol."""
     cfg_encoding: str = "bwd0"
     """Which CFG-constraint encoding strategy to use. Five strategies
     ship today (``ctac.smt.cfg.CFG_ENCODERS``):

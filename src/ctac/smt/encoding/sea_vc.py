@@ -1133,10 +1133,18 @@ class SeaVcEncoder(SmtEncoder):
             cases.sort(key=lambda x: rhs_rank.get(x[1], 10**9))
             if not cases:
                 raise SmtEncodingError(f"no dynamic cases found for symbol {sym}")
-            value = cases[-1][1]
-            for cond, rhs in reversed(cases[:-1]):
-                value = _simplify_ite(cond, rhs, value, sort=symbol_sort[sym])
-            add_constraint(f"(= {symbol_term[sym]} {value})")
+            sym_term = symbol_term[sym]
+            if ctx.guard_dynamics:
+                # Per-defining-block guarded equality. AMO over the
+                # CFG block guards ensures at most one ``cond`` is
+                # true per execution, so at most one equality fires.
+                for cond, rhs in cases:
+                    add_constraint(implies(cond, f"(= {sym_term} {rhs})"))
+            else:
+                value = cases[-1][1]
+                for cond, rhs in reversed(cases[:-1]):
+                    value = _simplify_ite(cond, rhs, value, sort=symbol_sort[sym])
+                add_constraint(f"(= {sym_term} {value})")
         dynamic_end = len(constraints)
 
         # CFG predecessor constraints — dispatched through smt.cfg

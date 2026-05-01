@@ -205,6 +205,72 @@ def test_guard_statics_default_off_is_byte_identical() -> None:
     assert a == b
 
 
+# Two-block diamond with a DSA-dynamic var: `v` is assigned in both
+# `a` and `b` (different RHSes), then read in the join block. The
+# encoder treats `v` as dynamic and merges the two defs.
+TAC_DYNAMIC_ASSIGN = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tc:bool
+\tv:bv256
+\tp:bool
+}
+Program {
+\tBlock entry Succ [a, b] {
+\t\tAssignExpCmd c true
+\t\tJumpiCmd a b c
+\t}
+\tBlock a Succ [j] {
+\t\tAssignExpCmd v 0x1
+\t\tJumpCmd j
+\t}
+\tBlock b Succ [j] {
+\t\tAssignExpCmd v 0x2
+\t\tJumpCmd j
+\t}
+\tBlock j Succ [] {
+\t\tAssignExpCmd p Eq(v 0x1)
+\t\tAssertCmd p "either"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_guard_dynamics_off_emits_ite_merge() -> None:
+    tac = parse_string(TAC_DYNAMIC_ASSIGN, path="<string>")
+    rendered = render_smt_script(build_vc(tac))
+    # Default: single ITE-merged equality on v, selected by block guard.
+    assert "(assert (= v (ite BLK_a 1 2)))" in rendered
+    # No per-block guarded equality on v.
+    assert "(=> BLK_a (= v 1))" not in rendered
+
+
+def test_guard_dynamics_on_emits_per_block_guarded_equalities() -> None:
+    tac = parse_string(TAC_DYNAMIC_ASSIGN, path="<string>")
+    rendered = render_smt_script(build_vc(tac, guard_dynamics=True))
+    # Per-defining-block guarded equality, one per def site.
+    assert "(assert (=> BLK_a (= v 1)))" in rendered
+    assert "(assert (=> BLK_b (= v 2)))" in rendered
+    # The merged ITE form must NOT appear.
+    assert "(ite BLK_a 1 2)" not in rendered
+
+
+def test_guard_dynamics_default_off_is_byte_identical() -> None:
+    tac = parse_string(TAC_DYNAMIC_ASSIGN, path="<string>")
+    a = render_smt_script(build_vc(tac))
+    b = render_smt_script(build_vc(tac, guard_dynamics=False))
+    assert a == b
+
+
 # CFG encoding strategies (bwd0 default, bwd1 alternative). The
 # fixture below has a non-entry mid block with a conditional branch
 # to two leaves; the `then` leaf has a single non-entry predecessor

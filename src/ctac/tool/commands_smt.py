@@ -155,6 +155,17 @@ def smt_cmd(
             "unaffected (entry guard is `true`)."
         ),
     ),
+    guard_dynamics: bool = typer.Option(
+        False,
+        "--guard-dynamics",
+        help=(
+            "Encode each dynamic (DSA-merged) assignment as a block-"
+            "guarded equality `(=> BLK_<bid> (= lhs rhs))` per "
+            "defining block (deduped by RHS). Default merges the "
+            "per-block defs into a single `(= lhs (ite ...))` "
+            "selected by block guards."
+        ),
+    ),
     cfg_encoding: Annotated[
         str,
         typer.Option(
@@ -201,6 +212,7 @@ def smt_cmd(
             unsat_core=unsat_core,
             tight_logic=tight_logic,
             guard_statics=guard_statics,
+            guard_dynamics=guard_dynamics,
             cfg_encoding=cfg_encoding,
         )
         smt_text = render_smt_script(script)
