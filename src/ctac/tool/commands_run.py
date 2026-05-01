@@ -264,18 +264,26 @@ def run(
     model_havoc_hits = 0
     model_havoc_fallback_hits = 0
     model_havoc_sentinel_fallback = 0
+    # Source of each `_ask_or_model` call in invocation order.
+    # `_havoc_value` is called at most once per AssignHavocCmd in event
+    # order, so this list lines up 1:1 with non-bytemap havoc events
+    # whose `value` is set.
+    havoc_sources_in_order: list[str] = []
 
     def _ask_or_model(symbol: str, kind: str) -> Value:
         nonlocal model_havoc_hits, model_havoc_fallback_hits, model_havoc_sentinel_fallback
         mv = _model_lookup(model_values, symbol)
         if mv is not None:
             model_havoc_hits += 1
+            havoc_sources_in_order.append("model")
             return coerce_value_kind(mv, kind)
         fb = _model_lookup(fallback_model_values, symbol)
         if fb is not None:
             model_havoc_fallback_hits += 1
+            havoc_sources_in_order.append("fallback")
             return coerce_value_kind(fb, kind)
         model_havoc_sentinel_fallback += 1
+        havoc_sources_in_order.append("default")
         return model_fallback_value(kind)
 
     ask_cb = _ask if hm == "ask" else None
@@ -295,6 +303,20 @@ def run(
         model_values=dict(model_values),
     )
     res = run_program(tac.program, config=rcfg, pretty_cmd=pp_backend.print_cmd)
+
+    # Tag each model-driven havoc event with where its value came from
+    # (model / fallback / sentinel default). Only AssignHavocCmd events
+    # that produced a value go through `_ask_or_model`, in event order;
+    # bytemap havocs short-circuit before `_havoc_value` so they aren't
+    # in the source list.
+    if model is not None and havoc_sources_in_order:
+        src_iter = iter(havoc_sources_in_order)
+        for ev_obj in res.events:
+            if isinstance(ev_obj.cmd, AssignHavocCmd) and ev_obj.value is not None:
+                try:
+                    ev_obj.value_source = next(src_iter)
+                except StopIteration:
+                    break
 
     mismatch_count = 0
     missing_expected = 0
@@ -393,8 +415,10 @@ def run(
                     c.print(f"  {src_prefix}")
                 if ev.value is not None:
                     suffix = ""
+                    if ev.value_source == "default":
+                        suffix = "    (default)"
                     if ev.mismatch and ev.expected is not None:
-                        suffix = f"    !! expected {format_value_plain_local(ev.expected)}"
+                        suffix += f"    !! expected {format_value_plain_local(ev.expected)}"
                     c.print(f"  {ev.rendered}    {format_value_plain_local(ev.value)}{suffix}")
                 elif ev.note:
                     c.print(f"  {ev.rendered}    {ev.note}")
@@ -411,6 +435,9 @@ def run(
 
             if ev.value is not None:
                 right = format_value_rich(ev.value)
+                if ev.value_source == "default":
+                    right.append("  ")
+                    right.append("(default)", style="bold yellow")
                 if ev.mismatch and ev.expected is not None:
                     right.append("  ")
                     right.append("!= expected ", style="bold red")

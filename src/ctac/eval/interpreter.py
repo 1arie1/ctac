@@ -74,6 +74,12 @@ class RunEvent:
     value: Value | None = None
     expected: Value | None = None
     mismatch: bool = False
+    # Provenance of `value` when it came from a model-driven havoc.
+    # Set post-hoc by the CLI (commands_run) for AssignHavocCmd events:
+    # ``"model"`` (primary --model hit), ``"fallback"`` (--fallback hit),
+    # ``"default"`` (unconstrained sentinel = MODEL_HAVOC_FALLBACK_NUM).
+    # ``None`` for everything else (computed values, no --model run, etc.).
+    value_source: str | None = None
 
 
 @dataclass

@@ -432,6 +432,65 @@ def test_ctac_run_executes_bytemap_rw(tmp_path):
     assert result.exit_code in (0, 2, 3), result.output
 
 
+def test_ctac_run_trace_marks_default_sentinel_havoc(tmp_path):
+    """When --model leaves a havoc'd symbol unconstrained, the trace
+    line for that havoc is marked ``(default)``. Symbols the model
+    does cover stay unmarked. Lets the reader tell at a glance which
+    Ite arms / asserts are anchored on real model values vs the
+    12_345_678 sentinel."""
+    from typer.testing import CliRunner
+
+    from ctac.tool.main import app
+
+    tac = (
+        "TACSymbolTable {\n"
+        "\tUserDefined {\n\t}\n"
+        "\tBuiltinFunctions {\n\t}\n"
+        "\tUninterpretedFunctions {\n\t}\n"
+        "\tR0:bv256\n"
+        "\tR1:bv256\n"
+        "\tR2:bv256\n"
+        "}\n"
+        "Program {\n"
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd R0\n"
+        "\t\tAssignHavocCmd R1\n"
+        "\t\tAssignExpCmd R2 Add(R0 R1)\n"
+        "\t}\n"
+        "}\n"
+        "Axioms {\n}\n"
+        'Metas {\n  "0": []\n}\n'
+    )
+    tac_path = tmp_path / "havoc_demo.tac"
+    tac_path.write_text(tac)
+    model_path = tmp_path / "havoc_demo.tacmodel"
+    # Only R0 is in the model; R1 must hit the sentinel default.
+    model_path.write_text(
+        "TAC model begin\n"
+        "R0:bv256 --> 0xcafe\n"
+        "TAC model end\n"
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["run", str(tac_path), "--model", str(model_path), "--plain", "--trace"],
+    )
+    assert result.exit_code in (0, 2, 3), result.output
+
+    lines = [ln for ln in result.output.splitlines() if "havoc" in ln or "= R0 + R1" in ln]
+    # R0 had a model hit -> no marker.
+    r0_line = next(ln for ln in lines if "R0 = havoc" in ln)
+    assert "(default)" not in r0_line, r0_line
+    # R1 missed the model -> sentinel -> (default) marker.
+    r1_line = next(ln for ln in lines if "R1 = havoc" in ln)
+    assert "(default)" in r1_line, r1_line
+    assert "1234_5678" in r1_line  # decimal-grouped 12_345_678 sentinel
+    # R2 is computed from operands, not a havoc -> no marker even though
+    # one operand came from the sentinel.
+    r2_line = next(ln for ln in lines if "= R0 + R1" in ln)
+    assert "(default)" not in r2_line, r2_line
+
+
 def test_ctac_run_executes_bytemap_rw_with_model_fallback(tmp_path):
     """End-to-end: source map absent → Select propagates Unknown → model
     fills the scalar LHS at the AssignExpCmd."""
