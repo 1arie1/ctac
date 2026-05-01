@@ -138,6 +138,7 @@ class RewriteCtx:
     assumes_by_symbol: dict[str, list[_AssumeFact]] = field(init=False)
     relations_by_pair: dict[tuple[str, str], list[_RelationFact]] = field(init=False)
     dominators: dict[str, frozenset[str]] = field(init=False)
+    successors_by_block: dict[str, tuple[str, ...]] = field(init=False)
     entry_block_id: str | None = field(init=False)
     _cur_block: str | None = field(default=None, init=False)
     _cur_cmd: int | None = field(default=None, init=False)
@@ -216,6 +217,9 @@ class RewriteCtx:
         self.assumes_by_symbol = assumes
         self.relations_by_pair = relations
         self.dominators = _compute_dominators(self.program)
+        self.successors_by_block = {
+            b.id: tuple(b.successors) for b in self.program.blocks
+        }
         self.entry_block_id = self.program.blocks[0].id if self.program.blocks else None
         self._fresh_counter = self.fresh_counter_start
 
@@ -256,6 +260,10 @@ class RewriteCtx:
     def is_static(self, var_name: str) -> bool:
         """True iff ``var_name`` is DSA-static (incl. havoc-only definitions)."""
         return canonical_symbol(var_name, strip_var_suffixes=_STRIP_SUFFIXES) in self.static_symbols
+
+    def successors_of(self, block_id: str) -> tuple[str, ...]:
+        """CFG successors of ``block_id`` (empty tuple for unknown / sinks)."""
+        return self.successors_by_block.get(block_id, ())
 
     def definition(self, var_name: str) -> TacExpr | None:
         """RHS expression of ``var_name``'s unique AssignExpCmd definition, if any.

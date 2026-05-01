@@ -150,20 +150,61 @@ def _deepest_common_strict_dominator(
     return max(common, key=lambda c: len(ctx.dominators.get(c, frozenset())))
 
 
-def _all_defs_dominate(
-    var_name: str, target_block: str, ctx: RewriteCtx
-) -> bool:
-    """True iff every definition of ``var_name`` is in a block that
-    dominates (or equals) ``target_block``. Required for hoisting a
-    TCSE into ``target_block`` whose RHS references ``var_name`` —
-    otherwise the hoisted def would read a variable not yet defined
-    on some path to ``target_block``."""
+def _effective_def_block_for_dominance(
+    var_name: str, ctx: RewriteCtx
+) -> str | None:
+    """Return the block whose dominance over a target captures
+    "every entry→target path passes through some def of ``var_name``".
+
+    * Single def → that def's block. Single-def coverage is just
+      single-block dominance, so the existing per-def check is
+      already correct.
+
+    * Multi-def (DSA-dynamic by ``analyze_dsa``'s definition: every
+      def in a different block, all those blocks sharing the same
+      single successor) → the unique common successor ``J`` of the
+      def-blocks. Under that invariant, ``J`` postdominates the def
+      set: every entry→target path that crosses ``J`` necessarily
+      passes through one of the def blocks. So ``J`` dominating
+      ``target`` ⇔ the def-set collectively covers every path to
+      ``target`` — which is the actual safety condition for the
+      hoist.
+
+    * Multi-def with no unique common successor → ``None`` (decline).
+      That shape isn't DSA-valid; we can't certify coverage from
+      one-step lookahead.
+    """
     canonical = canonical_symbol(var_name)
     defs = ctx.du.definitions_by_symbol.get(canonical, ())
     if not defs:
+        return None
+    if len(defs) == 1:
+        return defs[0].block_id
+    common: set[str] | None = None
+    for ds in defs:
+        succs = set(ctx.successors_of(ds.block_id))
+        common = succs if common is None else common & succs
+    if not common or len(common) != 1:
+        return None
+    (j,) = common
+    return j
+
+
+def _all_defs_dominate(
+    var_name: str, target_block: str, ctx: RewriteCtx
+) -> bool:
+    """True iff some def-coverage of ``var_name`` lies on every path
+    to ``target_block`` — see ``_effective_def_block_for_dominance``
+    for the static (single-def) and DSA-dynamic (multi-def) cases.
+
+    Required for hoisting a TCSE into ``target_block`` whose RHS
+    references ``var_name``: without coverage, the hoisted def would
+    read a variable not yet defined on some path to ``target_block``.
+    """
+    eff = _effective_def_block_for_dominance(var_name, ctx)
+    if eff is None:
         return False
-    target_doms = ctx.dominators.get(target_block, frozenset())
-    return all(d.block_id in target_doms for d in defs)
+    return eff in ctx.dominators.get(target_block, frozenset())
 
 
 def _rewrite_cse(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:

@@ -376,3 +376,113 @@ def test_cse_slow_path_accounts_for_cur_block_via_mid_iter_canon_eq():
     assert not ubd.issues, (
         f"CSE produced use-before-def at mid-iter canon match: {ubd.issues}"
     )
+
+
+# ---------------------------------------------------------------------------
+# DSA-dynamic free variables: when a free variable in the candidate RHS has
+# *multiple* defs (one per arm of an upstream fork that DSA classifies as
+# dynamic), every individual def fails to dominate any post-join target.
+# But under DSA's structural invariant — every dynamic-def block has the
+# same single successor J — those def-blocks collectively cover every path
+# to anything J dominates. The fix: for dynamic vars, use J as the
+# effective-def-block for the dominance gate.
+
+_TCSE_DYNAMIC_FREE_VAR_FIXTURE = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tc:bool
+\tD:int
+\tX:int
+\tY:int
+}
+Program {
+\tBlock entry Succ [a, b] {
+\t\tAssignHavocCmd c
+\t\tJumpiCmd a b c
+\t}
+\tBlock a Succ [j] {
+\t\tAssignExpCmd D 0x1(int)
+\t\tJumpCmd j
+\t}
+\tBlock b Succ [j] {
+\t\tAssignExpCmd D 0x2(int)
+\t\tJumpCmd j
+\t}
+\tBlock j Succ [u, v] {
+\t\tJumpiCmd u v c
+\t}
+\tBlock u Succ [] {
+\t\tAssignExpCmd X IntAdd(D 0x8(int))
+\t}
+\tBlock v Succ [] {
+\t\tAssignExpCmd Y IntAdd(D 0x8(int))
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_cse_hoists_through_dsa_dynamic_free_var():
+    """``D`` is DSA-dynamic (defined in arms ``a`` and ``b``, joining at
+    ``j``). ``X`` and ``Y`` both compute ``IntAdd(D, 0x8)`` in
+    sibling blocks ``u`` and ``v`` past the join.
+
+    Pre-fix: ``_all_defs_dominate("D", target, ctx)`` checks every D
+    def dominates target; neither ``a`` nor ``b`` dominates anything
+    past the join, so the gate fails and CSE bails — the duplicate
+    survives.
+
+    Post-fix: the dominance check uses ``j`` (unique common successor
+    of {a, b}, which postdominates the def set) as the effective
+    coverage block. ``j`` dominates the deepest common dominator of
+    {u, v} (which is ``j`` itself), so the hoist proceeds.
+    """
+    from ctac.analysis import analyze_dsa, analyze_use_before_def, extract_def_use
+
+    tac = parse_string(_TCSE_DYNAMIC_FREE_VAR_FIXTURE, path="<s>")
+
+    # Sanity: verify the fixture really makes D dynamic.
+    pre_dsa = analyze_dsa(tac.program)
+    dyn_syms = {a.symbol for a in pre_dsa.dynamic_assignments}
+    assert "D" in dyn_syms, (
+        f"fixture broken: expected D to be DSA-dynamic, got dyn={dyn_syms}"
+    )
+
+    res = rewrite_program(
+        tac.program, (CSE, CP_ALIAS), symbol_sorts=tac.symbol_sorts
+    )
+
+    # CSE should fire on at least one of {X, Y} as a duplicate of the
+    # other — this was previously declined entirely.
+    assert res.hits_by_rule.get("CSE", 0) >= 1, (
+        f"CSE should now hoist through dynamic D; hits={dict(res.hits_by_rule)}"
+    )
+
+    # Locate the hoisted TCSE: must land in `j` (the deepest strict
+    # common dominator of {u, v} that also has D collectively in
+    # scope via the join). Anywhere upstream of `j` would be
+    # use-before-def for D.
+    tcse_defs = [
+        (b.id, cmd)
+        for b in res.program.blocks
+        for cmd in b.commands
+        if isinstance(cmd, AssignExpCmd) and cmd.lhs.startswith("TCSE")
+    ]
+    assert tcse_defs, "expected one hoisted TCSE for IntAdd(D, 0x8)"
+    for block_id, cmd in tcse_defs:
+        assert block_id == "j", (
+            f"TCSE {cmd.lhs} placed in {block_id}, expected the join block 'j'"
+        )
+
+    # The output must remain DSA-shape and use-before-def clean.
+    du_post = extract_def_use(res.program)
+    ubd = analyze_use_before_def(res.program, def_use=du_post)
+    assert not ubd.issues, f"CSE hoist produced use-before-def: {ubd.issues}"
