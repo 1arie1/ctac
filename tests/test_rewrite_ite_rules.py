@@ -10,6 +10,7 @@ from ctac.rewrite.rules import (
     DE_MORGAN,
     EQ_CONST_FOLD,
     EQ_ITE_DIST,
+    EQ_REFLEXIVE,
     ITE_BOOL,
     ITE_SAME,
     ITE_SHARED_LEAF,
@@ -370,3 +371,32 @@ Metas {
 
     count_ites(cond)
     assert ites == 0
+
+
+def test_eq_reflexive_folds_same_symbol():
+    """``Eq(R0, R0)`` -> ``true``."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(R0 R0)"), path="<s>"
+    )
+    res = rewrite_program(tac.program, (EQ_REFLEXIVE,))
+    assert res.hits_by_rule == {"EqReflexive": 1}
+    assert _assume_cond(res.program) == ConstExpr("true")
+
+
+def test_eq_reflexive_skips_distinct_symbols():
+    """``Eq(R0, R1)`` does not fold."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(R0 R1)"), path="<s>"
+    )
+    res = rewrite_program(tac.program, (EQ_REFLEXIVE,))
+    assert res.hits_by_rule == {}
+
+
+def test_eq_reflexive_folds_same_const():
+    """Structural equality covers constants too: ``Eq(0x4, 0x4)`` -> ``true``."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(0x4 0x4)"), path="<s>"
+    )
+    res = rewrite_program(tac.program, (EQ_REFLEXIVE,))
+    assert res.hits_by_rule == {"EqReflexive": 1}
+    assert _assume_cond(res.program) == ConstExpr("true")

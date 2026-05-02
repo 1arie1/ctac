@@ -22,6 +22,7 @@ from ctac.rewrite.rules.bv_max_to_ite_validation import ADD_BV_MAX_TO_ITE_CASES
 from ctac.rewrite.rules.ceildiv_validation import R6_CASES
 from ctac.rewrite.rules.copyprop import CP_ALIAS
 from ctac.rewrite.rules.cse import CSE
+from ctac.rewrite.rules.havoc_equate_subst import HAVOC_EQUATE_SUBST
 from ctac.rewrite.rules.div import (
     R1_BITFIELD_STRIP,
     R2_DIV_FUSE,
@@ -45,6 +46,7 @@ from ctac.rewrite.rules.ite import (
     DE_MORGAN,
     EQ_CONST_FOLD,
     EQ_ITE_DIST,
+    EQ_REFLEXIVE,
     ITE_BOOL,
     ITE_COND_FOLD,
     ITE_SAME,
@@ -103,7 +105,13 @@ simplify_pipeline: tuple[Rule, ...] = (
     # see the stale `Div(...)` via `lookthrough` and emit Euclidean
     # bounds on a `Div` that R3 had already eliminated.
     R1_BITFIELD_STRIP,
+    # Eliminate "dummy" havoc'd vars whose only role is to mediate
+    # an equality assume. Substitutes R -> X across all R-using
+    # assumes; the post-substitution `Eq(X, X)` collapses via
+    # EQ_REFLEXIVE; DCE clears the now-unused havoc def.
+    HAVOC_EQUATE_SUBST,
     # Boolean / Ite simplification.
+    EQ_REFLEXIVE,
     EQ_CONST_FOLD,
     EQ_ITE_DIST,
     # Distribute Add/Sub over Ite operands so per-branch simplification
@@ -204,6 +212,8 @@ all_rule_names: tuple[str, ...] = (
     R4_DIV_IN_CMP.name,
     R4A_DIV_PURIFY.name,
     R6_CEILDIV.name,
+    HAVOC_EQUATE_SUBST.name,
+    EQ_REFLEXIVE.name,
     EQ_CONST_FOLD.name,
     EQ_ITE_DIST.name,
     ADD_ITE_DIST.name,
@@ -239,6 +249,8 @@ __all__ = [
     "DE_MORGAN",
     "EQ_CONST_FOLD",
     "EQ_ITE_DIST",
+    "EQ_REFLEXIVE",
+    "HAVOC_EQUATE_SUBST",
     "ITE_BOOL",
     "ITE_COND_FOLD",
     "ITE_PURIFY",

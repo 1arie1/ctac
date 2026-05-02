@@ -37,6 +37,21 @@ def _is_ite(e: TacExpr) -> bool:
     return isinstance(e, ApplyExpr) and e.op == "Ite" and len(e.args) == 3
 
 
+def _rewrite_eq_reflexive(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
+    """``Eq(e, e)`` -> ``true`` for any structurally-equal pair.
+
+    Specifically clears the ``Eq(X, X)`` shape that
+    ``HAVOC_EQUATE_SUBST`` synthesizes when its substitution turns
+    an `Eq(R, X)` equality assume into `Eq(X, X)`. UCE then removes
+    the resulting ``assume true``."""
+    if not (isinstance(expr, ApplyExpr) and expr.op == "Eq" and len(expr.args) == 2):
+        return None
+    a, b = expr.args
+    if a == b:
+        return _TRUE
+    return None
+
+
 def _rewrite_eq_const_fold(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
     """``Eq(const, const)`` folds to ``true`` / ``false``."""
     if not (isinstance(expr, ApplyExpr) and expr.op == "Eq" and len(expr.args) == 2):
@@ -375,6 +390,11 @@ EQ_CONST_FOLD = Rule(
     name="EqFold",
     fn=_rewrite_eq_const_fold,
     description="Eq(const, const) -> true|false.",
+)
+EQ_REFLEXIVE = Rule(
+    name="EqReflexive",
+    fn=_rewrite_eq_reflexive,
+    description="Eq(e, e) -> true.",
 )
 EQ_ITE_DIST = Rule(
     name="EqIte",
