@@ -24,6 +24,7 @@ from ctac.rewrite.rules.copyprop import CP_ALIAS
 from ctac.rewrite.rules.cse import CSE
 from ctac.rewrite.rules.havoc_equate_fold import HAVOC_EQUATE_FOLD
 from ctac.rewrite.rules.havoc_equate_subst import HAVOC_EQUATE_SUBST
+from ctac.rewrite.rules.mul_div import CHUNKED_MUL_BY_2N, MUL_DIV_TO_MULDIV
 from ctac.rewrite.rules.div import (
     R1_BITFIELD_STRIP,
     R2_DIV_FUSE,
@@ -106,6 +107,17 @@ simplify_pipeline: tuple[Rule, ...] = (
     # see the stale `Div(...)` via `lookthrough` and emit Euclidean
     # bounds on a `Div` that R3 had already eliminated.
     R1_BITFIELD_STRIP,
+    # Recognize SBF's chunk-extended u64 mul-by-2^N idiom; lifts to
+    # a clean `IntMul(R, 2^N)`. Composes with MUL_DIV_TO_MULDIV next.
+    # Lives here (not in chain_recognition_pipeline) because R6's
+    # ceildiv chain has interior `IntDiv(IntMul(...), c)` shapes that
+    # would otherwise get pre-empted by MUL_DIV_TO_MULDIV before R6
+    # gets to match the outer ceildiv shape.
+    CHUNKED_MUL_BY_2N,
+    # IntDiv(IntMul(a, b), c) -> IntMulDiv(a, b, c). The encoder
+    # axiomatizes IntMulDiv with Euclidean bounds; this rule lifts
+    # the syntactic composition into the axiomatized concept.
+    MUL_DIV_TO_MULDIV,
     # Eliminate "dummy" havoc'd vars whose only role is to mediate
     # an equality assume. Substitutes R -> X across all R-using
     # assumes; the post-substitution `Eq(X, X)` collapses via
@@ -220,6 +232,8 @@ all_rule_names: tuple[str, ...] = (
     R4_DIV_IN_CMP.name,
     R4A_DIV_PURIFY.name,
     R6_CEILDIV.name,
+    CHUNKED_MUL_BY_2N.name,
+    MUL_DIV_TO_MULDIV.name,
     HAVOC_EQUATE_SUBST.name,
     HAVOC_EQUATE_FOLD.name,
     EQ_REFLEXIVE.name,
@@ -253,6 +267,7 @@ __all__ = [
     "ADD_BV_TO_INT",
     "ADD_ITE_DIST",
     "BOOL_ABSORB",
+    "CHUNKED_MUL_BY_2N",
     "CP_ALIAS",
     "CSE",
     "DE_MORGAN",
@@ -267,6 +282,7 @@ __all__ = [
     "ITE_SAME",
     "ITE_SHARED_LEAF",
     "MUL_BV_TO_INT",
+    "MUL_DIV_TO_MULDIV",
     "N1_SHIFTED_BWAND",
     "N2_LOW_MASK",
     "N3_HIGH_MASK",
