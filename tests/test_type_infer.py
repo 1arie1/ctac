@@ -101,6 +101,35 @@ def test_mul_operand_meets_to_int() -> None:
     assert res.kind["X"] == TypeKind.INT
 
 
+def test_intmuldiv_operands_meet_to_int_and_result_is_int() -> None:
+    """`IntMulDiv(a, b, c) = a*b/c` — produced by ctac rw's
+    MUL_DIV_TO_MULDIV recognizer. All three operands are Int (pointer
+    multiplication / division is meaningless) and the result is Int."""
+    res = _run([
+        _havoc("A"),
+        _havoc("B"),
+        _havoc("C"),
+        _assign("R", _apply("IntMulDiv", _sym("A"), _sym("B"), _sym("C"))),
+    ])
+    assert res.kind["A"] == TypeKind.INT
+    assert res.kind["B"] == TypeKind.INT
+    assert res.kind["C"] == TypeKind.INT
+    assert res.kind["R"] == TypeKind.INT
+
+
+def test_intceildiv_operands_meet_to_int_and_result_is_int() -> None:
+    """`IntCeilDiv(num, den) = ceil(num/den)` — produced by ctac rw's
+    ceildiv recognizer. Same Int-only semantics as IntDiv."""
+    res = _run([
+        _havoc("N"),
+        _havoc("D"),
+        _assign("R", _apply("IntCeilDiv", _sym("N"), _sym("D"))),
+    ])
+    assert res.kind["N"] == TypeKind.INT
+    assert res.kind["D"] == TypeKind.INT
+    assert res.kind["R"] == TypeKind.INT
+
+
 def test_intdiv_operand_meets_to_int() -> None:
     res = _run([
         _havoc("R"),

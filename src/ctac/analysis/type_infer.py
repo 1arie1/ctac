@@ -94,6 +94,15 @@ _INT_OPERAND_OPS: frozenset[str] = frozenset(
         "Div",
         "IntMul",
         "IntDiv",
+        # IntMulDiv(a, b, c) = a * b / c — produced by ctac rw's
+        # MUL_DIV_TO_MULDIV recognizer (`rewrite/rules/mul_div.py`);
+        # axiomatized in sea_vc. Multiplying / dividing pointers is
+        # meaningless, so all three operands and the result are Int.
+        "IntMulDiv",
+        # IntCeilDiv(num, den) = ceil(num / den) — produced by ctac
+        # rw's ceildiv recognizer (`rewrite/rules/ceildiv.py`); also
+        # axiomatized in sea_vc. Same Int-only semantics as IntDiv.
+        "IntCeilDiv",
         "ShiftLeft",
         "ShiftRightLogical",
         "ShiftRightArithmetical",
