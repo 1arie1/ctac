@@ -37,6 +37,7 @@ from ctac.rewrite.rules.ite_purify import ITE_PURIFY
 from ctac.rewrite.rules.purify_assert import PURIFY_ASSERT
 from ctac.rewrite.rules.purify_assume import PURIFY_ASSUME
 from ctac.rewrite.rules.range_fold import RANGE_FOLD
+from ctac.rewrite.rules.select_over_store import SELECT_OVER_STORE
 from ctac.rewrite.rules.store_eq import STORE_EQ_NORM, normalize_store_eq
 from ctac.rewrite.rules.ite import (
     ADD_ITE_DIST,
@@ -127,6 +128,12 @@ simplify_pipeline: tuple[Rule, ...] = (
     # as an explicit Ite. ITE_COND_FOLD above collapses it whenever
     # range analysis decides `X >= 1`.
     ADD_BV_MAX_TO_ITE,
+    # Fold Select(M, k) through M's def chain when the resolution is
+    # clean — Store-key hit, constant-disjoint peel, or Ite-of-bytemaps
+    # with shared-root convergence. Memoizes on (M, k) per iteration so
+    # parallel arms of an Ite-of-bytemaps share sub-walks. Conservative
+    # on symbolic keys (bails rather than synthesize Ite-on-equality).
+    SELECT_OVER_STORE,
     # CP propagates aliases (Y := X). CSE deliberately runs in its own
     # phase (driven by the CLI), not here: CSE's RHS index is built once
     # per iteration, and rules that mutate registered RHSes (CP and the
@@ -188,6 +195,7 @@ all_rule_names: tuple[str, ...] = (
     SUB_BV_TO_INT.name,
     RANGE_FOLD.name,
     ADD_BV_MAX_TO_ITE.name,
+    SELECT_OVER_STORE.name,
     CSE.name,
     CP_ALIAS.name,
     ITE_PURIFY.name,
@@ -225,6 +233,7 @@ __all__ = [
     "R4A_DIV_PURIFY",
     "R6_CEILDIV",
     "RANGE_FOLD",
+    "SELECT_OVER_STORE",
     "STORE_EQ_NORM",
     "SUB_BV_TO_INT",
     "SUB_ITE_DIST_LEFT",

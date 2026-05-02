@@ -37,6 +37,7 @@ from ctac.rewrite.rules import (
     PURIFY_ASSERT,
     PURIFY_ASSUME,
     R4A_DIV_PURIFY,
+    SELECT_OVER_STORE,
     chain_recognition_pipeline,
     cse_pipeline,
     simplify_pipeline,
@@ -494,7 +495,7 @@ def rewrite_cmd(
                 # snapshot from scratch.
                 phase_cp_cleanup = rewrite_program(
                     phase_cse_late.program,
-                    (CP_ALIAS, ITE_SAME, ITE_SHARED_LEAF),
+                    (CP_ALIAS, ITE_SAME, ITE_SHARED_LEAF, SELECT_OVER_STORE),
                     max_iterations=max_iterations,
                     ite_max_depth=ite_max_depth,
                     symbol_sorts=tac.symbol_sorts,
