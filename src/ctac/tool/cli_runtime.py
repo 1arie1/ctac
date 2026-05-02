@@ -390,7 +390,9 @@ editing registers is a soundness risk and token-expensive. rw produces
 a smaller, more solver-friendly program in one pass.
 
 TYPICAL:
-  ctac rw f.tac --plain --report                   # stdout pp + rule hits
+  ctac rw f.tac --plain --report                   # stdout pp + per-rule hit counts
+  ctac rw f.tac --plain --trace -                  # per-fire JSONL on stdout
+  ctac rw f.tac --plain --trace fires.jsonl        # per-fire JSONL to file
   ctac rw f.tac -o small.tac --plain               # write a round-trippable .tac
   ctac rw f.tac -o small.htac --plain              # write pretty-printed (.htac)
   ctac rw f.tac --no-purify-div --plain            # disable R4a
@@ -401,7 +403,14 @@ PURIFY_ASSERT, ...) -> late CSE -> CP cleanup -> DCE. CSE runs in its
 own phases (never alongside rules that mutate registered RHSes) so
 its per-iteration RHS index is a real snapshot. `--purify-div` adds
 R4a (default on); `--purify-ite` enables the post-DCE phase (default
-on). Check `--report` for which rules fired and how often.
+on).
+
+INTROSPECTION: `--report` aggregates (which rules fired, how often,
+plus DCE stats); `--trace` emits one JSONL record per fire (phase,
+iteration, block_id, cmd_index, host_lhs, rule, before, after) so you
+can see *where* a rule fired or confirm a missed-fire site. Rule-
+driven phases only — DCE / ITE-purify restructuring / materialize-
+assumes don't appear in the trace.
 """,
     "rw-valid": """ctac rw-valid --agent
 
