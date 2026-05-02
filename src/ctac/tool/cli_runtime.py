@@ -359,6 +359,56 @@ OUTPUT: `degree.distribution.deg_<k>` shows how many vars at each
 degree; `degree.saw_top` flags any unrecognized operators (e.g. SBF
 intrinsics not yet in the operator table — sound over-approximation).
 """,
+    "types": """ctac types --agent
+
+Sound, possibly-incomplete kind inference for TAC registers. Lattice
+`Top (= Int+Ptr) | Int | Ptr | Bot`. Pin every register to one of the
+four kinds based on its structural use: index of `Select`/`Store` ->
+Ptr; operand of `Mul`/`Div`/`IntMul`/`IntDiv`/`Shift*`/`BWXOr`/`BNot`
+-> Int; `narrow` and `BWAnd`/`BWOr` with a constant operand are
+identity (passthrough); `R = SymRef(R')` and `assume R == R'` unify
+classes; `Add`/`IntAdd` of one Ptr and one Int is Ptr.
+
+WHY BEAT MANUAL: the pointer / integer split is buried in the TAC
+operator surface — you'd grep `Select` indices, then chase narrow /
+copy-propagation chains by hand. `ctac types` runs a union-find +
+lattice-meet to fixed point and tells you which registers are
+provably pointers. Sound: it never claims `Int` for an actual pointer
+or `Ptr` for an actual integer; abstains to `Top` when evidence is
+insufficient.
+
+TYPICAL:
+  ctac types f.tac --plain                       # full table + counts
+  ctac types f.tac --plain --show ptr            # only the pointer registers
+  ctac types f.tac --plain --by-class            # grouped by union-find class
+  ctac types f.tac --plain --json                # machine-readable
+  ctac types f.tac --plain --trace - --trace-symbol R1015
+                                                 # diagnose why R1015 is Top/Bot
+
+INTERPRETATION: `Bot` is a classifier-flagged contradiction — a class
+has structural evidence both for Ptr (used as index somewhere) and
+Int (operand of Mul / Shift / etc.). Either the program is genuinely
+ill-typed or two distinct values were canonicalized into the same
+class by a copy/narrow chain that crosses kinds; both are sound
+report-out values worth investigating. `Top` is "no commitment" —
+sound to leave alone or to use as the polymorphic case for v2 region
+refinement.
+
+DIAGNOSE: `--trace PATH` writes a JSONL constraint-event log to PATH
+(use `-` for stdout). One record per `meet` (constraint applied to a
+class), `union` (two classes merged), and `rhs-eval` (per-AssignExpCmd
+summary showing what the RHS evaluated to). Fields: `phase, iteration,
+block_id, cmd_index, kind, rule, symbols, before, after, detail,
+changed`. Filter to events on a specific class with `--trace-symbol
+SYM[,SYM...]` (canonical names — DSA suffixes auto-stripped). For
+"why is X `Top`?" the trace shows every constraint that touched X's
+class and what kind it tried to apply; an empty trace means no rule
+ever constrained X — sound, no structural use, defaults to Top.
+
+DEFAULT: scalar symbols only. `--include-memory` adds the
+`bytemap`/`ghostmap` rows (always Top in v1; the lattice is for
+scalars).
+""",
     "df": """ctac df --agent
 
 TAC data-flow analyses: def-use, liveness, DCE, use-before-def, DSA

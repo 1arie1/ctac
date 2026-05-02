@@ -19,6 +19,7 @@ import_module("ctac.tool.commands_slice")
 import_module("ctac.tool.commands_smt")
 import_module("ctac.tool.commands_splitcrit")
 import_module("ctac.tool.commands_stats")
+import_module("ctac.tool.commands_types")
 import_module("ctac.tool.commands_ua")
 
 __all__ = [

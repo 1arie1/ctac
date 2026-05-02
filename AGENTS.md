@@ -173,6 +173,27 @@ Prompt template:
   - `dsa.status: invalid` means `ctac smt` will reject — check this
     before running the VC.
 
+- `ctac types <file> --plain`
+  - Sound, possibly-incomplete kind inference for TAC registers
+    over the lattice `Top (= Int+Ptr) | Int | Ptr | Bot`.
+    Pointer kind comes from use as a `Select`/`Store` index;
+    integer kind comes from operand position of arithmetic ops
+    (`Mul`, `Div`, `IntMul`, `IntDiv`, `Shift*`, `BWXOr`, `BNot`).
+    `narrow` and `BWAnd`/`BWOr` with a constant operand are
+    identity (passthrough); `R = SymRef(R')` and
+    `assume R == R'` unify classes; `Add`/`IntAdd` of one Ptr
+    and one Int is Ptr.
+  - Soundness contract: never tags `Int` for a register that is
+    actually a pointer, or vice-versa. Abstains to `Top` when
+    evidence is insufficient.
+  - Key flags:
+    - `--show ptr|int|top|bot|all` — filter the table by kind.
+    - `--by-class` — group by union-find equivalence class.
+    - `--include-memory` — include `bytemap`/`ghostmap` rows.
+    - `--json` — machine-readable.
+  - `Bot` indicates a contradictory class (used as both index
+    and arithmetic operand) — investigate as a soundness signal.
+
 - `ctac rw <file> --plain`
   - TAC -> TAC simplification: div / bitfield / Ite rewrites + DCE,
     plus optional div and bool-name purification.
@@ -268,6 +289,7 @@ Prompt template:
   1. `ctac stats f.tac --plain`
   2. `ctac pp f.tac --plain --from <a> --to <b>`
   3. `ctac cfg f.tac --plain --from <a> --to <b>`
+  4. `ctac types f.tac --plain --show ptr` — list provable pointers.
 
 - Compare two programs:
   1. `ctac op-diff a.tac b.tac --plain` — per-stat frequency delta,
