@@ -605,6 +605,14 @@ PRECONDITIONS: exactly one `AssertCmd` (run `ctac ua` first if you
 have multiple); loop-free; bytemap usage must be `bytemap-free` or
 `bytemap-ro` (run `ctac stats` to check).
 
+BYTEMAP STORE-REDUCE: `--store-reduce` (off by default) builds a
+per-map chain data structure during encoding, prunes shadowed Store
+entries (later Store at the same key supersedes earlier),
+preserves `(ite ... (M_old idx))` shared-sibling form when no
+shadow fires, and drops `define-fun` lines for bytemap symbols not
+reachable from any Select query — content inlined into the chain
+that reads them. Sound by the array Store/Select axiom.
+
 Z3 KNOBS: `--timeout` (seconds), `--seed`, `--tactic`,
 `--z3-args "<raw>"`. Use `--debug` to see z3 stdin/stdout and a
 replayable command line.

@@ -36,6 +36,7 @@ def build_vc(
     guard_dynamics: bool = False,
     cfg_encoding: str = "bwd0",
     narrow_range: bool = False,
+    store_reduce: bool = False,
 ) -> SmtScript:
     # Pre-pass: break any critical edges so sea_vc's predecessor
     # exclusivity stays sound. Idempotent when the input is already clean.
@@ -53,6 +54,7 @@ def build_vc(
             guard_dynamics=guard_dynamics,
             cfg_encoding=cfg_encoding,
             narrow_range=narrow_range,
+            store_reduce=store_reduce,
         )
     )
 

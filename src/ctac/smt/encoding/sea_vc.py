@@ -20,6 +20,15 @@ from ctac.ast.nodes import (
 )
 from ctac.smt.cfg import CFG_ENCODERS, CfgEmit, build_cfg_input
 from ctac.smt.encoding.base import EncoderContext, SmtEncodingError, SmtEncoder
+from ctac.smt.encoding.map_chain import (
+    KV,
+    MapChain,
+    NamedMap,
+    OpaqueRef,
+    chain_opaque_self,
+)
+from ctac.smt.encoding.map_chain import store as chain_store
+from ctac.smt.encoding.map_chain import reachable_named_targets
 from ctac.smt.encoding.path_skeleton import (
     block_by_id,
     block_guard,
@@ -445,6 +454,13 @@ class SeaVcEncoder(SmtEncoder):
         uf_apps: dict[str, set[tuple[str, ...]]] = defaultdict(set)
         leaf_apps: set[tuple[str, str]] = set()
         leaf_visited: set[tuple[str, str]] = set()
+        # Set of canonical bytemap symbol names referenced by some
+        # ``Select`` term. Always populated; consumed only when
+        # ``ctx.store_reduce`` is on (dead-map elision).
+        live_map_names: set[str] = set()
+        # Per-map chain data structures (built only under store_reduce).
+        # See `src/ctac/smt/encoding/map_chain.py`.
+        map_chains: dict[str, MapChain] = {}
         constraints: list[str] = []
         block_pos = {b.id: i for i, b in enumerate(program.blocks)}
         # If a havoc is immediately followed by a range-refining assume over the same
@@ -846,6 +862,12 @@ class SeaVcEncoder(SmtEncoder):
                     # down to leaves rather than axiomatizing
                     # ``(M idx)`` directly.
                     _collect_leaves(mem, idx_term)
+                    # Track which map symbols are queried by some Select
+                    # — the seed set for `--store-reduce` dead-map
+                    # elision. Always populated so the closure logic
+                    # below has a consistent signal regardless of the
+                    # flag.
+                    live_map_names.add(mem_name)
                     return f"({symbol_term[mem_name]} {idx_term})", "Int"
 
                 raise SmtEncodingError(
@@ -924,6 +946,54 @@ class SeaVcEncoder(SmtEncoder):
             uf_decl_lines.discard(
                 f"(declare-fun {symbol_term[mem_sym]} (Int) Int)"
             )
+
+        # ──────────────────────────────────────────────────────────
+        # Per-bytemap chain construction (only under --store-reduce).
+        # See `src/ctac/smt/encoding/map_chain.py` for the data
+        # structure. Built in source order so each ``M_new = Store(M_old,
+        # k, v)`` finds ``MapChain[M_old]`` already populated. Maps
+        # whose RHS shape we don't recognize (Ite-anchored, compound
+        # m_old, multi-def DSA-dynamic, havoc-leaf) get the
+        # self-referential opaque chain ``[OpaqueRef(M)]``; their
+        # bodies are emitted by the existing logic.
+        # ──────────────────────────────────────────────────────────
+        if ctx.store_reduce:
+            # Default every memory symbol to opaque-self so that
+            # NamedMap/OpaqueRef lookups always find an entry.
+            for mem_sym in memory_symbols:
+                map_chains[mem_sym] = chain_opaque_self(mem_sym)
+            for b in program.blocks:
+                for cmd in b.commands:
+                    if not isinstance(cmd, AssignExpCmd):
+                        continue
+                    sym = canonical_symbol(cmd.lhs, strip_var_suffixes=True)
+                    if sym not in memory_symbols:
+                        continue
+                    if sym in dynamic_symbols:
+                        # Multi-def map: existing per-block + merged
+                        # emission. Stays opaque.
+                        continue
+                    rhs = cmd.rhs
+                    if (
+                        isinstance(rhs, ApplyExpr)
+                        and rhs.op == "Store"
+                        and len(rhs.args) == 3
+                        and isinstance(rhs.args[0], SymbolRef)
+                    ):
+                        m_old_name = canonical_symbol(
+                            rhs.args[0].name, strip_var_suffixes=True
+                        )
+                        old_chain = map_chains.get(m_old_name) or chain_opaque_self(
+                            m_old_name
+                        )
+                        map_chains[sym] = chain_store(
+                            old_chain,
+                            rhs.args[1],
+                            rhs.args[2],
+                            owner=m_old_name,
+                            registry=map_chains,
+                        )
+                    # Ite-anchored / compound m_old: leave opaque.
 
         def _emit_map_body(expr: TacExpr) -> str:
             """Build the body of a map ``define-fun``.
@@ -1014,6 +1084,87 @@ class SeaVcEncoder(SmtEncoder):
                 f"{_render_expr_short(map_expr)}"
             )
 
+        # ──────────────────────────────────────────────────────────
+        # Live-map closure for `--store-reduce`. Seed:
+        # every map referenced by some `Select(M, _)` in the program.
+        # Closure: walk each live map's chain (NamedMap / OpaqueRef
+        # entries -> add target) plus AST-level references for
+        # opaque-anchored maps (Ite-of-bytemap arms; Store-RHS m_old
+        # for compound shapes). When the flag is off, `live_map_names`
+        # is populated identically (it's a cheap side effect) but
+        # never consulted.
+        # ──────────────────────────────────────────────────────────
+
+        def _seed_live_from_selects(expr: TacExpr) -> None:
+            if isinstance(expr, ApplyExpr):
+                op_name = expr.op
+                args = expr.args
+                if op_name == "Apply" and args and isinstance(args[0], SymbolRef):
+                    op_name = args[0].name
+                    args = args[1:]
+                if op_name == "Select" and len(args) == 2 and isinstance(args[0], SymbolRef):
+                    name = canonical_symbol(args[0].name, strip_var_suffixes=True)
+                    if name in memory_symbols:
+                        live_map_names.add(name)
+                for a in expr.args:
+                    _seed_live_from_selects(a)
+
+        for b in program.blocks:
+            for cmd in b.commands:
+                if isinstance(cmd, AssignExpCmd):
+                    _seed_live_from_selects(cmd.rhs)
+                elif isinstance(cmd, AssumeExpCmd):
+                    _seed_live_from_selects(cmd.condition)
+                elif isinstance(cmd, AssertCmd):
+                    _seed_live_from_selects(cmd.predicate)
+
+        if ctx.store_reduce:
+            # Closure: chain references + AST-level references for
+            # opaque-anchored static maps and DSA-dynamic per-block
+            # bodies.
+            def _walk_for_map_refs(e: TacExpr, sink: set[str]) -> None:
+                if isinstance(e, SymbolRef):
+                    n = canonical_symbol(e.name, strip_var_suffixes=True)
+                    if n in memory_symbols:
+                        sink.add(n)
+                elif isinstance(e, ApplyExpr):
+                    for a in e.args:
+                        _walk_for_map_refs(a, sink)
+
+            def _is_opaque_self_chain(m_name: str) -> bool:
+                ch = map_chains.get(m_name)
+                if ch is None or len(ch.entries) != 1:
+                    return False
+                only = ch.entries[0]
+                return isinstance(only, OpaqueRef) and only.name == m_name
+
+            worklist = list(live_map_names)
+            while worklist:
+                m = worklist.pop()
+                # 1. Chain-level references.
+                chain = map_chains.get(m)
+                if chain is not None:
+                    for tgt in reachable_named_targets(chain):
+                        if tgt not in live_map_names:
+                            live_map_names.add(tgt)
+                            worklist.append(tgt)
+                # 2. AST-level references — but ONLY for opaque-anchored
+                #    maps (Ite-anchored statics, compound m_old, or
+                #    DSA-dynamic multi-defs). Store-anchored static maps
+                #    with a real chain already capture m_old via NamedMap;
+                #    walking the AST there would resurrect dead
+                #    intermediates that the chain has already inlined past.
+                if _is_opaque_self_chain(m) or m in dynamic_symbols:
+                    for ds in du.definitions_by_symbol.get(m, ()):
+                        cmd = block_by_id(program, ds.block_id).commands[ds.cmd_index]
+                        if isinstance(cmd, AssignExpCmd):
+                            sink: set[str] = set()
+                            _walk_for_map_refs(cmd.rhs, sink)
+                            for n in sink:
+                                if n not in live_map_names:
+                                    live_map_names.add(n)
+                                    worklist.append(n)
+
         # Walk all program defs in order; emit map definitions
         # alongside their natural program position (so cross-map
         # references — the body of M_n that uses M_{n-1} — see
@@ -1026,12 +1177,51 @@ class SeaVcEncoder(SmtEncoder):
             for sym in maps_with_store_def
             if sym in dynamic_symbols
         }
+        def _chain_has_kvs(chain: MapChain) -> bool:
+            """A chain produced by `chain_store(...)` always has at
+            least one KV; opaque-self chains have none. Used to decide
+            whether to use chain-based emit or fall back to the AST-
+            walk-based ``_emit_map_body``."""
+            return any(isinstance(e, KV) for e in chain.entries)
+
+        def _emit_chain_body(chain: MapChain) -> str:
+            """Emit a map ``define-fun`` body from a ``MapChain``. The
+            terminal entry produces ``(name idx)``; earlier KVs wrap
+            it in ``(ite (= idx k) v <below>)``. Sharing falls out of
+            the canonical ``[KV(k, v), NamedMap(M_old)]`` shape — that
+            chain emits as ``(ite (= idx k) v (M_old idx))``."""
+            terminal = chain.entries[-1]
+            if isinstance(terminal, (NamedMap, OpaqueRef)):
+                if terminal.name not in symbol_term:
+                    raise SmtEncodingError(
+                        f"map chain terminal references unknown symbol: {terminal.name!r}"
+                    )
+                body = f"({symbol_term[terminal.name]} {_MAP_PARAM})"
+            else:
+                raise SmtEncodingError(
+                    f"map chain has non-terminal final entry: {terminal!r}"
+                )
+            for entry in reversed(chain.entries[:-1]):
+                if not isinstance(entry, KV):
+                    raise SmtEncodingError(
+                        f"map chain has non-KV entry before terminal: {entry!r}"
+                    )
+                k_term, _ = emit_expr(entry.k, expected_sort="Int")
+                v_term, _ = emit_expr(entry.v, expected_sort="Int")
+                body = f"(ite (= {_MAP_PARAM} {k_term}) {v_term} {body})"
+            return body
+
         for b in program.blocks:
             for ci, cmd in enumerate(b.commands):
                 if not isinstance(cmd, (AssignExpCmd, AssignHavocCmd)):
                     continue
                 sym = cmd.lhs
                 if sym not in maps_with_store_def:
+                    continue
+                # Dead-map elision under --store-reduce: skip maps
+                # not reachable from any Select query (and not
+                # transitively referenced by a live map).
+                if ctx.store_reduce and sym not in live_map_names:
                     continue
                 nm = symbol_term[sym]
                 is_dynamic = sym in dynamic_symbols
@@ -1051,7 +1241,22 @@ class SeaVcEncoder(SmtEncoder):
                     with _with_source(
                         f"map-body rhs of {sym} in block {b.id} cmd {ci}"
                     ):
-                        body = _emit_map_body(cmd.rhs)
+                        # Choose chain-based emit vs the AST-walk-based
+                        # emit. Chain-based applies when the chain has
+                        # a real KV-bearing structure (Store-anchored
+                        # statics under store_reduce). DSA-dynamic and
+                        # Ite-anchored / compound-m_old maps fall
+                        # through to the existing emission.
+                        chain = map_chains.get(sym)
+                        if (
+                            ctx.store_reduce
+                            and not is_dynamic
+                            and chain is not None
+                            and _chain_has_kvs(chain)
+                        ):
+                            body = _emit_chain_body(chain)
+                        else:
+                            body = _emit_map_body(cmd.rhs)
                     if is_dynamic:
                         block_nm = _per_block_havoc_name(nm, b.id)
                         map_section_lines.append(

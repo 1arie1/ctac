@@ -201,6 +201,21 @@ def smt_cmd(
             "axiom; other bv widths are silent. Default off."
         ),
     ),
+    store_reduce: bool = typer.Option(
+        False,
+        "--store-reduce/--no-store-reduce",
+        help=(
+            "Build a per-bytemap chain data structure during encoding. "
+            "Prunes shadowed Store entries when a later Store at the "
+            "same key supersedes an earlier one; preserves the "
+            "(ite ... (M_old idx)) shared-sibling form when no shadow "
+            "fires; and drops define-fun lines for bytemap symbols not "
+            "reachable from any Select query (their content is inlined "
+            "into the chain that reads them). Sound by the array "
+            "Store/Select axiom. Default off — preserves byte-identical "
+            "output for the existing eager emission."
+        ),
+    ),
     debug: bool = typer.Option(
         False,
         "--debug/--no-debug",
@@ -233,6 +248,7 @@ def smt_cmd(
             guard_dynamics=guard_dynamics,
             cfg_encoding=cfg_encoding,
             narrow_range=narrow_range,
+            store_reduce=store_reduce,
         )
         smt_text = render_smt_script(script)
     except ParseError as e:

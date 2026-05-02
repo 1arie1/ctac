@@ -56,6 +56,16 @@ class EncoderContext:
     havoc-range handler); other bv widths are silent. Default False
     preserves the historical encoding, which discards the narrow and
     leaves the LHS unconstrained beyond its sort."""
+    store_reduce: bool = False
+    """If True, build a per-bytemap chain data structure during encoding
+    and use it to (1) prune shadowed Store entries when a later Store
+    at the same key supersedes an earlier one, (2) preserve the
+    ``(ite ... (M_old idx))`` shared-sibling form when no shadow fires,
+    and (3) drop ``define-fun`` lines for bytemap symbols not
+    reachable from any ``Select`` query (their content is inlined
+    into the chain that reads them). Default False keeps the
+    historical eager-emit shape unchanged. Sound by the array
+    Store/Select axiom."""
 
 
 class SmtEncoder(Protocol):

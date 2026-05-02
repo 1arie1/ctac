@@ -276,6 +276,16 @@ Prompt template:
     transitive chain, but shorter). `fwd-edge` / `bwd-edge`
     — introduce per-edge Bool variables `e_<i>_<j>` and use
     a biconditional block-existence over those variables.
+  - Bytemap Store-over-Store reduction: `--store-reduce` builds a
+    per-map chain data structure during encoding. Prunes shadowed
+    `Store` entries when a later Store at the same key supersedes
+    an earlier one (sound by the array Store/Select axiom);
+    preserves the `(ite ... (M_old idx))` shared-sibling form
+    when no shadow fires; and drops `define-fun` lines for
+    bytemap symbols not reachable from any `Select` query (their
+    content is inlined into the chain that reads them). Off by
+    default — preserves byte-identical output for the existing
+    eager emission.
   - Z3 knobs: `--timeout` (seconds), `--seed`, `--tactic`, and passthrough `--z3-args`.
   - Debug mode: `--debug` prints z3 stdin/stdout/stderr and a replay command.
 
