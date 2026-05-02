@@ -40,6 +40,7 @@ from ctac.rewrite.rules import (
     SELECT_OVER_STORE,
     chain_recognition_pipeline,
     cse_pipeline,
+    div_purify_pipeline,
     simplify_pipeline,
 )
 from ctac.tool.cli_runtime import (
@@ -376,7 +377,6 @@ def rewrite_cmd(
         )
         # Phase 1: simplification (bit-ops, const-divisor div rules, boolean/Ite,
         # distribution, range narrowing). Operates on phase 0's output.
-        # Phase 2 (optional): add R4a (div purification for non-constant divisors).
         phase1 = rewrite_program(
             phase_cse_early.program,
             simplify_pipeline,
@@ -387,20 +387,30 @@ def rewrite_cmd(
             phase="simplify",
             trace_sink=trace_sink,
         )
-        if purify_div:
-            phase2 = rewrite_program(
-                phase1.program,
-                simplify_pipeline + (R4A_DIV_PURIFY,),
-                max_iterations=max_iterations,
-                ite_max_depth=ite_max_depth,
-                symbol_sorts=tac.symbol_sorts,
-                use_int_ceil_div=ceildiv_op,
-                phase="simplify-r4a",
-                trace_sink=trace_sink,
-            )
-            rw = _merge_phases(phase0, phase_cse_early, phase1, phase2)
-        else:
-            rw = _merge_phases(phase0, phase_cse_early, phase1)
+        # Phase 1.5: div purification (R4 always; R4a when --purify-div).
+        # These are SMT-shaping rewrites (Div -> Euclidean bounds) that
+        # don't enable other simplifications on their own and that
+        # would mis-fire against simplify_pipeline's per-iteration
+        # static_defs snapshot when run alongside R3 — R3 cancels
+        # `Div(narrow(c*X), c) -> X` on cmd N, but R4 on cmd M > N
+        # in the same iter still saw the pre-cancel Div via
+        # `lookthrough` and emitted Euclidean bounds on a Div R3 had
+        # already eliminated. Running R4 here, after simplify reaches
+        # fixpoint, makes R4 see R3's final state.
+        div_rules = div_purify_pipeline + ((R4A_DIV_PURIFY,) if purify_div else ())
+        phase_div_purify = rewrite_program(
+            phase1.program,
+            div_rules,
+            max_iterations=max_iterations,
+            ite_max_depth=ite_max_depth,
+            symbol_sorts=tac.symbol_sorts,
+            use_int_ceil_div=ceildiv_op,
+            phase="div-purify",
+            trace_sink=trace_sink,
+        )
+        rw = _merge_phases(
+            phase0, phase_cse_early, phase1, phase_div_purify
+        )
         # Iterate DCE to fixed point: a chain of dead defs needs multiple sweeps
         # because liveness is computed once per pass and each pass only removes
         # the directly-dead leaves.

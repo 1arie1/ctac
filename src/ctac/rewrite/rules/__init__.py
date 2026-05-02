@@ -92,7 +92,16 @@ simplify_pipeline: tuple[Rule, ...] = (
     # Existing const-divisor div rules + bitfield strip.
     R2_DIV_FUSE,
     R3_DIV_MUL_CANCEL,
-    R4_DIV_IN_CMP,
+    # Note: R4_DIV_IN_CMP (Div-in-comparison -> Euclidean bounds) is
+    # *not* here. It's a div-purification step that emits SMT-level
+    # constraints rather than a structural simplification, so it runs
+    # in its own late phase (`div_purify_pipeline`) after the
+    # cancellation rules above have reached fixpoint. Running R4 here
+    # was unsound w.r.t. the per-iteration `static_defs` snapshot:
+    # when R3 cancelled `Div(narrow(2^32 * X), 2^32)` to `X` on
+    # cmd N, R4 on a later cmd in the same iteration could still
+    # see the stale `Div(...)` via `lookthrough` and emit Euclidean
+    # bounds on a `Div` that R3 had already eliminated.
     R1_BITFIELD_STRIP,
     # Boolean / Ite simplification.
     EQ_CONST_FOLD,
@@ -150,11 +159,27 @@ simplify_pipeline: tuple[Rule, ...] = (
 # late (after ITE_PURIFY etc.) — see ``commands_rw.py``.
 cse_pipeline: tuple[Rule, ...] = (CSE,)
 
+# Div-purification phase: SMT-level rewrites that replace ``Div`` (or
+# its uses in comparisons) with their Euclidean-bounds expansion.
+# These rules don't enable further structural simplification on their
+# own — their output is a constraint shape sea_vc consumes — so they
+# run AFTER ``simplify_pipeline`` has reached fixpoint, never
+# alongside the cancellation rules (R2/R3). Mixing R4 with R3 in the
+# same phase produced unsound R4 firings against R3's stale
+# ``static_defs`` snapshot (R3 eliminated the Div on cmd N, R4 on
+# cmd M > N still saw the pre-R3 Div via ``lookthrough``).
+# R4A_DIV_PURIFY is appended in ``purify_pipeline`` (gated by
+# ``--purify-div``) since it depends on a non-constant divisor that
+# only the CLI can know is desired.
+div_purify_pipeline: tuple[Rule, ...] = (R4_DIV_IN_CMP,)
+
 # Full pipeline: chain recognition + simplification + purification. The
 # CLI drives these as separate phases so chain recognizers see the
-# unmolested input, distribution rules don't pre-empt R6, and R4a's
-# Div-replacement happens last.
-purify_pipeline: tuple[Rule, ...] = simplify_pipeline + (R4A_DIV_PURIFY,)
+# unmolested input, distribution rules don't pre-empt R6, and the
+# div-purification rules fire only after simplify reaches fixpoint.
+purify_pipeline: tuple[Rule, ...] = (
+    simplify_pipeline + div_purify_pipeline + (R4A_DIV_PURIFY,)
+)
 
 default_pipeline: tuple[Rule, ...] = purify_pipeline
 
@@ -242,6 +267,7 @@ __all__ = [
     "all_rule_names",
     "cse_pipeline",
     "default_pipeline",
+    "div_purify_pipeline",
     "normalize_store_eq",
     "purify_pipeline",
     "simplify_pipeline",
