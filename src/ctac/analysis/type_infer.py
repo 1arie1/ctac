@@ -10,15 +10,26 @@ constraints:
   ``BWXOr`` / ``BNot`` operand → ``Int``.
 * ``Add`` / ``IntAdd`` and ``Sub`` / ``IntSub`` resolve their result
   kind from the operand kinds: ``Int + Int = Int``, ``Int - Int =
-  Int``, ``Ptr + Int = Ptr``, ``Ptr - Int = Ptr``. A small constant
-  (``|c| < 2^32``) is treated as ``Int`` for arithmetic-result
-  resolution: such a constant cannot be a region-prefix pointer
-  (all four SBF address regions start at ≥ 2^32), so using it as
-  the ``Int`` operand of these rules is sound. Constants are still
-  not seeded with a kind globally — only at the arithmetic-result
-  resolution point. ``Sub(Int, Ptr)`` and ``Sub(Ptr, Ptr)`` are
-  abstained (the latter is the pointer-difference → Int rule,
-  deferred to v2).
+  Int``, ``Ptr + Int = Ptr``, ``Ptr - Int = Ptr``. Two constant
+  predicates fold in here:
+
+  - **Small offset** (``|c| < 2^32``) is the strict bound for
+    ``Ptr + c -> Ptr`` / ``Ptr - c -> Ptr``: such a constant
+    cannot push a pointer past more than one region boundary,
+    so the result is still a pointer-shaped value.
+  - **Definitely Int** (``c < 2^32`` OR ``c >= 5*2^32``) is the
+    looser bound for the ``Int + Int -> Int`` rule: a constant
+    outside the union of pointer regions ``[2^32, 5*2^32)``
+    cannot be a pointer, so it can act as an Int operand.
+
+  Constants are still not seeded with a kind globally — only at
+  the arithmetic-result resolution point. ``Sub(Int, Ptr)`` and
+  ``Sub(Ptr, Ptr)`` are abstained (the latter is the pointer-
+  difference -> Int rule, deferred to v2).
+* ``assume Eq(R, c)`` (recursing through ``LAnd``) where ``c`` is a
+  definitely-Int constant -> meet ``R``'s class with ``Int``.
+  Sound: a ``c`` outside every region cannot itself be a pointer,
+  so any value asserted equal to it cannot be one either.
 * ``narrow`` (``safe_math_narrow_bvN:bif``) is identity:
   ``lhs ≡ inner``.
 * ``BWAnd(R, const)`` / ``BWOr(R, const)`` is identity (alignment
@@ -143,12 +154,10 @@ def _is_safe_math_narrow_name(name: str) -> bool:
 
 
 def _is_small_const_offset(expr: TacExpr) -> bool:
-    """True iff ``expr`` is a constant whose magnitude is below the
-    region-distance threshold ``_PTR_OFFSET_LIMIT``. Used by the Add/Sub
-    rule to treat such constants as effectively ``Int`` for arithmetic-
-    result resolution: a small constant cannot be a region-prefix pointer
-    (every SBF address region starts at ≥ 2^32), so in arithmetic
-    position it can only contribute ``Int`` semantics."""
+    """True iff ``expr`` is a constant whose magnitude is strictly below
+    the region-distance threshold ``_PTR_OFFSET_LIMIT`` (2^32). Used by
+    the ``Ptr ± c -> Ptr`` rule: such an offset can shift a pointer by
+    at most one region, so the result is still a pointer-shaped value."""
     if not isinstance(expr, ConstExpr):
         return False
     n = const_expr_to_int(expr)
@@ -157,18 +166,51 @@ def _is_small_const_offset(expr: TacExpr) -> bool:
     return abs(n) < _PTR_OFFSET_LIMIT
 
 
+# Upper bound (exclusive) on values that could lie in some SBF pointer
+# region. Regions span ``0x{1,2,3,4}xxxxxxxx``, i.e. the union
+# ``[2^32, 5*2^32)``. A non-negative integer at or above 5*2^32 is
+# above every pointer region; a value below 2^32 (or negative) is below
+# every pointer region. Either way, it cannot itself be a pointer.
+_POINTER_RANGE_HI = 5 * (1 << 32)
+
+
+def _is_const_definitely_int(expr: TacExpr) -> bool:
+    """True iff ``expr`` is a constant whose value is provably outside
+    every SBF pointer region. Such a constant cannot be a pointer, so
+    in any arithmetic-result position or ``assume R == c`` context it
+    contributes ``Int`` semantics."""
+    if not isinstance(expr, ConstExpr):
+        return False
+    n = const_expr_to_int(expr)
+    if n is None:
+        return False
+    if n < _PTR_OFFSET_LIMIT:
+        # Below the lowest region (incl. negatives).
+        return True
+    if n >= _POINTER_RANGE_HI:
+        # Above the highest region.
+        return True
+    return False
+
+
 def _effective_arith_kind(expr: TacExpr, kind: TypeKind) -> TypeKind:
-    """Resolve an Add/Sub operand's effective kind for result resolution.
-
-    Returns ``Int`` for a small-constant operand whose class kind is
-    ``Top`` (the constant cannot be a region-prefix pointer; in an
-    arithmetic position it behaves as Int). Otherwise returns the
-    operand's own class kind unchanged.
-
-    Soundness: this does NOT seed kind on the constant globally — the
-    union-find class for the surrounding expression is unaffected; the
-    Int treatment is applied only at the local result-kind decision."""
+    """Resolve an Add/Sub operand's effective kind for the strict
+    ``Ptr ± c -> Ptr`` rule. Treats a small-magnitude constant as Int.
+    Constants outside the pointer-range box but ≥ 2^32 stay TOP here —
+    they are NOT safe to treat as Int for ``Ptr + c -> Ptr`` (the result
+    would land outside any pointer region)."""
     if kind == TypeKind.TOP and _is_small_const_offset(expr):
+        return TypeKind.INT
+    return kind
+
+
+def _loose_arith_kind(expr: TacExpr, kind: TypeKind) -> TypeKind:
+    """Resolve an Add/Sub operand's effective kind for the
+    ``Int + Int -> Int`` rule. Treats every definitely-Int constant
+    (small OR larger-than-pointer-range) as Int. Used only when no
+    operand is Ptr — combining a Ptr with a huge constant is unsound
+    here (the result wouldn't stay in any region)."""
+    if kind == TypeKind.TOP and _is_const_definitely_int(expr):
         return TypeKind.INT
     return kind
 
@@ -532,6 +574,9 @@ def _walk_and_apply(uf: _UnionFind, expr: TacExpr) -> tuple[TypeKind, bool]:
         result_kind = arg_kinds[0]
     elif op in ("Add", "IntAdd") and len(args) == 2:
         a, b = args[0], args[1]
+        # Strict effective kind: only small offsets count as Int — used
+        # for the Ptr+c=Ptr rule, where huge offsets would land outside
+        # every pointer region.
         eka = _effective_arith_kind(a, arg_kinds[0])
         ekb = _effective_arith_kind(b, arg_kinds[1])
         if eka == TypeKind.BOT or ekb == TypeKind.BOT:
@@ -540,13 +585,16 @@ def _walk_and_apply(uf: _UnionFind, expr: TacExpr) -> tuple[TypeKind, bool]:
             eka == TypeKind.INT and ekb == TypeKind.PTR
         ):
             result_kind = TypeKind.PTR
-        elif eka == TypeKind.INT and ekb == TypeKind.INT:
-            result_kind = TypeKind.INT
         else:
-            # Top operand (without small-const treatment) or Ptr+Ptr —
-            # abstain. Ptr+Ptr could be flagged Bot but we leave it Top
-            # for v1 (sound, imprecise).
-            result_kind = TypeKind.TOP
+            # Try Int+Int -> Int with the looser predicate (any const
+            # definitely outside pointer range counts as Int here).
+            lka = _loose_arith_kind(a, arg_kinds[0])
+            lkb = _loose_arith_kind(b, arg_kinds[1])
+            if lka == TypeKind.INT and lkb == TypeKind.INT:
+                result_kind = TypeKind.INT
+            else:
+                # Mixed Top/Top, or Ptr+Ptr — abstain (sound, imprecise).
+                result_kind = TypeKind.TOP
     elif op in ("Sub", "IntSub") and len(args) == 2:
         # Sub is asymmetric in argument order: only the LHS may be Ptr.
         # ``Sub(Int, Ptr)`` is not a pointer in any sensible semantics
@@ -559,10 +607,13 @@ def _walk_and_apply(uf: _UnionFind, expr: TacExpr) -> tuple[TypeKind, bool]:
             result_kind = TypeKind.BOT
         elif eka == TypeKind.PTR and ekb == TypeKind.INT:
             result_kind = TypeKind.PTR
-        elif eka == TypeKind.INT and ekb == TypeKind.INT:
-            result_kind = TypeKind.INT
         else:
-            result_kind = TypeKind.TOP
+            lka = _loose_arith_kind(a, arg_kinds[0])
+            lkb = _loose_arith_kind(b, arg_kinds[1])
+            if lka == TypeKind.INT and lkb == TypeKind.INT:
+                result_kind = TypeKind.INT
+            else:
+                result_kind = TypeKind.TOP
     elif op == "Ite" and len(args) == 3:
         result_kind = join(arg_kinds[1], arg_kinds[2])
     elif op in ("BWAnd", "BWOr") and len(args) == 2:
@@ -605,6 +656,45 @@ def _expr_summary(expr: TacExpr) -> str:
     return go(expr, 2)
 
 
+def _walk_assume_for_const_int_eq(uf: _UnionFind, cond: TacExpr) -> bool:
+    """In a must-hold (assume) context, recurse through ``LAnd`` and meet
+    a SymRef's class with ``Int`` whenever it is asserted equal to a
+    constant outside every pointer region.
+
+    Sound: under any reachable execution the SymRef's value equals the
+    constant; if that constant cannot itself be a pointer, neither can
+    the SymRef. Recursion stops at any non-LAnd boolean operator
+    (``LOr``/``LNot``/comparisons) — those don't preserve the
+    must-hold context for their nested Eq operands."""
+    if not isinstance(cond, ApplyExpr):
+        return False
+    op, args = _unwrap_apply(cond)
+    changed = False
+    if op == "Eq" and len(args) == 2:
+        a, b = args[0], args[1]
+        if isinstance(a, SymbolRef) and _is_const_definitely_int(b):
+            if uf.meet_kind(
+                canonical_symbol(a.name),
+                TypeKind.INT,
+                rule="assume-eq-const-int",
+                detail=f"assume {a.name} == {b.value}",
+            ):
+                changed = True
+        if isinstance(b, SymbolRef) and _is_const_definitely_int(a):
+            if uf.meet_kind(
+                canonical_symbol(b.name),
+                TypeKind.INT,
+                rule="assume-eq-const-int",
+                detail=f"assume {a.value} == {b.name}",
+            ):
+                changed = True
+    elif op == "LAnd":
+        for arg in args:
+            if _walk_assume_for_const_int_eq(uf, arg):
+                changed = True
+    return changed
+
+
 def _process_command(uf: _UnionFind, cmd, trace_ctx: _TraceCtx) -> bool:
     changed = False
     if isinstance(cmd, AssignExpCmd):
@@ -644,6 +734,8 @@ def _process_command(uf: _UnionFind, cmd, trace_ctx: _TraceCtx) -> bool:
     elif isinstance(cmd, AssumeExpCmd):
         _, c = _walk_and_apply(uf, cmd.condition)
         if c:
+            changed = True
+        if _walk_assume_for_const_int_eq(uf, cmd.condition):
             changed = True
     elif isinstance(cmd, AssertCmd):
         _, c = _walk_and_apply(uf, cmd.predicate)

@@ -227,11 +227,70 @@ def test_assume_equality_unifies() -> None:
     assert res.class_id["R"] == res.class_id["R2"]
 
 
-def test_assume_equality_with_const_does_not_seed_kind() -> None:
+def test_assume_equality_with_pointer_range_const_does_not_seed_kind() -> None:
+    """A constant with a region-prefix high nibble (e.g. ``0x300000000``)
+    could be a heap pointer, so abstain — don't seed Int from it."""
     res = _run([
         _havoc("R"),
         _assume(_apply("Eq", _sym("R"), _const("0x300000000"))),
     ])
+    assert res.kind["R"] == TypeKind.TOP
+
+
+def test_assume_equality_with_huge_const_seeds_int() -> None:
+    """``assume R == 5765610986344117002`` (≈ 0x5008..., far above
+    every pointer region) → ``R`` must be Int. Mirrors the
+    ``assume R1234 == 446_7415_4235_9119_7800`` pattern in
+    request_elevation_group."""
+    res = _run([
+        _havoc("R"),
+        _assume(_apply("Eq", _sym("R"), _const("5765610986344117002"))),
+    ])
+    assert res.kind["R"] == TypeKind.INT
+
+
+def test_assume_equality_with_small_const_seeds_int() -> None:
+    """``assume R == 0`` — zero is below every pointer region, so R is
+    Int."""
+    res = _run([
+        _havoc("R"),
+        _assume(_apply("Eq", _sym("R"), _const("0"))),
+    ])
+    assert res.kind["R"] == TypeKind.INT
+
+
+def test_assume_eq_const_int_inside_land_is_recognized() -> None:
+    """LAnd preserves the must-hold context for both conjuncts."""
+    res = _run([
+        _havoc("R"),
+        _havoc("S"),
+        _assume(
+            _apply(
+                "LAnd",
+                _apply("Eq", _sym("R"), _const("0xffffffffffffffff")),
+                _apply("Eq", _sym("S"), _const("0x10")),
+            )
+        ),
+    ])
+    assert res.kind["R"] == TypeKind.INT
+    assert res.kind["S"] == TypeKind.INT
+
+
+def test_assume_eq_const_int_inside_lor_does_not_seed_kind() -> None:
+    """LOr does NOT preserve must-hold for its conjuncts — only one
+    branch needs to be true. Must abstain."""
+    res = _run([
+        _havoc("R"),
+        _assume(
+            _apply(
+                "LOr",
+                _apply("Eq", _sym("R"), _const("0")),
+                _apply("Eq", _sym("R"), _const("0x300000000")),
+            )
+        ),
+    ])
+    # R could equal a pointer-shaped value (the second disjunct), so we
+    # cannot conclude Int.
     assert res.kind["R"] == TypeKind.TOP
 
 
@@ -430,6 +489,44 @@ def test_intsub_int_minus_small_const_is_int() -> None:
     ])
     assert res.kind["R"] == TypeKind.INT
     assert res.kind["Y"] == TypeKind.INT
+
+
+def test_intadd_int_plus_huge_const_is_int() -> None:
+    """A constant larger than the pointer-range upper bound (5*2^32)
+    cannot be a pointer either — it acts as Int in arithmetic position
+    via the looser ``Int + Int = Int`` predicate."""
+    res = _run([
+        _havoc("R"),
+        _assign("X", _apply("Mul", _sym("R"), _const("2"))),
+        # 0x500000000 = 5 * 2^32 — exactly the upper bound (not a pointer).
+        _assign("Y", _apply("IntAdd", _sym("R"), _const("0x500000000"))),
+    ])
+    assert res.kind["R"] == TypeKind.INT
+    assert res.kind["Y"] == TypeKind.INT
+
+
+def test_intsub_int_minus_huge_const_is_int() -> None:
+    res = _run([
+        _havoc("R"),
+        _assign("X", _apply("Mul", _sym("R"), _const("2"))),
+        _assign("Y", _apply("IntSub", _sym("R"), _const("0xffffffffffffffff"))),
+    ])
+    assert res.kind["R"] == TypeKind.INT
+    assert res.kind["Y"] == TypeKind.INT
+
+
+def test_add_ptr_plus_huge_const_stays_top() -> None:
+    """Adding a constant ≥ 5*2^32 to a Ptr would push past every region —
+    must abstain. The strict ``Ptr ± small_const`` rule does NOT extend
+    to huge constants."""
+    res = _run([
+        _havoc("M"),
+        _havoc("P"),
+        _assign("V", _apply("Select", _sym("M"), _sym("P"))),
+        _assign("R", _apply("IntAdd", _sym("P"), _const("0x500000000"))),
+    ])
+    assert res.kind["P"] == TypeKind.PTR
+    assert res.kind["R"] == TypeKind.TOP
 
 
 def test_intadd_two_small_consts_resolves_int() -> None:
