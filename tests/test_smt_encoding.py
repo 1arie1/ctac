@@ -185,17 +185,26 @@ def test_guard_statics_off_emits_unguarded_static_eq() -> None:
 def test_guard_statics_on_wraps_non_entry_static_in_blk_implication() -> None:
     tac = parse_string(TAC_NON_ENTRY_STATIC, path="<string>")
     rendered = render_smt_script(build_vc(tac, guard_statics=True))
-    assert "(assert (=> BLK_ok (= v 66)))" in rendered
+    # Block `ok` has two static defs (`v = 0x42` and `p = Eq(v, 0x42)`);
+    # under --guard-statics they share a single block-guard implication
+    # over the conjunction of equalities, not one implication apiece.
+    assert "(assert (=> BLK_ok (and (= v 66) (= p (= v 66)))))" in rendered
+    assert "(assert (=> BLK_ok (= v 66)))" not in rendered
     assert "(assert (= v 66))" not in rendered
 
 
 def test_guard_statics_on_leaves_entry_static_unguarded() -> None:
-    # Entry block guard reduces to `true`, so `_implies` short-circuits
-    # and entry-block static defs render identically with/without the flag.
+    # Entry block guard reduces to `true`, so `implies` short-circuits
+    # the wrapper away — entry-block statics never appear under
+    # `(=> BLK_entry ...)`. They are still bundled into a single
+    # `(and ...)` conjunction (the per-block grouping shape).
     tac = parse_string(TAC_SMOKE_OPS, path="<string>")
-    a = render_smt_script(build_vc(tac))
-    b = render_smt_script(build_vc(tac, guard_statics=True))
-    assert a == b
+    rendered = render_smt_script(build_vc(tac, guard_statics=True))
+    assert "(=> BLK_entry" not in rendered
+    assert (
+        "(assert (and (= x 1) (= y (mod (+ x 2) BV256_MOD)) (= b (>= y 3))))"
+        in rendered
+    )
 
 
 def test_guard_statics_default_off_is_byte_identical() -> None:

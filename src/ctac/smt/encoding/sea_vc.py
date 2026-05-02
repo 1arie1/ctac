@@ -1080,7 +1080,14 @@ class SeaVcEncoder(SmtEncoder):
                             f"(define-fun {nm} (({_MAP_PARAM} Int)) Int {merged_body})"
                         )
 
-        # Static assignment encoding and assume constraints.
+        # Static assignment encoding and assume constraints. Under
+        # --guard-statics we batch the equalities by defining block and
+        # emit one ``(=> BLK_b (and eq1 eq2 ...))`` per block instead of
+        # per-equality implications: the block guard is the same fact
+        # for every static def in that block, so a single conjunction
+        # avoids handing the SAT/SMT core N copies of the same premise
+        # to discharge.
+        grouped_static_eqs: dict[str, list[str]] = {}
         for ds in du.definitions:
             if ds.symbol in dynamic_symbols:
                 continue
@@ -1099,14 +1106,17 @@ class SeaVcEncoder(SmtEncoder):
                     rhs, _ = emit_expr(cmd.rhs, expected_sort=symbol_sort[ds.symbol])
                 eq = f"(= {lhs} {rhs})"
                 if ctx.guard_statics:
-                    guard = block_guard(ds.block_id, entry_block_id=entry_block_id)
-                    add_constraint(implies(guard, eq))
+                    grouped_static_eqs.setdefault(ds.block_id, []).append(eq)
                 else:
                     add_constraint(eq)
                 if _rhs_is_top_level_narrow(cmd.rhs):
                     add_narrow_range_if_bv256(ds.symbol, lhs)
             elif isinstance(cmd, AssignHavocCmd):
                 add_havoc_range_if_bv256(ds.symbol, symbol_term[ds.symbol], block_id=ds.block_id, cmd_index=ds.cmd_index)
+        if ctx.guard_statics:
+            for block_id, eqs in grouped_static_eqs.items():
+                guard = block_guard(block_id, entry_block_id=entry_block_id)
+                add_constraint(implies(guard, and_terms(eqs)))
         static_end = len(constraints)
 
         for block in program.blocks:

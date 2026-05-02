@@ -231,9 +231,11 @@ Prompt template:
   - Solver mode: `--run` invokes z3 and reports `sat|unsat|unknown|timeout`.
   - SAT model export: `--model <path>` writes TAC model text compatible with `ctac run --model`.
   - Unsat-core mode: `--unsat-core` names asserts and prints the core on UNSAT.
-  - Static-def guarding: `--guard-statics` wraps each static-def
-    equality in `(=> BLK_<bid> (= lhs rhs))` instead of the default
-    bare `(= lhs rhs)`. Off by default; entry-block defs are
+  - Static-def guarding: `--guard-statics` emits one
+    `(=> BLK_<bid> (and (= lhs1 rhs1) (= lhs2 rhs2) ...))` per
+    defining block — a single block guard shared across that
+    block's static equalities — instead of the default bare
+    `(= lhs rhs)` per def. Off by default; entry-block defs are
     unaffected (entry guard is `true`).
   - Dynamic-def guarding: `--guard-dynamics` encodes each dynamic
     (DSA-merged) assignment as a per-defining-block guarded

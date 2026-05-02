@@ -149,10 +149,13 @@ def smt_cmd(
         False,
         "--guard-statics",
         help=(
-            "Guard each static-def equality by its block-reachability "
-            "variable: `(=> BLK_<bid> (= lhs rhs))`. Default emits "
-            "`(= lhs rhs)` unconditionally; entry-block defs are "
-            "unaffected (entry guard is `true`)."
+            "Guard the static-def equalities of each block by its "
+            "block-reachability variable: per defining block, emit a "
+            "single `(=> BLK_<bid> (and (= lhs1 rhs1) (= lhs2 rhs2) "
+            "...))` over the conjunction of that block's static "
+            "equalities. Default emits each `(= lhs rhs)` "
+            "unconditionally; entry-block defs are unaffected (entry "
+            "guard is `true`)."
         ),
     ),
     guard_dynamics: bool = typer.Option(
