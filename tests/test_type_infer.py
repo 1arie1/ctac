@@ -348,8 +348,9 @@ def test_narrow_add_chain_propagates_ptr_kind() -> None:
     assert res.kind["R"] == TypeKind.PTR
 
 
-def test_add_int_plus_int_stays_top_in_v1() -> None:
-    """V1 abstains on Int+Int (sound; v2 may add this rule)."""
+def test_add_int_plus_int_is_int() -> None:
+    """`Int + Int = Int` is sound (no boundary-crossing risk) and is
+    resolved by the v1 arithmetic-result rules."""
     res = _run([
         _havoc("A"),
         _havoc("B"),
@@ -357,11 +358,65 @@ def test_add_int_plus_int_stays_top_in_v1() -> None:
         _assign("X2", _apply("Mul", _sym("B"), _const("2"))),
         _assign("R", _apply("Add", _sym("A"), _sym("B"))),
     ])
-    # A and B are pinned Int via Mul use, but R = A+B isn't constrained to
-    # Int by v1 — sound abstention. The rule could be added in v2.
     assert res.kind["A"] == TypeKind.INT
     assert res.kind["B"] == TypeKind.INT
-    assert res.kind["R"] == TypeKind.TOP
+    assert res.kind["R"] == TypeKind.INT
+
+
+def test_intsub_int_minus_int_is_int() -> None:
+    """`Int - Int = Int` — covers the I1503 = IntSub(R1774, R1460) pattern
+    in `request_elevation_group`'s post-rw form."""
+    res = _run([
+        _havoc("A"),
+        _havoc("B"),
+        # Pin both as Int via downstream Mul use.
+        _assign("X1", _apply("Mul", _sym("A"), _const("2"))),
+        _assign("X2", _apply("Mul", _sym("B"), _const("2"))),
+        _assign("I", _apply("IntSub", _sym("A"), _sym("B"))),
+    ])
+    assert res.kind["A"] == TypeKind.INT
+    assert res.kind["B"] == TypeKind.INT
+    assert res.kind["I"] == TypeKind.INT
+
+
+def test_intadd_int_plus_small_const_is_int() -> None:
+    """A small constant in arithmetic position acts as Int — propagating
+    through `Int + small_const` to give an Int result. Constants are
+    still NOT seeded with a kind globally (they can act as Int in one
+    position and Ptr-context-receiving in another)."""
+    res = _run([
+        _havoc("R"),
+        _assign("X", _apply("Mul", _sym("R"), _const("2"))),
+        _assign("Y", _apply("IntAdd", _sym("R"), _const("0x10"))),
+    ])
+    assert res.kind["R"] == TypeKind.INT
+    assert res.kind["Y"] == TypeKind.INT
+
+
+def test_intsub_int_minus_small_const_is_int() -> None:
+    res = _run([
+        _havoc("R"),
+        _assign("X", _apply("Mul", _sym("R"), _const("2"))),
+        _assign("Y", _apply("IntSub", _sym("R"), _const("0x10"))),
+    ])
+    assert res.kind["R"] == TypeKind.INT
+    assert res.kind["Y"] == TypeKind.INT
+
+
+def test_intadd_two_small_consts_resolves_int() -> None:
+    """Both operands small consts → Int+Int → Int. Edge case, but
+    confirms the small-const-as-Int treatment composes."""
+    res = _run([
+        _havoc("M"),
+        _assign("Y", _apply("IntAdd", _const("0x10"), _const("0x20"))),
+        # Without a downstream use Y would already be Int via the rule.
+        _assign("V", _apply("Select", _sym("M"), _sym("Y"))),
+    ])
+    # Y was used as a Select index → meet with Ptr would conflict with
+    # the small-const-derived Int → Bot. This pins the soundness of the
+    # small-const-as-Int treatment: it doesn't shield the result from
+    # downstream contradictions.
+    assert res.kind["Y"] == TypeKind.BOT
 
 
 def test_ite_join_of_two_ptrs_is_ptr() -> None:

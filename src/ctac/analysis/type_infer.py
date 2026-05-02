@@ -8,15 +8,17 @@ constraints:
 * ``Select(M, idx)`` / ``Store(M, idx, v)`` index → ``Ptr``.
 * ``Mul`` / ``Div`` / ``IntMul`` / ``IntDiv`` / ``Shift*`` /
   ``BWXOr`` / ``BNot`` operand → ``Int``.
-* ``Add`` / ``IntAdd`` of one ``Ptr`` and one ``Int`` operand →
-  result is ``Ptr``.
-* ``Add`` / ``IntAdd`` of a ``Ptr`` and a small constant (``|c| <
-  2^32``) → result is ``Ptr``. ``Sub`` / ``IntSub`` analogously:
-  ``Ptr - Int`` and ``Ptr - small_const`` → ``Ptr``. The threshold
-  is the inter-region distance in TAC's high-nibble address layout;
-  adding a constant below it cannot move a pointer past more than
-  one region boundary, so the result is still a pointer-shaped
-  value (kind ``Ptr``, possibly different region in v2).
+* ``Add`` / ``IntAdd`` and ``Sub`` / ``IntSub`` resolve their result
+  kind from the operand kinds: ``Int + Int = Int``, ``Int - Int =
+  Int``, ``Ptr + Int = Ptr``, ``Ptr - Int = Ptr``. A small constant
+  (``|c| < 2^32``) is treated as ``Int`` for arithmetic-result
+  resolution: such a constant cannot be a region-prefix pointer
+  (all four SBF address regions start at ≥ 2^32), so using it as
+  the ``Int`` operand of these rules is sound. Constants are still
+  not seeded with a kind globally — only at the arithmetic-result
+  resolution point. ``Sub(Int, Ptr)`` and ``Sub(Ptr, Ptr)`` are
+  abstained (the latter is the pointer-difference → Int rule,
+  deferred to v2).
 * ``narrow`` (``safe_math_narrow_bvN:bif``) is identity:
   ``lhs ≡ inner``.
 * ``BWAnd(R, const)`` / ``BWOr(R, const)`` is identity (alignment
@@ -134,13 +136,32 @@ def _is_safe_math_narrow_name(name: str) -> bool:
 def _is_small_const_offset(expr: TacExpr) -> bool:
     """True iff ``expr`` is a constant whose magnitude is below the
     region-distance threshold ``_PTR_OFFSET_LIMIT``. Used by the Add/Sub
-    asymmetric rule to recognize ``Ptr ± small_const`` as ``Ptr``."""
+    rule to treat such constants as effectively ``Int`` for arithmetic-
+    result resolution: a small constant cannot be a region-prefix pointer
+    (every SBF address region starts at ≥ 2^32), so in arithmetic
+    position it can only contribute ``Int`` semantics."""
     if not isinstance(expr, ConstExpr):
         return False
     n = const_expr_to_int(expr)
     if n is None:
         return False
     return abs(n) < _PTR_OFFSET_LIMIT
+
+
+def _effective_arith_kind(expr: TacExpr, kind: TypeKind) -> TypeKind:
+    """Resolve an Add/Sub operand's effective kind for result resolution.
+
+    Returns ``Int`` for a small-constant operand whose class kind is
+    ``Top`` (the constant cannot be a region-prefix pointer; in an
+    arithmetic position it behaves as Int). Otherwise returns the
+    operand's own class kind unchanged.
+
+    Soundness: this does NOT seed kind on the constant globally — the
+    union-find class for the surrounding expression is unaffected; the
+    Int treatment is applied only at the local result-kind decision."""
+    if kind == TypeKind.TOP and _is_small_const_offset(expr):
+        return TypeKind.INT
+    return kind
 
 
 def _unwrap_apply(expr: ApplyExpr) -> tuple[str, tuple[TacExpr, ...]]:
@@ -502,37 +523,35 @@ def _walk_and_apply(uf: _UnionFind, expr: TacExpr) -> tuple[TypeKind, bool]:
         result_kind = arg_kinds[0]
     elif op in ("Add", "IntAdd") and len(args) == 2:
         a, b = args[0], args[1]
-        ka, kb = arg_kinds[0], arg_kinds[1]
-        if ka == TypeKind.BOT or kb == TypeKind.BOT:
+        eka = _effective_arith_kind(a, arg_kinds[0])
+        ekb = _effective_arith_kind(b, arg_kinds[1])
+        if eka == TypeKind.BOT or ekb == TypeKind.BOT:
             result_kind = TypeKind.BOT
-        elif (ka == TypeKind.PTR and kb == TypeKind.INT) or (
-            ka == TypeKind.INT and kb == TypeKind.PTR
+        elif (eka == TypeKind.PTR and ekb == TypeKind.INT) or (
+            eka == TypeKind.INT and ekb == TypeKind.PTR
         ):
             result_kind = TypeKind.PTR
-        elif ka == TypeKind.PTR and _is_small_const_offset(b):
-            # Ptr + small_const — pointer arithmetic by a constant
-            # offset stays within at most one region boundary.
-            result_kind = TypeKind.PTR
-        elif kb == TypeKind.PTR and _is_small_const_offset(a):
-            result_kind = TypeKind.PTR
+        elif eka == TypeKind.INT and ekb == TypeKind.INT:
+            result_kind = TypeKind.INT
         else:
-            # Int+Int, any Top operand without a small-const partner,
-            # or Ptr+Ptr — abstain. Ptr+Ptr could be flagged Bot but
-            # we leave it Top for v1 (sound, imprecise).
+            # Top operand (without small-const treatment) or Ptr+Ptr —
+            # abstain. Ptr+Ptr could be flagged Bot but we leave it Top
+            # for v1 (sound, imprecise).
             result_kind = TypeKind.TOP
     elif op in ("Sub", "IntSub") and len(args) == 2:
         # Sub is asymmetric in argument order: only the LHS may be Ptr.
-        # ``Sub(Int, Ptr)`` and ``Sub(small_const, Ptr)`` are not
-        # pointer-shaped values in any sensible semantics; abstain there.
-        # ``Sub(Ptr, Ptr) = Int`` (pointer difference) is deferred to v2.
+        # ``Sub(Int, Ptr)`` is not a pointer in any sensible semantics
+        # (abstain). ``Sub(Ptr, Ptr) = Int`` (pointer difference) is
+        # deferred to v2.
         a, b = args[0], args[1]
-        ka, kb = arg_kinds[0], arg_kinds[1]
-        if ka == TypeKind.BOT or kb == TypeKind.BOT:
+        eka = _effective_arith_kind(a, arg_kinds[0])
+        ekb = _effective_arith_kind(b, arg_kinds[1])
+        if eka == TypeKind.BOT or ekb == TypeKind.BOT:
             result_kind = TypeKind.BOT
-        elif ka == TypeKind.PTR and kb == TypeKind.INT:
+        elif eka == TypeKind.PTR and ekb == TypeKind.INT:
             result_kind = TypeKind.PTR
-        elif ka == TypeKind.PTR and _is_small_const_offset(b):
-            result_kind = TypeKind.PTR
+        elif eka == TypeKind.INT and ekb == TypeKind.INT:
+            result_kind = TypeKind.INT
         else:
             result_kind = TypeKind.TOP
     elif op == "Ite" and len(args) == 3:
