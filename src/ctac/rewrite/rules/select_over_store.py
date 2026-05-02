@@ -111,7 +111,14 @@ def _resolve_select(
 ) -> TacExpr | None:
     """Top-level resolution entry: handle a SymbolRef map by looking
     up its static def, then dispatching to ``_resolve_in_def``. Cache
-    the result (including ``None`` for bailed queries)."""
+    the result.
+
+    "Last good map" fallback: if the inner walk through this symbol's
+    def can't make clean progress (returns ``None``), commit to the
+    current symbol level as ``Select(SymRef, idx)``. Sound because we
+    arrived here only via const-disjoint Store peels at the outer
+    callers, each of which is independently sound. The fallback lets
+    those outer peels survive even when the deeper walk bails."""
     canon = canonical_symbol(map_sym.name)
     cache_key = (canon, _canonical_expr(idx_expr))
     if cache_key in cache:
@@ -124,17 +131,20 @@ def _resolve_select(
         cache[cache_key] = None
         return None
 
+    leaf_form: TacExpr = ApplyExpr("Select", (SymbolRef(canon), idx_expr))
+
     def_rhs = ctx.definition(canon)
     if def_rhs is None:
         # Leaf: havoc-defined, dynamic-multi-def, or no static def.
-        # The Select stays rooted here.
-        result: TacExpr | None = ApplyExpr(
-            "Select", (SymbolRef(canon), idx_expr)
-        )
-        cache[cache_key] = result
-        return result
+        cache[cache_key] = leaf_form
+        return leaf_form
 
-    result = _resolve_in_def(def_rhs, idx_expr, ctx, cache)
+    inner = _resolve_in_def(def_rhs, idx_expr, ctx, cache)
+    # Fallback to the leaf form if the inner walk couldn't produce a
+    # single clean answer (symbolic-key Store, Ite-arms disagree, etc).
+    # The outer top-level guard in ``_rewrite_select_over_store``
+    # suppresses the rule fire when this fallback equals the input.
+    result: TacExpr | None = inner if inner is not None else leaf_form
     cache[cache_key] = result
     return result
 

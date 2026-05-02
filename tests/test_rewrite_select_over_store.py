@@ -152,6 +152,48 @@ def test_sos_symbolic_key_bails():
     )
 
 
+def test_sos_const_disjoint_peels_above_symbolic_key_store():
+    """Multi-step chain where a const-disjoint Store sits above a
+    symbolic-key Store. The const-disjoint peel is sound on its own;
+    the rule should commit to it instead of bailing all the way back.
+    Mirror of the request_elevation_group `R1026 = M1021[0x400000020]`
+    pattern where the inner walk hits a symbolic-key Store at M1161
+    but the four const-disjoint Stores above it should still peel."""
+    syms = (
+        "M0:bytemap\n"
+        "\tM1:bytemap\n"
+        "\tM2:bytemap\n"
+        "\tR0:bv256\n"
+        "\tR1:bv256\n"
+        "\tR_sym:bv256\n"
+        "\tR_v:bv256"
+    )
+    body = (
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd M0\n"
+        "\t\tAssignHavocCmd R_sym\n"
+        "\t\tAssignHavocCmd R_v\n"
+        # Inner: Store with symbolic key — un-resolvable for a const Select index.
+        "\t\tAssignExpCmd M1 Store(M0 R_sym R_v)\n"
+        # Outer: Store at a constant key disjoint from our query.
+        "\t\tAssignExpCmd M2 Store(M1 0x10 R0)\n"
+        # Query at a different constant key — disjoint from 0x10, can peel.
+        "\t\tAssignExpCmd R1 Select(M2 0x20)\n"
+        "\t}"
+    )
+    tac = parse_string(_wrap(body, syms=syms), path="<s>")
+    res = rewrite_program(
+        tac.program, (SELECT_OVER_STORE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule == {"SelectOverStore": 1}
+    # R1's RHS becomes Select(M1, 0x20) — peeled past the const-disjoint
+    # Store at M2 but committed to M1 (the symbolic-key Store can't
+    # peel further without region-aware reasoning).
+    assert _rhs(res.program, "R1") == ApplyExpr(
+        "Select", (SymbolRef("M1"), ConstExpr("0x20"))
+    )
+
+
 def test_sos_symbolic_key_syntactic_equality_hits():
     """Syntactic equality on symbolic keys still folds: the value at
     that exact symbol IS the stored value, regardless of what the
