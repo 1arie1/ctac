@@ -257,6 +257,19 @@ class RewriteCtx:
             return
         self._pending_skips.add((self._cur_block, self._cur_cmd))
 
+    def skip_cmd_at(self, block_id: str, cmd_index: int) -> None:
+        """Mark an arbitrary ``(block_id, cmd_index)`` as to-be-deleted.
+
+        Counterpart to :meth:`skip_current_cmd` for multi-command
+        rewrites that need to delete commands at positions other than
+        the rule's current host (e.g. a rule fired at an assume that
+        also wants to drop the matching havoc def + sibling
+        constraints elsewhere in the same block). The framework's
+        per-position-edit pass at end-of-iteration applies these
+        skips uniformly.
+        """
+        self._pending_skips.add((block_id, cmd_index))
+
     def is_static(self, var_name: str) -> bool:
         """True iff ``var_name`` is DSA-static (incl. havoc-only definitions)."""
         return canonical_symbol(var_name, strip_var_suffixes=_STRIP_SUFFIXES) in self.static_symbols

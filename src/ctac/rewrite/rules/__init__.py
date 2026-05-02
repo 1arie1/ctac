@@ -22,6 +22,7 @@ from ctac.rewrite.rules.bv_max_to_ite_validation import ADD_BV_MAX_TO_ITE_CASES
 from ctac.rewrite.rules.ceildiv_validation import R6_CASES
 from ctac.rewrite.rules.copyprop import CP_ALIAS
 from ctac.rewrite.rules.cse import CSE
+from ctac.rewrite.rules.havoc_equate_fold import HAVOC_EQUATE_FOLD
 from ctac.rewrite.rules.havoc_equate_subst import HAVOC_EQUATE_SUBST
 from ctac.rewrite.rules.div import (
     R1_BITFIELD_STRIP,
@@ -110,6 +111,13 @@ simplify_pipeline: tuple[Rule, ...] = (
     # assumes; the post-substitution `Eq(X, X)` collapses via
     # EQ_REFLEXIVE; DCE clears the now-unused havoc def.
     HAVOC_EQUATE_SUBST,
+    # Sister rule to HAVOC_EQUATE_SUBST: when SUBST can't fire
+    # because X's def is later than R's uses (e.g. SBF-frontend
+    # "pre-allocate slot R, later equate to nondet result X" shape),
+    # FOLD drops R + its constraints and rewrites the equality assume
+    # to a conjunction of the moved constraints. Soundness via
+    # same-block restriction.
+    HAVOC_EQUATE_FOLD,
     # Boolean / Ite simplification.
     EQ_REFLEXIVE,
     EQ_CONST_FOLD,
@@ -213,6 +221,7 @@ all_rule_names: tuple[str, ...] = (
     R4A_DIV_PURIFY.name,
     R6_CEILDIV.name,
     HAVOC_EQUATE_SUBST.name,
+    HAVOC_EQUATE_FOLD.name,
     EQ_REFLEXIVE.name,
     EQ_CONST_FOLD.name,
     EQ_ITE_DIST.name,
@@ -250,6 +259,7 @@ __all__ = [
     "EQ_CONST_FOLD",
     "EQ_ITE_DIST",
     "EQ_REFLEXIVE",
+    "HAVOC_EQUATE_FOLD",
     "HAVOC_EQUATE_SUBST",
     "ITE_BOOL",
     "ITE_COND_FOLD",
