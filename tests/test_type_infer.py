@@ -235,6 +235,119 @@ def test_intadd_ptr_plus_int_is_ptr() -> None:
     assert res.kind["R"] == TypeKind.PTR
 
 
+def test_add_ptr_plus_small_const_is_ptr() -> None:
+    """`R = Add(Rptr, small_const)` — recognizes the alignment / struct-
+    field-offset pattern. R728 + 8 stays in the same (or adjacent) region."""
+    res = _run([
+        _havoc("M"),
+        _havoc("P"),
+        _assign("V", _apply("Select", _sym("M"), _sym("P"))),
+        _assign("R", _apply("Add", _sym("P"), _const("0x8"))),
+    ])
+    assert res.kind["P"] == TypeKind.PTR
+    assert res.kind["R"] == TypeKind.PTR
+
+
+def test_add_small_const_plus_ptr_is_ptr() -> None:
+    """Argument order doesn't matter: small_const + Ptr is also Ptr."""
+    res = _run([
+        _havoc("M"),
+        _havoc("P"),
+        _assign("V", _apply("Select", _sym("M"), _sym("P"))),
+        _assign("R", _apply("IntAdd", _const("0x8"), _sym("P"))),
+    ])
+    assert res.kind["R"] == TypeKind.PTR
+
+
+def test_sub_ptr_minus_small_const_is_ptr() -> None:
+    """`R = Sub(Rptr, small_const)` — backward pointer arithmetic."""
+    res = _run([
+        _havoc("M"),
+        _havoc("P"),
+        _assign("V", _apply("Select", _sym("M"), _sym("P"))),
+        _assign("R", _apply("IntSub", _sym("P"), _const("0x10"))),
+    ])
+    assert res.kind["R"] == TypeKind.PTR
+
+
+def test_sub_small_const_minus_ptr_stays_top() -> None:
+    """`Sub(small_const, Ptr)` is not a sensible pointer in any semantics —
+    the analysis abstains rather than concluding Ptr."""
+    res = _run([
+        _havoc("M"),
+        _havoc("P"),
+        _assign("V", _apply("Select", _sym("M"), _sym("P"))),
+        _assign("R", _apply("IntSub", _const("0x100"), _sym("P"))),
+    ])
+    assert res.kind["P"] == TypeKind.PTR
+    assert res.kind["R"] == TypeKind.TOP
+
+
+def test_sub_ptr_minus_int_is_ptr() -> None:
+    """`Sub(Ptr, Int)` (with both as registers) — pointer minus offset."""
+    res = _run([
+        _havoc("M"),
+        _havoc("P"),
+        _havoc("OFF"),
+        _assign("V1", _apply("Select", _sym("M"), _sym("P"))),
+        _assign("V2", _apply("Mul", _sym("OFF"), _const("4"))),
+        _assign("R", _apply("Sub", _sym("P"), _sym("OFF"))),
+    ])
+    assert res.kind["P"] == TypeKind.PTR
+    assert res.kind["OFF"] == TypeKind.INT
+    assert res.kind["R"] == TypeKind.PTR
+
+
+def test_add_ptr_plus_large_const_stays_top() -> None:
+    """A constant whose magnitude is at or above the region-distance
+    threshold (2^32) is not "small" — abstain to preserve soundness on
+    region boundaries we can't reason about. ``ctac rw``-lifted bv ops
+    like ``IntAdd(0x300000000, R)`` should not be confused with pointer
+    arithmetic."""
+    res = _run([
+        _havoc("M"),
+        _havoc("P"),
+        _assign("V", _apply("Select", _sym("M"), _sym("P"))),
+        # 0x100000000 = 2^32, exactly the threshold — not "small".
+        _assign("R", _apply("IntAdd", _sym("P"), _const("0x100000000"))),
+    ])
+    assert res.kind["P"] == TypeKind.PTR
+    assert res.kind["R"] == TypeKind.TOP
+
+
+def test_add_ptr_plus_negative_small_const_is_ptr() -> None:
+    """Negative offsets are also small if their magnitude is below the
+    threshold (e.g. backward struct-field math). The threshold uses
+    ``abs(c)`` so negatives qualify symmetrically with positives."""
+    res = _run([
+        _havoc("M"),
+        _havoc("P"),
+        _assign("V", _apply("Select", _sym("M"), _sym("P"))),
+        # Decimal form: const_expr_to_int handles bare negative decimal
+        # but not bare negative hex; the rule's threshold logic uses
+        # abs(value), so the parsing form is what matters here.
+        _assign("R", _apply("IntAdd", _sym("P"), _const("-16"))),
+    ])
+    assert res.kind["R"] == TypeKind.PTR
+
+
+def test_narrow_add_chain_propagates_ptr_kind() -> None:
+    """The TAC-typical chain `R = narrow(c +int Rptr)` now propagates
+    the pointer kind even when R has no downstream index use."""
+    res = _run([
+        _havoc("M"),
+        _havoc("BASE"),
+        _assign("V", _apply("Select", _sym("M"), _sym("BASE"))),
+        # R = narrow(0x8 +int BASE) — no downstream index use of R.
+        _assign(
+            "R",
+            _narrow(_apply("IntAdd", _const("0x8"), _sym("BASE"))),
+        ),
+    ])
+    assert res.kind["BASE"] == TypeKind.PTR
+    assert res.kind["R"] == TypeKind.PTR
+
+
 def test_add_int_plus_int_stays_top_in_v1() -> None:
     """V1 abstains on Int+Int (sound; v2 may add this rule)."""
     res = _run([

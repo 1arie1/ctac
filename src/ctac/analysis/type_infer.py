@@ -10,6 +10,13 @@ constraints:
   ``BWXOr`` / ``BNot`` operand → ``Int``.
 * ``Add`` / ``IntAdd`` of one ``Ptr`` and one ``Int`` operand →
   result is ``Ptr``.
+* ``Add`` / ``IntAdd`` of a ``Ptr`` and a small constant (``|c| <
+  2^32``) → result is ``Ptr``. ``Sub`` / ``IntSub`` analogously:
+  ``Ptr - Int`` and ``Ptr - small_const`` → ``Ptr``. The threshold
+  is the inter-region distance in TAC's high-nibble address layout;
+  adding a constant below it cannot move a pointer past more than
+  one region boundary, so the result is still a pointer-shaped
+  value (kind ``Ptr``, possibly different region in v2).
 * ``narrow`` (``safe_math_narrow_bvN:bif``) is identity:
   ``lhs ≡ inner``.
 * ``BWAnd(R, const)`` / ``BWOr(R, const)`` is identity (alignment
@@ -51,7 +58,20 @@ from ctac.ast.nodes import (
     SymbolRef,
     TacExpr,
 )
+from ctac.ast.range_constraints import const_expr_to_int
 from ctac.ir.models import TacProgram
+
+
+# Conservative upper bound on the magnitude of a constant offset that we
+# treat as "definitely cannot escape the pointer region(s)" when added to a
+# Ptr-classified register. Region prefixes in TAC's high-nibble layout sit
+# at multiples of 2^32 (`0x{01,02,03,04}00000000`), so a constant whose
+# absolute value is strictly less than 2^32 can shift a pointer by at most
+# one region. Each such shift lands in another pointer-shaped value (still
+# kind Ptr in our v1 lattice). Practical SBF offsets — struct fields,
+# array element offsets — are far below this threshold (typically <= 2^16);
+# 2^32 is the soundness ceiling, not a tightness target.
+_PTR_OFFSET_LIMIT = 1 << 32
 
 
 class TypeKind(str, Enum):
@@ -109,6 +129,18 @@ def join(a: TypeKind, b: TypeKind) -> TypeKind:
 
 def _is_safe_math_narrow_name(name: str) -> bool:
     return name.startswith("safe_math_narrow_bv") and name.endswith(":bif")
+
+
+def _is_small_const_offset(expr: TacExpr) -> bool:
+    """True iff ``expr`` is a constant whose magnitude is below the
+    region-distance threshold ``_PTR_OFFSET_LIMIT``. Used by the Add/Sub
+    asymmetric rule to recognize ``Ptr ± small_const`` as ``Ptr``."""
+    if not isinstance(expr, ConstExpr):
+        return False
+    n = const_expr_to_int(expr)
+    if n is None:
+        return False
+    return abs(n) < _PTR_OFFSET_LIMIT
 
 
 def _unwrap_apply(expr: ApplyExpr) -> tuple[str, tuple[TacExpr, ...]]:
@@ -469,6 +501,7 @@ def _walk_and_apply(uf: _UnionFind, expr: TacExpr) -> tuple[TypeKind, bool]:
         # Identity in SMT — kind passthrough.
         result_kind = arg_kinds[0]
     elif op in ("Add", "IntAdd") and len(args) == 2:
+        a, b = args[0], args[1]
         ka, kb = arg_kinds[0], arg_kinds[1]
         if ka == TypeKind.BOT or kb == TypeKind.BOT:
             result_kind = TypeKind.BOT
@@ -476,10 +509,31 @@ def _walk_and_apply(uf: _UnionFind, expr: TacExpr) -> tuple[TypeKind, bool]:
             ka == TypeKind.INT and kb == TypeKind.PTR
         ):
             result_kind = TypeKind.PTR
+        elif ka == TypeKind.PTR and _is_small_const_offset(b):
+            # Ptr + small_const — pointer arithmetic by a constant
+            # offset stays within at most one region boundary.
+            result_kind = TypeKind.PTR
+        elif kb == TypeKind.PTR and _is_small_const_offset(a):
+            result_kind = TypeKind.PTR
         else:
-            # Int+Int, any Top operand, or Ptr+Ptr — abstain. Ptr+Ptr
-            # could be flagged Bot but we leave it Top for v1 (sound,
-            # imprecise; v2 may revisit).
+            # Int+Int, any Top operand without a small-const partner,
+            # or Ptr+Ptr — abstain. Ptr+Ptr could be flagged Bot but
+            # we leave it Top for v1 (sound, imprecise).
+            result_kind = TypeKind.TOP
+    elif op in ("Sub", "IntSub") and len(args) == 2:
+        # Sub is asymmetric in argument order: only the LHS may be Ptr.
+        # ``Sub(Int, Ptr)`` and ``Sub(small_const, Ptr)`` are not
+        # pointer-shaped values in any sensible semantics; abstain there.
+        # ``Sub(Ptr, Ptr) = Int`` (pointer difference) is deferred to v2.
+        a, b = args[0], args[1]
+        ka, kb = arg_kinds[0], arg_kinds[1]
+        if ka == TypeKind.BOT or kb == TypeKind.BOT:
+            result_kind = TypeKind.BOT
+        elif ka == TypeKind.PTR and kb == TypeKind.INT:
+            result_kind = TypeKind.PTR
+        elif ka == TypeKind.PTR and _is_small_const_offset(b):
+            result_kind = TypeKind.PTR
+        else:
             result_kind = TypeKind.TOP
     elif op == "Ite" and len(args) == 3:
         result_kind = join(arg_kinds[1], arg_kinds[2])
