@@ -52,28 +52,12 @@ arms must reference the *same* R (canonical equality).
 
 from __future__ import annotations
 
-from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
+from ctac.ast.nodes import ApplyExpr, ConstExpr, TacExpr
 from ctac.analysis.symbols import canonical_symbol
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
+from ctac.rewrite.range_infer import infer_expr_range
 from ctac.rewrite.rules.common import as_int_const, const_to_int, log2_if_pow2
-
-
-def _peel_symref(expr: TacExpr, ctx: RewriteCtx) -> TacExpr:
-    """Walk through ``SymbolRef -> static_def`` chains. Unlike
-    :meth:`RewriteCtx.lookthrough`, does **not** peel
-    ``safe_math_narrow_bv256`` wrappers — narrow's truncation
-    semantics matter for ``IntMul`` overflow."""
-    seen: set[TacExpr] = set()
-    while expr not in seen:
-        seen.add(expr)
-        if isinstance(expr, SymbolRef):
-            d = ctx.definition(expr.name)
-            if d is not None:
-                expr = d
-                continue
-        break
-    return expr
 
 
 _INT_ADD_OPS = frozenset({"IntAdd"})
@@ -219,20 +203,36 @@ def _rewrite_mul_div_to_muldiv(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None
     reducing the number of intermediate ``IntMul`` results the
     solver has to chain through.
 
-    **Soundness gate**: only fires when the numerator peels to
-    ``IntMul`` *without* crossing a ``narrow`` wrapper.
-    ``IntDiv(narrow(IntMul(a, b)), c)`` divides the *truncated*
-    product ``(a*b) mod 2^256`` by ``c``, while ``IntMulDiv(a, b, c)``
-    divides the un-truncated ``a*b``. The two diverge when ``a*b ≥
-    2^256``. Using a SymRef-only peeler instead of
-    ``ctx.lookthrough`` keeps the truncation visible — when it's
-    there, we bail.
+    **Soundness gate (divisor positivity)**: ``int_mul_div_axiom`` is
+    a *partial* axiom — its Euclidean bounds are conditioned on
+    ``c > 0`` (``sea_vc.py:176``). For ``c <= 0`` the UF is
+    unconstrained, so a syntactic rewrite ``IntDiv(IntMul(a, b), c)
+    -> IntMulDiv(a, b, c)`` would diverge from the original (z3's
+    builtin ``div``) when ``c <= 0``. Range-infer the divisor and
+    fire only when ``c >= 1``. Mirrors R6's ``den_range[0] > 0``
+    precondition for the same reason.
+
+    ``narrow`` peeling on the numerator is **sound** because narrow
+    is a type assertion (precondition that the value already fits
+    in bv256), not a runtime mod. The encoder treats it as a no-op
+    (``sea_vc.py:619-620``), so peeling through it for matching is
+    semantics-preserving.
     """
     if not (isinstance(expr, ApplyExpr) and expr.op in _INT_DIV_OPS and len(expr.args) == 2):
         return None
     num, c = expr.args
-    num_inner = _peel_symref(num, ctx)
+    num_inner = ctx.lookthrough(num)
     if not (isinstance(num_inner, ApplyExpr) and num_inner.op in _INT_MUL_OPS and len(num_inner.args) == 2):
+        return None
+    # Divisor must be provably positive — IntMulDiv's axiom is
+    # conditional on c > 0; for c <= 0 the UF is free and the
+    # rewrite would over-permit. Try the pre-lookthrough form first
+    # (so direct assumes like `c in [1, k]` are picked up) and fall
+    # back to the expanded form.
+    den_range = infer_expr_range(c, ctx)
+    if den_range is None:
+        den_range = infer_expr_range(ctx.lookthrough(c), ctx)
+    if den_range is None or den_range[0] <= 0:
         return None
     a, b = num_inner.args
     return ApplyExpr("IntMulDiv", (a, b, c))

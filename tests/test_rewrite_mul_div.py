@@ -162,12 +162,14 @@ def test_chunked_mul_bails_on_non_powers_of_two():
 
 
 def test_muldiv_basic():
-    """IntDiv(IntMul(a, b), c) -> IntMulDiv(a, b, c)."""
+    """IntDiv(IntMul(a, b), c) -> IntMulDiv(a, b, c) when c is
+    provably positive (assume gives the bound)."""
     body = (
         "\tBlock e Succ [] {\n"
         "\t\tAssignHavocCmd a\n"
         "\t\tAssignHavocCmd b\n"
         "\t\tAssignHavocCmd c\n"
+        "\t\tAssumeExpCmd LAnd(Ge(c 0x1(int)) Le(c 0xffffffffffffffff(int)))\n"
         "\t\tAssignExpCmd I IntDiv(IntMul(a b) c)\n"
         "\t}"
     )
@@ -191,6 +193,7 @@ def test_muldiv_through_lookthrough():
         "\t\tAssignHavocCmd a\n"
         "\t\tAssignHavocCmd b\n"
         "\t\tAssignHavocCmd c\n"
+        "\t\tAssumeExpCmd LAnd(Ge(c 0x1(int)) Le(c 0xffffffffffffffff(int)))\n"
         "\t\tAssignExpCmd Mab IntMul(a b)\n"
         "\t\tAssignExpCmd I IntDiv(Mab c)\n"
         "\t}"
@@ -229,24 +232,17 @@ def test_muldiv_bails_on_non_intmul_numerator():
 # ---------- Composition: chunk + muldiv together ----------
 
 
-def test_chunked_mul_then_muldiv_composes_partially():
-    """Composition pins the *boundary* of what we can fold today.
-    ``CHUNKED_MUL`` fires on the inner ``IntAdd`` and produces a
-    clean ``IntMul``. But the QFP chain wraps that ``IntMul`` in a
-    ``narrow`` before the outer ``IntDiv`` divides — and ``MUL_DIV``'s
-    soundness gate bails on ``narrow``-wrapped numerators (since
-    ``narrow(IntMul(a, b))`` truncates and ``IntMulDiv`` doesn't).
-
-    So ChunkedMul fires; MulDiv does not. Recovering the MulDiv
-    collapse for the QFP case requires either range-aware narrow
-    elision (``IntMul`` of bounded args fits in 2^256, narrow is
-    a no-op) or a more aggressive MulDiv that synthesizes
-    ``narrow(IntMulDiv(a, b, c))`` matching the original truncation
-    semantics. Tracked in loose-ends."""
+def test_chunked_mul_then_muldiv_composes():
+    """End-to-end: the full Solana QFP chain (chunk arithmetic +
+    division) collapses to a single IntMulDiv. The narrow between
+    IntDiv and IntMul peels through (narrow is a no-op type
+    assertion, sea_vc.py:619-620). Divisor R633 needs a positivity
+    bound for MUL_DIV to fire — added as an assume here."""
     body = (
         "\tBlock e Succ [] {\n"
         "\t\tAssignHavocCmd R641\n"
         "\t\tAssignHavocCmd R633\n"
+        "\t\tAssumeExpCmd LAnd(Ge(R633 0x1(int)) Le(R633 0xffffffffffffffff(int)))\n"
         "\t\tAssignExpCmd R642 Mod(ShiftLeft(R641 0xe) 0x10000000000000000)\n"
         "\t\tAssignExpCmd R643 Mod(R641 0x10000000000000000)\n"
         "\t\tAssignExpCmd I645 IntMul(0x10000000000000000(int) Div(R643 0x4000000000000))\n"
@@ -266,27 +262,32 @@ def test_chunked_mul_then_muldiv_composes_partially():
         symbol_sorts=tac.symbol_sorts,
     )
     assert res.hits_by_rule.get("ChunkedMul", 0) == 1
-    # MulDiv bails on narrow-wrapped numerator — the soundness gate.
-    assert res.hits_by_rule.get("MulDiv", 0) == 0
+    assert res.hits_by_rule.get("MulDiv", 0) == 1
+    rhs = _rhs(res.program, "I650")
+    # I650 = IntMulDiv(Mod(R641, 2^M), 2^N, R633).
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "IntMulDiv"
+    inner = rhs.args[0]
+    assert isinstance(inner, ApplyExpr) and inner.op == "Mod"
+    assert inner.args[0] == SymbolRef("R641")
+    assert isinstance(rhs.args[1], ConstExpr)
+    assert rhs.args[2] == SymbolRef("R633")
 
 
-def test_muldiv_bails_on_narrow_wrapped_numerator():
-    """``IntDiv(narrow(IntMul(a, b)), c)`` does NOT fold to
-    ``IntMulDiv(a, b, c)``: the narrow truncates ``a*b`` mod 2^256
-    while ``IntMulDiv`` divides the un-truncated product. The two
-    diverge when ``a*b >= 2^256``. The rule's soundness gate must
-    detect the narrow and bail."""
+def test_muldiv_bails_when_divisor_not_provably_positive():
+    """``IntMulDiv``'s axiom is conditional on ``c > 0``. Without a
+    range-fact establishing positivity, the rewrite from
+    ``IntDiv(IntMul(a, b), c)`` would over-permit (the UF would be
+    free for c <= 0)."""
     body = (
         "\tBlock e Succ [] {\n"
         "\t\tAssignHavocCmd a\n"
         "\t\tAssignHavocCmd b\n"
         "\t\tAssignHavocCmd c\n"
-        "\t\tAssignExpCmd Mab IntMul(a b)\n"
-        "\t\tAssignExpCmd I IntDiv(Apply(safe_math_narrow_bv256:bif Mab) c)\n"
+        "\t\tAssignExpCmd I IntDiv(IntMul(a b) c)\n"
         "\t}"
     )
     tac = parse_string(
-        _wrap(body, syms="a:int\n\tb:int\n\tc:int\n\tMab:int\n\tI:bv256"),
+        _wrap(body, syms="a:int\n\tb:int\n\tc:int\n\tI:int"),
         path="<s>",
     )
     res = rewrite_program(
