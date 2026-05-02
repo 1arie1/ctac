@@ -168,14 +168,35 @@ def _int_ceil_div_axiom_define_fun() -> str:
 
 
 def _int_mul_div_axiom_define_fun() -> str:
-    # Partial axiom for floor multiply-then-divide: defined when the
-    # divisor is positive. The bounds avoid introducing ``div`` in the
-    # axiom (pure NIA), mirroring int_ceil_div's shape.
+    # Total axiom for ``int_mul_div``. Two branches by divisor sign:
+    #
+    # * c > 0:  Euclidean bounds. No ``(* a b)`` mention — pure NIA on
+    #   ``(* c IMD)``, which keeps the formula linear in the most
+    #   common case (positive divisor) and avoids handing z3 the
+    #   nonlinear product directly.
+    # * c <= 0: tie ``int_mul_div`` to z3's built-in ``div`` over
+    #   ``(* a b)``. Costs a nonlinear-mul mention but is needed for
+    #   soundness — without it, ``int_mul_div`` is a free UF at
+    #   c <= 0, distinct from z3's ``div``-at-c<=0 (also free, but a
+    #   different free function), and the rewrite
+    #   ``IntDiv(IntMul(a, b), c) -> IntMulDiv(a, b, c)`` is
+    #   unsound. z3 confirms: with only the c > 0 branch, the
+    #   inequality ``(int_mul_div a b c) != (div (* a b) c)`` is sat
+    #   at c = -1; adding the c <= 0 branch makes it unsat for all c.
+    #
+    # In practice the c <= 0 branch is dormant for SBF programs that
+    # assert their divisors positive — z3 propagates ``c > 0``,
+    # selects the bounds branch, and the ``(* a b)`` term in the
+    # c <= 0 branch never materializes. The rewrite stays cheap
+    # where it matters and stays sound everywhere else.
     return (
         "(define-fun int_mul_div_axiom ((a Int) (b Int) (c Int)) Bool "
+        "(and "
         "(=> (> c 0) "
         "(and (<= (* c (int_mul_div a b c)) (* a b)) "
-        "(< (* a b) (+ (* c (int_mul_div a b c)) c)))))"
+        "(< (* a b) (+ (* c (int_mul_div a b c)) c)))) "
+        "(=> (<= c 0) "
+        "(= (int_mul_div a b c) (div (* a b) c)))))"
     )
 
 

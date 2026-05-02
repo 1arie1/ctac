@@ -169,7 +169,7 @@ def test_muldiv_basic():
         "\t\tAssignHavocCmd a\n"
         "\t\tAssignHavocCmd b\n"
         "\t\tAssignHavocCmd c\n"
-        "\t\tAssumeExpCmd LAnd(Ge(c 0x1(int)) Le(c 0xffffffffffffffff(int)))\n"
+        ""
         "\t\tAssignExpCmd I IntDiv(IntMul(a b) c)\n"
         "\t}"
     )
@@ -193,7 +193,7 @@ def test_muldiv_through_lookthrough():
         "\t\tAssignHavocCmd a\n"
         "\t\tAssignHavocCmd b\n"
         "\t\tAssignHavocCmd c\n"
-        "\t\tAssumeExpCmd LAnd(Ge(c 0x1(int)) Le(c 0xffffffffffffffff(int)))\n"
+        ""
         "\t\tAssignExpCmd Mab IntMul(a b)\n"
         "\t\tAssignExpCmd I IntDiv(Mab c)\n"
         "\t}"
@@ -242,7 +242,6 @@ def test_chunked_mul_then_muldiv_composes():
         "\tBlock e Succ [] {\n"
         "\t\tAssignHavocCmd R641\n"
         "\t\tAssignHavocCmd R633\n"
-        "\t\tAssumeExpCmd LAnd(Ge(R633 0x1(int)) Le(R633 0xffffffffffffffff(int)))\n"
         "\t\tAssignExpCmd R642 Mod(ShiftLeft(R641 0xe) 0x10000000000000000)\n"
         "\t\tAssignExpCmd R643 Mod(R641 0x10000000000000000)\n"
         "\t\tAssignExpCmd I645 IntMul(0x10000000000000000(int) Div(R643 0x4000000000000))\n"
@@ -273,11 +272,10 @@ def test_chunked_mul_then_muldiv_composes():
     assert rhs.args[2] == SymbolRef("R633")
 
 
-def test_muldiv_bails_when_divisor_not_provably_positive():
-    """``IntMulDiv``'s axiom is conditional on ``c > 0``. Without a
-    range-fact establishing positivity, the rewrite from
-    ``IntDiv(IntMul(a, b), c)`` would over-permit (the UF would be
-    free for c <= 0)."""
+def test_muldiv_fires_without_positivity_assume():
+    """The IntMulDiv axiom is now total (covers all c via the c<=0
+    branch tying to z3's div). The rewrite is sound for any c, so
+    no divisor-range gate is needed."""
     body = (
         "\tBlock e Succ [] {\n"
         "\t\tAssignHavocCmd a\n"
@@ -293,4 +291,4 @@ def test_muldiv_bails_when_divisor_not_provably_positive():
     res = rewrite_program(
         tac.program, (MUL_DIV_TO_MULDIV,), symbol_sorts=tac.symbol_sorts
     )
-    assert res.hits_by_rule == {}
+    assert res.hits_by_rule == {"MulDiv": 1}
