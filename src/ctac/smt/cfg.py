@@ -13,6 +13,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Callable
 
+import networkx as nx
+
 from ctac.ir.models import TacProgram
 from ctac.smt.encoding.path_skeleton import block_guard, predecessor_edges
 from ctac.smt.util import and_terms, at_most_one_terms, iff, implies, or_terms
@@ -186,6 +188,49 @@ def encode_fwd(inp: CfgEncodeInput, emit: CfgEmit) -> None:
             )
 
 
+def _immediate_dominators(inp: CfgEncodeInput) -> dict[int, int]:
+    """Compute the immediate dominator of each block (by integer index).
+
+    Returns a dict from non-entry block index to its unique immediate
+    dominator's index. Blocks unreachable from the entry are absent
+    from the result. The entry itself has ``idom(entry) = entry`` in
+    the networkx convention; we omit that self-mapping so callers can
+    iterate the dict and emit constraints unconditionally."""
+    g = nx.DiGraph()
+    n = len(inp.block_ids)
+    g.add_nodes_from(range(n))
+    for e in inp.edges:
+        g.add_edge(e.pred, e.succ)
+    raw = nx.immediate_dominators(g, inp.entry)
+    return {node: idom for node, idom in raw.items() if node != idom}
+
+
+def encode_fwd_bwd(inp: CfgEncodeInput, emit: CfgEmit) -> None:
+    """``fwd`` plus backward immediate-dominator clauses.
+
+    Same constraints as ``encode_fwd`` (block-level forward
+    implications + AMO over successors + branch-condition guards),
+    plus one extra clause per non-entry reachable block:
+
+        ``BLK_i => BLK_idom(i)``
+
+    where ``idom(i)`` is the unique immediate dominator of ``i`` in
+    the static CFG. Sound by definition of dominance — every path
+    from the entry to ``i`` passes through ``idom(i)``, so reaching
+    ``i`` implies reaching its idom. Logically redundant given the
+    fwd predecessor chain (BCP could derive each step), but the
+    1-hop backward implication gives the SAT engine a much shorter
+    propagation path: if ``BLK_i`` is decided/forced true, BCP
+    immediately propagates to ``BLK_idom(i)`` instead of working
+    through the predecessor-OR fan-in."""
+    encode_fwd(inp, emit)
+    idom = _immediate_dominators(inp)
+    for i, j in idom.items():
+        # Skip clauses whose head guard is "true" (entry block):
+        # ``BLK_i => true`` collapses to ``true`` in ``implies``.
+        emit.add_constraint(implies(inp.block_guards[i], inp.block_guards[j]))
+
+
 def encode_fwd_edge(inp: CfgEncodeInput, emit: CfgEmit) -> None:
     """Forward encoding with per-edge Bool variables.
 
@@ -291,6 +336,7 @@ CFG_ENCODERS: dict[str, CfgEncoder] = {
     "bwd0": encode_bwd0,
     "bwd1": encode_bwd1,
     "fwd": encode_fwd,
+    "fwd-bwd": encode_fwd_bwd,
     "fwd-edge": encode_fwd_edge,
     "bwd-edge": encode_bwd_edge,
 }

@@ -264,14 +264,18 @@ Prompt template:
     `(= lhs (ite cond rhs ...))` ITE-merge form. One assertion per
     defining block (deduped by RHS) vs. one assertion per symbol.
   - CFG-constraint encoding: `--cfg-encoding
-    {bwd0,bwd1,fwd,fwd-edge,bwd-edge}` selects the
+    {bwd0,bwd1,fwd,fwd-bwd,fwd-edge,bwd-edge}` selects the
     constraint shape over block-reachability variables.
     `bwd0` (default) — predecessor-oriented edge-feasibility
     OR-of-ANDs. `bwd1` — predecessor per-edge clausal
     implications (sound under AMO). `fwd` — successor
-    one-way implications. `fwd-edge` / `bwd-edge` — introduce
-    per-edge Bool variables `e_<i>_<j>` and use a biconditional
-    block-existence over those variables.
+    one-way implications. `fwd-bwd` — `fwd` plus backward
+    immediate-dominator clauses `BLK_i => BLK_idom(i)` for
+    each non-entry block, giving BCP a 1-hop backward
+    propagation path (logically redundant given `fwd`'s
+    transitive chain, but shorter). `fwd-edge` / `bwd-edge`
+    — introduce per-edge Bool variables `e_<i>_<j>` and use
+    a biconditional block-existence over those variables.
   - Z3 knobs: `--timeout` (seconds), `--seed`, `--tactic`, and passthrough `--z3-args`.
   - Debug mode: `--debug` prints z3 stdin/stdout/stderr and a replay command.
 

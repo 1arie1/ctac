@@ -367,6 +367,35 @@ def test_cfg_encoding_fwd_emits_one_way_block_existence() -> None:
     assert "(=> (and BLK_mid BLK_els) (not c))" in rendered
 
 
+def test_cfg_encoding_fwd_bwd_includes_fwd_clauses_and_idom_implications() -> None:
+    """`fwd-bwd` is a strict superset of `fwd`: every fwd clause is
+    present, plus a backward immediate-dominator clause for each
+    non-entry block. The diamond CFG has entry -> mid -> {thn, els};
+    every non-entry block's idom is whichever block dominates it on
+    every path."""
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-bwd"))
+    # All the existing fwd clauses must still be present.
+    assert "(=> BLK_mid (or BLK_thn BLK_els))" in rendered
+    assert "(=> (and BLK_mid BLK_thn) c)" in rendered
+    assert "(=> (and BLK_mid BLK_els) (not c))" in rendered
+    # Backward idom clauses. `entry`'s guard is "true" so any
+    # `BLK_X => true` clause is filtered out by sea_vc's add_constraint.
+    # idom(mid) = entry — clause filtered. idom(thn) = mid, idom(els) = mid:
+    assert "(=> BLK_thn BLK_mid)" in rendered
+    assert "(=> BLK_els BLK_mid)" in rendered
+
+
+def test_cfg_encoding_fwd_bwd_skips_idom_clause_when_idom_is_entry() -> None:
+    """The entry block's guard is the SMT literal `true` (path_skeleton
+    convention), so `BLK_i => true` collapses to `true` in the implies
+    helper and is filtered out — no spurious unconditional clauses."""
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-bwd"))
+    # idom(mid) = entry. The clause "(=> BLK_mid true)" must NOT appear.
+    assert "(=> BLK_mid true)" not in rendered
+
+
 def test_cfg_encoding_fwd_edge_declares_edge_vars_and_uses_iff() -> None:
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
     rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edge"))
@@ -533,7 +562,7 @@ Metas {
 }
 """
     tac = parse_string(src, path="<string>")
-    for enc in ("bwd0", "bwd1", "fwd", "fwd-edge", "bwd-edge"):
+    for enc in ("bwd0", "bwd1", "fwd", "fwd-bwd", "fwd-edge", "bwd-edge"):
         rendered = render_smt_script(build_vc(tac, cfg_encoding=enc))
         # Every strategy must produce a well-formed script that
         # mentions BLK_EXIT and the assert predicate.

@@ -178,11 +178,14 @@ def smt_cmd(
                 "bwd0 (default): predecessor-oriented edge-feasibility "
                 "OR-of-ANDs. bwd1: per-edge clausal implications "
                 "(predecessor). fwd: successor-oriented one-way "
-                "implication. fwd-edge / bwd-edge: per-edge Bool "
-                "variables with biconditional block-existence."
+                "implication. fwd-bwd: fwd plus a backward `BLK_i => "
+                "BLK_idom(i)` clause for each non-entry block (gives "
+                "BCP a 1-hop backward propagation path). fwd-edge / "
+                "bwd-edge: per-edge Bool variables with biconditional "
+                "block-existence."
             ),
             autocompletion=complete_choices(
-                ["bwd0", "bwd1", "fwd", "fwd-edge", "bwd-edge"]
+                ["bwd0", "bwd1", "fwd", "fwd-bwd", "fwd-edge", "bwd-edge"]
             ),
         ),
     ] = "bwd0",
