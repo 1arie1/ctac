@@ -386,6 +386,43 @@ def test_cp_propagates_through_alias():
     assert rhs.args == (SymbolRef("R0"), SymbolRef("R0"))
 
 
+def test_cp_propagates_constant_to_use_sites():
+    """`R1 = 0x300000538` then `R2 = Select(M, R1)` — CP propagates the
+    constant to the Select-index, unblocking SELECT_OVER_STORE / range
+    folding downstream. (Mirror of the L0_triple post-specialize shape
+    documented in the parked CP_CONST entry.)"""
+    tac_src = _tac(
+        """\t\tAssignHavocCmd M
+\t\tAssignExpCmd R1 0x300000538
+\t\tAssignExpCmd R2 Select(M R1)""",
+        syms="M:bytemap\n\tR1:bv256\n\tR2:bv256",
+    )
+    tac = parse_string(tac_src, path="<s>")
+    res = rewrite_program(tac.program, (CP_ALIAS,))
+    assert res.hits_by_rule.get("CP", 0) >= 1
+    rhs = _rhs(res.program, "R2")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Select"
+    assert rhs.args == (SymbolRef("M"), ConstExpr("0x300000538"))
+
+
+def test_cp_propagates_constant_through_compound_expressions():
+    """Constants flow through nested expressions too — `IntAdd(0x8, R1)`
+    becomes `IntAdd(0x8, 0x300000538)` once CP fires on R1. (RangeFold
+    then folds compound forms to a single ConstExpr; that's a separate
+    rule outside CP's scope.)"""
+    tac_src = _tac(
+        """\t\tAssignExpCmd R1 0x300000538
+\t\tAssignExpCmd R2 IntAdd(0x8(int) R1)""",
+        syms="R1:bv256\n\tR2:int",
+    )
+    tac = parse_string(tac_src, path="<s>")
+    res = rewrite_program(tac.program, (CP_ALIAS,))
+    assert res.hits_by_rule.get("CP", 0) >= 1
+    rhs = _rhs(res.program, "R2")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "IntAdd"
+    assert rhs.args == (ConstExpr("0x8(int)"), ConstExpr("0x300000538"))
+
+
 def test_assume_range_only_visible_in_dominating_branch():
     """CP should not inline facts across non-dominating branches."""
     tac_src = """TACSymbolTable {
