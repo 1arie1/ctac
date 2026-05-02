@@ -214,7 +214,7 @@ def run_search(
         exclude=exclude,
     )
     try:
-        filtered_cfg, warnings = Cfg(tac.program).filtered(flt)
+        filtered_cfg, warnings = Cfg(tac.program).filtered(flt, preserve_successors=True)
     except ValueError as e:
         if plain:
             c.print(f"search filter error: {e}")
@@ -470,7 +470,7 @@ def cfg(
 
     cfg_model = Cfg(tac.program)
     try:
-        filtered_cfg, warnings = cfg_model.filtered(flt)
+        filtered_cfg, warnings = cfg_model.filtered(flt, preserve_successors=True)
     except ValueError as e:
         if plain:
             c.print(f"cfg filter error: {e}")
@@ -628,7 +628,7 @@ def pp(
         exclude=exclude,
     )
     try:
-        filtered_cfg, warnings = Cfg(tac.program).filtered(flt)
+        filtered_cfg, warnings = Cfg(tac.program).filtered(flt, preserve_successors=True)
     except ValueError as e:
         if plain:
             c.print(f"pp filter error: {e}")

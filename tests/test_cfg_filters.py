@@ -81,6 +81,22 @@ def test_filtered_induces_edges(minimal):
     assert by["exit"].successors == []
 
 
+def test_filtered_preserves_successors_for_renderers(minimal):
+    """``Cfg.filtered(preserve_successors=True)`` keeps each kept
+    block's original successor list verbatim — even when the
+    successor isn't in the slice. Used by ``pp`` / ``cfg`` so the
+    rendered terminator reflects the real CFG instead of being
+    silently rewritten to ``stop``."""
+    from ctac.graph import Cfg, CfgFilter
+
+    sub_cfg, _ = Cfg(minimal.program).filtered(
+        CfgFilter(only_ids=frozenset(["entry"])),
+        preserve_successors=True,
+    )
+    by = sub_cfg.program.block_by_id()
+    assert by["entry"].successors == ["exit", "loop"]
+
+
 def test_unknown_to_raises(minimal):
     with pytest.raises(ValueError, match="unknown block"):
         resolve_cfg_keep_ids(minimal.program, to_id="missing")

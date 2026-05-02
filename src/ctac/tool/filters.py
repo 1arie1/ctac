@@ -35,8 +35,16 @@ class CfgFilterOptions:
         )
 
 
-def apply_cfg_filters(program: TacProgram, opt: CfgFilterOptions) -> tuple[TacProgram, list[str]]:
-    """Return filtered program and warning lines (empty if no filters)."""
+def apply_cfg_filters(
+    program: TacProgram,
+    opt: CfgFilterOptions,
+    *,
+    preserve_successors: bool = False,
+) -> tuple[TacProgram, list[str]]:
+    """Return filtered program and warning lines (empty if no filters).
+
+    See :meth:`ctac.graph.Cfg.filtered` for ``preserve_successors``.
+    """
     if not opt.any_active():
         return program, []
     filtered, warnings = Cfg(program).filtered(
@@ -48,6 +56,7 @@ def apply_cfg_filters(program: TacProgram, opt: CfgFilterOptions) -> tuple[TacPr
             id_regex=opt.id_regex,
             cmd_contains=opt.cmd_contains,
             exclude_ids=Cfg.parse_csv_ids(opt.exclude),
-        )
+        ),
+        preserve_successors=preserve_successors,
     )
     return filtered.program, warnings

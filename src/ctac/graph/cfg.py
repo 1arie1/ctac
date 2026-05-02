@@ -274,7 +274,18 @@ class Cfg:
 
         return keep, warnings
 
-    def filtered(self, flt: CfgFilter) -> tuple["Cfg", list[str]]:
+    def filtered(self, flt: CfgFilter, *, preserve_successors: bool = False) -> tuple["Cfg", list[str]]:
+        """Slice the program by ``flt``.
+
+        ``preserve_successors=False`` (default) rewrites each kept block's
+        ``successors`` to keep only references inside the slice — needed
+        when the slice will be re-emitted as a self-contained program
+        (e.g. ``ua`` SMT prep). ``preserve_successors=True`` keeps the
+        original successors verbatim so renderers (``pp``, ``cfg``) can
+        show the real block terminator even when the target lives
+        outside the slice; dangling-edge warnings still fire from
+        ``iter_lines`` / ``iter_dot``.
+        """
         if not flt.any_active():
             return Cfg(self.program), []
         keep, warnings = self.resolve_keep_ids(flt)
@@ -282,7 +293,10 @@ class Cfg:
         for b in self.program.blocks:
             if b.id not in keep:
                 continue
-            succ = [s for s in b.successors if s in keep]
+            if preserve_successors:
+                succ = list(b.successors)
+            else:
+                succ = [s for s in b.successors if s in keep]
             blocks.append(TacBlock(id=b.id, successors=succ, commands=list(b.commands)))
         return Cfg(TacProgram(blocks=blocks)), warnings
 
