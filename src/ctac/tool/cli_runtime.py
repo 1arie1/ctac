@@ -94,8 +94,22 @@ CANONICAL WORKFLOWS:
 - SMT VC dump: `ctac smt <path> --plain` (add `--run` to invoke z3).
 - Rewrite-rule soundness: `ctac rw-valid -o DIR`.
 
-ACCEPTED INPUTS: `.tac`, `.sbf.json`, or a Certora output directory
-(auto-resolves to `<dir>/outputs/*.tac`).
+PROJECT WORKFLOW (recommended for multi-step pipelines):
+  ctac prj init f.tac -o mytac --plain    # create a HEAD-tracked workspace
+  ctac rw mytac --plain                   # HEAD -> in.rw.tac
+  ctac ua mytac --plain                   # HEAD -> in.rw.ua.tac
+  ctac smt mytac --plain                  # writes in.rw.ua.smt2
+  ctac prj list mytac --plain             # see the whole graph
+The project tracks "the current TAC" for you, ingests every command's
+output as a content-addressed object, and exposes friendly-name
+symlinks (`mytac/in.rw.tac` etc.) you can read with cat/grep/`vim`
+directly. See `ctac prj --agent` for the full surface (init / list /
+info / set-head / label / export-path / archive / clone) and the raw
+file-access patterns.
+
+ACCEPTED INPUTS: `.tac`, `.sbf.json`, a Certora output directory
+(auto-resolves to `<dir>/outputs/*.tac`), or a ctac project directory
+(`rw`, `ua`, `pp`, `smt`, `pin` use HEAD as input).
 
 ALWAYS: pass `--plain` for deterministic, ASCII-only output the agent
 can parse reliably. Environment `CTAC_PLAIN=1` or `NO_COLOR=1` works too.
@@ -704,10 +718,38 @@ REFS: any of these resolve an object — full sha, unique short sha
 `<set-ref>:<member-name>` is accepted by `prj set-head` to
 materialize and focus a fileset member.
 
+RAW FILE ACCESS (for experiments / quick edits / non-ctac tools):
+The project format never hides files — every object is a real file
+(or directory) on disk that any tool can read.
+- Friendly-name symlinks in the project root resolve transparently:
+    cat mytac/in.rw.tac
+    vim mytac/in.rw.ua.tac
+    diff mytac/in.tac mytac/in.rw.tac
+    grep -c AssertCmd mytac/in.rw.ua.tac
+- For shell pipes, `prj export-path` prints one line, undecorated:
+    z3 $(ctac prj export-path mytac in.rw.ua.smt2) -T:30
+    cp $(ctac prj export-path mytac) /tmp/scratch.tac
+- The content-addressed store is browsable directly under
+  `<DIR>/.ctac/objects/<sha[:2]>/<sha[2:]>` — files for single-file
+  objects, directories for filesets. Symlinks point at these.
+- Filesets behave like ordinary directories on disk:
+    ls mytac/in.ua.split/
+    cat mytac/in.ua.split/assert_01.tac
+- `prj archive` produces a tar / tar.gz of `.ctac/`; `prj clone`
+  unpacks one (or copies a project directory) and rebuilds the
+  friendly-name symlinks at the destination.
+
+Editing a file in place is fine for experimentation but does NOT
+update the manifest — the sha that names the object reflects what
+was originally ingested. To bring an edit back as a new tracked
+object, write it to a path outside the project (or use the
+`Project.add(...)` library API directly).
+
 NOT YET PROJECT-AWARE: `stats`, `cfg`, `search`, `slice`, `df`,
 `types`, `run`, `cfg-match`, `bb-diff`, `op-diff`, `splitcrit`,
-`absint`, `rw-eq`. Pass an explicit object path
-(`mytac/in.rw.tac`) for those today.
+`absint`, `rw-eq`. Pass an explicit object path for those today —
+either the friendly symlink (`mytac/in.rw.tac`) or
+`$(ctac prj export-path mytac)`.
 """,
 }
 

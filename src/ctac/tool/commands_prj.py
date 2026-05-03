@@ -81,6 +81,17 @@ prj_app = typer.Typer(
 app.add_typer(prj_app, name="prj", rich_help_panel=PROJECT_PANEL)
 
 
+@prj_app.callback(invoke_without_command=True)
+def _prj_callback(
+    ctx: typer.Context,
+    agent: bool = agent_option(),
+) -> None:
+    # Mirrors the top-level `ctac --agent` callback so users can run
+    # `ctac prj --agent` and get the project-level agent guide instead
+    # of typer's "missing subcommand" error.
+    _ = (ctx, agent)
+
+
 # ----------------------------------------------------------- prj init
 
 
