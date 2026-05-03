@@ -20,6 +20,7 @@ from ctac.rewrite.rules.bv_to_int import (
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
 from ctac.rewrite.rules.bv_max_to_ite_validation import ADD_BV_MAX_TO_ITE_CASES
 from ctac.rewrite.rules.ceildiv_validation import R6_CASES
+from ctac.rewrite.rules.bool_fold import BOOL_CONST_FOLD
 from ctac.rewrite.rules.copyprop import CP_ALIAS
 from ctac.rewrite.rules.cse import CSE
 from ctac.rewrite.rules.havoc_equate_fold import HAVOC_EQUATE_FOLD
@@ -141,6 +142,12 @@ simplify_pipeline: tuple[Rule, ...] = (
     SUB_ITE_DIST_RIGHT,
     ITE_SAME,
     ITE_SHARED_LEAF,
+    # Bool-const fold: `Ite(true, X, _) -> X`, `Ite(false, _, Y) -> Y`,
+    # plus LNot/LAnd/LOr/Eq over Bool ConstExpr operands. Universally
+    # sound; cheap (top-level pattern match). Useful both for inputs
+    # that arrive with literal-bool guards and after substitutions
+    # introduced by `ctac pin --bind`.
+    BOOL_CONST_FOLD,
     ITE_BOOL,
     # Range-driven Ite folding: decide `cond` via interval inference
     # and collapse to the then/else branch. Paired with ADD_BV_MAX_TO_ITE
@@ -244,6 +251,7 @@ all_rule_names: tuple[str, ...] = (
     SUB_ITE_DIST_RIGHT.name,
     ITE_SAME.name,
     ITE_SHARED_LEAF.name,
+    BOOL_CONST_FOLD.name,
     ITE_BOOL.name,
     ITE_COND_FOLD.name,
     BOOL_ABSORB.name,
@@ -267,6 +275,7 @@ __all__ = [
     "ADD_BV_TO_INT",
     "ADD_ITE_DIST",
     "BOOL_ABSORB",
+    "BOOL_CONST_FOLD",
     "CHUNKED_MUL_BY_2N",
     "CP_ALIAS",
     "CSE",

@@ -1,23 +1,17 @@
 """Boolean constant folding for ``LNot`` / ``LAnd`` / ``LOr`` / ``Eq`` /
 ``Ite`` over Bool ``ConstExpr`` operands.
 
-Used by ``ctac pin``'s cleanup pass: after ``--bind`` substitution
-replaces ``SymbolRef`` boolean variables with ``true``/``false``
-constants, this rule collapses the surrounding boolean structure so
-downstream Ite-merges fold to one branch and DCE removes the dead
-defs.
-
-Not registered in the default ``simplify_pipeline`` — pin imports the
-rule directly. The fold is sound (pure Boolean evaluation), but its
-typical inputs only arise after a substitution pass, and adding it to
-the general pipeline would slow rw on programs that don't have such
-substitutions in flight.
+Registered in ``simplify_pipeline`` (so ``ctac rw`` collapses any
+``Ite(true, X, _) -> X`` / ``Ite(false, _, Y) -> Y`` and the
+sibling Bool-combinator folds it sees) and reused by ``ctac pin``'s
+cleanup pass after ``--bind`` substitution replaces ``SymbolRef``
+booleans with constants.
 
 Soundness: every reduction is a Boolean tautology over the constants
 ``true`` and ``false``. ``Eq`` over two ``ConstExpr`` operands of any
-kind reduces to ``true``/``false`` only when both have identical
+kind reduces to ``true`` / ``false`` only when both have identical
 serialized values; we don't attempt cross-kind equality reasoning
-(e.g., ``Eq(0, false)`` stays put).
+(e.g. ``Eq(0, false)`` stays put).
 
 The rewrite engine handles recursion and fixpoint; this rule only
 matches at the top of the inspected expression.
