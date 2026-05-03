@@ -49,10 +49,42 @@ def auto_name(parent_name: str, command: str, ext: str) -> str:
     return f"{stem}.{ext}"
 
 
+def auto_set_name(parent_name: str, command: str) -> str:
+    """Friendly name for a fileset object.
+
+    Filesets are directories of TAC/htac/smt files; the directory
+    itself doesn't carry a ``.tac``-style extension. The convention
+    is ``<parent-stem>.<command>.split`` — the trailing ``.split``
+    marks the result as a fileset regardless of which command
+    produced it (today: ``pin --split`` and ``ua --strategy split``).
+    """
+    if "/" in parent_name or "\\" in parent_name:
+        raise ValueError(f"auto_set_name expects a basename, got: {parent_name!r}")
+    if not command:
+        raise ValueError("auto_set_name: command must be non-empty")
+    parent_ext = _detect_known_ext(parent_name)
+    if parent_ext is None:
+        stem = parent_name
+        # If parent is itself a `.split` fileset, drop that suffix so
+        # we don't accumulate `.split.cmd.split`.
+        if stem.endswith(".split"):
+            stem = stem[: -len(".split")]
+    else:
+        stem = parent_name[: -len(parent_ext) - 1]
+    return f"{stem}.{command}.split"
+
+
 def collision_suffix(name: str, n: int) -> str:
-    """Insert ``.<n>`` before the extension: ``foo.tac`` -> ``foo.2.tac``."""
+    """Insert ``.<n>`` before the extension: ``foo.tac`` -> ``foo.2.tac``.
+
+    When ``name`` looks like a fileset (ends in ``.split``), the suffix
+    is appended *after* ``split`` so the marker stays at the tail:
+    ``foo.split`` -> ``foo.split.2`` (not ``foo.2.split``).
+    """
     if n < 2:
         raise ValueError("collision_suffix: n must be >= 2")
+    if name.endswith(".split"):
+        return f"{name}.{n}"
     if "." not in name:
         return f"{name}.{n}"
     stem, _, ext = name.rpartition(".")

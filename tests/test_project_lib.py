@@ -10,7 +10,7 @@ from ctac.project import DOT_CTAC, Project, ProjectError
 from ctac.project.hashing import sha256_file, short_sha
 from ctac.project.log import read_log
 from ctac.project.manifest import read_manifest
-from ctac.project.naming import auto_name, collision_suffix
+from ctac.project.naming import auto_name, auto_set_name, collision_suffix
 from ctac.project.refs import is_valid_label, read_head, read_ref
 
 
@@ -45,8 +45,23 @@ def test_auto_name_rejects_path_components() -> None:
 def test_collision_suffix() -> None:
     assert collision_suffix("base.rw.tac", 2) == "base.rw.2.tac"
     assert collision_suffix("base", 3) == "base.3"
+    # Filesets keep `.split` at the tail.
+    assert collision_suffix("base.pin.split", 2) == "base.pin.split.2"
     with pytest.raises(ValueError):
         collision_suffix("base", 1)
+
+
+def test_auto_set_name() -> None:
+    assert auto_set_name("in.tac", "pin") == "in.pin.split"
+    assert auto_set_name("in.rw.tac", "ua") == "in.rw.ua.split"
+    # Already a fileset → don't accumulate `.split.cmd.split`.
+    assert auto_set_name("in.pin.split", "rw") == "in.pin.rw.split"
+    # Unknown extension → append.
+    assert auto_set_name("in.bin", "pin") == "in.bin.pin.split"
+    with pytest.raises(ValueError):
+        auto_set_name("dir/in.tac", "pin")
+    with pytest.raises(ValueError):
+        auto_set_name("in.tac", "")
 
 
 # ------------------------------------------------------------ refs
@@ -296,6 +311,130 @@ def test_set_head_advances(tmp_path: Path) -> None:
     assert prj.head_sha == info2.sha
     prj.set_head("base")  # via label — back to base
     assert prj.head_sha == sha0
+
+
+# ----------------------------------------------------------- filesets
+
+
+def _build_fileset(root: Path, name: str = "split-out") -> Path:
+    """Create a small directory of TAC files + manifest.json, return its path."""
+    p = root / name
+    p.mkdir()
+    (p / "case_1.tac").write_text("case1 content\n", encoding="utf-8")
+    (p / "case_2.tac").write_text("case2 content\n", encoding="utf-8")
+    (p / "manifest.json").write_text('{"strategy": "split"}\n', encoding="utf-8")
+    return p
+
+
+def test_fileset_add_creates_directory_object(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    src = _build_fileset(tmp_path)
+    info = prj.add(
+        src,
+        kind="tac-set",
+        parents=[prj.head_sha],
+        command="ua",
+        args=["--strategy", "split"],
+        suggested_name="in.split",
+        advance_head=True,
+    )
+    assert info.kind == "tac-set"
+    assert info.names == ("in.split",)
+    # HEAD path is a directory and contains the original entries.
+    head_path = prj.head_path()
+    assert head_path.is_dir()
+    assert {p.name for p in head_path.iterdir()} == {
+        "case_1.tac",
+        "case_2.tac",
+        "manifest.json",
+    }
+    # Friendly symlink in the project root resolves to the directory.
+    link = prj.root / "in.split"
+    assert link.is_symlink()
+    assert link.is_dir()  # symlink-following
+
+
+def test_fileset_add_is_idempotent(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    src = _build_fileset(tmp_path)
+    info1 = prj.add(
+        src,
+        kind="tac-set",
+        parents=[prj.head_sha],
+        command="ua",
+        args=[],
+        suggested_name="in.split",
+        advance_head=True,
+    )
+    info2 = prj.add(
+        src,
+        kind="tac-set",
+        parents=[prj.head_sha],
+        command="ua",
+        args=[],
+        suggested_name="in.split",
+    )
+    assert info1.sha == info2.sha
+
+
+def test_focus_member_creates_first_class_object(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    src = _build_fileset(tmp_path)
+    set_info = prj.add(
+        src,
+        kind="tac-set",
+        parents=[prj.head_sha],
+        command="ua-split",
+        args=[],
+        suggested_name="in.split",
+        advance_head=True,
+    )
+    prj.set_head("in.split:case_1.tac")
+    assert prj.head.kind == "tac"
+    assert "case_1.tac" in prj.head.names
+    # Parent of the focused member is the fileset.
+    assert set_info.sha in prj.head.parents
+    # HEAD path is the actual file content (not the directory).
+    assert prj.head_path().is_file()
+    assert prj.head_path().read_text(encoding="utf-8") == "case1 content\n"
+
+
+def test_focus_member_unknown(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    src = _build_fileset(tmp_path)
+    prj.add(
+        src,
+        kind="tac-set",
+        parents=[prj.head_sha],
+        command="ua-split",
+        args=[],
+        suggested_name="in.split",
+        advance_head=True,
+    )
+    with pytest.raises(ProjectError, match="no member"):
+        prj.set_head("in.split:nope.tac")
+
+
+def test_focus_on_non_fileset_rejected(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    with pytest.raises(ProjectError, match="not a fileset"):
+        prj.set_head("in.tac:foo")
+
+
+def test_fileset_size_reports_total_bytes(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    src = _build_fileset(tmp_path)
+    expected = sum(p.stat().st_size for p in src.iterdir() if p.is_file())
+    info = prj.add(
+        src, kind="tac-set", parents=[prj.head_sha], command="ua", args=[]
+    )
+    assert info.size == expected
 
 
 def test_set_label_writes_ref(tmp_path: Path) -> None:

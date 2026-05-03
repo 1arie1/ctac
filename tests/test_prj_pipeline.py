@@ -196,14 +196,25 @@ def test_ua_pipeline_after_rw(tmp_path: Path) -> None:
     assert "in.rw.ua.tac" in prj.head.names
 
 
-def test_ua_split_in_project_requires_explicit_output(tmp_path: Path) -> None:
-    """Split produces a fileset; phase 2 doesn't ingest those, so the
-    user must pass -o explicitly."""
-    prj_dir, _ = _init_project(tmp_path, TAC_MULTI_ASSERT)
+def test_ua_split_ingests_fileset(tmp_path: Path) -> None:
+    """`ua --strategy split` produces a tac-set; project-aware mode
+    ingests it and advances HEAD to the fileset."""
+    prj_dir, prj0 = _init_project(tmp_path, TAC_MULTI_ASSERT)
+    head0 = prj0.head_sha
     runner = CliRunner()
-    res = runner.invoke(app, ["ua", str(prj_dir), "--strategy", "split", "--plain"])
-    assert res.exit_code == 1
-    assert "phase 3" in res.stdout
+    res = runner.invoke(
+        app, ["ua", str(prj_dir), "--strategy", "split", "--plain"]
+    )
+    assert res.exit_code == 0, res.stdout
+    prj = Project.open(prj_dir)
+    assert prj.head.kind == "tac-set"
+    assert head0 in prj.head.parents
+    assert (prj_dir / "in.ua.split").is_symlink()
+    head_dir = prj.head_path()
+    files = sorted(p.name for p in head_dir.iterdir())
+    assert "manifest.json" in files
+    # Two asserts -> at least two assert_*.tac files.
+    assert sum(1 for f in files if f.startswith("assert_")) >= 2
 
 
 # ----------------------------------------------------------- pp
@@ -280,6 +291,132 @@ def test_full_pipeline_rw_ua_smt(tmp_path: Path) -> None:
     smt_objs = [o for o in prj.list_objects() if o.kind == "smt"]
     assert len(smt_objs) == 1
     assert prj.head_sha in smt_objs[0].parents
+
+
+# ----------------------------------------------------- fileset HEAD
+
+
+def _ingest_fileset(prj_dir: Path, members: dict[str, str]) -> None:
+    """Helper: build a tac-set with the given member -> content map and
+    ingest it via the library API, advancing HEAD to the fileset."""
+    prj = Project.open(prj_dir)
+    src = prj_dir.parent / "fset"
+    src.mkdir()
+    for name, content in members.items():
+        (src / name).write_text(content, encoding="utf-8")
+    prj.add(
+        src,
+        kind="tac-set",
+        parents=[prj.head_sha],
+        command="ua-split",
+        args=[],
+        suggested_name="in.split",
+        advance_head=True,
+    )
+
+
+# A TAC with a Jump-target block that has multiple predecessors so
+# `pin --split` actually produces 2+ cases.
+TAC_SPLITTABLE = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tb:bool
+}
+Program {
+\tBlock entry Succ [a, b] {
+\t\tAssignHavocCmd b
+\t\tJumpiCmd a b b
+\t}
+\tBlock a Succ [j] {
+\t\tJumpCmd j
+\t}
+\tBlock b Succ [j] {
+\t\tJumpCmd j
+\t}
+\tBlock j Succ [] {
+\t\tAssertCmd b "ok"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_pin_split_ingests_fileset(tmp_path: Path) -> None:
+    prj_dir, prj0 = _init_project(tmp_path, TAC_SPLITTABLE)
+    head0 = prj0.head_sha
+    runner = CliRunner()
+    res = runner.invoke(
+        app, ["pin", str(prj_dir), "--split", "j", "--plain"]
+    )
+    assert res.exit_code == 0, res.stdout
+    prj = Project.open(prj_dir)
+    # HEAD advanced to a tac-set with the pin-output structure.
+    assert prj.head.kind == "tac-set"
+    assert head0 in prj.head.parents
+    set_dir = prj.head_path()
+    assert set_dir.is_dir()
+    files = sorted(p.name for p in set_dir.iterdir())
+    # Each case .tac plus the pin manifest.
+    assert "manifest.json" in files
+    assert any(f.endswith(".tac") for f in files)
+    # Friendly symlink in the project root: <stem>.<cmd>.split.
+    set_link = prj_dir / "in.pin.split"
+    assert set_link.is_symlink()
+    assert set_link.is_dir()
+
+
+def test_pin_apply_advances_head(tmp_path: Path) -> None:
+    """Without --split, pin produces a single .tac and advances HEAD."""
+    prj_dir, prj0 = _init_project(tmp_path, TAC_SPLITTABLE)
+    head0 = prj0.head_sha
+    runner = CliRunner()
+    res = runner.invoke(
+        app, ["pin", str(prj_dir), "--drop", "a", "--plain"]
+    )
+    assert res.exit_code == 0, res.stdout
+    prj = Project.open(prj_dir)
+    assert prj.head.kind == "tac"
+    if prj.head.sha != head0:
+        assert head0 in prj.head.parents
+
+
+def test_pin_split_explicit_output_skips_project(tmp_path: Path) -> None:
+    prj_dir, _ = _init_project(tmp_path, TAC_SPLITTABLE)
+    out_dir = tmp_path / "explicit-split"
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["pin", str(prj_dir), "--split", "j", "-o", str(out_dir), "--plain"],
+    )
+    assert res.exit_code == 0, res.stdout
+    assert out_dir.is_dir()
+    assert (out_dir / "manifest.json").is_file()
+    # No fileset registered in the project.
+    prj = Project.open(prj_dir)
+    sets = [o for o in prj.list_objects() if o.kind == "tac-set"]
+    assert sets == []
+
+
+def test_consumer_rejects_fileset_head(tmp_path: Path) -> None:
+    """rw/ua/pp/smt all refuse to operate on a project whose HEAD is a
+    fileset — they need a single-file HEAD. The error message points
+    at `prj set-head`."""
+    prj_dir, _ = _init_project(tmp_path)
+    _ingest_fileset(prj_dir, {"case_1.tac": "x\n", "case_2.tac": "y\n"})
+    runner = CliRunner()
+    for cmd in ("rw", "ua", "pp", "smt"):
+        res = runner.invoke(app, [cmd, str(prj_dir), "--plain"])
+        assert res.exit_code == 1, f"{cmd} should reject fileset HEAD"
+        assert "fileset" in res.stdout
+        assert "set-head" in res.stdout
 
 
 def test_rw_idempotent_rerun(tmp_path: Path) -> None:

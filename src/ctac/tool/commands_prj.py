@@ -39,10 +39,17 @@ _PRJ_EPILOG = (
     "([cyan]in.tac[/cyan], [cyan]in.rw.tac[/cyan], "
     "[cyan]in.rw.ua.tac[/cyan], ...).\n\n"
     "[bold green]Project-aware commands[/bold green]  "
-    "Pass [cyan]mytac[/cyan] in place of a [cyan].tac[/cyan] path: "
-    "[cyan]rw[/cyan] and [cyan]ua[/cyan] (merge) advance HEAD; "
-    "[cyan]pp[/cyan] and [cyan]smt[/cyan] register a sibling object. "
-    "Explicit [cyan]-o PATH[/cyan] always bypasses the project.\n\n"
+    "Pass [cyan]mytac[/cyan] in place of a [cyan].tac[/cyan] path. "
+    "Single-file producers ([cyan]rw[/cyan], [cyan]ua --strategy merge[/cyan], "
+    "[cyan]pin[/cyan] without [cyan]--split[/cyan]) advance HEAD. "
+    "Fileset producers ([cyan]pin --split[/cyan], "
+    "[cyan]ua --strategy split[/cyan]) ingest as a [cyan]tac-set[/cyan] "
+    "and HEAD advances to the set. Sibling producers ([cyan]pp[/cyan], "
+    "[cyan]smt[/cyan]) register output without moving HEAD. Explicit "
+    "[cyan]-o PATH[/cyan] always bypasses the project.\n\n"
+    "[bold green]Fileset HEAD[/bold green]  Single-file consumers refuse "
+    "to run when HEAD is a fileset; focus a member first with "
+    "[cyan]prj set-head <set>:<member>[/cyan].\n\n"
     "[bold green]Examples[/bold green]\n\n"
     "[cyan]ctac prj init f.tac -o mytac --plain[/cyan]"
     "  [dim]# create project[/dim]\n\n"
@@ -173,6 +180,8 @@ def prj_list(
             c.print(f"resolve error: {e}" if plain else f"[red]resolve error:[/red] {e}")
             raise typer.Exit(1) from e
         _print_one(c, prj, info, plain=plain, recursive=False)
+        if info.kind.endswith("-set"):
+            _print_set_members(c, prj, info, plain=plain)
         return
 
     head_sha = prj.head_sha
@@ -211,6 +220,62 @@ def prj_list(
             c.print("[bold]Labels[/bold]")
             for lbl, sha in sorted(prj.manifest.labels.items()):
                 c.print(f"  [magenta]{lbl}[/magenta] -> [yellow]{sha[:8]}[/yellow]")
+
+
+# ----------------------------------------------------------- prj set-head
+
+
+@prj_app.command("set-head")
+def prj_set_head(
+    project_dir: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            help="Project directory (the one containing .ctac/).",
+        ),
+    ],
+    ref: Annotated[
+        str,
+        typer.Argument(
+            help=(
+                "Object reference. Accepts a sha (full / unique short), "
+                "a label, a friendly name, or a project-relative path. "
+                "The form <set-ref>:<member-name> focuses a fileset "
+                "member: it materializes the member as a new first-class "
+                "object whose parent is the fileset, then moves HEAD to "
+                "the new object."
+            ),
+        ),
+    ],
+    plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
+    agent: bool = agent_option(),
+) -> None:
+    """Move HEAD to <REF> (or focus a fileset member via <set>:<member>)."""
+    _ = agent
+    plain = plain_requested(plain)
+    c = console(plain)
+    try:
+        prj = Project.open(project_dir)
+    except ProjectError as e:
+        c.print(f"project error: {e}" if plain else f"[red]project error:[/red] {e}")
+        raise typer.Exit(1) from e
+    try:
+        prj.set_head(ref)
+    except ProjectError as e:
+        c.print(f"set-head error: {e}" if plain else f"[red]set-head error:[/red] {e}")
+        raise typer.Exit(1) from e
+    head = prj.head
+    if plain:
+        c.print(f"head: {head.sha}", markup=False)
+        if head.names:
+            c.print(f"head_path: {prj.root / head.names[-1]}", markup=False)
+    else:
+        c.print(f"[bold]HEAD[/bold] -> [yellow]{head.sha[:12]}[/yellow]")
+        if head.names:
+            c.print(f"  path: [cyan]{prj.root / head.names[-1]}[/cyan]")
 
 
 # ----------------------------------------------------------- prj info
@@ -322,3 +387,36 @@ def _print_one(
             c.print(f"  size:    {o.size}")
             if recursive and idx + 1 < len(chain):
                 c.print("")
+
+
+def _print_set_members(c, prj: Project, info: ObjectInfo, *, plain: bool) -> None:
+    """List the entries of a fileset (kind ending in ``-set``)."""
+    set_dir = prj.object_path(info.sha)
+    if not set_dir.is_dir():
+        c.print(
+            f"# warning: fileset object {info.sha[:8]} is not a directory on disk",
+            markup=False,
+        )
+        return
+    members = sorted(p for p in set_dir.iterdir() if p.is_file())
+    if plain:
+        c.print("", markup=False)
+        c.print(f"members ({len(members)}):", markup=False)
+        for p in members:
+            c.print(f"  {p.name}  ({p.stat().st_size} bytes)", markup=False)
+        c.print("", markup=False)
+        c.print(
+            "# focus a member with: "
+            f"ctac prj set-head <DIR> {info.names[0] if info.names else info.sha[:8]}:<member>",
+            markup=False,
+        )
+    else:
+        c.print("")
+        c.print(f"[bold]Members ({len(members)})[/bold]")
+        for p in members:
+            c.print(f"  [cyan]{p.name}[/cyan]  [dim]{p.stat().st_size} bytes[/dim]")
+        ref = info.names[0] if info.names else info.sha[:8]
+        c.print(
+            f"\n[dim]focus a member: "
+            f"[cyan]ctac prj set-head <DIR> {ref}:<member>[/cyan][/dim]"
+        )

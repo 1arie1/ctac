@@ -29,6 +29,7 @@ short and consistent.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -63,6 +64,11 @@ def resolve_project_or_tac(path: Path | None) -> ResolvedInput:
     Project directories take precedence: if ``path`` contains a
     ``.ctac/HEAD``, the project is opened and HEAD's content path is
     returned. Otherwise the existing TAC-input resolver runs.
+
+    When HEAD is a fileset (kind ends in ``-set``), the consumer
+    commands wired through this helper can't proceed — TAC-shaped
+    commands need a single-file HEAD. Surface a clear error pointing
+    the user at ``ctac prj set-head <DIR> <set>:<member>``.
     """
     user_path, user_warnings = resolve_user_path(path)
     if user_path.is_dir() and Project.is_project(user_path):
@@ -70,6 +76,13 @@ def resolve_project_or_tac(path: Path | None) -> ResolvedInput:
             prj = Project.open(user_path)
         except ProjectError as e:
             raise ValueError(f"failed to open project at {user_path}: {e}") from e
+        head = prj.head
+        if head.kind.endswith("-set"):
+            raise ValueError(
+                f"HEAD is a fileset ({head.kind}); pick a member with "
+                f"`ctac prj set-head {user_path} <set-ref>:<member>` "
+                f"before running TAC commands."
+            )
         return ResolvedInput(
             tac_path=prj.head_path(),
             project=prj,
@@ -182,6 +195,58 @@ def ingest_or_write_text(
         )
     finally:
         tmp_path.unlink(missing_ok=True)
+    written = project.root / info.names[-1] if info.names else project.object_path(info.sha)
+    return written, info
+
+
+def ingest_or_write_dir(
+    *,
+    explicit_output: Optional[Path],
+    project: Optional[Project],
+    populate: Callable[[Path], None],
+    command: str,
+    kind: ObjectKind,
+    args: list[str] | None = None,
+    advance_head: bool,
+    suggested_name: Optional[str] = None,
+) -> tuple[Optional[Path], Optional[ObjectInfo]]:
+    """Like :func:`ingest_or_write_program` but for a directory artifact
+    (fileset). ``populate(path)`` is called with the destination path
+    (created if missing) to write the contents.
+
+    - explicit ``-o DIR``: ``populate(explicit_output)``; no project
+      ingestion. The directory is created if missing.
+    - project, no ``-o``: ``populate(tmp_dir)``; ingest the temp dir
+      as a fileset (kind must end in ``-set``); cleanup the temp dir.
+    - neither: ``(None, None)`` — caller should warn that an output
+      target is required.
+    """
+    if explicit_output is not None:
+        explicit_output.mkdir(parents=True, exist_ok=True)
+        populate(explicit_output)
+        return explicit_output, None
+
+    if project is None:
+        return None, None
+
+    if not kind.endswith("-set"):
+        raise ValueError(
+            f"ingest_or_write_dir: kind must be a fileset kind, got {kind!r}"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="ctac-prj-set-") as tmp_root:
+        tmp_dir = Path(tmp_root) / "out"
+        tmp_dir.mkdir()
+        populate(tmp_dir)
+        info = project.add(
+            tmp_dir,
+            kind=kind,
+            parents=[project.head_sha] if project.manifest.head else [],
+            command=command,
+            args=list(args or []),
+            suggested_name=suggested_name,
+            advance_head=advance_head,
+        )
     written = project.root / info.names[-1] if info.names else project.object_path(info.sha)
     return written, info
 

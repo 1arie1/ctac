@@ -653,38 +653,56 @@ keeps a manifest you can replay later.
 
 PROJECT-AWARE COMMANDS: pass a project directory in place of a .tac
 path. HEAD is read for input; outputs are ingested automatically.
-- `rw`, `ua` (merge strategy): no -o → ingest, advance HEAD.
-- `pp` (-> .htac), `smt` (-> .smt2): no -o → ingest as HEAD-sibling
-  (parent = HEAD; HEAD does not move).
+- HEAD-moving single-file: `rw`, `ua --strategy merge`, `pin`
+  (without `--split`).
+- HEAD-moving fileset: `pin --split`, `ua --strategy split`.
+  Output is a tac-set (kind ends in -set), HEAD becomes the set,
+  friendly name `<stem>.<command>.split/`.
+- HEAD-sibling (parent = HEAD; HEAD does not move): `pp` -> .htac,
+  `smt` -> .smt2.
 - explicit `-o PATH` always bypasses project ingestion.
+
+When HEAD is a fileset, single-file consumers refuse to run; focus
+a member first with `prj set-head <set>:<member>`.
 
 PRJ COMMANDS:
   ctac prj init f.tac -o mytac --plain          # create project
   ctac prj list mytac --plain                   # list objects
+  ctac prj list mytac <set-ref> --plain         # show fileset members
   ctac prj info mytac base --plain --recursive  # walk parents
+  ctac prj set-head mytac <ref>                 # move HEAD
+  ctac prj set-head mytac <set>:<member>        # focus a member
 
-TYPICAL PIPELINE:
+TYPICAL PIPELINE (linear):
   ctac prj init f.tac -o mytac --plain
-  ctac rw mytac --plain         # HEAD -> in.rw.tac
-  ctac ua mytac --plain         # HEAD -> in.rw.ua.tac
-  ctac smt mytac --plain        # writes in.rw.ua.smt2 (sibling)
-  ctac prj list mytac --plain
+  ctac rw mytac --plain                        # HEAD -> in.rw.tac
+  ctac ua mytac --plain                        # HEAD -> in.rw.ua.tac
+  ctac smt mytac --plain                       # writes in.rw.ua.smt2
+
+TYPICAL PIPELINE (split):
+  ctac ua mytac --strategy split --plain       # HEAD -> in.ua.split/
+  ctac prj list mytac in.ua.split --plain      # see members
+  ctac prj set-head mytac in.ua.split:assert_01.tac
+  ctac smt mytac --plain                       # solve focused case
 
 LAYOUT:
   mytac/.ctac/HEAD                    # text: <sha>
   mytac/.ctac/refs/<label>            # text: <sha>
-  mytac/.ctac/objects/<pfx>/<rest>    # canonical content
+  mytac/.ctac/objects/<pfx>/<rest>    # canonical content (file or dir)
   mytac/.ctac/manifest.json           # provenance graph
   mytac/.ctac/log.jsonl               # append-only command log
   mytac/in.tac                        # symlink -> objects/<sha>
+  mytac/in.ua.split/                  # symlink -> objects/<sha>/ (set)
 
 REFS: any of these resolve an object — full sha, unique short sha
 (>= 4 hex chars), label name (`base`), friendly symlink name
-(`in.rw.tac`), or a path inside the project root.
+(`in.rw.tac`), or a path inside the project root. The form
+`<set-ref>:<member-name>` is accepted by `prj set-head` to
+materialize and focus a fileset member.
 
 NOT YET PROJECT-AWARE: `stats`, `cfg`, `search`, `slice`, `df`,
-`types`, `run`, `cfg-match`, `bb-diff`, `op-diff`, `pin`,
-`splitcrit`, `absint`, `rw-eq`. Pass an explicit object path
+`types`, `run`, `cfg-match`, `bb-diff`, `op-diff`, `splitcrit`,
+`absint`, `rw-eq`. Pass an explicit object path
 (`mytac/in.rw.tac`) for those today.
 """,
 }

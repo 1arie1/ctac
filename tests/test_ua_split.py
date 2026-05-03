@@ -290,4 +290,5 @@ def test_cli_split_requires_output(tmp_path: Path) -> None:
     runner = CliRunner()
     res = runner.invoke(app, ["ua", str(src), "--strategy", "split", "--plain"])
     assert res.exit_code == 1
-    assert "--strategy split requires -o" in res.stdout
+    assert "--strategy split requires" in res.stdout
+    assert "-o" in res.stdout

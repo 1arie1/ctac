@@ -195,14 +195,26 @@ pins HEAD ("the current TAC"), records every produced artifact's
 provenance, and exposes friendly-name symlinks
 (`base.tac`, `base.rw.tac`, ...) on top of the content-addressed
 `.ctac/objects/` store. Pass the project directory to `rw`, `ua`,
-`pp`, or `smt` in place of a `.tac` path — HEAD is read for input,
-and outputs are ingested into the project automatically when `-o`
-is omitted:
+`pp`, `smt`, or `pin` in place of a `.tac` path — HEAD is read for
+input, and outputs are ingested into the project automatically
+when `-o` is omitted:
 
 ```bash
 ctac rw mytac --plain    # HEAD: in.tac -> in.rw.tac
 ctac ua mytac --plain    # HEAD: in.rw.tac -> in.rw.ua.tac
 ctac smt mytac --plain   # writes in.rw.ua.smt2 as a HEAD sibling
+```
+
+Filesets (directories of TAC files) are first-class. `pin --split`
+and `ua --strategy split` produce a `tac-set` object; HEAD advances
+to the fileset (e.g. `in.ua.split/`). Pick a member with
+`prj set-head` to continue:
+
+```bash
+ctac ua mytac --strategy split --plain          # HEAD -> in.ua.split/
+ctac prj list mytac in.ua.split --plain         # show members + hint
+ctac prj set-head mytac in.ua.split:assert_01.tac --plain
+ctac smt mytac --plain                          # solve the focused case
 ```
 
 The library surface (`ctac.project.Project`) is what the REPL and

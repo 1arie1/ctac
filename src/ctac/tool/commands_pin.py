@@ -23,8 +23,11 @@ from ctac.tool.cli_runtime import (
     console,
     plain_requested,
 )
-from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
-from ctac.tool.tac_output import write_program_to_path
+from ctac.tool.project_io import (
+    ingest_or_write_dir,
+    ingest_or_write_program,
+    resolve_project_or_tac,
+)
 from ctac.tracing import JsonlTrace, NullTrace
 from ctac.transform.pin import (
     PinPlan,
@@ -247,9 +250,8 @@ def pin_cmd(
 
     # Run mode.
     try:
-        user_path, user_warnings = resolve_user_path(path)
-        tac_path, input_warnings = resolve_tac_input_path(user_path)
-        tac = parse_path(tac_path)
+        resolved = resolve_project_or_tac(path)
+        tac = parse_path(resolved.tac_path)
     except ParseError as e:
         c.print(
             f"parse error: {e}" if plain
@@ -265,7 +267,7 @@ def pin_cmd(
         )
         raise typer.Exit(1) from e
 
-    for w in user_warnings + input_warnings:
+    for w in resolved.warnings:
         c.print(f"# input warning: {w}", markup=False)
 
     plan = PinPlan(
@@ -288,16 +290,6 @@ def pin_cmd(
     try:
         if splits:
             cs = pin_enumerate(tac.program, plan, trace=trace_obj)
-            if output_path is None:
-                c.print(
-                    "# no --output given; pass -o DIR/ to write cases + manifest",
-                    markup=False,
-                )
-                c.print(
-                    f"# would write {len(cs.cases)} case(s)",
-                    markup=False,
-                )
-                return
             if name_style not in ("descriptive", "index"):
                 c.print(
                     f"error: --name-style must be descriptive|index "
@@ -312,22 +304,52 @@ def pin_cmd(
             command_str = _reconstruct_command(
                 str(path), drops, binds, splits, output_path, no_cleanup
             )
-            write_manifest(
-                cs,
-                output_path,
-                source_tac=tac,
-                source_path=str(tac_path),
-                command=command_str,
-                name_style=name_style,  # type: ignore[arg-type]
+
+            def _populate_split_dir(dst: Path) -> None:
+                write_manifest(
+                    cs,
+                    dst,
+                    source_tac=tac,
+                    source_path=str(resolved.tac_path),
+                    command=command_str,
+                    name_style=name_style,  # type: ignore[arg-type]
+                )
+
+            written, _info = ingest_or_write_dir(
+                explicit_output=output_path,
+                project=resolved.project,
+                populate=_populate_split_dir,
+                command="pin",
+                kind="tac-set",
+                advance_head=True,
             )
+            if written is None:
+                c.print(
+                    "# no --output given; pass -o DIR/ to write cases + manifest",
+                    markup=False,
+                )
+                c.print(
+                    f"# would write {len(cs.cases)} case(s)",
+                    markup=False,
+                )
+                return
             c.print(
                 f"# wrote {len(cs.cases)} case(s) + manifest.json to "
-                f"{output_path}",
+                f"{written}",
                 markup=False,
             )
         else:
             res = apply(tac.program, plan, trace=trace_obj)
-            if output_path is None:
+            written_path, _info = ingest_or_write_program(
+                explicit_output=output_path,
+                project=resolved.project,
+                tac=tac,
+                program=res.program,
+                command="pin",
+                kind="tac",
+                advance_head=True,
+            )
+            if written_path is None:
                 c.print(
                     "# no --output given; pass -o FILE.tac to write the result",
                     markup=False,
@@ -337,12 +359,7 @@ def pin_cmd(
                     markup=False,
                 )
                 return
-            write_program_to_path(
-                output_path=output_path,
-                tac=tac,
-                program=res.program,
-            )
-            c.print(f"# wrote {output_path}", markup=False)
+            c.print(f"# wrote {written_path}", markup=False)
     except ValueError as e:
         c.print(
             f"error: {e}" if plain else f"[red]error:[/red] {e}",

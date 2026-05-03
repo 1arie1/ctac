@@ -128,6 +128,111 @@ def test_prj_info_unknown_ref(tmp_path: Path) -> None:
     assert "resolve error" in res.stdout
 
 
+def test_prj_set_head_label(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac", "first\n")
+    prj_dir = tmp_path / "mytac"
+    runner = CliRunner()
+    runner.invoke(app, ["prj", "init", str(base), "-o", str(prj_dir), "--plain"])
+    # Add a second object via library, advance HEAD off it, then set-head back.
+    prj = Project.open(prj_dir)
+    other = tmp_path / "other.tac"
+    other.write_text("second\n", encoding="utf-8")
+    prj.add(
+        other, kind="tac", parents=[prj.head_sha], command="rw", args=[], advance_head=True
+    )
+    res = runner.invoke(app, ["prj", "set-head", str(prj_dir), "base", "--plain"])
+    assert res.exit_code == 0, res.stdout
+    prj2 = Project.open(prj_dir)
+    assert "in.tac" in prj2.head.names
+
+
+def test_prj_set_head_focus_member(tmp_path: Path) -> None:
+    """End-to-end: ingest a fileset via the library, then `prj set-head <set>:<member>`."""
+    base = _write_tac(tmp_path / "in.tac")
+    prj_dir = tmp_path / "mytac"
+    runner = CliRunner()
+    runner.invoke(app, ["prj", "init", str(base), "-o", str(prj_dir), "--plain"])
+    prj = Project.open(prj_dir)
+    # Build a fileset directly via the library (CLI ingestion comes
+    # later in this phase via `pin --split` / `ua --split`).
+    src = tmp_path / "fset"
+    src.mkdir()
+    (src / "case_1.tac").write_text("c1\n", encoding="utf-8")
+    (src / "case_2.tac").write_text("c2\n", encoding="utf-8")
+    prj.add(
+        src,
+        kind="tac-set",
+        parents=[prj.head_sha],
+        command="ua-split",
+        args=[],
+        suggested_name="in.split",
+        advance_head=True,
+    )
+    res = runner.invoke(
+        app,
+        ["prj", "set-head", str(prj_dir), "in.split:case_1.tac", "--plain"],
+    )
+    assert res.exit_code == 0, res.stdout
+    prj2 = Project.open(prj_dir)
+    assert prj2.head.kind == "tac"
+    assert "case_1.tac" in prj2.head.names
+
+
+def test_prj_set_head_member_not_found(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj_dir = tmp_path / "mytac"
+    runner = CliRunner()
+    runner.invoke(app, ["prj", "init", str(base), "-o", str(prj_dir), "--plain"])
+    prj = Project.open(prj_dir)
+    src = tmp_path / "fset"
+    src.mkdir()
+    (src / "only.tac").write_text("x\n", encoding="utf-8")
+    prj.add(
+        src,
+        kind="tac-set",
+        parents=[prj.head_sha],
+        command="ua-split",
+        args=[],
+        suggested_name="in.split",
+        advance_head=True,
+    )
+    res = runner.invoke(
+        app,
+        ["prj", "set-head", str(prj_dir), "in.split:nope.tac", "--plain"],
+    )
+    assert res.exit_code == 1
+    assert "set-head error" in res.stdout
+
+
+def test_prj_list_fileset_lists_members(tmp_path: Path) -> None:
+    """`prj list <DIR> <fileset-ref>` shows the fileset's metadata
+    plus its directory members and a hint to use `prj set-head`."""
+    base = _write_tac(tmp_path / "in.tac")
+    prj_dir = tmp_path / "mytac"
+    runner = CliRunner()
+    runner.invoke(app, ["prj", "init", str(base), "-o", str(prj_dir), "--plain"])
+    prj = Project.open(prj_dir)
+    src = tmp_path / "fset"
+    src.mkdir()
+    (src / "case_1.tac").write_text("first\n", encoding="utf-8")
+    (src / "case_2.tac").write_text("second\n", encoding="utf-8")
+    prj.add(
+        src,
+        kind="tac-set",
+        parents=[prj.head_sha],
+        command="ua-split",
+        args=[],
+        suggested_name="in.split",
+        advance_head=True,
+    )
+    res = runner.invoke(app, ["prj", "list", str(prj_dir), "in.split", "--plain"])
+    assert res.exit_code == 0, res.stdout
+    assert "members (2):" in res.stdout
+    assert "case_1.tac" in res.stdout
+    assert "case_2.tac" in res.stdout
+    assert "set-head" in res.stdout
+
+
 def test_prj_list_one_object(tmp_path: Path) -> None:
     """`prj list <DIR> <OBJ_ID>` falls through to per-object info."""
     base = _write_tac(tmp_path / "in.tac")

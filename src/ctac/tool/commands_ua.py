@@ -29,7 +29,11 @@ from ctac.tool.cli_runtime import (
     console,
     plain_requested,
 )
-from ctac.tool.project_io import ingest_or_write_program, resolve_project_or_tac
+from ctac.tool.project_io import (
+    ingest_or_write_dir,
+    ingest_or_write_program,
+    resolve_project_or_tac,
+)
 from ctac.ua import merge_asserts, split_asserts
 
 
@@ -149,17 +153,6 @@ def ua_cmd(
         c.print(f"input error: {e}" if plain else f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
 
-    if strategy == "split" and resolved.project is not None and output_path is None:
-        # Split produces a directory of TACs (a fileset). Project
-        # ingestion of filesets is phase 3; for now, require an
-        # explicit -o so the user opts in to the legacy behavior.
-        c.print(
-            "# error: --strategy split inside a project requires explicit "
-            "-o DIR (fileset ingestion lands in phase 3)",
-            markup=False,
-        )
-        raise typer.Exit(1)
-
     for w in resolved.warnings:
         c.print(f"# input warning: {w}", markup=False)
 
@@ -205,6 +198,7 @@ def ua_cmd(
             tac=tac,
             program=program,
             output_path=output_path,
+            project=resolved.project,
             report=report,
             asserts_before=asserts_before,
             removed_true=removed_true,
@@ -272,19 +266,21 @@ def _run_split(
     tac,
     program: TacProgram,
     output_path: Optional[Path],
+    project,
     report: bool,
     asserts_before: int,
     removed_true: int,
     extra_symbols: tuple[tuple[str, str], ...],
     source_path: str,
 ) -> None:
-    if output_path is None:
+    if output_path is None and project is None:
         c.print(
-            "# error: --strategy split requires -o DIR for the output directory",
+            "# error: --strategy split requires either -o DIR or a project "
+            "directory (so the fileset can be ingested)",
             markup=False,
         )
         raise typer.Exit(1)
-    if output_path.exists() and not output_path.is_dir():
+    if output_path is not None and output_path.exists() and not output_path.is_dir():
         c.print(
             f"# error: --strategy split expects -o to be a directory; "
             f"{output_path} exists and is not a directory",
@@ -293,37 +289,47 @@ def _run_split(
         raise typer.Exit(1)
 
     result = split_asserts(program)
-
-    output_path.mkdir(parents=True, exist_ok=True)
-    outputs_written = 0
     k = len(result.outputs)
     pad = max(2, len(str(max(k - 1, 0))))
+    outputs_written = [0]
     manifest_outputs: list[dict] = []
-    for out in result.outputs:
-        filename = f"assert_{out.index:0{pad}d}.tac"
-        live_extra = filter_live_extra_symbols(extra_symbols, out.program)
-        text = render_tac_file(tac, program=out.program, extra_symbols=live_extra)
-        (output_path / filename).write_text(text, encoding="utf-8")
-        outputs_written += 1
-        manifest_outputs.append(
-            {
-                "file": filename,
-                "index": out.index,
-                "block_id": out.block_id,
-                "cmd_index": out.cmd_index,
-                "message": out.message,
-            }
+
+    def _populate(dst: Path) -> None:
+        for out in result.outputs:
+            filename = f"assert_{out.index:0{pad}d}.tac"
+            live_extra = filter_live_extra_symbols(extra_symbols, out.program)
+            text = render_tac_file(tac, program=out.program, extra_symbols=live_extra)
+            (dst / filename).write_text(text, encoding="utf-8")
+            outputs_written[0] += 1
+            manifest_outputs.append(
+                {
+                    "file": filename,
+                    "index": out.index,
+                    "block_id": out.block_id,
+                    "cmd_index": out.cmd_index,
+                    "message": out.message,
+                }
+            )
+        manifest = {
+            "strategy": "split",
+            "source_path": source_path,
+            "asserts_before": result.asserts_before,
+            "removed_true_asserts": removed_true,
+            "outputs": manifest_outputs,
+        }
+        (dst / "manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
-    manifest = {
-        "strategy": "split",
-        "source_path": source_path,
-        "asserts_before": result.asserts_before,
-        "removed_true_asserts": removed_true,
-        "outputs": manifest_outputs,
-    }
-    (output_path / "manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+
+    written, _info = ingest_or_write_dir(
+        explicit_output=output_path,
+        project=project,
+        populate=_populate,
+        command="ua",
+        kind="tac-set",
+        advance_head=True,
     )
+    assert written is not None  # output_path is None && project is None already errored
 
     if report:
         _print_split_report(
@@ -332,11 +338,14 @@ def _run_split(
             asserts_before=asserts_before,
             removed_true=removed_true,
             result=result,
-            output_dir=output_path,
-            outputs_written=outputs_written,
+            output_dir=written,
+            outputs_written=outputs_written[0],
         )
-    elif outputs_written:
-        c.print(f"# wrote {outputs_written} files + manifest to {output_path}", markup=False)
+    elif outputs_written[0]:
+        c.print(
+            f"# wrote {outputs_written[0]} files + manifest to {written}",
+            markup=False,
+        )
 
 
 def _print_merge_report(

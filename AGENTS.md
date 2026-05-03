@@ -340,30 +340,49 @@ project root carries friendly-name symlinks (`base.tac`,
   - `OBJ_ID` accepts: full sha, unique sha prefix (>= 4 hex chars),
     label name, friendly symlink name, or a project-relative path.
 
+- `ctac prj set-head <DIR> <REF> --plain`
+  - Move HEAD to `<REF>`. Special form `<set-ref>:<member-name>`
+    materializes a fileset member as a fresh single-file object
+    whose parent is the fileset, then moves HEAD to it.
+
 Project-aware commands (give the project dir in place of a `.tac`):
 
-- HEAD-moving (no `-o` ingests + advances HEAD): `rw`, `ua` (merge
-  strategy only — `--strategy split` produces a fileset, deferred
-  to phase 3).
-- Sibling-producing (no `-o` ingests as a non-HEAD-advancing object
-  whose parent is HEAD): `pp` writes `.htac`, `smt` writes `.smt2`.
+- HEAD-moving single-file producers (no `-o` ingests + advances
+  HEAD): `rw`, `ua --strategy merge`, `pin` (without `--split`).
+- HEAD-moving fileset producers: `pin --split`, `ua --strategy
+  split`. Output is a tac-set (directory of cases + manifest);
+  HEAD advances to the fileset object, friendly name
+  `<stem>.<command>.split` (e.g. `in.pin.split/`,
+  `in.ua.split/`).
+- Sibling-producing (no `-o` ingests as a non-HEAD-advancing
+  object whose parent is HEAD): `pp` writes `.htac`, `smt`
+  writes `.smt2`.
 - Explicit `-o PATH` always bypasses project ingestion; the user
   gets the file at PATH, the project is untouched.
+
+When HEAD is a fileset, single-file consumers (`rw`, `ua`, `pp`,
+`smt`) refuse to run — focus a member first:
+
+```bash
+ctac prj set-head mytac in.ua.split:assert_01.tac
+ctac smt mytac --plain
+```
 
 Typical pipeline:
 
 ```bash
-ctac prj init f.tac -o mytac --plain   # HEAD = base.tac (or in.tac)
-ctac rw mytac --plain                  # HEAD -> in.rw.tac
-ctac ua mytac --plain                  # HEAD -> in.rw.ua.tac
-ctac smt mytac --plain                 # writes in.rw.ua.smt2 (sibling)
-ctac prj list mytac --plain
+ctac prj init f.tac -o mytac --plain         # HEAD = in.tac
+ctac rw mytac --plain                        # HEAD -> in.rw.tac
+ctac ua mytac --strategy split --plain       # HEAD -> in.rw.ua.split/
+ctac prj list mytac in.rw.ua.split --plain   # show members + hint
+ctac prj set-head mytac in.rw.ua.split:assert_01.tac --plain
+ctac smt mytac --plain                       # writes assert_01.smt2
 ```
 
 Other commands (`stats`, `cfg`, `search`, `slice`, `df`, `types`,
-`run`, `cfg-match`, `bb-diff`, `op-diff`, `pin`, `splitcrit`,
-`absint`, `rw-eq`) still take an explicit TAC path; passing a
-project dir to them is on the phase-2 follow-up list.
+`run`, `cfg-match`, `bb-diff`, `op-diff`, `splitcrit`, `absint`,
+`rw-eq`) still take an explicit TAC path; routing them through
+the project is on the follow-up list.
 
 ## Repo Structure (Key Paths)
 

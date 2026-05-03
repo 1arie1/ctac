@@ -29,7 +29,7 @@ from ctac.project.manifest import (
     read_manifest,
     write_manifest,
 )
-from ctac.project.naming import auto_name, collision_suffix
+from ctac.project.naming import auto_name, auto_set_name, collision_suffix
 from ctac.project.types import OBJECT_KINDS, ObjectInfo, ObjectKind, ProjectError
 
 
@@ -301,7 +301,22 @@ class Project:
         return info
 
     def set_head(self, ref: str) -> None:
-        sha = self.resolve(ref)
+        """Move HEAD to the object identified by ``ref``.
+
+        ``ref`` accepts the same forms as :meth:`resolve`. The
+        additional ``<set-ref>:<member-name>`` syntax materializes
+        the named member of a fileset as a fresh first-class
+        object (kind inferred from the set's kind: ``tac-set`` ->
+        ``tac``, ``htac-set`` -> ``htac``, ``smt-set`` -> ``smt``)
+        with parent = fileset, then moves HEAD to it. Useful after
+        ``ua --strategy split`` / ``pin --split`` to focus a single
+        case before continuing with ``rw`` / ``smt``.
+        """
+        if ":" in ref:
+            set_ref, _, member = ref.partition(":")
+            sha = self._focus_member(set_ref, member)
+        else:
+            sha = self.resolve(ref)
         refs_mod.write_head(self.dot_ctac, sha)
         self.manifest.head = sha
         write_manifest(self.manifest, self.dot_ctac)
@@ -315,6 +330,34 @@ class Project:
                 advance_head=True,
             ),
         )
+
+    def _focus_member(self, set_ref: str, member: str) -> str:
+        if not member:
+            raise ProjectError("fileset member name is empty")
+        set_sha = self.resolve(set_ref)
+        set_info = self.manifest.objects[set_sha]
+        if not set_info.kind.endswith("-set"):
+            raise ProjectError(
+                f"reference {set_ref!r} is not a fileset (kind={set_info.kind})"
+            )
+        set_dir = store_mod.object_path(self.dot_ctac, set_sha)
+        member_path = set_dir / member
+        if not member_path.is_file():
+            raise ProjectError(
+                f"fileset {set_ref!r} has no member {member!r}; "
+                f"available: {sorted(p.name for p in set_dir.iterdir() if p.is_file())}"
+            )
+        member_kind: ObjectKind = set_info.kind[: -len("-set")]  # type: ignore[assignment]
+        info = self.add(
+            member_path,
+            kind=member_kind,
+            parents=[set_sha],
+            command="focus",
+            args=[member],
+            suggested_name=member,
+            advance_head=False,
+        )
+        return info.sha
 
     def set_label(self, ref: str, label: str) -> None:
         if not refs_mod.is_valid_label(label):
@@ -345,14 +388,16 @@ class Project:
     ) -> str:
         """Pick a friendly name for the new object.
 
-        Rule:
-        - If ``suggested`` is given, use it (with collision suffix if
-          a different sha already owns that name).
-        - Otherwise, derive from HEAD's first friendly name + command +
-          ``kind``-appropriate extension.
-        - If no HEAD exists yet (first object), and no ``suggested``,
-          fall back to ``base.<ext>``.
+        Rules:
+        - If ``suggested`` is given, use it (with collision suffix if a
+          different sha already owns that name).
+        - Otherwise derive from HEAD's most recently appended friendly
+          name. Filesets get ``<stem>.<command>.split``; single-file
+          kinds get ``<stem>.<command>.<ext>`` via :func:`auto_name`.
+        - If no HEAD exists yet, fall back to ``base.<ext>`` (or
+          ``base.<command>.split`` for filesets).
         """
+        is_set = kind.endswith("-set")
         ext = _ext_for_kind(kind)
         if suggested is not None:
             base = suggested
@@ -361,16 +406,23 @@ class Project:
                 head_info = self.manifest.objects[self.head_sha] if self.manifest.head else None
             except (FileNotFoundError, KeyError):
                 head_info = None
-            if head_info is not None and head_info.names:
-                # Use the most recently appended name as the basis: when
-                # an idempotent command (rw on a fixed point) extended
-                # an existing object's alias list, follow-on commands
-                # should chain off the new alias (`in.rw.tac`) rather
-                # than the original (`in.tac`), preserving pipeline
-                # provenance in the filename.
-                base = auto_name(head_info.names[-1], command, ext)
+            parent_name = (
+                head_info.names[-1]
+                if head_info is not None and head_info.names
+                else None
+            )
+            # Use the most recently appended HEAD name as the basis: when
+            # an idempotent command (rw on a fixed point) extended an
+            # existing object's alias list, follow-on commands should
+            # chain off the new alias (`in.rw.tac`) rather than the
+            # original (`in.tac`), preserving pipeline provenance in
+            # the filename.
+            if parent_name is None:
+                base = f"base.{command}.split" if is_set else f"base.{ext}"
+            elif is_set:
+                base = auto_set_name(parent_name, command)
             else:
-                base = f"base.{ext}"
+                base = auto_name(parent_name, command, ext)
         return self._dedupe_name(base, sha, existing_names)
 
     def _dedupe_name(
