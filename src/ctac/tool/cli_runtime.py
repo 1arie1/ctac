@@ -60,6 +60,7 @@ ANALYZE_PANEL = "Analyze data-flow"
 TRANSFORM_PANEL = "Transform TAC"
 VERIFY_PANEL = "Verify"
 VALIDATE_PANEL = "Validate the rewriter"
+PROJECT_PANEL = "Manage a project"
 
 _AGENT_GUIDE_MAIN = """ctac agent guide (plain, terse)
 
@@ -638,6 +639,41 @@ PIPELINE: drops `assert true`, purifies compound predicates into fresh
 
 FOLLOWUP: `ctac smt f_ua.tac --run` to verify.
 """,
+    "prj": """ctac prj --agent
+
+Manage a ctac project: a working directory with a `.ctac/` sidecar
+that pins a HEAD ("the current TAC"), records every produced
+artifact's provenance, and auto-names derived files mechanically.
+
+WHY BEAT MANUAL: solving requires `rw -> ua -> smt` (and often
+several iterations). Threading those through `-o` flags and
+remembering which file is "current" is error-prone; a project tracks
+HEAD for you, gives you `base.rw.ua.tac` as a friendly symlink, and
+keeps a manifest you can replay later.
+
+PHASE 1 (this release): the project lifecycle and read API only —
+`init`, `list`, `info`. Existing TAC commands do NOT yet accept a
+project directory in place of a `.tac` argument; that's phase 2.
+You can pass an explicit object path (`mytac/base.tac`) today and
+re-add the result with `prj` once it's emitted.
+
+TYPICAL:
+  ctac prj init f.tac -o mytac --plain          # create project
+  ctac prj list mytac --plain                   # list objects
+  ctac prj info mytac base --plain --recursive  # walk parents
+
+LAYOUT:
+  mytac/.ctac/HEAD                    # text: <sha>
+  mytac/.ctac/refs/<label>            # text: <sha>
+  mytac/.ctac/objects/<pfx>/<rest>    # canonical content (read-only)
+  mytac/.ctac/manifest.json           # provenance graph
+  mytac/.ctac/log.jsonl               # append-only command log
+  mytac/base.tac                      # symlink -> objects/<sha>
+
+REFS: any of these resolve an object — full sha, unique short sha
+(>= 4 hex chars), label name (`base`), friendly symlink name
+(`base.tac`), or a path inside the project root.
+""",
 }
 
 
@@ -645,8 +681,14 @@ def _agent_guide_text(ctx: typer.Context | None) -> str:
     if ctx is None:
         return _AGENT_GUIDE_MAIN
     path = (ctx.command_path or "").strip().split()
-    cmd = path[-1] if path else "ctac"
-    return _AGENT_GUIDE_BY_CMD.get(cmd, _AGENT_GUIDE_MAIN)
+    # Walk from most-specific to least: ``ctac prj init --agent``
+    # tries ``init`` then ``prj`` then falls through to the main
+    # guide. Sub-app commands without their own entry inherit the
+    # group's guide.
+    for token in reversed(path):
+        if token in _AGENT_GUIDE_BY_CMD:
+            return _AGENT_GUIDE_BY_CMD[token]
+    return _AGENT_GUIDE_MAIN
 
 
 def _agent_callback(ctx: typer.Context, _param: Any, value: bool) -> bool:

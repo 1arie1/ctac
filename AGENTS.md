@@ -317,6 +317,35 @@ Prompt template:
   - Z3 knobs: `--timeout` (seconds), `--seed`, `--tactic`, and passthrough `--z3-args`.
   - Debug mode: `--debug` prints z3 stdin/stdout/stderr and a replay command.
 
+## Project (HEAD-tracked workspace)
+
+A *project* is a working directory with a `.ctac/` sidecar that
+tracks "the current TAC" through a multi-step pipeline. Content is
+content-addressed under `.ctac/objects/<sha[:2]>/<sha[2:]>`; the
+project root carries friendly-name symlinks (`base.tac`,
+`base.rw.tac`, ...) for quick access.
+
+- `ctac prj init <FILE> -o <DIR> --plain`
+  - Create a project at DIR with FILE as the base. HEAD is set to
+    the base; label `base` points at the same sha.
+  - `--label NAME` overrides the default `base` label.
+  - `--force` overwrites an existing `.ctac/`.
+
+- `ctac prj list <DIR> [<OBJ_ID>] --plain`
+  - Tabular list of all objects (sha, kind, command, names). With
+    `OBJ_ID`, falls through to `prj info` for that one object.
+
+- `ctac prj info <DIR> <OBJ_ID> --plain [--recursive]`
+  - Full provenance record. `--recursive` walks the parent chain.
+  - `OBJ_ID` accepts: full sha, unique sha prefix (>= 4 hex chars),
+    label name, friendly symlink name, or a project-relative path.
+
+Phase-1 status: existing TAC commands (`rw`, `ua`, `smt`, `pp`)
+do **not** yet accept a project directory in place of a `.tac`
+argument — that's phase 2. For now, run them on the explicit
+object path (`mytac/base.tac`) and re-add the result with the
+`ctac.project.Project.add(...)` library API.
+
 ## Repo Structure (Key Paths)
 
 - VSCode extension for `.htac` lives under `tools/vscode-tac/`.

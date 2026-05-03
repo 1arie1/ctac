@@ -182,6 +182,25 @@ expected outcome is `unsat`. Currently covers R4 (5 operator variants),
 R4a (base + signed), R6 (base + signed). Other rules are listed in
 `manifest.json:missing`.
 
+### Manage a project
+
+```bash
+ctac prj init f.tac -o mytac --plain  # create a project, HEAD = base
+ctac prj list mytac --plain  # show all objects + labels
+ctac prj info mytac base --recursive --plain  # walk parents back to base
+```
+
+A *project* is a working directory with a `.ctac/` sidecar that
+pins HEAD ("the current TAC"), records every produced artifact's
+provenance, and exposes friendly-name symlinks
+(`base.tac`, `base.rw.tac`, ...) on top of the content-addressed
+`.ctac/objects/` store. Phase 1 ships the lifecycle and read API;
+existing TAC commands (`rw`, `ua`, `smt`, `pp`) accept project
+directories in phase 2.
+
+The library surface (`ctac.project.Project`) is what the REPL and
+other tooling should use; the CLI is a thin façade.
+
 ## Directory input conventions
 
 - **TAC inputs**: a directory argument is scanned as
