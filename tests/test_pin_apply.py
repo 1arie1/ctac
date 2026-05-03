@@ -289,6 +289,61 @@ def test_apply_postconditions_pass_for_clean_program():
     assert res.dead_blocks == frozenset()
 
 
+def test_apply_rejects_drops_that_introduce_use_before_def():
+    """A drop that removes a variable's only def, where uses survive,
+    must be rejected by the post-condition (not silently emitted)."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [j] {\n"
+            "\t\tAssignExpCmd M1 0x42\n"
+            "\t\tJumpCmd j\n"
+            "\t}\n"
+            "\tBlock b Succ [j] {\n"
+            "\t\tJumpCmd j\n"
+            "\t}\n"
+            "\tBlock j Succ [] {\n"
+            "\t\tAssumeExpCmd Eq(M1 0x42)\n"
+            "\t}\n",
+            syms="B0:bool\n\tM1:bv256",
+        ),
+        path="<s>",
+    )
+    # Dropping block 'a' eliminates the only def of M1, but block 'j'
+    # still uses it. Pin must refuse.
+    with pytest.raises(AssertionError, match="use-before-def"):
+        apply(tac.program, PinPlan(drops=("a",)))
+
+
+def test_apply_dsa_suffixed_rc_substitution_works():
+    """RC vars with DSA :N suffix should still get folded."""
+    # Build a synthetic case where the RC var appears with a :N suffix.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [exit, dead] {\n"
+            "\t\tJumpiCmd exit dead B0\n"
+            "\t}\n"
+            "\tBlock dead Succ [] {\n"
+            "\t\tAssignHavocCmd ReachabilityCertoradead\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            # A use site references the RC var WITH a :42 suffix.
+            "\t\tAssignExpCmd R0 Ite(ReachabilityCertoradead:42 0x1 0x2)\n"
+            "\t}\n",
+            syms="B0:bool\n\tR0:bv256",
+        ),
+        path="<s>",
+    )
+    res = apply(tac.program, PinPlan(drops=("dead",)))
+    # After pin: ReachabilityCertoradead → false; the Ite folds to else=0x2.
+    from ctac.ast.nodes import AssignExpCmd
+    exit_block = next(b for b in res.program.blocks if b.id == "exit")
+    asn = next(c for c in exit_block.commands if isinstance(c, AssignExpCmd))
+    assert asn.rhs == ConstExpr("0x2")
+
+
 def test_apply_no_cleanup_skips_cleanup_phase():
     """With cleanup=False, no fold events emitted."""
     tac = parse_string(

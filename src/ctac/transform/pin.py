@@ -39,6 +39,8 @@ from ctac.ast.nodes import (
     TacCmd,
     TacExpr,
 )
+from ctac.analysis.passes import analyze_dsa, analyze_use_before_def
+from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.subst import subst_symbol_to_expr
 from ctac.ir.models import NBId, TacBlock, TacProgram
 from ctac.rewrite import rewrite_program
@@ -50,6 +52,11 @@ from ctac.smt.encoding.path_skeleton import (
     reachability_var_name,
 )
 from ctac.tracing import NullTrace, Trace
+
+
+def _canon(name: str) -> str:
+    """Canonicalize a symbol name (strip ``:N`` DSA-version suffix)."""
+    return canonical_symbol(name, strip_var_suffixes=True)
 
 
 # Public type aliases.
@@ -68,21 +75,23 @@ def _entry_block_id(program: TacProgram) -> BlockId:
 
 
 def _build_definition_map(program: TacProgram) -> dict[str, TacExpr]:
-    """Single-static-assignment definition map: ``var -> rhs``.
+    """Single-static-assignment definition map: ``canonical_var -> rhs``.
+
+    Keys are canonicalized (DSA ``:N`` suffix stripped) so lookups
+    match symbol references regardless of their per-use suffix.
 
     Only ``AssignExpCmd`` defs are recorded — havocs are unconstrained
     and the static evaluator treats them as unknown via absence.
 
-    If the same variable is defined more than once (which violates
-    DSA but can happen in malformed inputs), the *last* definition
-    wins; static eval will probably refuse to evaluate that variable
-    anyway since the result is non-deterministic.
+    If the same canonical variable is defined more than once (which
+    violates DSA but can happen in malformed inputs), the *last*
+    definition wins.
     """
     out: dict[str, TacExpr] = {}
     for b in program.blocks:
         for cmd in b.commands:
             if isinstance(cmd, AssignExpCmd):
-                out[cmd.lhs] = cmd.rhs
+                out[_canon(cmd.lhs)] = cmd.rhs
     return out
 
 
@@ -112,10 +121,10 @@ def _build_assume_map(program: TacProgram) -> dict[str, ConstExpr]:
                 a, c = cond.args
                 if isinstance(a, SymbolRef) and isinstance(c, ConstExpr):
                     if c.value in ("true", "false"):
-                        out[a.name] = c
+                        out[_canon(a.name)] = c
                 elif isinstance(c, SymbolRef) and isinstance(a, ConstExpr):
                     if a.value in ("true", "false"):
-                        out[c.name] = a
+                        out[_canon(c.name)] = a
     return out
 
 
@@ -176,16 +185,17 @@ def static_eval_bool(
         return None
 
     if isinstance(expr, SymbolRef):
-        if expr.name in subs:
-            v = subs[expr.name].value
+        canon = _canon(expr.name)
+        if canon in subs:
+            v = subs[canon].value
             if v == "true":
                 return True
             if v == "false":
                 return False
             return None
-        if defs is not None and expr.name in defs and expr.name not in _seen:
+        if defs is not None and canon in defs and canon not in _seen:
             return static_eval_bool(
-                defs[expr.name], subs, defs, _seen=_seen | {expr.name}
+                defs[canon], subs, defs, _seen=_seen | {canon}
             )
         return None
 
@@ -427,6 +437,45 @@ def validate_plan_against(
 # ----------------------------------------------------- Phase 2 transforms
 
 
+def _expand_with_suffixes(
+    program: TacProgram, mapping: Mapping[str, TacExpr]
+) -> dict[str, TacExpr]:
+    """Build a substitution map keyed by *every* DSA-suffixed variant of
+    each canonical name in ``mapping``.
+
+    pin's binds are conceptually keyed by the canonical name (e.g.
+    ``ReachabilityCertora65_1_0_0_0_0``), but TAC use sites carry
+    ``:N`` suffixes (e.g. ``ReachabilityCertora65_1_0_0_0_0:15``).
+    We walk the program once and add each suffixed variant of each
+    bound symbol to a flat lookup map; ``subst_symbol_to_expr`` can
+    then match exact names without needing to canonicalize at every
+    step.
+    """
+    if not mapping:
+        return dict(mapping)
+    canonical_keys = {_canon(k): v for k, v in mapping.items()}
+    out: dict[str, TacExpr] = dict(mapping)
+    out.update(canonical_keys)
+
+    def _walk(expr: TacExpr) -> None:
+        if isinstance(expr, SymbolRef):
+            if _canon(expr.name) in canonical_keys:
+                out[expr.name] = canonical_keys[_canon(expr.name)]
+        elif isinstance(expr, ApplyExpr):
+            for a in expr.args:
+                _walk(a)
+
+    for b in program.blocks:
+        for cmd in b.commands:
+            if isinstance(cmd, AssignExpCmd):
+                _walk(cmd.rhs)
+            elif isinstance(cmd, AssumeExpCmd):
+                _walk(cmd.condition)
+            elif isinstance(cmd, AssertCmd):
+                _walk(cmd.predicate)
+    return out
+
+
 def _subst_in_cmd(cmd: TacCmd, mapping: Mapping[str, TacExpr]) -> TacCmd:
     """Substitute SymbolRef -> TacExpr through every expression-bearing
     field of ``cmd``. Returns a new cmd if anything changed.
@@ -435,6 +484,10 @@ def _subst_in_cmd(cmd: TacCmd, mapping: Mapping[str, TacExpr]) -> TacCmd:
     not a SymbolRef) and pass through unchanged. JumpiCmd's ``condition``
     is a name, not an expression — handled separately by terminator
     surgery, not by this expression substitution.
+
+    The caller is responsible for ensuring ``mapping`` covers every
+    DSA-suffixed variant the substitution should hit (use
+    :func:`_expand_with_suffixes`).
     """
     if isinstance(cmd, AssignExpCmd):
         new_rhs = subst_symbol_to_expr(cmd.rhs, mapping)
@@ -458,12 +511,17 @@ def _substitute_in_program(
     program: TacProgram, mapping: Mapping[str, TacExpr]
 ) -> TacProgram:
     """Substitute SymbolRef -> TacExpr in every expression-bearing
-    command across the program. Returns a new TacProgram."""
+    command across the program. Returns a new TacProgram.
+
+    Handles DSA ``:N`` suffix variance: the mapping can be keyed by
+    canonical names; this function expands it to cover every suffixed
+    variant present in the program before substituting."""
     if not mapping:
         return program
+    expanded = _expand_with_suffixes(program, mapping)
     new_blocks: list[TacBlock] = []
     for b in program.blocks:
-        new_cmds = [_subst_in_cmd(c, mapping) for c in b.commands]
+        new_cmds = [_subst_in_cmd(c, expanded) for c in b.commands]
         new_blocks.append(
             TacBlock(id=b.id, successors=list(b.successors), commands=new_cmds)
         )
@@ -520,29 +578,45 @@ def _drop_cfg_surgery(
             new_blocks.append(b)
             continue
 
-        # JumpiCmd: try static eval first, then dead-target shortcut.
-        cond_val = static_eval_bool(SymbolRef(last.condition), subs, defs)
+        # JumpiCmd: rewrite ONLY when one of its targets is in the
+        # effective dead set. We don't speculatively fold static-eval-
+        # constant conditions when both targets are live — pin is a
+        # targeted CFG-edit tool, and folding such Jumpi's would
+        # silently re-shape the CFG in places the user didn't ask
+        # about (creating spurious orphans relative to the source).
+        then_dead = last.then_target in dead
+        else_dead = last.else_target in dead
+        if then_dead and else_dead:
+            raise AssertionError(
+                f"live block {b.id!r}'s JumpiCmd targets both dead "
+                f"({last.then_target!r}, {last.else_target!r}); Phase 1 "
+                f"should have flagged {b.id!r} as dead too"
+            )
+
         keep_target: str | None = None
-        if cond_val is True:
-            keep_target = last.then_target
-        elif cond_val is False:
+        if then_dead:
             keep_target = last.else_target
+        elif else_dead:
+            keep_target = last.then_target
         else:
-            then_dead = last.then_target in dead
-            else_dead = last.else_target in dead
-            if then_dead and else_dead:
-                raise AssertionError(
-                    f"live block {b.id!r}'s JumpiCmd targets both dead "
-                    f"({last.then_target!r}, {last.else_target!r}); Phase 1 "
-                    f"should have flagged {b.id!r} as dead too"
+            # Both targets live: try static-eval as a refinement only
+            # when it would coincide with what cleanup would do anyway.
+            # Specifically, only fold if the condition is a SymbolRef
+            # whose value is bound directly in subs (user --bind or
+            # auto-RC bind from drops). Don't chase through defs here
+            # — that's an auto-simplification we leave to the cleanup
+            # rewriter pass.
+            if last.condition in subs or _canon(last.condition) in subs:
+                cond_val = static_eval_bool(
+                    SymbolRef(last.condition), subs, defs
                 )
-            if then_dead:
-                keep_target = last.else_target
-            elif else_dead:
-                keep_target = last.then_target
+                if cond_val is True:
+                    keep_target = last.then_target
+                elif cond_val is False:
+                    keep_target = last.else_target
 
         if keep_target is None:
-            # Both targets live and condition unknown — keep the JumpiCmd.
+            # Both targets live and no folding triggered — keep the Jumpi.
             new_blocks.append(b)
             continue
 
@@ -598,7 +672,10 @@ def _drop_havoc_defs_for_dead_rcs(
     for b in program.blocks:
         new_cmds: list[TacCmd] = []
         for cmd in b.commands:
-            if isinstance(cmd, AssignHavocCmd) and cmd.lhs in dead_rc_names:
+            if (
+                isinstance(cmd, AssignHavocCmd)
+                and _canon(cmd.lhs) in dead_rc_names
+            ):
                 changed = True
                 continue
             new_cmds.append(cmd)
@@ -644,13 +721,38 @@ def _reachability_orphans(program: TacProgram) -> set[BlockId]:
 
 
 def assert_no_orphans(program: TacProgram) -> None:
-    """Post-condition: every block lies on an entry-to-terminal path."""
+    """Strict: every block lies on an entry-to-terminal path.
+
+    Use this when you want to verify a program is structurally clean.
+    Pin's internal contract is *relative* (don't introduce new
+    orphans); use :func:`assert_no_new_orphans` for that.
+    """
     orphans = _reachability_orphans(program)
     if orphans:
         sample = sorted(orphans)[:5]
         more = "" if len(orphans) <= 5 else f" (+{len(orphans) - 5} more)"
         raise AssertionError(
-            f"orphan blocks present after pin: {sample}{more}"
+            f"orphan blocks present: {sample}{more}"
+        )
+
+
+def assert_no_new_orphans(
+    source: TacProgram, output: TacProgram
+) -> None:
+    """Relative: pin must not introduce new orphans.
+
+    Pre-existing orphans in ``source`` (blocks that were already
+    forward-unreachable from entry, or unable to reach a terminal)
+    are accepted in ``output``. Only orphans whose block ids appear
+    in ``output`` but not as orphans of ``source`` are pin's fault."""
+    src_orphans = _reachability_orphans(source)
+    out_orphans = _reachability_orphans(output)
+    new = out_orphans - src_orphans
+    if new:
+        sample = sorted(new)[:5]
+        more = "" if len(new) <= 5 else f" (+{len(new) - 5} more)"
+        raise AssertionError(
+            f"pin introduced orphan blocks: {sample}{more}"
         )
 
 
@@ -675,6 +777,90 @@ def assert_no_dangling_jumps(program: TacProgram) -> None:
     if missing:
         raise AssertionError(
             f"dangling jump targets after pin: {sorted(missing)[:5]}"
+        )
+
+
+def _ubd_canonical_symbols(program: TacProgram) -> set[str]:
+    ubd = analyze_use_before_def(program)
+    return {_canon(i.symbol) for i in ubd.issues}
+
+
+def _dsa_issue_signatures(program: TacProgram) -> set[tuple[str, str | None]]:
+    dsa = analyze_dsa(program)
+    return {(i.kind, _canon(i.symbol) if i.symbol else None) for i in dsa.issues}
+
+
+def assert_no_use_before_def(program: TacProgram) -> None:
+    """Strict: every variable use is dominated by a def, no exceptions.
+
+    Use this on a program that should be clean from scratch. For the
+    relative pin contract (pin shouldn't introduce *new* issues), use
+    :func:`assert_no_new_use_before_def` instead."""
+    ubd = analyze_use_before_def(program)
+    if ubd.issues:
+        sample = [
+            f"{i.symbol}@{i.block_id}:{i.cmd_index}"
+            for i in ubd.issues[:5]
+        ]
+        more = (
+            "" if len(ubd.issues) <= 5
+            else f" (+{len(ubd.issues) - 5} more)"
+        )
+        raise AssertionError(
+            f"use-before-def violations: {sample}{more}"
+        )
+
+
+def assert_no_new_use_before_def(
+    source: TacProgram, output: TacProgram
+) -> None:
+    """Relative: pin must not *introduce* UBD violations.
+
+    Compares canonical symbol names (DSA suffixes stripped). Issues
+    present in ``source`` are accepted; issues whose symbol appears
+    only in ``output`` are pin's fault and trigger an assertion.
+    """
+    src = _ubd_canonical_symbols(source)
+    out = _ubd_canonical_symbols(output)
+    new = out - src
+    if new:
+        raise AssertionError(
+            f"pin introduced use-before-def on {len(new)} symbol(s): "
+            f"{sorted(new)[:5]}"
+            + (f" (+{len(new) - 5} more)" if len(new) > 5 else "")
+            + "\n  a dropped block defined these variables; their "
+            "surviving uses didn't fold away. Inspect the output's "
+            "Ite expressions over the corresponding RC vars."
+        )
+
+
+def assert_dsa_clean(program: TacProgram) -> None:
+    """Strict: DSA shape is preserved. See :func:`assert_no_new_dsa_issues`
+    for the relative variant pin uses internally."""
+    dsa = analyze_dsa(program)
+    if dsa.issues:
+        sample = [
+            f"{i.kind}@{i.block_id}: {i.detail[:60]}"
+            for i in dsa.issues[:5]
+        ]
+        more = (
+            "" if len(dsa.issues) <= 5
+            else f" (+{len(dsa.issues) - 5} more)"
+        )
+        raise AssertionError(f"DSA shape violations: {sample}{more}")
+
+
+def assert_no_new_dsa_issues(
+    source: TacProgram, output: TacProgram
+) -> None:
+    """Relative: pin must not introduce new DSA shape issues."""
+    src = _dsa_issue_signatures(source)
+    out = _dsa_issue_signatures(output)
+    new = out - src
+    if new:
+        raise AssertionError(
+            f"pin introduced {len(new)} DSA issue(s): "
+            f"{sorted(str(s) for s in new)[:5]}"
         )
 
 
@@ -806,10 +992,33 @@ def apply(
     })
 
     # Phase 1.
+    #
+    # Compute two dead-set closures:
+    #   full_dead = with the user's drops + binds applied
+    #   pre_dead  = with NO user input (pure structural orphans of source)
+    #
+    # Effective drop set = full_dead minus (pre_dead minus user-named).
+    # I.e. honor everything the user named, plus their cascade; but don't
+    # silently drop pre-existing orphans the user didn't ask about.
+    # Those flow through to the output (and post-condition checks are
+    # relative, so they pass).
     dead_result = compute_dead_blocks(
         program, plan.drops, user_binds_map, trace=tr
     )
-    dead = dead_result.dead
+    full_dead = dead_result.dead
+    pre_result = compute_dead_blocks(program, (), {})
+    pre_dead = pre_result.dead - set(plan.drops)
+    dead = full_dead - pre_dead
+
+    # Trace the effective decision: which blocks were preserved as
+    # pre-existing orphans, and which we'll actually drop.
+    if pre_dead:
+        tr.emit({
+            "event": "preserved-pre-existing-orphans",
+            "phase": "analyze",
+            "blocks": sorted(pre_dead),
+            "count": len(pre_dead),
+        })
 
     # Build the full bind map: user binds + auto-RC binds for the
     # closed dead set.
@@ -840,13 +1049,24 @@ def apply(
         program = _cleanup(program)
         tr.emit({"event": "cleanup-complete", "phase": "transform"})
 
-    # Post-conditions.
-    assert_no_orphans(program)
+    # Post-conditions. Order: cheapest structural checks first, then
+    # the data-flow checks that depend on a clean CFG.
+    #
+    # All checks are relative to the source: pin must not *introduce*
+    # orphans, UBD, or DSA issues, but pre-existing issues in the input
+    # pass through unchanged.
+    assert_no_new_orphans(source, program)
     tr.emit({"event": "post-condition-check", "phase": "validate",
-             "check": "no_orphans", "result": "pass"})
+             "check": "no_new_orphans", "result": "pass"})
     assert_no_dangling_jumps(program)
     tr.emit({"event": "post-condition-check", "phase": "validate",
              "check": "no_dangling_jumps", "result": "pass"})
+    assert_no_new_use_before_def(source, program)
+    tr.emit({"event": "post-condition-check", "phase": "validate",
+             "check": "no_new_use_before_def", "result": "pass"})
+    assert_no_new_dsa_issues(source, program)
+    tr.emit({"event": "post-condition-check", "phase": "validate",
+             "check": "no_new_dsa_issues", "result": "pass"})
 
     tr.emit({
         "event": "pin-complete",
