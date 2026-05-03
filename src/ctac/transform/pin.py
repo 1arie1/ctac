@@ -437,6 +437,147 @@ def validate_plan_against(
 # ----------------------------------------------------- Phase 2 transforms
 
 
+def _check_no_rc_in_jumpi_conditions(program: TacProgram) -> None:
+    """Pre-condition: RC variables are never used as JumpiCmd conditions.
+
+    The Certora RC-var contract says RCs only appear in map definitions
+    (Ite-merge guards on memory variables) and never in control-flow
+    conditions. Pin relies on this — if violated, the dominance-based
+    RC=true substitution would need to participate in CFG surgery
+    (creating the iteration we're trying to avoid). Hard error rather
+    than silent miscompilation.
+    """
+    for b in program.blocks:
+        for cmd in b.commands:
+            if isinstance(cmd, JumpiCmd):
+                if is_reachability_var(_canon(cmd.condition)):
+                    raise ValueError(
+                        f"JumpiCmd in block {b.id!r} has RC variable "
+                        f"{cmd.condition!r} as condition; this violates "
+                        f"the Certora RC-var contract (RCs appear only "
+                        f"in map definitions, never in jump conditions). "
+                        f"Pin cannot proceed."
+                    )
+
+
+def _dominator_sets(program: TacProgram) -> dict[BlockId, frozenset[BlockId]]:
+    """For each block, the set of blocks that dominate it (including
+    itself). Computed on the program's CFG as-is — caller is
+    responsible for having removed dead blocks first.
+
+    Blocks not reachable from the entry get an empty dominator set."""
+    if not program.blocks:
+        return {}
+    g = _cfg_digraph(program)
+    entry = _entry_block_id(program)
+    if entry not in g:
+        return {b.id: frozenset() for b in program.blocks}
+
+    fwd = nx.descendants(g, entry) | {entry}
+    sub = g.subgraph(fwd)
+    idom = nx.immediate_dominators(sub, entry)
+
+    out: dict[BlockId, frozenset[BlockId]] = {}
+    for n in sub.nodes:
+        chain = {n}
+        cur = n
+        # idom[entry] == entry; walk up until we reach the fixed point.
+        while cur != idom.get(cur, cur):
+            cur = idom[cur]
+            chain.add(cur)
+        out[n] = frozenset(chain)
+
+    for b in program.blocks:
+        if b.id not in out:
+            out[b.id] = frozenset()
+    return out
+
+
+def _per_block_bind_maps(
+    program: TacProgram,
+    dead: frozenset[BlockId],
+    user_binds: Mapping[str, ConstExpr],
+    dominators: Mapping[BlockId, frozenset[BlockId]],
+) -> dict[BlockId, dict[str, ConstExpr]]:
+    """Per-block substitution map encoding the RC variable contract:
+
+    * Global (every block): user binds + ``RC_BLK = false`` for each
+      dropped block.
+    * Per surviving block X: ``RC_BLK = true`` for every block BLK
+      that dominates X in the post-drop CFG.
+
+    RC=false (from a dead block) takes precedence over RC=true (from
+    a dominator) — but in practice dead blocks aren't in the
+    post-drop CFG so they can't be dominators of anything; the two
+    sets are disjoint.
+    """
+    global_b: dict[str, ConstExpr] = dict(user_binds)
+    for b in dead:
+        global_b[reachability_var_name(b)] = ConstExpr("false")
+
+    out: dict[BlockId, dict[str, ConstExpr]] = {}
+    for b in program.blocks:
+        bm = dict(global_b)
+        for dom in dominators.get(b.id, ()):
+            rc = reachability_var_name(dom)
+            if rc not in bm:
+                bm[rc] = ConstExpr("true")
+        out[b.id] = bm
+    return out
+
+
+def _expand_block_binds_for_suffixes(
+    block: TacBlock, mapping: Mapping[str, TacExpr]
+) -> dict[str, TacExpr]:
+    """Per-block version of :func:`_expand_with_suffixes`. Walks one
+    block's commands and adds DSA-suffixed variants of the canonical
+    keys actually present in this block's expressions."""
+    if not mapping:
+        return dict(mapping)
+    canonical_keys = {_canon(k): v for k, v in mapping.items()}
+    out: dict[str, TacExpr] = dict(mapping)
+    out.update(canonical_keys)
+
+    def _walk(expr: TacExpr) -> None:
+        if isinstance(expr, SymbolRef):
+            ck = _canon(expr.name)
+            if ck in canonical_keys:
+                out[expr.name] = canonical_keys[ck]
+        elif isinstance(expr, ApplyExpr):
+            for a in expr.args:
+                _walk(a)
+
+    for cmd in block.commands:
+        if isinstance(cmd, AssignExpCmd):
+            _walk(cmd.rhs)
+        elif isinstance(cmd, AssumeExpCmd):
+            _walk(cmd.condition)
+        elif isinstance(cmd, AssertCmd):
+            _walk(cmd.predicate)
+    return out
+
+
+def _substitute_per_block(
+    program: TacProgram,
+    per_block_binds: Mapping[BlockId, Mapping[str, ConstExpr]],
+) -> TacProgram:
+    """Substitute SymbolRef -> ConstExpr per block, using each block's
+    own bind map. Blocks without a map (or with an empty one) pass
+    through unchanged."""
+    new_blocks: list[TacBlock] = []
+    for b in program.blocks:
+        bm = per_block_binds.get(b.id)
+        if not bm:
+            new_blocks.append(b)
+            continue
+        expanded = _expand_block_binds_for_suffixes(b, bm)
+        new_cmds = [_subst_in_cmd(c, expanded) for c in b.commands]
+        new_blocks.append(
+            TacBlock(id=b.id, successors=list(b.successors), commands=new_cmds)
+        )
+    return TacProgram(blocks=new_blocks)
+
+
 def _expand_with_suffixes(
     program: TacProgram, mapping: Mapping[str, TacExpr]
 ) -> dict[str, TacExpr]:
@@ -967,6 +1108,11 @@ def apply(
     tr: Trace = trace if trace is not None else NullTrace()
     source = program
 
+    # Pre-condition: RC vars must not appear in JumpiCmd conditions.
+    # Hard error if violated — pin's RC-folding model assumes RCs are
+    # used only in expression contexts (map definitions / Ite-merges).
+    _check_no_rc_in_jumpi_conditions(program)
+
     # Up-front validation. Collect all issues so the user sees them
     # together rather than a single first-fail.
     user_binds_map = {var: val for var, val in plan.binds}
@@ -1020,30 +1166,60 @@ def apply(
             "count": len(pre_dead),
         })
 
-    # Build the full bind map: user binds + auto-RC binds for the
-    # closed dead set.
-    rc_binds: dict[str, ConstExpr] = {
+    # Build the global bind map (user binds + RC=false for dropped
+    # blocks). The dominance-based RC=true component is per-block and
+    # is computed below, after CFG surgery + remove.
+    rc_binds_false: dict[str, ConstExpr] = {
         reachability_var_name(b): _FALSE for b in dead
     }
-    rc_binds_tuple = tuple((k, v) for k, v in rc_binds.items())
-    full_binds: dict[str, ConstExpr] = {**user_binds_map, **rc_binds}
+    rc_binds_tuple = tuple((k, v) for k, v in rc_binds_false.items())
+    global_binds: dict[str, ConstExpr] = {
+        **user_binds_map,
+        **rc_binds_false,
+    }
 
     for var, _val in plan.binds:
         tr.emit({"event": "user-bind", "phase": "transform", "var": var,
                  "value": _val.value})
     for var, val in rc_binds_tuple:
-        tr.emit({"event": "rc-bind", "phase": "transform", "var": var,
-                 "value": val.value})
+        tr.emit({"event": "rc-bind", "phase": "transform",
+                 "var": var, "value": val.value, "reason": "block_dropped"})
 
-    # Phase 2.
+    # Phase 2. Order:
+    #   1. CFG surgery (rewrite terminators of preds of dead blocks).
+    #   2. Remove dead blocks from the program.
+    #   3. Compute dominators on the resulting CFG (the final shape).
+    #   4. Build per-block bind maps (global RC=false + per-block
+    #      RC=true for blocks dominated by surviving BLKs).
+    #   5. Substitute per-block.
+    #   6. Purge any leftover RC havocs for dead blocks (in surviving
+    #      blocks that hosted them).
+    #   7. Cleanup rewriter pass.
     defs = _build_definition_map(program)
-    program = _drop_cfg_surgery(program, dead, full_binds, defs)
-    program = _substitute_with_rc(program, full_binds)
-    program = _drop_havoc_defs_for_dead_rcs(program, dead)
+    program = _drop_cfg_surgery(program, dead, global_binds, defs)
     program = _remove_blocks(program, dead)
 
     for b in sorted(dead):
         tr.emit({"event": "block-removed", "phase": "transform", "block": b})
+
+    dominators = _dominator_sets(program)
+    per_block = _per_block_bind_maps(
+        program, dead, user_binds_map, dominators
+    )
+
+    # Trace per-block RC=true bindings (debugging aid; quiet about
+    # the global half — already covered by rc-bind / user-bind events).
+    for block_id, bm in per_block.items():
+        for var, val in bm.items():
+            if val.value == "true" and is_reachability_var(_canon(var)):
+                tr.emit({
+                    "event": "rc-bind", "phase": "transform",
+                    "var": var, "value": "true",
+                    "reason": "dominator_of_block", "block": block_id,
+                })
+
+    program = _substitute_per_block(program, per_block)
+    program = _drop_havoc_defs_for_dead_rcs(program, dead)
 
     if plan.cleanup:
         program = _cleanup(program)

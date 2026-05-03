@@ -344,6 +344,67 @@ def test_apply_dsa_suffixed_rc_substitution_works():
     assert asn.rhs == ConstExpr("0x2")
 
 
+def test_apply_rc_dominator_is_folded_to_true():
+    """When BLK survives and dominates a use site of RC_BLK, the use
+    folds to true. Mirrors the kvault-style 'after dropping one
+    predecessor, the surviving one dominates the join'."""
+    tac = parse_string(
+        _wrap(
+            # entry -> {p1, p2} -> j ; user drops p1.
+            # In post-drop CFG, p2 dominates j; RC_p2 = true at j.
+            "\tBlock e Succ [p1, p2] {\n"
+            "\t\tJumpiCmd p1 p2 B0\n"
+            "\t}\n"
+            "\tBlock p1 Succ [j] {\n"
+            "\t\tJumpCmd j\n"
+            "\t}\n"
+            "\tBlock p2 Succ [j] {\n"
+            "\t\tAssignHavocCmd ReachabilityCertorap2\n"
+            "\t\tJumpCmd j\n"
+            "\t}\n"
+            "\tBlock j Succ [exit] {\n"
+            # Use site references RC_p2; should fold to true after p1 is dropped.
+            "\t\tAssignExpCmd R0 Ite(ReachabilityCertorap2 0xa 0xb)\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="B0:bool\n\tR0:bv256",
+        ),
+        path="<s>",
+    )
+    res = apply(tac.program, PinPlan(drops=("p1",)))
+    from ctac.ast.nodes import AssignExpCmd
+    j = next(b for b in res.program.blocks if b.id == "j")
+    asn = next(c for c in j.commands if isinstance(c, AssignExpCmd) and c.lhs == "R0")
+    # RC_p2 = true (p2 now dominates j) -> Ite folds to then = 0xa.
+    assert asn.rhs == ConstExpr("0xa")
+
+
+def test_apply_rejects_rc_in_jumpi_condition():
+    """Hard error if a JumpiCmd's condition is an RC variable —
+    pin's RC-folding model assumes RCs only appear in expressions,
+    not in jump conditions."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b ReachabilityCertoraa\n"
+            "\t}\n"
+            "\tBlock a Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n"
+            "\tBlock b Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="B0:bool",
+        ),
+        path="<s>",
+    )
+    with pytest.raises(ValueError, match="RC variable"):
+        apply(tac.program, PinPlan())
+
+
 def test_apply_no_cleanup_skips_cleanup_phase():
     """With cleanup=False, no fold events emitted."""
     tac = parse_string(
