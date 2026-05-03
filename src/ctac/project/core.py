@@ -359,6 +359,105 @@ class Project:
         )
         return info.sha
 
+    def relink_all(self) -> list[str]:
+        """Re-create every friendly-name symlink declared in the manifest.
+
+        Useful after :meth:`clone_to` (or after extracting an archive)
+        when only ``.ctac/`` was copied — the project root needs its
+        symlinks rebuilt to expose objects under their friendly
+        filenames again.
+
+        Returns the list of names that could not be linked (because
+        a non-symlink already occupies that path); these are skipped
+        rather than overwritten.
+        """
+        skipped: list[str] = []
+        for sha, info in self.manifest.objects.items():
+            for name in info.names:
+                try:
+                    store_mod.relink_friendly_name(
+                        self.root, self.dot_ctac, name, sha
+                    )
+                except FileExistsError:
+                    skipped.append(name)
+                except FileNotFoundError:
+                    # Object missing from store (corrupted clone source);
+                    # leave the manifest entry but skip the symlink.
+                    skipped.append(name)
+        return skipped
+
+    @classmethod
+    def clone_to(
+        cls,
+        src: Path,
+        dst: Path,
+        *,
+        force: bool = False,
+    ) -> "Project":
+        """Copy a project (objects + manifest + log + refs) to a new
+        location and rebuild friendly-name symlinks.
+
+        ``src`` is an existing project directory or a tar / tar.gz
+        archive produced by :meth:`archive_to`. ``dst`` is the
+        destination project directory; it must not already contain a
+        ``.ctac/`` unless ``force=True``.
+        """
+        import shutil
+        import tarfile
+
+        dst.mkdir(parents=True, exist_ok=True)
+        existing = dst / DOT_CTAC
+        if existing.exists():
+            if not force:
+                raise ProjectError(
+                    f"destination already contains a project: {dst} "
+                    f"(use force=True to overwrite)"
+                )
+            _rmtree(existing)
+
+        if src.is_file():
+            # Archive: extract the .ctac/ tree into dst.
+            with tarfile.open(src, "r:*") as tf:
+                tf.extractall(dst, filter="data")
+            if not (dst / DOT_CTAC).is_dir():
+                raise ProjectError(
+                    f"archive {src} did not contain a top-level .ctac/ dir"
+                )
+        elif src.is_dir():
+            src_dot = src / DOT_CTAC
+            if not src_dot.is_dir():
+                raise ProjectError(
+                    f"source is not a project (no .ctac/): {src}"
+                )
+            shutil.copytree(src_dot, dst / DOT_CTAC, symlinks=False)
+        else:
+            raise ProjectError(f"clone source not found: {src}")
+
+        prj = cls.open(dst)
+        prj.relink_all()
+        return prj
+
+    def archive_to(self, archive_path: Path) -> Path:
+        """Pack ``.ctac/`` into a tarball at ``archive_path``.
+
+        Compression is selected from the file extension: ``.tar.gz`` /
+        ``.tgz`` for gzip, otherwise an uncompressed ``.tar``. Only
+        the ``.ctac/`` directory is archived; the project-root
+        symlinks are derived data and are recreated by
+        :meth:`clone_to` on extract.
+        """
+        import tarfile
+
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        suffixes = "".join(archive_path.suffixes[-2:]).lower()
+        if archive_path.suffix.lower() in (".gz", ".tgz") or suffixes.endswith(".tar.gz"):
+            mode = "w:gz"
+        else:
+            mode = "w"
+        with tarfile.open(archive_path, mode) as tf:
+            tf.add(self.dot_ctac, arcname=DOT_CTAC, recursive=True)
+        return archive_path
+
     def set_label(self, ref: str, label: str) -> None:
         if not refs_mod.is_valid_label(label):
             raise ProjectError(f"invalid label: {label!r}")

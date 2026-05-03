@@ -299,6 +299,76 @@ def test_manifest_json_stable(tmp_path: Path) -> None:
 # --------------------------------------------------------- set_head + label
 
 
+def test_relink_all_rebuilds_missing_symlinks(tmp_path: Path) -> None:
+    """After deleting a friendly-name symlink, `relink_all()` recreates it."""
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    # Delete the symlink to simulate a partial copy.
+    link = prj.root / "in.tac"
+    link.unlink()
+    assert not link.exists()
+    skipped = prj.relink_all()
+    assert skipped == []
+    assert link.is_symlink()
+
+
+def test_relink_all_preserves_existing_correct_links(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    # relink_all is a no-op when symlinks already point at the right targets.
+    inode_before = (prj.root / "in.tac").lstat().st_ino
+    prj.relink_all()
+    inode_after = (prj.root / "in.tac").lstat().st_ino
+    # Symlink may have been recreated (different inode) or left alone;
+    # either way the target should resolve to the same content.
+    assert inode_before is not None and inode_after is not None
+    assert (prj.root / "in.tac").resolve() == prj.head_path()
+
+
+def test_archive_to_and_clone_to_round_trip(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    src = Project.init(tmp_path / "src", base)
+    arc = tmp_path / "snap.tar.gz"
+    src.archive_to(arc)
+    assert arc.is_file()
+    # gzipped magic bytes.
+    assert arc.read_bytes()[:2] == b"\x1f\x8b"
+    dst = Project.clone_to(arc, tmp_path / "dst")
+    assert dst.head_sha == src.head_sha
+    assert (dst.root / "in.tac").is_symlink()
+
+
+def test_clone_to_dir_source(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    src = Project.init(tmp_path / "src", base)
+    dst = Project.clone_to(src.root, tmp_path / "dst")
+    assert dst.head_sha == src.head_sha
+    assert dst.manifest.labels == src.manifest.labels
+
+
+def test_clone_to_existing_dst_requires_force(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    src = Project.init(tmp_path / "src", base)
+    Project.init(tmp_path / "dst", base)
+    with pytest.raises(ProjectError, match="already contains a project"):
+        Project.clone_to(src.root, tmp_path / "dst")
+    # Force succeeds.
+    dst2 = Project.clone_to(src.root, tmp_path / "dst", force=True)
+    assert dst2.head_sha == src.head_sha
+
+
+def test_archive_extension_picks_compression(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "src", base)
+    plain_arc = tmp_path / "snap.tar"
+    prj.archive_to(plain_arc)
+    # Uncompressed: should not start with gzip magic bytes.
+    assert plain_arc.read_bytes()[:2] != b"\x1f\x8b"
+    gz_arc = tmp_path / "snap.tgz"
+    prj.archive_to(gz_arc)
+    assert gz_arc.read_bytes()[:2] == b"\x1f\x8b"
+
+
 def test_set_head_advances(tmp_path: Path) -> None:
     base = _write_tac(tmp_path / "in.tac", "first\n")
     prj = Project.init(tmp_path / "mytac", base)

@@ -1,12 +1,18 @@
 """CLI for ``ctac prj`` — manage a ctac project.
 
-Phase 1 commands:
+Commands:
 
-- ``prj init <TAC_FILE> -o <DIR>`` — create a new project at DIR
-  with TAC_FILE as the base.
-- ``prj list <DIR> [<OBJ_ID>]`` — list project entries.
-- ``prj info <DIR> <OBJ_ID> [--recursive]`` — full record for one
-  object, optionally walking parents.
+- ``prj init <TAC_FILE> -o <DIR>`` — create a new project.
+- ``prj list <DIR> [<OBJ_ID>]`` — list entries (or fileset members).
+- ``prj info <DIR> <OBJ_ID> [--recursive]`` — full provenance record.
+- ``prj set-head <DIR> <REF>`` — move HEAD; ``<set>:<member>``
+  syntax materializes + focuses a fileset member.
+- ``prj label <DIR> <OBJ_ID> <LABEL>`` — name an object.
+- ``prj export-path <DIR> [<REF>]`` — print the abs path of HEAD or
+  a named ref (one line, undecorated, shell-pipeable).
+- ``prj archive <DIR> -o <FILE>`` — pack ``.ctac/`` into a tarball.
+- ``prj clone <SRC> -o <DST>`` — duplicate a project or extract an
+  archive; rebuilds friendly-name symlinks at the destination.
 
 The CLI is a thin façade over :mod:`ctac.project` (library-first).
 """
@@ -276,6 +282,201 @@ def prj_set_head(
         c.print(f"[bold]HEAD[/bold] -> [yellow]{head.sha[:12]}[/yellow]")
         if head.names:
             c.print(f"  path: [cyan]{prj.root / head.names[-1]}[/cyan]")
+
+
+# ----------------------------------------------------------- prj clone
+
+
+@prj_app.command("clone")
+def prj_clone(
+    source: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            help=(
+                "Source: an existing project directory, or a tar / "
+                "tar.gz archive produced by `prj archive`."
+            ),
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "-o", "--output",
+            help="Destination project directory. Created if missing.",
+        ),
+    ],
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Overwrite an existing .ctac/ in the destination.",
+        ),
+    ] = False,
+    plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
+    agent: bool = agent_option(),
+) -> None:
+    """Duplicate a project (or unpack an archive) into a fresh directory."""
+    _ = agent
+    plain = plain_requested(plain)
+    c = console(plain)
+    try:
+        prj = Project.clone_to(source, output_dir, force=force)
+    except ProjectError as e:
+        c.print(f"clone error: {e}" if plain else f"[red]clone error:[/red] {e}")
+        raise typer.Exit(1) from e
+
+    head = prj.head
+    if plain:
+        c.print(f"project: {prj.root}", markup=False)
+        c.print(f"head: {head.sha}", markup=False)
+        c.print(f"objects: {len(prj.manifest.objects)}", markup=False)
+    else:
+        c.print(f"[bold]Cloned[/bold] [cyan]{source}[/cyan] -> [cyan]{prj.root}[/cyan]")
+        c.print(f"  HEAD:    [yellow]{head.sha[:12]}[/yellow]")
+        c.print(f"  objects: [bold]{len(prj.manifest.objects)}[/bold]")
+
+
+# ----------------------------------------------------------- prj archive
+
+
+@prj_app.command("archive")
+def prj_archive(
+    project_dir: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            help="Project directory (the one containing .ctac/).",
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        typer.Option(
+            "-o", "--output",
+            help=(
+                "Archive file to write. Compression is picked from the "
+                "extension: .tar.gz / .tgz -> gzip, anything else -> tar."
+            ),
+        ),
+    ],
+    plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
+    agent: bool = agent_option(),
+) -> None:
+    """Pack .ctac/ into a tarball suitable for sharing or restoring."""
+    _ = agent
+    plain = plain_requested(plain)
+    c = console(plain)
+    try:
+        prj = Project.open(project_dir)
+        out = prj.archive_to(output_path)
+    except ProjectError as e:
+        c.print(f"archive error: {e}" if plain else f"[red]archive error:[/red] {e}")
+        raise typer.Exit(1) from e
+    if plain:
+        c.print(f"archive: {out}", markup=False)
+        c.print(f"size: {out.stat().st_size}", markup=False)
+        c.print(f"objects: {len(prj.manifest.objects)}", markup=False)
+    else:
+        c.print(f"[bold]Wrote[/bold] [cyan]{out}[/cyan]")
+        c.print(f"  size:    [bold]{out.stat().st_size}[/bold] bytes")
+        c.print(f"  objects: [bold]{len(prj.manifest.objects)}[/bold]")
+
+
+# ----------------------------------------------------------- prj label
+
+
+@prj_app.command("label")
+def prj_label(
+    project_dir: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            help="Project directory (the one containing .ctac/).",
+        ),
+    ],
+    obj_id: Annotated[
+        str,
+        typer.Argument(help="Object id (sha, short sha, label, or friendly name)."),
+    ],
+    label: Annotated[
+        str,
+        typer.Argument(help="Label name. Letters, digits, `_`, `-`, `.`, `/`."),
+    ],
+    plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
+    agent: bool = agent_option(),
+) -> None:
+    """Attach a user-visible name to an object for later reference."""
+    _ = agent
+    plain = plain_requested(plain)
+    c = console(plain)
+    try:
+        prj = Project.open(project_dir)
+        prj.set_label(obj_id, label)
+    except ProjectError as e:
+        c.print(f"label error: {e}" if plain else f"[red]label error:[/red] {e}")
+        raise typer.Exit(1) from e
+    sha = prj.manifest.labels[label]
+    if plain:
+        c.print(f"label: {label}", markup=False)
+        c.print(f"sha: {sha}", markup=False)
+    else:
+        c.print(
+            f"[magenta]{label}[/magenta] -> [yellow]{sha[:12]}[/yellow]"
+        )
+
+
+# ----------------------------------------------------------- prj export-path
+
+
+@prj_app.command("export-path")
+def prj_export_path(
+    project_dir: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            help="Project directory (the one containing .ctac/).",
+        ),
+    ],
+    ref: Annotated[
+        Optional[str],
+        typer.Argument(
+            help=(
+                "Object reference (default: HEAD). Accepts a sha, short "
+                "sha, label, friendly name, or project-relative path."
+            ),
+        ),
+    ] = None,
+    plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
+    agent: bool = agent_option(),
+) -> None:
+    """Print the absolute path to an object's content (default: HEAD).
+
+    Designed for shell scripting: `cat $(ctac prj export-path mytac)`.
+    Always emits one path on stdout with no decoration so output stays
+    pipeable regardless of `--plain`.
+    """
+    _ = agent
+    _ = plain  # output is always undecorated for shell composition
+    try:
+        prj = Project.open(project_dir)
+        if ref is None:
+            path = prj.head_path()
+        else:
+            path = prj.object_path(ref)
+    except ProjectError as e:
+        c = console(plain_requested(plain))
+        c.print(f"export-path error: {e}", markup=False)
+        raise typer.Exit(1) from e
+    typer.echo(str(path.resolve()))
 
 
 # ----------------------------------------------------------- prj info

@@ -345,6 +345,25 @@ project root carries friendly-name symlinks (`base.tac`,
     materializes a fileset member as a fresh single-file object
     whose parent is the fileset, then moves HEAD to it.
 
+- `ctac prj label <DIR> <OBJ_ID> <LABEL> --plain`
+  - Attach a user-visible name to an object. Labels resolve like
+    any other ref (sha / short sha / friendly name / label).
+
+- `ctac prj export-path <DIR> [<REF>] --plain`
+  - Print the absolute path to an object's content (default: HEAD).
+    Output is one line, undecorated — designed for shell composition:
+    ``cat $(ctac prj export-path mytac)``.
+
+- `ctac prj archive <DIR> -o <FILE> --plain`
+  - Pack `.ctac/` into a tarball. Compression by extension:
+    `.tar.gz` / `.tgz` -> gzip; anything else -> plain tar.
+
+- `ctac prj clone <SRC> -o <DST> [--force] --plain`
+  - Duplicate a project. `<SRC>` is either an existing project
+    directory or a tarball produced by `prj archive`; either way
+    `.ctac/` is copied / extracted into `<DST>` and friendly-name
+    symlinks are rebuilt from the manifest.
+
 Project-aware commands (give the project dir in place of a `.tac`):
 
 - HEAD-moving single-file producers (no `-o` ingests + advances

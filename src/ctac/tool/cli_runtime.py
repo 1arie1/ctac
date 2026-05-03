@@ -672,6 +672,10 @@ PRJ COMMANDS:
   ctac prj info mytac base --plain --recursive  # walk parents
   ctac prj set-head mytac <ref>                 # move HEAD
   ctac prj set-head mytac <set>:<member>        # focus a member
+  ctac prj label mytac <ref> <name>             # name an object
+  ctac prj export-path mytac [<ref>]            # abs path of HEAD/ref
+  ctac prj archive mytac -o snap.tar.gz         # pack .ctac/
+  ctac prj clone <src> -o <dst> [--force]       # dup or unpack archive
 
 TYPICAL PIPELINE (linear):
   ctac prj init f.tac -o mytac --plain
