@@ -31,6 +31,7 @@ from ctac.tool.cli_runtime import (
     plain_requested,
 )
 from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
+from ctac.tool.project_io import ingest_or_write_text, resolve_project_or_tac
 
 
 def normalize_cfg_style(raw: str) -> CfgStyle:
@@ -602,9 +603,8 @@ def pp(
     plain = plain_requested(plain)
     c = console(plain)
     try:
-        user_path, user_warnings = resolve_user_path(path)
-        tac_path, input_warnings = resolve_tac_input_path(user_path)
-        tac = parse_path(tac_path, weak_is_strong=weak_is_strong)
+        resolved = resolve_project_or_tac(path)
+        tac = parse_path(resolved.tac_path, weak_is_strong=weak_is_strong)
     except ParseError as e:
         if plain:
             c.print(f"parse error: {e}")
@@ -645,13 +645,16 @@ def pp(
 
     from ctac.ast.highlight import highlight_tac_line
 
-    # When writing to a file, accumulate plain-text lines; otherwise stream
-    # highlighted output through the console.
-    to_file = output_path is not None
+    # When writing to a file or ingesting into a project, accumulate
+    # plain-text lines; otherwise stream highlighted output through the
+    # console. Project ingestion is non-HEAD-advancing — pp doesn't
+    # transform the TAC, it just renders it — so the rendered htac is a
+    # sibling of HEAD rather than a successor.
+    to_buffer = output_path is not None or resolved.project is not None
     file_lines: list[str] = []
 
     def _emit(text: str, *, highlight: bool = False) -> None:
-        if to_file:
+        if to_buffer:
             file_lines.append(text)
         elif highlight:
             c.print(highlight_tac_line(text))
@@ -660,7 +663,7 @@ def pp(
 
     if tac.path:
         _emit(f"# path: {tac.path}")
-    for w in (user_warnings + input_warnings):
+    for w in resolved.warnings:
         _emit(f"# input warning: {w}")
     _emit(f"# printer: {printer_name}")
     for w in warnings:
@@ -687,13 +690,21 @@ def pp(
         _emit("")
         shown += 1
 
-    if to_file:
-        assert output_path is not None
-        output_path.write_text("\n".join(file_lines) + ("\n" if file_lines else ""), encoding="utf-8")
+    if to_buffer:
+        text = "\n".join(file_lines) + ("\n" if file_lines else "")
+        written_path, _info = ingest_or_write_text(
+            explicit_output=output_path,
+            project=resolved.project,
+            text=text,
+            command="pp",
+            kind="htac",
+            advance_head=False,
+        )
+        assert written_path is not None
         if plain:
-            c.print(f"# wrote {output_path}", markup=False)
+            c.print(f"# wrote {written_path}", markup=False)
         else:
-            c.print(f"[cyan]wrote[/cyan]: [bold]{output_path}[/bold]")
+            c.print(f"[cyan]wrote[/cyan]: [bold]{written_path}[/bold]")
 
 
 _SEARCH_EPILOG = (

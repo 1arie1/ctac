@@ -26,7 +26,7 @@ from ctac.tool.cli_runtime import (
     console,
     plain_requested,
 )
-from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
+from ctac.tool.project_io import ingest_or_write_text, resolve_project_or_tac
 
 _SYMBOL_LINE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*):([A-Za-z0-9_]+)\s*$")
 
@@ -232,9 +232,8 @@ def smt_cmd(
         raise typer.Exit(1)
     known_encodings = ", ".join(available_encodings())
     try:
-        user_path, user_warnings = resolve_user_path(path)
-        tac_path, input_warnings = resolve_tac_input_path(user_path)
-        tac = parse_path(tac_path)
+        resolved = resolve_project_or_tac(path)
+        tac = parse_path(resolved.tac_path)
         # bytemap-rw used to be rejected here; sea_vc now encodes Store
         # via lambda-style ``define-fun`` per-map definitions
         # (function-level ITE for DSA-dynamic merges; ``Select`` is
@@ -263,17 +262,29 @@ def smt_cmd(
         if tac.path:
             c.print(f"# path: {tac.path}", markup=False)
         c.print(f"# encoding: {encoding}", markup=False)
-        for w in user_warnings + input_warnings:
+        for w in resolved.warnings:
             c.print(f"# input warning: {w}", markup=False)
         for w in script.warnings:
             c.print(f"# encoder warning: {w}", markup=False)
 
-    if output_path is not None:
-        output_path.write_text(smt_text, encoding="utf-8")
+    # smt produces an .smt2 sibling of HEAD — non-HEAD-advancing.
+    # Project ingestion only fires when the user gave us a project dir
+    # AND no -o; explicit -o keeps the legacy path. The result is always
+    # also written to a real on-disk path (either user's or project
+    # symlink), so the post-write `--run` flow still finds it.
+    written_smt_path, _smt_info = ingest_or_write_text(
+        explicit_output=output_path,
+        project=resolved.project,
+        text=smt_text,
+        command="smt",
+        kind="smt",
+        advance_head=False,
+    )
+    if written_smt_path is not None:
         if plain:
-            c.print(f"# wrote smt: {output_path}", markup=False)
+            c.print(f"# wrote smt: {written_smt_path}", markup=False)
         else:
-            c.print(f"[cyan]wrote smt[/cyan]: [bold]{output_path}[/bold]")
+            c.print(f"[cyan]wrote smt[/cyan]: [bold]{written_smt_path}[/bold]")
         if not run:
             return
 

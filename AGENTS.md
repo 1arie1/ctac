@@ -340,11 +340,30 @@ project root carries friendly-name symlinks (`base.tac`,
   - `OBJ_ID` accepts: full sha, unique sha prefix (>= 4 hex chars),
     label name, friendly symlink name, or a project-relative path.
 
-Phase-1 status: existing TAC commands (`rw`, `ua`, `smt`, `pp`)
-do **not** yet accept a project directory in place of a `.tac`
-argument — that's phase 2. For now, run them on the explicit
-object path (`mytac/base.tac`) and re-add the result with the
-`ctac.project.Project.add(...)` library API.
+Project-aware commands (give the project dir in place of a `.tac`):
+
+- HEAD-moving (no `-o` ingests + advances HEAD): `rw`, `ua` (merge
+  strategy only — `--strategy split` produces a fileset, deferred
+  to phase 3).
+- Sibling-producing (no `-o` ingests as a non-HEAD-advancing object
+  whose parent is HEAD): `pp` writes `.htac`, `smt` writes `.smt2`.
+- Explicit `-o PATH` always bypasses project ingestion; the user
+  gets the file at PATH, the project is untouched.
+
+Typical pipeline:
+
+```bash
+ctac prj init f.tac -o mytac --plain   # HEAD = base.tac (or in.tac)
+ctac rw mytac --plain                  # HEAD -> in.rw.tac
+ctac ua mytac --plain                  # HEAD -> in.rw.ua.tac
+ctac smt mytac --plain                 # writes in.rw.ua.smt2 (sibling)
+ctac prj list mytac --plain
+```
+
+Other commands (`stats`, `cfg`, `search`, `slice`, `df`, `types`,
+`run`, `cfg-match`, `bb-diff`, `op-diff`, `pin`, `splitcrit`,
+`absint`, `rw-eq`) still take an explicit TAC path; passing a
+project dir to them is on the phase-2 follow-up list.
 
 ## Repo Structure (Key Paths)
 

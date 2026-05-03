@@ -20,7 +20,6 @@ from ctac.parse import ParseError, parse_path
 from ctac.tool.tac_output import (
     filter_live_extra_symbols,
     render_pp_lines,
-    write_program_to_path,
 )
 from collections import Counter
 from dataclasses import replace
@@ -51,7 +50,7 @@ from ctac.tool.cli_runtime import (
     console,
     plain_requested,
 )
-from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
+from ctac.tool.project_io import ingest_or_write_program, resolve_project_or_tac
 
 
 def _print_report(
@@ -327,9 +326,8 @@ def rewrite_cmd(
     plain = plain_requested(plain)
     c = console(plain)
     try:
-        user_path, user_warnings = resolve_user_path(path)
-        tac_path, input_warnings = resolve_tac_input_path(user_path)
-        tac = parse_path(tac_path)
+        resolved = resolve_project_or_tac(path)
+        tac = parse_path(resolved.tac_path)
     except ParseError as e:
         c.print(f"parse error: {e}" if plain else f"[red]parse error:[/red] {e}")
         raise typer.Exit(1) from e
@@ -337,7 +335,7 @@ def rewrite_cmd(
         c.print(f"input error: {e}" if plain else f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
 
-    for w in user_warnings + input_warnings:
+    for w in resolved.warnings:
         c.print(f"# input warning: {w}", markup=False)
 
     before_count = _command_count(tac.program)
@@ -561,21 +559,25 @@ def rewrite_cmd(
             lift_dynamic_ite_hits=lift_hits,
         )
 
-    if output_path is not None:
-        # Prune symbol-table declarations whose AssignExpCmd was DCE'd
-        # so the output's TACSymbolTable doesn't carry orphan
-        # ``TCSE<n>:bv256`` lines without a matching def. Annotation-
-        # only weak refs are preserved (extract_def_use treats them as
-        # uses), so debug metadata stays valid.
-        live_extra = filter_live_extra_symbols(rw.extra_symbols, final_program)
-        write_program_to_path(
-            output_path=output_path,
-            tac=tac,
-            program=final_program,
-            extra_symbols=live_extra,
-        )
+    # Prune symbol-table declarations whose AssignExpCmd was DCE'd so
+    # the output's TACSymbolTable doesn't carry orphan ``TCSE<n>:bv256``
+    # lines without a matching def. Annotation-only weak refs are
+    # preserved (extract_def_use treats them as uses), so debug metadata
+    # stays valid.
+    live_extra = filter_live_extra_symbols(rw.extra_symbols, final_program)
+    written_path, _info = ingest_or_write_program(
+        explicit_output=output_path,
+        project=resolved.project,
+        tac=tac,
+        program=final_program,
+        extra_symbols=live_extra,
+        command="rw",
+        kind="tac",
+        advance_head=True,
+    )
+    if written_path is not None:
         if not report:
-            c.print(f"# wrote {output_path}", markup=False)
+            c.print(f"# wrote {written_path}", markup=False)
     else:
         for ln in render_pp_lines(final_program):
             c.print(ln, markup=False)

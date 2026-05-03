@@ -362,7 +362,13 @@ class Project:
             except (FileNotFoundError, KeyError):
                 head_info = None
             if head_info is not None and head_info.names:
-                base = auto_name(head_info.names[0], command, ext)
+                # Use the most recently appended name as the basis: when
+                # an idempotent command (rw on a fixed point) extended
+                # an existing object's alias list, follow-on commands
+                # should chain off the new alias (`in.rw.tac`) rather
+                # than the original (`in.tac`), preserving pipeline
+                # provenance in the filename.
+                base = auto_name(head_info.names[-1], command, ext)
             else:
                 base = f"base.{ext}"
         return self._dedupe_name(base, sha, existing_names)

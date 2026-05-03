@@ -194,9 +194,16 @@ A *project* is a working directory with a `.ctac/` sidecar that
 pins HEAD ("the current TAC"), records every produced artifact's
 provenance, and exposes friendly-name symlinks
 (`base.tac`, `base.rw.tac`, ...) on top of the content-addressed
-`.ctac/objects/` store. Phase 1 ships the lifecycle and read API;
-existing TAC commands (`rw`, `ua`, `smt`, `pp`) accept project
-directories in phase 2.
+`.ctac/objects/` store. Pass the project directory to `rw`, `ua`,
+`pp`, or `smt` in place of a `.tac` path — HEAD is read for input,
+and outputs are ingested into the project automatically when `-o`
+is omitted:
+
+```bash
+ctac rw mytac --plain    # HEAD: in.tac -> in.rw.tac
+ctac ua mytac --plain    # HEAD: in.rw.tac -> in.rw.ua.tac
+ctac smt mytac --plain   # writes in.rw.ua.smt2 as a HEAD sibling
+```
 
 The library surface (`ctac.project.Project`) is what the REPL and
 other tooling should use; the CLI is a thin façade.

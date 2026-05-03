@@ -43,9 +43,10 @@ def store_file(dot_ctac: Path, src: Path) -> tuple[str, Path, bool]:
 
     Returns ``(sha, stored_path, was_new)``. If an object with the
     same sha is already present, ``src`` is not copied and
-    ``was_new`` is False. The store is read-only after a write —
-    files are made non-writable to discourage in-place edits (the
-    canonical bytes must match the sha at all times).
+    ``was_new`` is False. Stored objects use the default umask so
+    pytest's tmp-dir cleanup (and ``rm -rf``) Just Works; protecting
+    against in-place edits that would desync sha is a nice-to-have
+    we can revisit if it actually bites.
     """
     sha = sha256_file(src)
     target = object_path(dot_ctac, sha)
@@ -54,7 +55,6 @@ def store_file(dot_ctac: Path, src: Path) -> tuple[str, Path, bool]:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
     shutil.copyfile(src, tmp)
-    os.chmod(tmp, 0o444)
     tmp.replace(target)
     return sha, target, True
 

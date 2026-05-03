@@ -17,7 +17,7 @@ from ctac.analysis import remove_true_asserts
 from ctac.ast.nodes import AssertCmd
 from ctac.ir.models import TacProgram
 from ctac.parse import ParseError, parse_path, render_tac_file
-from ctac.tool.tac_output import filter_live_extra_symbols, write_program_to_path
+from ctac.tool.tac_output import filter_live_extra_symbols
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.rules import PURIFY_ASSERT
 from ctac.tool.cli_runtime import (
@@ -29,7 +29,7 @@ from ctac.tool.cli_runtime import (
     console,
     plain_requested,
 )
-from ctac.tool.input_resolution import resolve_tac_input_path, resolve_user_path
+from ctac.tool.project_io import ingest_or_write_program, resolve_project_or_tac
 from ctac.ua import merge_asserts, split_asserts
 
 
@@ -140,9 +140,8 @@ def ua_cmd(
     c = console(plain)
 
     try:
-        user_path, user_warnings = resolve_user_path(path)
-        tac_path, input_warnings = resolve_tac_input_path(user_path)
-        tac = parse_path(tac_path)
+        resolved = resolve_project_or_tac(path)
+        tac = parse_path(resolved.tac_path)
     except ParseError as e:
         c.print(f"parse error: {e}" if plain else f"[red]parse error:[/red] {e}")
         raise typer.Exit(1) from e
@@ -150,7 +149,18 @@ def ua_cmd(
         c.print(f"input error: {e}" if plain else f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
 
-    for w in user_warnings + input_warnings:
+    if strategy == "split" and resolved.project is not None and output_path is None:
+        # Split produces a directory of TACs (a fileset). Project
+        # ingestion of filesets is phase 3; for now, require an
+        # explicit -o so the user opts in to the legacy behavior.
+        c.print(
+            "# error: --strategy split inside a project requires explicit "
+            "-o DIR (fileset ingestion lands in phase 3)",
+            markup=False,
+        )
+        raise typer.Exit(1)
+
+    for w in resolved.warnings:
         c.print(f"# input warning: {w}", markup=False)
 
     asserts_before = _count_asserts(tac.program)
@@ -181,11 +191,12 @@ def ua_cmd(
             tac=tac,
             program=program,
             output_path=output_path,
+            project=resolved.project,
             report=report,
             asserts_before=asserts_before,
             removed_true=removed_true,
             extra_symbols=extra_symbols,
-            source_path=str(tac_path),
+            source_path=str(resolved.tac_path),
         )
     else:  # strategy == "split"
         _run_split(
@@ -198,7 +209,7 @@ def ua_cmd(
             asserts_before=asserts_before,
             removed_true=removed_true,
             extra_symbols=extra_symbols,
-            source_path=str(tac_path),
+            source_path=str(resolved.tac_path),
         )
 
 
@@ -209,6 +220,7 @@ def _run_merge(
     tac,
     program: TacProgram,
     output_path: Optional[Path],
+    project,
     report: bool,
     asserts_before: int,
     removed_true: int,
@@ -231,23 +243,26 @@ def _run_merge(
             result=result,
         )
 
-    if output_path is None:
+    live_extra = filter_live_extra_symbols(extra_symbols, result.program)
+    written_path, _info = ingest_or_write_program(
+        explicit_output=output_path,
+        project=project,
+        tac=tac,
+        program=result.program,
+        extra_symbols=live_extra,
+        command="ua",
+        kind="tac",
+        advance_head=True,
+    )
+    if written_path is not None:
+        if not report:
+            c.print(f"# wrote {written_path}", markup=False)
+    else:
         if not report:
             c.print(
                 "# no --output given; pass -o FILE.tac (or .htac) to write the result",
                 markup=False,
             )
-        return
-
-    live_extra = filter_live_extra_symbols(extra_symbols, result.program)
-    write_program_to_path(
-        output_path=output_path,
-        tac=tac,
-        program=result.program,
-        extra_symbols=live_extra,
-    )
-    if not report:
-        c.print(f"# wrote {output_path}", markup=False)
 
 
 def _run_split(

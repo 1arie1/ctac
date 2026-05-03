@@ -651,28 +651,41 @@ remembering which file is "current" is error-prone; a project tracks
 HEAD for you, gives you `base.rw.ua.tac` as a friendly symlink, and
 keeps a manifest you can replay later.
 
-PHASE 1 (this release): the project lifecycle and read API only —
-`init`, `list`, `info`. Existing TAC commands do NOT yet accept a
-project directory in place of a `.tac` argument; that's phase 2.
-You can pass an explicit object path (`mytac/base.tac`) today and
-re-add the result with `prj` once it's emitted.
+PROJECT-AWARE COMMANDS: pass a project directory in place of a .tac
+path. HEAD is read for input; outputs are ingested automatically.
+- `rw`, `ua` (merge strategy): no -o → ingest, advance HEAD.
+- `pp` (-> .htac), `smt` (-> .smt2): no -o → ingest as HEAD-sibling
+  (parent = HEAD; HEAD does not move).
+- explicit `-o PATH` always bypasses project ingestion.
 
-TYPICAL:
+PRJ COMMANDS:
   ctac prj init f.tac -o mytac --plain          # create project
   ctac prj list mytac --plain                   # list objects
   ctac prj info mytac base --plain --recursive  # walk parents
 
+TYPICAL PIPELINE:
+  ctac prj init f.tac -o mytac --plain
+  ctac rw mytac --plain         # HEAD -> in.rw.tac
+  ctac ua mytac --plain         # HEAD -> in.rw.ua.tac
+  ctac smt mytac --plain        # writes in.rw.ua.smt2 (sibling)
+  ctac prj list mytac --plain
+
 LAYOUT:
   mytac/.ctac/HEAD                    # text: <sha>
   mytac/.ctac/refs/<label>            # text: <sha>
-  mytac/.ctac/objects/<pfx>/<rest>    # canonical content (read-only)
+  mytac/.ctac/objects/<pfx>/<rest>    # canonical content
   mytac/.ctac/manifest.json           # provenance graph
   mytac/.ctac/log.jsonl               # append-only command log
-  mytac/base.tac                      # symlink -> objects/<sha>
+  mytac/in.tac                        # symlink -> objects/<sha>
 
 REFS: any of these resolve an object — full sha, unique short sha
 (>= 4 hex chars), label name (`base`), friendly symlink name
-(`base.tac`), or a path inside the project root.
+(`in.rw.tac`), or a path inside the project root.
+
+NOT YET PROJECT-AWARE: `stats`, `cfg`, `search`, `slice`, `df`,
+`types`, `run`, `cfg-match`, `bb-diff`, `op-diff`, `pin`,
+`splitcrit`, `absint`, `rw-eq`. Pass an explicit object path
+(`mytac/in.rw.tac`) for those today.
 """,
 }
 
