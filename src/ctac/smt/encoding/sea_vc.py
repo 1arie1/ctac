@@ -451,7 +451,14 @@ class SeaVcEncoder(SmtEncoder):
             bad = ", ".join(sorted(static_symbols & dynamic_symbols))
             raise SmtEncodingError(f"DSA partition violated for symbol(s): {bad}")
 
-        uf_apps: dict[str, set[tuple[str, ...]]] = defaultdict(set)
+        # uf_apps: per-UF, a map from (encoded args tuple) to the set
+        # of block ids whose top-level emit_expr produced that
+        # application. Block ids power --guard-axioms; without it only
+        # the keys are consumed.
+        uf_apps: dict[str, dict[tuple[str, ...], set[str]]] = defaultdict(dict)
+        # leaf_apps: bytemap leaf-UF range-axiom keys. Always emitted
+        # unguarded (they're generic and cheap), so no per-block
+        # attribution is needed.
         leaf_apps: set[tuple[str, str]] = set()
         leaf_visited: set[tuple[str, str]] = set()
         # Set of canonical bytemap symbol names referenced by some
@@ -629,6 +636,32 @@ class SeaVcEncoder(SmtEncoder):
             finally:
                 source_stack.pop()
 
+        # Block-context stack for axiom-trigger attribution. Each
+        # top-level ``emit_expr`` callsite (per-command rhs/assume/
+        # assert/map-body) pushes the id of the block that triggered
+        # the encoding. ``uf_apps`` / ``leaf_apps`` consult the top of
+        # the stack so an axiom instance carries the set of blocks
+        # whose terms triggered it; ``--guard-axioms`` then guards the
+        # axiom assert by the OR of those block guards.
+        block_stack: list[str] = []
+
+        @contextmanager
+        def _with_block(block_id: str) -> Iterator[None]:
+            block_stack.append(block_id)
+            try:
+                yield
+            finally:
+                block_stack.pop()
+
+        def _current_block() -> str | None:
+            return block_stack[-1] if block_stack else None
+
+        def _add_uf_app(uf: str, args: tuple[str, ...]) -> None:
+            blk = _current_block()
+            slot = uf_apps[uf].setdefault(args, set())
+            if blk is not None:
+                slot.add(blk)
+
         def emit_expr(expr: TacExpr, *, expected_sort: str | None = None) -> tuple[str, str]:
             def to_bool(term: str, sort: str) -> str:
                 if sort == "Bool":
@@ -670,7 +703,7 @@ class SeaVcEncoder(SmtEncoder):
                         smt_sort = "Bool" if ret_sort == "Bool" else "Int"
                         dom = " ".join("Int" for _ in args)
                         uf_decl_lines.add(f"(declare-fun {uf} ({dom}) {smt_sort})")
-                        uf_apps[uf].add(tuple(args))
+                        _add_uf_app(uf, tuple(args))
                         return (f"({uf} {' '.join(args)})" if args else f"({uf})"), smt_sort
                     raise SmtEncodingError("unsupported Apply(...) form")
 
@@ -731,7 +764,7 @@ class SeaVcEncoder(SmtEncoder):
                     a2, _ = emit_expr(expr.args[1], expected_sort="Int")
                     uf = "int_ceil_div"
                     uf_decl_lines.add(f"(declare-fun {uf} (Int Int) Int)")
-                    uf_apps[uf].add((a1, a2))
+                    _add_uf_app(uf, (a1, a2))
                     return f"({uf} {a1} {a2})", "Int"
                 if op == "IntMulDiv":
                     # Floor multiply-then-divide: floor((a*b)/c). Total UF
@@ -745,7 +778,7 @@ class SeaVcEncoder(SmtEncoder):
                     a3, _ = emit_expr(expr.args[2], expected_sort="Int")
                     uf = "int_mul_div"
                     uf_decl_lines.add(f"(declare-fun {uf} (Int Int Int) Int)")
-                    uf_apps[uf].add((a1, a2, a3))
+                    _add_uf_app(uf, (a1, a2, a3))
                     return f"({uf} {a1} {a2} {a3})", "Int"
                 if op in {"Shl", "BvShl", "BVShl", "LShift", "ShiftLeft"}:
                     if len(expr.args) != 2:
@@ -755,7 +788,7 @@ class SeaVcEncoder(SmtEncoder):
                         uf = "bv256_shl"
                         y, _ = emit_expr(expr.args[1], expected_sort="Int")
                         uf_decl_lines.add(f"(declare-fun {uf} (Int Int) Int)")
-                        uf_apps[uf].add((x, y))
+                        _add_uf_app(uf, (x, y))
                         return f"({uf} {x} {y})", "Int"
                     k = _parse_const(expr.args[1].value)
                     if k < 0:
@@ -769,7 +802,7 @@ class SeaVcEncoder(SmtEncoder):
                         uf = "bv256_lshr"
                         y, _ = emit_expr(expr.args[1], expected_sort="Int")
                         uf_decl_lines.add(f"(declare-fun {uf} (Int Int) Int)")
-                        uf_apps[uf].add((x, y))
+                        _add_uf_app(uf, (x, y))
                         return f"({uf} {x} {y})", "Int"
                     k = _parse_const(expr.args[1].value)
                     if k < 0:
@@ -811,21 +844,21 @@ class SeaVcEncoder(SmtEncoder):
                                 return f"(* (mod (div {target} {pow_lo}) {pow_w}) {pow_lo})", "Int"
                     uf = "bv256_and"
                     uf_decl_lines.add(f"(declare-fun {uf} (Int Int) Int)")
-                    uf_apps[uf].add((x_t, y_t))
+                    _add_uf_app(uf, (x_t, y_t))
                     return f"({uf} {x_t} {y_t})", "Int"
                 if op in {"BXor", "BitXor", "BvXor", "BVXor", "Xor", "BWXor", "BWXOr", "BWXOR"}:
                     a1, _ = emit_expr(expr.args[0], expected_sort="Int")
                     a2, _ = emit_expr(expr.args[1], expected_sort="Int")
                     uf = "bv256_xor"
                     uf_decl_lines.add(f"(declare-fun {uf} (Int Int) Int)")
-                    uf_apps[uf].add((a1, a2))
+                    _add_uf_app(uf, (a1, a2))
                     return f"({uf} {a1} {a2})", "Int"
                 if op in {"BOr", "BitOr", "BvOr", "BVOr", "BWOr", "BWOR"}:
                     a1, _ = emit_expr(expr.args[0], expected_sort="Int")
                     a2, _ = emit_expr(expr.args[1], expected_sort="Int")
                     uf = "bv256_or"
                     uf_decl_lines.add(f"(declare-fun {uf} (Int Int) Int)")
-                    uf_apps[uf].add((a1, a2))
+                    _add_uf_app(uf, (a1, a2))
                     return f"({uf} {a1} {a2})", "Int"
                 if op == "Ite":
                     if len(expr.args) != 3:
@@ -1240,7 +1273,7 @@ class SeaVcEncoder(SmtEncoder):
                 else:  # AssignExpCmd
                     with _with_source(
                         f"map-body rhs of {sym} in block {b.id} cmd {ci}"
-                    ):
+                    ), _with_block(b.id):
                         # Choose chain-based emit vs the AST-walk-based
                         # emit. Chain-based applies when the chain has
                         # a real KV-bearing structure (Store-anchored
@@ -1307,7 +1340,7 @@ class SeaVcEncoder(SmtEncoder):
                 lhs = symbol_term[ds.symbol]
                 with _with_source(
                     f"static rhs of {ds.symbol} in block {ds.block_id} cmd {ds.cmd_index}"
-                ):
+                ), _with_block(ds.block_id):
                     rhs, _ = emit_expr(cmd.rhs, expected_sort=symbol_sort[ds.symbol])
                 eq = f"(= {lhs} {rhs})"
                 if ctx.guard_statics:
@@ -1358,7 +1391,7 @@ class SeaVcEncoder(SmtEncoder):
 
                     with _with_source(
                         f"assume condition in block {block.id} cmd {idx}"
-                    ):
+                    ), _with_block(block.id):
                         cond, s = emit_expr(cond_expr, expected_sort="Bool")
                     if s != "Bool":
                         raise SmtEncodingError("Assume condition must be Bool")
@@ -1386,7 +1419,7 @@ class SeaVcEncoder(SmtEncoder):
                 if isinstance(cmd, AssignExpCmd):
                     with _with_source(
                         f"dynamic rhs of {sym} in block {row.block_id} cmd {row.cmd_index}"
-                    ):
+                    ), _with_block(row.block_id):
                         rhs, _ = emit_expr(cmd.rhs, expected_sort=symbol_sort[sym])
                 elif isinstance(cmd, AssignHavocCmd):
                     rhs = declare_havoc(sym, row.block_id, row.cmd_index)
@@ -1444,7 +1477,7 @@ class SeaVcEncoder(SmtEncoder):
         with _with_source(
             f"assert predicate in block {ctx.assert_site.block_id} "
             f"cmd {ctx.assert_site.cmd_index}"
-        ):
+        ), _with_block(ctx.assert_site.block_id):
             assert_cond, assert_sort = emit_expr(assert_expr, expected_sort="Bool")
         if assert_sort != "Bool":
             raise SmtEncodingError("Assert predicate must lower to Bool")
@@ -1562,6 +1595,16 @@ class SeaVcEncoder(SmtEncoder):
         # Emit UF axiom definitions once, then instantiate per application.
         emitted_axiom_funs: set[str] = set()
         printed_axiom_banner = False
+        def _axiom_guard(blocks: set[str]) -> str:
+            # Reduce a set of trigger-block ids to a single guard term.
+            # Empty (no recorded trigger) falls through unguarded —
+            # safer to keep the axiom than drop it.
+            if not blocks:
+                return "true"
+            return or_terms(
+                [block_guard(b, entry_block_id=entry_block_id) for b in sorted(blocks)]
+            )
+
         for uf in sorted(uf_apps):
             axiom_info = _UF_AXIOM_DEFINE_BY_UF.get(uf)
             if axiom_info is None:
@@ -1575,7 +1618,10 @@ class SeaVcEncoder(SmtEncoder):
                 emitted_axiom_funs.add(axiom_fun_name)
             out_lines.append(f"; instantiate {axiom_fun_name} for each {uf} application")
             for args in sorted(uf_apps[uf]):
-                out_lines.append(f"(assert ({axiom_fun_name} {' '.join(args)}))")
+                instance = f"({axiom_fun_name} {' '.join(args)})"
+                if ctx.guard_axioms:
+                    instance = implies(_axiom_guard(uf_apps[uf][args]), instance)
+                out_lines.append(f"(assert {instance})")
 
         # Memory cells are bv256-valued. Without a per-application
         # range axiom, z3 can pick negative or >BV256_MAX values that
@@ -1586,6 +1632,13 @@ class SeaVcEncoder(SmtEncoder):
         # that would expand on application, re-bounding stored values
         # whose scalar bv256 bound already covers them. Stored slots
         # are skipped during the walk for the same reason.
+        # Memory bv256-range axioms stay unguarded even under
+        # --guard-axioms. They are generic, cheap (a single
+        # `(<= 0 (M idx) BV256_MAX)` per leaf application), and
+        # always sound to assert; the cost they pay isn't worth a
+        # block-reachability gate, and keeping them universally
+        # asserted preserves the model-replay invariant `ctac run`
+        # relies on regardless of which path z3 picks.
         if leaf_apps:
             if not printed_axiom_banner:
                 emit_banner("Axiom Instantiations")

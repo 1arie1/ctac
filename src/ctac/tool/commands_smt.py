@@ -169,6 +169,20 @@ def smt_cmd(
             "selected by block guards."
         ),
     ),
+    guard_axioms: bool = typer.Option(
+        False,
+        "--guard-axioms",
+        help=(
+            "Guard each per-application UF axiom instantiation by "
+            "the block-reachability variables of the trigger sites: "
+            "`(=> (or BLK_b1 BLK_b2 ...) <axiom>)`. Covers the "
+            "expensive UF axioms (bv256_xor, int_ceil_div, "
+            "int_mul_div). Memory bv256-range axioms on leaf "
+            "bytemap UFs stay unguarded (generic and cheap). "
+            "Entry-block-only triggers stay bare (guard is `true`). "
+            "Default emits each UF axiom unconditionally."
+        ),
+    ),
     cfg_encoding: Annotated[
         str,
         typer.Option(
@@ -245,6 +259,7 @@ def smt_cmd(
             tight_logic=tight_logic,
             guard_statics=guard_statics,
             guard_dynamics=guard_dynamics,
+            guard_axioms=guard_axioms,
             cfg_encoding=cfg_encoding,
             narrow_range=narrow_range,
             store_reduce=store_reduce,

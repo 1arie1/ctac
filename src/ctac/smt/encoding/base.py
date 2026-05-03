@@ -35,6 +35,21 @@ class EncoderContext:
     single ``(= lhs (ite cond rhs ...))`` term selected by block
     guards. The guard form produces one assertion per defining block
     (deduped by RHS); the ITE form produces one assertion per symbol."""
+    guard_axioms: bool = False
+    """If True, guard each per-application UF axiom instantiation by
+    the block-reachability variables of the blocks where the term
+    that triggered the instantiation is encoded. Each axiom assert
+    becomes ``(=> (or BLK_b1 BLK_b2 ...) <axiom_instance>)``; an
+    axiom whose triggers all live in the entry block stays bare (the
+    entry guard is ``true``). Covers the expensive per-application
+    UF axioms (``bv256_xor_axiom``, ``int_ceil_div_axiom``,
+    ``int_mul_div_axiom``). The bv256-range axioms on leaf bytemap
+    UFs are deliberately *not* guarded — they are generic, cheap,
+    and always sound to assert. Default False emits each UF axiom
+    unconditionally. The guarded form is sound (the unguarded
+    version dominates it); the win is in keeping the axiom out of
+    the SMT core when its trigger block is not reachable on the
+    current path."""
     cfg_encoding: str = "bwd0"
     """Which CFG-constraint encoding strategy to use. Five strategies
     ship today (``ctac.smt.cfg.CFG_ENCODERS``):

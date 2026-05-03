@@ -291,6 +291,14 @@ Prompt template:
     equality `(=> BLK_<bid> (= lhs rhs))` instead of the default
     `(= lhs (ite cond rhs ...))` ITE-merge form. One assertion per
     defining block (deduped by RHS) vs. one assertion per symbol.
+  - Axiom guarding: `--guard-axioms` wraps each per-application UF
+    axiom assertion in `(=> (or BLK_b1 BLK_b2 ...) <axiom>)`, where
+    the disjunction collects every block whose top-level expression
+    triggered the instance. Covers the expensive UF axioms
+    (`bv256_xor`, `int_ceil_div`, `int_mul_div`). Memory bv256-range
+    axioms on leaf bytemap UFs are *not* guarded — they are generic
+    and cheap, always sound to assert. Entry-block-only triggers
+    stay bare (entry guard is `true`). Off by default.
   - CFG-constraint encoding: `--cfg-encoding
     {bwd0,bwd1,fwd,fwd-bwd,fwd-edge,bwd-edge}` selects the
     constraint shape over block-reachability variables.

@@ -570,3 +570,163 @@ Metas {
         assert "(check-sat)" in rendered, f"{enc}: missing check-sat"
 
 
+# UF-axiom trigger in a non-entry block: BWXor in `ok` lowers to
+# `bv256_xor`; the per-application axiom must carry the trigger
+# block's reachability guard under --guard-axioms.
+TAC_NON_ENTRY_XOR = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tc:bool
+\tx:bv256
+\ty:bv256
+\tz:bv256
+\tp:bool
+}
+Program {
+\tBlock entry Succ [ok, bad] {
+\t\tAssignExpCmd c true
+\t\tAssignHavocCmd x
+\t\tAssignHavocCmd y
+\t\tJumpiCmd ok bad c
+\t}
+\tBlock ok Succ [] {
+\t\tAssignExpCmd z BWXor(x y)
+\t\tAssignExpCmd p Eq(z 0x0)
+\t\tAssertCmd p "no"
+\t}
+\tBlock bad Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+# UF-axiom trigger in the entry block: the entry-block guard
+# resolves to `true`, so even with --guard-axioms the axiom should
+# stay bare (the `implies` helper short-circuits `true => x` to `x`).
+TAC_ENTRY_XOR = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+\ty:bv256
+\tz:bv256
+\tb:bool
+}
+Program {
+\tBlock entry Succ [ok] {
+\t\tAssignHavocCmd x
+\t\tAssignHavocCmd y
+\t\tAssignExpCmd z BWXor(x y)
+\t\tAssignExpCmd b true
+\t\tJumpCmd ok
+\t}
+\tBlock ok Succ [] {
+\t\tAssertCmd b "ok"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+# Leaf bv256-range axiom: a `Select` on a havoc'd bytemap in a
+# non-entry block. The leaf-axiom on `(M idx)` is keyed on the
+# Select's enclosing block, not the map's def block.
+TAC_NON_ENTRY_SELECT = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tc:bool
+\tM:bytemap
+\tv:bv256
+\tb:bool
+}
+Program {
+\tBlock entry Succ [ok, bad] {
+\t\tAssignExpCmd c true
+\t\tAssignHavocCmd M
+\t\tJumpiCmd ok bad c
+\t}
+\tBlock ok Succ [] {
+\t\tAssignExpCmd v Select(M 0x10)
+\t\tAssignExpCmd b Eq(v 0x0)
+\t\tAssertCmd b "v"
+\t}
+\tBlock bad Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_guard_axioms_default_off_is_byte_identical() -> None:
+    tac = parse_string(TAC_NON_ENTRY_XOR, path="<string>")
+    a = render_smt_script(build_vc(tac))
+    b = render_smt_script(build_vc(tac, guard_axioms=False))
+    assert a == b
+
+
+def test_guard_axioms_off_emits_unguarded_uf_axiom() -> None:
+    tac = parse_string(TAC_NON_ENTRY_XOR, path="<string>")
+    rendered = render_smt_script(build_vc(tac))
+    # Default off: bare assert of the per-application axiom, no
+    # block-guard wrapper.
+    assert "(assert (bv256_xor_axiom x y))" in rendered
+    assert "(=> BLK_ok (bv256_xor_axiom x y))" not in rendered
+
+
+def test_guard_axioms_on_wraps_non_entry_uf_axiom_in_blk_implication() -> None:
+    tac = parse_string(TAC_NON_ENTRY_XOR, path="<string>")
+    rendered = render_smt_script(build_vc(tac, guard_axioms=True))
+    # The xor instance is triggered solely by the static def
+    # `z = BWXor(x, y)` in block `ok`, so the axiom carries `BLK_ok`
+    # as its single guard.
+    assert "(assert (=> BLK_ok (bv256_xor_axiom x y)))" in rendered
+    assert "(assert (bv256_xor_axiom x y))" not in rendered
+
+
+def test_guard_axioms_on_leaves_entry_uf_axiom_unguarded() -> None:
+    # Entry-block guard collapses to `true`; `implies` short-circuits
+    # the wrapper away. Same shape as guard_statics treats entry-block
+    # static defs.
+    tac = parse_string(TAC_ENTRY_XOR, path="<string>")
+    rendered = render_smt_script(build_vc(tac, guard_axioms=True))
+    assert "(assert (bv256_xor_axiom x y))" in rendered
+    assert "(=> BLK_entry" not in rendered
+
+
+def test_guard_axioms_does_not_guard_leaf_bv256_range_axiom() -> None:
+    # Memory bv256-range axioms are generic and cheap, so they stay
+    # unguarded even when --guard-axioms is on. Both modes must emit
+    # the bare `(<= 0 (M 16) BV256_MAX)` form.
+    tac = parse_string(TAC_NON_ENTRY_SELECT, path="<string>")
+    for guard in (False, True):
+        rendered = render_smt_script(build_vc(tac, guard_axioms=guard))
+        assert "(assert (<= 0 (M 16) BV256_MAX))" in rendered
+        assert "(=> BLK_ok (<= 0 (M 16) BV256_MAX))" not in rendered
+
+
