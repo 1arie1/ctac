@@ -215,6 +215,34 @@ Prompt template:
     - `--report` — counts.
   - Single-assert input is a no-op (`was_noop: true`).
 
+- `ctac pin <file> --plain`
+  - Specialize a TAC: drop blocks (with cleanup), bind variables to
+    constants, enumerate splits as cases. Library-first; CLI is a
+    thin façade over `ctac.transform.pin`.
+  - Output contract: every block remaining is on an entry-to-exit
+    path (no orphans, no dangling halts). DSA + use-before-def
+    preserved.
+  - Key flags:
+    - `--drop BLK1,BLK2` — repeatable; remove blocks from the CFG.
+      RC vars for dropped blocks fold to false automatically.
+    - `--bind VAR=VALUE` — repeatable; substitute a variable.
+      RC variables (`ReachabilityCertora*`) are rejected — use
+      `--drop` instead.
+    - `--split BLK` — repeatable; enumerate one case per
+      predecessor of `BLK`. Output becomes a directory with one
+      `.tac` per case + `manifest.json`.
+    - `-o PATH` — output file (single-case) or directory
+      (multi-case with `--split`).
+    - `--show` — render an existing manifest directory's summary
+      (also implicit when the positional is a directory with
+      `manifest.json`).
+    - `--name-style descriptive|index` — case filename style.
+    - `--no-cleanup` — skip the cleanup rewriter pass.
+    - `--trace PATH` — JSONL trace of pin decisions and edits
+      (debug-only; `-` for stdout).
+  - Library: `from ctac.transform.pin import PinPlan, apply,
+    enumerate, bind, compute_dead_blocks`.
+
 - `ctac rw-valid --plain`
   - Emit per-rule SMT-LIB soundness specs (one `.smt2` per rule +
     `manifest.json`). Does NOT invoke z3 — run the solver yourself.

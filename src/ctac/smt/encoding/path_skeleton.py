@@ -24,6 +24,32 @@ def block_guard(block_id: str, *, entry_block_id: str) -> str:
     return "true" if block_id == entry_block_id else blk_var_name(block_id)
 
 
+# Production pipeline's reachability-bool naming convention. The TAC
+# ships ``ReachabilityCertora<block-id>`` as a free havoc'd Bool that
+# the encoder aliases to the matching ``BLK_<id>``. ``ctac pin`` uses
+# the same convention to fold RC vars to false when their block is
+# dropped.
+_RC_PREFIX = "ReachabilityCertora"
+
+
+def reachability_var_name(block_id: str) -> str:
+    """Return the reachability-bool variable name for ``block_id``."""
+    return f"{_RC_PREFIX}{block_id}"
+
+
+def is_reachability_var(name: str) -> bool:
+    """True if ``name`` matches the reachability-bool naming convention."""
+    return name.startswith(_RC_PREFIX) and len(name) > len(_RC_PREFIX)
+
+
+def block_id_for_reachability_var(name: str) -> str | None:
+    """Inverse of :func:`reachability_var_name`. Returns ``None`` if
+    ``name`` is not a reachability-bool name."""
+    if not is_reachability_var(name):
+        return None
+    return name[len(_RC_PREFIX):]
+
+
 @dataclass(frozen=True)
 class PredEdge:
     pred_block_id: str
