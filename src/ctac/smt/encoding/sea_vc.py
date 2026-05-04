@@ -787,7 +787,15 @@ class SeaVcEncoder(SmtEncoder):
                     if op == "LAnd":
                         range_match = match_inclusive_range_constraint(expr, strip_var_suffixes=True)
                         if range_match is not None and range_match.symbol in symbol_term:
-                            x_term = symbol_term[range_match.symbol]
+                            # Route through emit_expr so ``--inline-scalars``
+                            # substitutes the rhs at this site too. Direct
+                            # ``symbol_term[...]`` lookup would emit the
+                            # bare symbol name even when the symbol's
+                            # declaration has been dropped because it's
+                            # an inline candidate.
+                            x_term, _ = emit_expr(
+                                SymbolRef(range_match.symbol), expected_sort="Int"
+                            )
                             lo_term, _ = emit_expr(range_match.lower, expected_sort="Int")
                             hi_term, _ = emit_expr(range_match.upper, expected_sort="Int")
                             return f"(<= {lo_term} {x_term} {hi_term})", "Bool"
