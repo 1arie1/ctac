@@ -47,6 +47,7 @@ from ctac.rewrite import rewrite_program
 from ctac.rewrite.rules.bool_fold import BOOL_CONST_FOLD
 from ctac.rewrite.rules.copyprop import CP_ALIAS
 from ctac.rewrite.rules.ite import ITE_BOOL, ITE_SAME
+from ctac.rewrite.unparse import canonicalize_cmd
 from ctac.smt.encoding.path_skeleton import (
     block_id_for_reachability_var,
     is_reachability_var,
@@ -94,6 +95,29 @@ def _build_definition_map(program: TacProgram) -> dict[str, TacExpr]:
             if isinstance(cmd, AssignExpCmd):
                 out[_canon(cmd.lhs)] = cmd.rhs
     return out
+
+
+def _build_def_block_map(program: TacProgram) -> dict[str, frozenset[BlockId]]:
+    """Map canonical symbol name -> set of blocks defining it via
+    ``AssignExpCmd``.
+
+    Used by the post-pinning Ite-arm fold to detect symbols whose
+    every def site is in the dropped block set; references to such
+    symbols are dead in the surviving program.
+
+    Havoc defs are intentionally excluded: RC vars are havoc'd in the
+    entry block (which is never dropped), so a havoc'd RC var's def
+    site stays alive even when its named block is dropped — pin
+    handles that case via ``_drop_havoc_defs_for_dead_rcs`` and the
+    RC=false bind. For non-RC havocs that escape their block, a use
+    after a drop is already a use-before-def, not an Ite-arm dropping
+    case."""
+    by_sym: dict[str, set[BlockId]] = {}
+    for b in program.blocks:
+        for cmd in b.commands:
+            if isinstance(cmd, AssignExpCmd):
+                by_sym.setdefault(_canon(cmd.lhs), set()).add(b.id)
+    return {k: frozenset(v) for k, v in by_sym.items()}
 
 
 def _build_assume_map(program: TacProgram) -> dict[str, ConstExpr]:
@@ -895,19 +919,131 @@ def _fold_lor_rc_self_dominance(program: TacProgram) -> TacProgram:
             if isinstance(cmd, AssignExpCmd):
                 new_rhs = _rewrite_expr_lor_rc(cmd.rhs, preds)
                 if new_rhs is not cmd.rhs:
-                    new_cmds.append(replace(cmd, rhs=new_rhs))
+                    new_cmds.append(canonicalize_cmd(replace(cmd, rhs=new_rhs)))
                     block_changed = True
                     continue
             elif isinstance(cmd, AssumeExpCmd):
                 new_cond = _rewrite_expr_lor_rc(cmd.condition, preds)
                 if new_cond is not cmd.condition:
-                    new_cmds.append(replace(cmd, condition=new_cond))
+                    new_cmds.append(canonicalize_cmd(replace(cmd, condition=new_cond)))
                     block_changed = True
                     continue
             elif isinstance(cmd, AssertCmd):
                 new_pred = _rewrite_expr_lor_rc(cmd.predicate, preds)
                 if new_pred is not cmd.predicate:
-                    new_cmds.append(replace(cmd, predicate=new_pred))
+                    new_cmds.append(canonicalize_cmd(replace(cmd, predicate=new_pred)))
+                    block_changed = True
+                    continue
+            new_cmds.append(cmd)
+        if block_changed:
+            new_blocks.append(
+                TacBlock(id=b.id, successors=list(b.successors), commands=new_cmds)
+            )
+            changed = True
+        else:
+            new_blocks.append(b)
+    return TacProgram(blocks=new_blocks) if changed else program
+
+
+def _is_dropped_def_ref(
+    expr: TacExpr,
+    *,
+    source_defs: Mapping[str, frozenset[BlockId]],
+    dead: frozenset[BlockId],
+) -> bool:
+    """True iff ``expr`` is a ``SymbolRef`` whose source-program def
+    sites are all in ``dead``.
+
+    Conservative: returns False for non-symbol expressions, for
+    symbols with at least one surviving def, and for symbols not in
+    ``source_defs`` (no info — treat as live)."""
+    if not isinstance(expr, SymbolRef):
+        return False
+    canon = _canon(expr.name)
+    defs = source_defs.get(canon)
+    if not defs:
+        return False
+    return defs.issubset(dead)
+
+
+def _rewrite_expr_drop_ite_arms(
+    expr: TacExpr,
+    *,
+    source_defs: Mapping[str, frozenset[BlockId]],
+    dead: frozenset[BlockId],
+) -> TacExpr:
+    """Recursively fold ``Ite(c, armT, armF)`` where one arm references
+    a symbol whose every source-program def is in ``dead``.
+
+    If both arms are dropped, returns the original expression — the
+    use site itself is dead and a higher-level pass should remove it,
+    but folding to an arbitrary value would be unsound."""
+    if not isinstance(expr, ApplyExpr):
+        return expr
+    new_args = tuple(
+        _rewrite_expr_drop_ite_arms(a, source_defs=source_defs, dead=dead)
+        for a in expr.args
+    )
+    if expr.op == "Ite" and len(new_args) == 3:
+        cond, arm_t, arm_f = new_args
+        t_dropped = _is_dropped_def_ref(arm_t, source_defs=source_defs, dead=dead)
+        f_dropped = _is_dropped_def_ref(arm_f, source_defs=source_defs, dead=dead)
+        if t_dropped and not f_dropped:
+            return arm_f
+        if f_dropped and not t_dropped:
+            return arm_t
+    if any(na is not oa for na, oa in zip(new_args, expr.args)):
+        return ApplyExpr(op=expr.op, args=list(new_args))
+    return expr
+
+
+def _drop_ite_arms_with_dropped_def(
+    program: TacProgram,
+    *,
+    source_defs: Mapping[str, frozenset[BlockId]],
+    dead: frozenset[BlockId],
+) -> TacProgram:
+    """Per-block rewrite: any Ite arm referencing a symbol whose
+    source-program defs are all dropped is folded out of the Ite.
+
+    Soundness: in the surviving program, no execution produces such a
+    symbol's value, so any Ite arm referencing it is on a dead branch.
+    The Ite folds to its surviving arm regardless of the condition
+    value — the user's claim is that the gating condition is already
+    correlated with the dropped path, so it would never select the
+    dead arm in any execution that reaches the Ite.
+
+    Run this between substitution and the rewriter cleanup pass.
+    Source-program def info must be captured before block removal so
+    we can recognize the now-dropped def sites."""
+    new_blocks: list[TacBlock] = []
+    changed = False
+    for b in program.blocks:
+        new_cmds: list[TacCmd] = []
+        block_changed = False
+        for cmd in b.commands:
+            if isinstance(cmd, AssignExpCmd):
+                new_rhs = _rewrite_expr_drop_ite_arms(
+                    cmd.rhs, source_defs=source_defs, dead=dead
+                )
+                if new_rhs is not cmd.rhs:
+                    new_cmds.append(canonicalize_cmd(replace(cmd, rhs=new_rhs)))
+                    block_changed = True
+                    continue
+            elif isinstance(cmd, AssumeExpCmd):
+                new_cond = _rewrite_expr_drop_ite_arms(
+                    cmd.condition, source_defs=source_defs, dead=dead
+                )
+                if new_cond is not cmd.condition:
+                    new_cmds.append(canonicalize_cmd(replace(cmd, condition=new_cond)))
+                    block_changed = True
+                    continue
+            elif isinstance(cmd, AssertCmd):
+                new_pred = _rewrite_expr_drop_ite_arms(
+                    cmd.predicate, source_defs=source_defs, dead=dead
+                )
+                if new_pred is not cmd.predicate:
+                    new_cmds.append(canonicalize_cmd(replace(cmd, predicate=new_pred)))
                     block_changed = True
                     continue
             new_cmds.append(cmd)
@@ -1291,6 +1427,7 @@ def apply(
     #      blocks that hosted them).
     #   7. Cleanup rewriter pass.
     defs = _build_definition_map(program)
+    source_def_blocks = _build_def_block_map(program)
     program = _drop_cfg_surgery(program, dead, global_binds, defs)
     program = _remove_blocks(program, dead)
 
@@ -1316,6 +1453,9 @@ def apply(
     program = _substitute_per_block(program, per_block)
     program = _drop_havoc_defs_for_dead_rcs(program, dead)
     program = _fold_lor_rc_self_dominance(program)
+    program = _drop_ite_arms_with_dropped_def(
+        program, source_defs=source_def_blocks, dead=dead
+    )
 
     if plan.cleanup:
         program = _cleanup(program)

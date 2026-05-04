@@ -19,9 +19,11 @@ from ctac.ast.nodes import (
 )
 from ctac.parse import parse_string
 from ctac.transform.pin import (
+    _build_def_block_map,
     _cleanup,
     _drop_cfg_surgery,
     _drop_havoc_defs_for_dead_rcs,
+    _drop_ite_arms_with_dropped_def,
     _fold_lor_rc_self_dominance,
     _remove_blocks,
     _substitute_in_program,
@@ -504,3 +506,153 @@ def test_lor_rc_no_fold_when_non_rc_operand():
     assert isinstance(assume, AssumeExpCmd)
     assert isinstance(assume.condition, ApplyExpr)
     assert assume.condition.op == "LOr"
+
+
+# ----------------------------- Ite arms with dropped defs
+
+
+def test_drop_ite_arm_when_else_def_is_dropped():
+    """Ite(c, M_live, M_dropped) -> M_live (else arm's def is in dead)."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [join] {\n"
+            "\t\tAssignExpCmd M_a 0x1\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock b Succ [join] {\n"
+            "\t\tAssignExpCmd M_b 0x2\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock join Succ [exit] {\n"
+            "\t\tAssignExpCmd M_join Ite(B0 M_a M_b)\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="B0:bool\n\tM_a:bytemap\n\tM_b:bytemap\n\tM_join:bytemap",
+        ),
+        path="<s>",
+    )
+    source_defs = _build_def_block_map(tac.program)
+    out = _drop_ite_arms_with_dropped_def(
+        tac.program, source_defs=source_defs, dead=frozenset({"b"})
+    )
+    join = next(b for b in out.blocks if b.id == "join")
+    assert join.commands[0].rhs == SymbolRef("M_a")
+
+
+def test_drop_ite_arm_when_then_def_is_dropped():
+    """Ite(c, M_dropped, M_live) -> M_live (then arm's def is in dead)."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [join] {\n"
+            "\t\tAssignExpCmd M_a 0x1\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock b Succ [join] {\n"
+            "\t\tAssignExpCmd M_b 0x2\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock join Succ [exit] {\n"
+            "\t\tAssignExpCmd M_join Ite(B0 M_a M_b)\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="B0:bool\n\tM_a:bytemap\n\tM_b:bytemap\n\tM_join:bytemap",
+        ),
+        path="<s>",
+    )
+    source_defs = _build_def_block_map(tac.program)
+    out = _drop_ite_arms_with_dropped_def(
+        tac.program, source_defs=source_defs, dead=frozenset({"a"})
+    )
+    join = next(b for b in out.blocks if b.id == "join")
+    assert join.commands[0].rhs == SymbolRef("M_b")
+
+
+def test_drop_ite_arm_no_fold_when_both_arms_live():
+    """No fold when both arms reference live-defined symbols."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [join] {\n"
+            "\t\tAssignExpCmd M_a 0x1\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock b Succ [join] {\n"
+            "\t\tAssignExpCmd M_b 0x2\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock join Succ [exit] {\n"
+            "\t\tAssignExpCmd M_join Ite(B0 M_a M_b)\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="B0:bool\n\tM_a:bytemap\n\tM_b:bytemap\n\tM_join:bytemap",
+        ),
+        path="<s>",
+    )
+    source_defs = _build_def_block_map(tac.program)
+    out = _drop_ite_arms_with_dropped_def(
+        tac.program, source_defs=source_defs, dead=frozenset()
+    )
+    join = next(b for b in out.blocks if b.id == "join")
+    rhs = join.commands[0].rhs
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+
+
+def test_drop_ite_arm_recurses_into_nested_ite():
+    """Inner Ite arm with dropped def folds; outer Ite then has the
+    surviving leaf in its else."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b, c] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [join] {\n"
+            "\t\tAssignExpCmd M_a 0x1\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock b Succ [join] {\n"
+            "\t\tAssignExpCmd M_b 0x2\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock c Succ [join] {\n"
+            "\t\tAssignExpCmd M_c 0x3\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock join Succ [exit] {\n"
+            "\t\tAssignExpCmd M_join Ite(B0 M_a Ite(B1 M_b M_c))\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="B0:bool\n\tB1:bool\n\tM_a:bytemap\n\tM_b:bytemap\n\t"
+                 "M_c:bytemap\n\tM_join:bytemap",
+        ),
+        path="<s>",
+    )
+    source_defs = _build_def_block_map(tac.program)
+    out = _drop_ite_arms_with_dropped_def(
+        tac.program, source_defs=source_defs, dead=frozenset({"c"})
+    )
+    join = next(b for b in out.blocks if b.id == "join")
+    rhs = join.commands[0].rhs
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+    assert rhs.args[0] == SymbolRef("B0")
+    assert rhs.args[1] == SymbolRef("M_a")
+    assert rhs.args[2] == SymbolRef("M_b")
