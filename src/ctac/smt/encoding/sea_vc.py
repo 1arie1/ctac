@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterator
 
 from ctac.analysis import analyze_dsa, analyze_use_before_def, extract_def_use
+from ctac.analysis.model import DefinitionSite
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
     ApplyExpr,
@@ -383,10 +384,15 @@ class SeaVcEncoder(SmtEncoder):
             )
 
         dynamic_symbols = {x.symbol for x in dsa.dynamic_assignments}
-        # Populated below (post `maps_with_store_def`) when
-        # ``--inline-scalars`` is set. Lookup-only inside ``emit_expr``,
-        # so an empty dict is the no-op.
+        # Inline-scalars state. ``inline_candidates`` is an eligibility
+        # set populated post-`maps_with_store_def`; ``inline_subs`` is
+        # the lazy memo of computed RHS strings. ``_inline_resolving``
+        # blocks recursion through cycles. All three are lookup-only
+        # inside ``emit_expr`` when ``--inline-scalars`` is off, so
+        # default behaviour is unchanged.
         inline_subs: dict[str, str] = {}
+        inline_candidates: dict[str, DefinitionSite] = {}
+        _inline_resolving: set[str] = set()
         raw_sorts = _parse_symbol_sorts(ctx.tac_file.symbol_table_text)
         symbols: set[str] = set(du.symbol_to_id)
         bool_hints: set[str] = set()
@@ -712,11 +718,30 @@ class SeaVcEncoder(SmtEncoder):
             if isinstance(expr, SymbolRef):
                 sym = canonical_symbol(expr.name, strip_var_suffixes=True)
                 if sym in inline_subs:
-                    # ``--inline-scalars``: the symbol's static def has
-                    # been substituted at every use site. The pre-pass
-                    # populated ``inline_subs[sym]`` with the SMT form
-                    # of the RHS already.
                     return inline_subs[sym], symbol_sort[sym]
+                if sym in inline_candidates and sym not in _inline_resolving:
+                    # ``--inline-scalars``: lazily compute the inlined
+                    # RHS on first reference. Recursive emit_expr will
+                    # transitively expand nested candidates (cycle-
+                    # safe via ``_inline_resolving``).
+                    cand_ds = inline_candidates[sym]
+                    cand_cmd = block_by_id(
+                        program, cand_ds.block_id
+                    ).commands[cand_ds.cmd_index]
+                    assert isinstance(cand_cmd, AssignExpCmd)
+                    _inline_resolving.add(sym)
+                    try:
+                        with _with_source(
+                            f"inline rhs of {sym} in block "
+                            f"{cand_ds.block_id} cmd {cand_ds.cmd_index}"
+                        ), _with_block(cand_ds.block_id):
+                            rhs_smt, _ = emit_expr(
+                                cand_cmd.rhs, expected_sort=symbol_sort[sym]
+                            )
+                    finally:
+                        _inline_resolving.discard(sym)
+                    inline_subs[sym] = rhs_smt
+                    return rhs_smt, symbol_sort[sym]
                 if sym not in symbol_term:
                     raise SmtEncodingError(f"unknown symbol in expression: {expr.name!r}")
                 return symbol_term[sym], symbol_sort[sym]
@@ -1058,12 +1083,12 @@ class SeaVcEncoder(SmtEncoder):
                 f"(declare-fun {symbol_term[mem_sym]} (Int) Int)"
             )
 
-        # Inline-scalars pre-pass. Populates ``inline_subs`` (already
-        # in scope, consulted by ``emit_expr``) for static
-        # ``AssignExpCmd`` defs whose RHS matches the conservative
-        # linear-shape filter. Iterating in DSA order means alias
-        # chains collapse transitively (later defs see earlier ones
-        # already in ``inline_subs`` via the SymbolRef branch).
+        # Inline-scalars pre-pass. Populates ``inline_candidates``
+        # (read by ``emit_expr`` to lazily compute the inlined RHS on
+        # first reference). Iterating in DSA order is *not* sufficient
+        # because ``du.definitions`` may visit a use-def edge with the
+        # use first; lazy resolution ensures any candidate's RHS sees
+        # earlier candidates resolved (or recurses through them).
         if ctx.inline_scalars:
             # Symbols referenced by name (not as TacExpr) cannot be
             # inlined safely: their declarations need to stay live
@@ -1095,14 +1120,7 @@ class SeaVcEncoder(SmtEncoder):
                     continue
                 if not _is_inlinable_rhs(cmd.rhs):
                     continue
-                with _with_source(
-                    f"inline rhs of {ds.symbol} in block {ds.block_id} "
-                    f"cmd {ds.cmd_index}"
-                ), _with_block(ds.block_id):
-                    rhs_smt, _ = emit_expr(
-                        cmd.rhs, expected_sort=symbol_sort[ds.symbol]
-                    )
-                inline_subs[ds.symbol] = rhs_smt
+                inline_candidates[ds.symbol] = ds
 
         # ──────────────────────────────────────────────────────────
         # Per-bytemap chain construction (only under --store-reduce).
@@ -1465,13 +1483,25 @@ class SeaVcEncoder(SmtEncoder):
             b = block_by_id(program, ds.block_id)
             cmd = b.commands[ds.cmd_index]
             if isinstance(cmd, AssignExpCmd):
-                if ctx.inline_scalars and ds.symbol in inline_subs:
+                if ctx.inline_scalars and ds.symbol in inline_candidates:
                     # Equality is unnecessary — every use of ``ds.symbol``
-                    # has been substituted by ``inline_subs[ds.symbol]``
-                    # via ``emit_expr``. Re-instantiate the narrow-range
-                    # axiom on the inlined RHS so the bv256-domain bound
-                    # stays in the SMT (now binding the substituted
-                    # expression rather than the now-eliminated symbol).
+                    # is substituted via ``emit_expr``'s lazy lookup of
+                    # ``inline_subs``. If the symbol was never referenced
+                    # the lazy resolution didn't run; force-resolve it
+                    # here so the narrow-range axiom (if applicable)
+                    # gets the inlined form. Wrapping in emit_expr also
+                    # ensures the rhs SMT is computed even when the
+                    # symbol has no surviving uses (a future cleanup
+                    # may drop such defs entirely).
+                    if ds.symbol not in inline_subs:
+                        with _with_source(
+                            f"inline rhs of {ds.symbol} in block "
+                            f"{ds.block_id} cmd {ds.cmd_index}"
+                        ), _with_block(ds.block_id):
+                            rhs_smt, _ = emit_expr(
+                                cmd.rhs, expected_sort=symbol_sort[ds.symbol]
+                            )
+                        inline_subs[ds.symbol] = rhs_smt
                     if _rhs_is_top_level_narrow(cmd.rhs):
                         add_narrow_range_if_bv256(
                             ds.symbol, inline_subs[ds.symbol]
@@ -1860,9 +1890,13 @@ class SeaVcEncoder(SmtEncoder):
 
         # Filter out declarations for inlined scalars: those symbols
         # have been substituted at every use site, so their
-        # ``declare-const`` lines would be orphans.
-        if ctx.inline_scalars and inline_subs:
-            inlined_decl_names = {symbol_term[s] for s in inline_subs}
+        # ``declare-const`` lines would be orphans. Use the candidate
+        # set (everything we *could* inline) rather than the lazy
+        # ``inline_subs`` cache — a candidate that was never
+        # referenced still gets its decl dropped because the static
+        # loop force-resolves it before reaching this point.
+        if ctx.inline_scalars and inline_candidates:
+            inlined_decl_names = {symbol_term[s] for s in inline_candidates}
             decls = [d for d in decls if d.name not in inlined_decl_names]
 
         return SmtScript(
