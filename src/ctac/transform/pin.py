@@ -48,6 +48,7 @@ from ctac.rewrite.rules.bool_fold import BOOL_CONST_FOLD
 from ctac.rewrite.rules.copyprop import CP_ALIAS
 from ctac.rewrite.rules.ite import ITE_BOOL, ITE_SAME
 from ctac.smt.encoding.path_skeleton import (
+    block_id_for_reachability_var,
     is_reachability_var,
     reachability_var_name,
 )
@@ -826,6 +827,100 @@ def _drop_havoc_defs_for_dead_rcs(
     return TacProgram(blocks=new_blocks) if changed else program
 
 
+def _try_lor_rc_self_dom(
+    expr: TacExpr, predecessors: frozenset[BlockId]
+) -> TacExpr | None:
+    """If ``expr`` is ``LOr(RC[B_1], ..., RC[B_k])`` and the operand
+    block IDs equal ``predecessors``, return ``_TRUE``. Else ``None``.
+
+    Soundness: every reaching execution at the use-site block W has
+    fired exactly one of W's live predecessors; if the disjunction
+    names them all, it's true at W.
+    """
+    if not isinstance(expr, ApplyExpr) or expr.op != "LOr":
+        return None
+    if not expr.args:
+        return None
+    operand_blocks: set[BlockId] = set()
+    for a in expr.args:
+        if not isinstance(a, SymbolRef):
+            return None
+        bid = block_id_for_reachability_var(_canon(a.name))
+        if bid is None:
+            return None
+        operand_blocks.add(bid)
+    if frozenset(operand_blocks) != predecessors:
+        return None
+    return _TRUE
+
+
+def _rewrite_expr_lor_rc(
+    expr: TacExpr, predecessors: frozenset[BlockId]
+) -> TacExpr:
+    """Recursively apply :func:`_try_lor_rc_self_dom` to every LOr in
+    ``expr``. Returns ``expr`` unchanged if nothing fires."""
+    if isinstance(expr, ApplyExpr):
+        new_args = tuple(_rewrite_expr_lor_rc(a, predecessors) for a in expr.args)
+        if expr.op == "LOr":
+            folded = _try_lor_rc_self_dom(
+                ApplyExpr(op=expr.op, args=list(new_args)), predecessors
+            )
+            if folded is not None:
+                return folded
+        if any(na is not oa for na, oa in zip(new_args, expr.args)):
+            return ApplyExpr(op=expr.op, args=list(new_args))
+    return expr
+
+
+def _fold_lor_rc_self_dominance(program: TacProgram) -> TacProgram:
+    """Self-dominance LOr-of-RC fold: per-block rewrite of
+    ``LOr(RC[B_1], ..., RC[B_k])`` to ``true`` when ``{B_i}`` equals the
+    block's live predecessor set in the post-drop CFG.
+
+    Run this between substitution (which folds RC=false for dropped
+    blocks) and the rewriter cleanup pass (which then propagates
+    ``Ite(true, x, _) → x``).
+    """
+    cfg = _cfg_digraph(program)
+    new_blocks: list[TacBlock] = []
+    changed = False
+    for b in program.blocks:
+        preds = frozenset(cfg.predecessors(b.id))
+        if not preds:
+            new_blocks.append(b)
+            continue
+        new_cmds: list[TacCmd] = []
+        block_changed = False
+        for cmd in b.commands:
+            if isinstance(cmd, AssignExpCmd):
+                new_rhs = _rewrite_expr_lor_rc(cmd.rhs, preds)
+                if new_rhs is not cmd.rhs:
+                    new_cmds.append(replace(cmd, rhs=new_rhs))
+                    block_changed = True
+                    continue
+            elif isinstance(cmd, AssumeExpCmd):
+                new_cond = _rewrite_expr_lor_rc(cmd.condition, preds)
+                if new_cond is not cmd.condition:
+                    new_cmds.append(replace(cmd, condition=new_cond))
+                    block_changed = True
+                    continue
+            elif isinstance(cmd, AssertCmd):
+                new_pred = _rewrite_expr_lor_rc(cmd.predicate, preds)
+                if new_pred is not cmd.predicate:
+                    new_cmds.append(replace(cmd, predicate=new_pred))
+                    block_changed = True
+                    continue
+            new_cmds.append(cmd)
+        if block_changed:
+            new_blocks.append(
+                TacBlock(id=b.id, successors=list(b.successors), commands=new_cmds)
+            )
+            changed = True
+        else:
+            new_blocks.append(b)
+    return TacProgram(blocks=new_blocks) if changed else program
+
+
 _CLEANUP_RULES = (BOOL_CONST_FOLD, ITE_BOOL, ITE_SAME, CP_ALIAS)
 
 
@@ -1220,6 +1315,7 @@ def apply(
 
     program = _substitute_per_block(program, per_block)
     program = _drop_havoc_defs_for_dead_rcs(program, dead)
+    program = _fold_lor_rc_self_dominance(program)
 
     if plan.cleanup:
         program = _cleanup(program)

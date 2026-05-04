@@ -22,6 +22,7 @@ from ctac.transform.pin import (
     _cleanup,
     _drop_cfg_surgery,
     _drop_havoc_defs_for_dead_rcs,
+    _fold_lor_rc_self_dominance,
     _remove_blocks,
     _substitute_in_program,
     _used_block_ids,
@@ -369,3 +370,137 @@ def test_used_block_ids_collects_jump_targets():
     )
     used = _used_block_ids(tac.program)
     assert used == {"a", "b"}
+
+
+# ----------------------------- LOr-of-RC self-dominance fold
+
+
+def test_lor_rc_folds_when_operands_match_predecessors():
+    """LOr(RC[a], RC[b]) at join with preds={a,b} folds to true."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [join] {\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock b Succ [join] {\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock join Succ [exit] {\n"
+            "\t\tAssumeExpCmd "
+            "LOr(ReachabilityCertoraa ReachabilityCertorab)\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n"
+        ),
+        path="<s>",
+    )
+    out = _fold_lor_rc_self_dominance(tac.program)
+    join = next(b for b in out.blocks if b.id == "join")
+    assume = join.commands[0]
+    assert isinstance(assume, AssumeExpCmd)
+    assert assume.condition == T
+
+
+def test_lor_rc_no_fold_when_operands_strict_subset():
+    """LOr(RC[a]) at join with preds={a,b} does not fold (could be false on b path)."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [join] {\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock b Succ [join] {\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock join Succ [exit] {\n"
+            "\t\tAssumeExpCmd "
+            "LOr(ReachabilityCertoraa ReachabilityCertoraa)\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n"
+        ),
+        path="<s>",
+    )
+    out = _fold_lor_rc_self_dominance(tac.program)
+    join = next(b for b in out.blocks if b.id == "join")
+    assume = join.commands[0]
+    assert isinstance(assume, AssumeExpCmd)
+    assert isinstance(assume.condition, ApplyExpr)
+    assert assume.condition.op == "LOr"
+
+
+def test_lor_rc_folds_inside_nested_ite():
+    """LOr inside an Ite gate is rewritten in-place; outer expression
+    structure preserved."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [join] {\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock b Succ [join] {\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock join Succ [exit] {\n"
+            "\t\tAssumeExpCmd "
+            "Ite(LOr(ReachabilityCertoraa ReachabilityCertorab) B0 B1)\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n"
+        ),
+        path="<s>",
+    )
+    out = _fold_lor_rc_self_dominance(tac.program)
+    join = next(b for b in out.blocks if b.id == "join")
+    assume = join.commands[0]
+    assert isinstance(assume, AssumeExpCmd)
+    # Outer Ite preserved; gate became true.
+    assert isinstance(assume.condition, ApplyExpr)
+    assert assume.condition.op == "Ite"
+    assert assume.condition.args[0] == T
+    assert assume.condition.args[1] == SymbolRef("B0")
+    assert assume.condition.args[2] == SymbolRef("B1")
+
+
+def test_lor_rc_no_fold_when_non_rc_operand():
+    """LOr(RC[a], B0) — non-RC operand disqualifies the rule."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [join] {\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock b Succ [join] {\n"
+            "\t\tJumpCmd join\n"
+            "\t}\n"
+            "\tBlock join Succ [exit] {\n"
+            "\t\tAssumeExpCmd LOr(ReachabilityCertoraa B0)\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n"
+        ),
+        path="<s>",
+    )
+    out = _fold_lor_rc_self_dominance(tac.program)
+    join = next(b for b in out.blocks if b.id == "join")
+    assume = join.commands[0]
+    assert isinstance(assume, AssumeExpCmd)
+    assert isinstance(assume.condition, ApplyExpr)
+    assert assume.condition.op == "LOr"
