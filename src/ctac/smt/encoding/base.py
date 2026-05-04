@@ -71,6 +71,24 @@ class EncoderContext:
     havoc-range handler); other bv widths are silent. Default False
     preserves the historical encoding, which discards the narrow and
     leaves the LHS unconstrained beyond its sort."""
+    bv_add_sub_axiom: str = "no-mod"
+    """Axiomatization variant for TAC bv256 ``Add`` and ``Sub`` operators.
+
+    - ``"no-mod"`` (default): emit single-wrap ITE form. For
+      ``Add(a, b)``:
+      ``(ite (<= (+ a b) BV256_MAX) (+ a b) (- (+ a b) BV256_MOD))``.
+      For ``Sub(a, b)``:
+      ``(ite (>= (- a b) 0) (- a b) (+ (- a b) BV256_MOD))``. Sound
+      because operand domain ``[0, BV256_MAX]`` makes single wrap
+      sufficient (Sub form is 2's-complement-consistent: ``a - b = -1``
+      resolves to ``BV256_MAX``). Both arms are linear in the operands;
+      LRA / solve-eqs / ctx-simplify push through.
+    - ``"mod"`` (legacy): emit ``(mod (op a b) BV256_MOD)``. The opaque
+      modulus operator was the previous default; kept for byte-identical
+      reproduction of older outputs and A/B comparisons.
+
+    Affects only TAC ``Add`` and ``Sub``. TAC ``Mul`` (multi-wrap) and
+    TAC ``IntAdd`` / ``IntSub`` (unwrapped) are unaffected."""
     store_reduce: bool = False
     """If True, build a per-bytemap chain data structure during encoding
     and use it to (1) prune shadowed Store entries when a later Store

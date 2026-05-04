@@ -736,11 +736,43 @@ class SeaVcEncoder(SmtEncoder):
                     a2, _ = emit_expr(expr.args[1], expected_sort="Int")
                     smt = {"Lt": "<", "Le": "<=", "Gt": ">", "Ge": ">="}[op]
                     return f"({smt} {a1} {a2})", "Bool"
-                if op in {"Add", "Sub", "Mul"}:
+                if op in {"Add", "Sub"}:
+                    # bv256-wrap arithmetic. Single-wrap ITE form (default,
+                    # ``bv_add_sub_axiom == "no-mod"``) is sound because both
+                    # operands are in [0, BV256_MAX], so Add wraps at most
+                    # once upward and Sub at most once downward; both arms
+                    # of the ITE are linear in the operands, exposing the
+                    # arithmetic to LRA / solve-eqs / ctx-simplify. The
+                    # ``"mod"`` legacy form keeps the prior opaque modulus
+                    # wrapping for byte-identical comparison runs.
                     a1, _ = emit_expr(expr.args[0], expected_sort="Int")
                     a2, _ = emit_expr(expr.args[1], expected_sort="Int")
-                    smt = {"Add": "+", "Sub": "-", "Mul": "*"}[op]
-                    return f"(mod ({smt} {a1} {a2}) BV256_MOD)", "Int"
+                    smt = "+" if op == "Add" else "-"
+                    raw = f"({smt} {a1} {a2})"
+                    if ctx.bv_add_sub_axiom == "mod":
+                        return f"(mod {raw} BV256_MOD)", "Int"
+                    if op == "Add":
+                        # No-overflow side OR single wrap upward.
+                        return (
+                            f"(ite (<= {raw} BV256_MAX) {raw} (- {raw} BV256_MOD))",
+                            "Int",
+                        )
+                    # Sub: 2's-complement-consistent. (- a b) ∈ [-BV256_MAX,
+                    # BV256_MAX]; negative case is ``+ BV256_MOD`` so e.g.
+                    # ``a - b == -1`` resolves to ``BV256_MAX``.
+                    return (
+                        f"(ite (>= {raw} 0) {raw} (+ {raw} BV256_MOD))",
+                        "Int",
+                    )
+                if op == "Mul":
+                    # bv256-wrap multiplication can produce many wraps;
+                    # the single-wrap-ITE shape is unsound here. Stays on
+                    # the opaque modulus form unconditionally (a future
+                    # multi-variant axiomatization for Mul would slot in
+                    # the same way Add/Sub now do).
+                    a1, _ = emit_expr(expr.args[0], expected_sort="Int")
+                    a2, _ = emit_expr(expr.args[1], expected_sort="Int")
+                    return f"(mod (* {a1} {a2}) BV256_MOD)", "Int"
                 if op in {"Div", "Mod", "IntAdd", "IntSub", "IntMul", "IntDiv", "IntMod"}:
                     a1, _ = emit_expr(expr.args[0], expected_sort="Int")
                     a2, _ = emit_expr(expr.args[1], expected_sort="Int")

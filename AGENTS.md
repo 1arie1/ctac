@@ -312,6 +312,17 @@ Prompt template:
     transitive chain, but shorter). `fwd-edge` / `bwd-edge`
     — introduce per-edge Bool variables `e_<i>_<j>` and use
     a biconditional block-existence over those variables.
+  - bv256 Add/Sub axiomatization:
+    `--bv-add-sub-no-mod-axiom` (default) emits a single-wrap ITE
+    for TAC `Add` and `Sub`:
+    `(ite (<= (+ a b) BV256_MAX) (+ a b) (- (+ a b) BV256_MOD))`
+    for `Add` and the symmetric 2's-complement form for `Sub`.
+    Both arms are linear in the operands, so LRA / solve-eqs /
+    ctx-simplify can push through. `--bv-add-sub-mod-axiom`
+    recovers the prior opaque `(mod (op a b) BV256_MOD)` form for
+    A/B comparison or byte-identical legacy output. Affects only
+    `Add`/`Sub`; `Mul` (multi-wrap) and `IntAdd`/`IntSub`
+    (unwrapped) are unchanged.
   - Bytemap Store-over-Store reduction: `--store-reduce` builds a
     per-map chain data structure during encoding. Prunes shadowed
     `Store` entries when a later Store at the same key supersedes

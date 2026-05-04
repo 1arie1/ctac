@@ -197,9 +197,14 @@ def test_guard_statics_on_leaves_entry_static_unguarded() -> None:
     # Entry block guard reduces to `true`, so `implies` short-circuits
     # the wrapper away — entry-block statics never appear under
     # `(=> BLK_entry ...)`. They are still bundled into a single
-    # `(and ...)` conjunction (the per-block grouping shape).
+    # `(and ...)` conjunction (the per-block grouping shape). Use the
+    # legacy `mod` axiom variant here so the conjunction shape is
+    # checked against a stable form — the orthogonal default-axiom
+    # change ("no-mod") is covered by `test_bv_add_sub_axiom_*`.
     tac = parse_string(TAC_SMOKE_OPS, path="<string>")
-    rendered = render_smt_script(build_vc(tac, guard_statics=True))
+    rendered = render_smt_script(
+        build_vc(tac, guard_statics=True, bv_add_sub_axiom="mod")
+    )
     assert "(=> BLK_entry" not in rendered
     assert (
         "(assert (and (= x 1) (= y (mod (+ x 2) BV256_MOD)) (= b (>= y 3))))"
@@ -728,5 +733,110 @@ def test_guard_axioms_does_not_guard_leaf_bv256_range_axiom() -> None:
         rendered = render_smt_script(build_vc(tac, guard_axioms=guard))
         assert "(assert (<= 0 (M 16) BV256_MAX))" in rendered
         assert "(=> BLK_ok (<= 0 (M 16) BV256_MAX))" not in rendered
+
+
+# bv_add_sub axiom variant — Add and Sub on bv256 lower to either an
+# opaque ``(mod (op a b) BV256_MOD)`` (legacy) or a single-wrap ITE
+# whose two arms are linear in the operands (default, "no-mod"). The
+# fixture below uses both Add and Sub plus an IntAdd (unwrapped) and a
+# Mul (multi-wrap; never affected by the option).
+TAC_ADD_SUB_MUL_INT = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+\ty:bv256
+\ti:int
+\tj:int
+\ta:bv256
+\ts:bv256
+\tm:bv256
+\tn:int
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignExpCmd x 0x11
+\t\tAssignExpCmd y 0x3
+\t\tAssignExpCmd i 0x11(int)
+\t\tAssignExpCmd j 0x3(int)
+\t\tAssignExpCmd a Add(x y)
+\t\tAssignExpCmd s Sub(x y)
+\t\tAssignExpCmd m Mul(x y)
+\t\tAssignExpCmd n IntAdd(i j)
+\t\tAssignExpCmd ok true
+\t\tAssertCmd ok "arith"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_bv_add_sub_axiom_default_is_no_mod() -> None:
+    # Default emits single-wrap ITE for Add and Sub.
+    tac = parse_string(TAC_ADD_SUB_MUL_INT, path="<string>")
+    rendered = render_smt_script(build_vc(tac))
+    assert (
+        "(assert (= a (ite (<= (+ x y) BV256_MAX) (+ x y) (- (+ x y) BV256_MOD))))"
+        in rendered
+    )
+    assert (
+        "(assert (= s (ite (>= (- x y) 0) (- x y) (+ (- x y) BV256_MOD))))"
+        in rendered
+    )
+    # Legacy mod-form for Add/Sub must NOT appear.
+    assert "(mod (+ " not in rendered
+    assert "(mod (- " not in rendered
+
+
+def test_bv_add_sub_axiom_mod_emits_legacy_form() -> None:
+    # Opt-in legacy `mod` axiom recovers the previous opaque form.
+    tac = parse_string(TAC_ADD_SUB_MUL_INT, path="<string>")
+    rendered = render_smt_script(build_vc(tac, bv_add_sub_axiom="mod"))
+    assert "(assert (= a (mod (+ x y) BV256_MOD)))" in rendered
+    assert "(assert (= s (mod (- x y) BV256_MOD)))" in rendered
+    # The new ITE form must NOT appear under legacy.
+    assert "(ite (<= (+ x y) BV256_MAX)" not in rendered
+    assert "(ite (>= (- x y) 0)" not in rendered
+
+
+def test_bv_add_sub_axiom_does_not_affect_mul() -> None:
+    # TAC Mul always lowers to `(mod (* a b) BV256_MOD)`; the new
+    # variant doesn't apply (single-wrap insufficient for Mul).
+    tac = parse_string(TAC_ADD_SUB_MUL_INT, path="<string>")
+    for variant in ("no-mod", "mod"):
+        rendered = render_smt_script(build_vc(tac, bv_add_sub_axiom=variant))
+        assert "(assert (= m (mod (* x y) BV256_MOD)))" in rendered, variant
+
+
+def test_bv_add_sub_axiom_does_not_affect_int_add() -> None:
+    # TAC IntAdd is unwrapped Int-arithmetic and always emits `(+ i j)`
+    # regardless of the bv-axiom variant.
+    tac = parse_string(TAC_ADD_SUB_MUL_INT, path="<string>")
+    for variant in ("no-mod", "mod"):
+        rendered = render_smt_script(build_vc(tac, bv_add_sub_axiom=variant))
+        assert "(assert (= n (+ i j)))" in rendered, variant
+
+
+def test_bv_add_sub_axiom_invalid_value_rejected() -> None:
+    tac = parse_string(TAC_ADD_SUB_MUL_INT, path="<string>")
+    with pytest.raises(SmtEncodingError, match="unknown bv_add_sub_axiom"):
+        build_vc(tac, bv_add_sub_axiom="bogus")
+
+
+def test_bv_add_sub_axiom_legacy_mode_byte_identical_pre_change_shape() -> None:
+    # Sanity: under `bv_add_sub_axiom="mod"`, the wrap form for Add and
+    # Sub is byte-identical to the prior implementation. The fixture
+    # below uses the same shape historic tests pinned.
+    tac = parse_string(TAC_SMOKE_OPS, path="<string>")
+    rendered = render_smt_script(build_vc(tac, bv_add_sub_axiom="mod"))
+    assert "(assert (= y (mod (+ x 2) BV256_MOD)))" in rendered
 
 

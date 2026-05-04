@@ -215,6 +215,20 @@ def smt_cmd(
             "axiom; other bv widths are silent. Default off."
         ),
     ),
+    bv_add_sub_mod_axiom: bool = typer.Option(
+        False,
+        "--bv-add-sub-mod-axiom/--bv-add-sub-no-mod-axiom",
+        help=(
+            "Axiomatization for TAC bv256 Add and Sub. "
+            "--bv-add-sub-no-mod-axiom (default): single-wrap ITE form, "
+            "exposes both arms as linear arithmetic so LRA / solve-eqs "
+            "/ ctx-simplify can push through. "
+            "--bv-add-sub-mod-axiom: legacy `(mod (op a b) BV256_MOD)` "
+            "form, kept for byte-identical reproduction of older outputs "
+            "and A/B comparisons. Mul (multi-wrap) and IntAdd / IntSub "
+            "(unwrapped) are unaffected."
+        ),
+    ),
     store_reduce: bool = typer.Option(
         False,
         "--store-reduce/--no-store-reduce",
@@ -262,6 +276,7 @@ def smt_cmd(
             guard_axioms=guard_axioms,
             cfg_encoding=cfg_encoding,
             narrow_range=narrow_range,
+            bv_add_sub_axiom="mod" if bv_add_sub_mod_axiom else "no-mod",
             store_reduce=store_reduce,
         )
         smt_text = render_smt_script(script)

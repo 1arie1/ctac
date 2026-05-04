@@ -26,6 +26,9 @@ from ctac.splitcrit import split_critical_edges
 register_encoder("sea_vc", SeaVcEncoder)
 
 
+_BV_ADD_SUB_AXIOM_VARIANTS = ("no-mod", "mod")
+
+
 def build_vc(
     tac_file: TacFile,
     *,
@@ -37,8 +40,14 @@ def build_vc(
     guard_axioms: bool = False,
     cfg_encoding: str = "bwd0",
     narrow_range: bool = False,
+    bv_add_sub_axiom: str = "no-mod",
     store_reduce: bool = False,
 ) -> SmtScript:
+    if bv_add_sub_axiom not in _BV_ADD_SUB_AXIOM_VARIANTS:
+        known = ", ".join(_BV_ADD_SUB_AXIOM_VARIANTS)
+        raise SmtEncodingError(
+            f"unknown bv_add_sub_axiom {bv_add_sub_axiom!r}; available: {known}"
+        )
     # Pre-pass: break any critical edges so sea_vc's predecessor
     # exclusivity stays sound. Idempotent when the input is already clean.
     split = split_critical_edges(tac_file.program)
@@ -56,6 +65,7 @@ def build_vc(
             guard_axioms=guard_axioms,
             cfg_encoding=cfg_encoding,
             narrow_range=narrow_range,
+            bv_add_sub_axiom=bv_add_sub_axiom,
             store_reduce=store_reduce,
         )
     )

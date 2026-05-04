@@ -481,11 +481,36 @@ def test_sea_vc_mod_and_intmod_are_plain_int_mod() -> None:
 
 
 def test_sea_vc_add_sub_mul_are_bv256_modulo() -> None:
+    # Legacy `mod` axiom variant: bv256-wrap arith uses opaque
+    # ``(mod (op a b) BV256_MOD)`` for Add/Sub/Mul. New default is
+    # ``"no-mod"`` (single-wrap ITE for Add/Sub); test it separately.
     tac = parse_string(TAC_BV_ARITH, path="<string>")
-    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    rendered = render_smt_script(
+        build_vc(tac, encoding="sea_vc", bv_add_sub_axiom="mod")
+    )
     assert "(assert (= a (mod (+ x y) BV256_MOD)))" in rendered
     assert "(assert (= s (mod (- x y) BV256_MOD)))" in rendered
     assert "(assert (= m (mod (* x y) BV256_MOD)))" in rendered
+
+
+def test_sea_vc_add_sub_default_is_single_wrap_ite() -> None:
+    # Default (``no-mod``) emits single-wrap ITE for Add/Sub.
+    # Mul is unaffected — it stays on the opaque mod form because
+    # multiplication can wrap many times.
+    tac = parse_string(TAC_BV_ARITH, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    assert (
+        "(assert (= a (ite (<= (+ x y) BV256_MAX) (+ x y) (- (+ x y) BV256_MOD))))"
+        in rendered
+    )
+    assert (
+        "(assert (= s (ite (>= (- x y) 0) (- x y) (+ (- x y) BV256_MOD))))"
+        in rendered
+    )
+    assert "(assert (= m (mod (* x y) BV256_MOD)))" in rendered
+    # Legacy mod-form for Add/Sub must NOT appear under default.
+    assert "(mod (+ " not in rendered
+    assert "(mod (- " not in rendered
 
 
 def test_sea_vc_simplifies_dynamic_bool_ite_leafs() -> None:
