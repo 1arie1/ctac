@@ -99,6 +99,31 @@ class EncoderContext:
     into the chain that reads them). Default False keeps the
     historical eager-emit shape unchanged. Sound by the array
     Store/Select axiom."""
+    inline_scalars: bool = False
+    """If True, **static** ``AssignExpCmd`` defs (single-def per DSA,
+    non-dynamic, non-map-store) whose RHS matches a conservative
+    "simple linear" shape are inlined at every use site rather than
+    emitted as ``(= R rhs)``. Off by default — inlining can move
+    terms into nonlinear-arithmetic contexts where they hurt the
+    NLA tactic and may cause subexpression duplication.
+
+    The filter accepts (after peeling ``safe_math_narrow_bvN``
+    wrappers, which the encoder already treats as identity):
+    ``ConstExpr``, ``SymbolRef``, and binary ``Add`` / ``Sub`` /
+    ``IntAdd`` / ``IntSub`` / ``Mul`` / ``IntMul`` with at least one
+    ``ConstExpr`` operand and the other a ``SymbolRef``.
+
+    Specifically excluded: dynamic (DSA-merged) defs, havoc defs,
+    map-store defs, ``Mul`` / ``Div`` / ``Mod`` between two non-const
+    operands, ``Ite``, deferred-axiom UFs (``int_mul_div``,
+    ``int_ceil_div``, ``bv256_xor``), arbitrary nested ``Apply`` calls
+    other than ``safe_math_narrow``, and any expression whose
+    operands aren't bare ``ConstExpr`` or ``SymbolRef`` — to keep
+    substitution one level deep and bound duplication.
+
+    Under ``--narrow-range``, the bv256-domain bound is preserved
+    by re-instantiating it on the inlined RHS rather than the now-
+    eliminated symbol."""
 
 
 class SmtEncoder(Protocol):

@@ -327,6 +327,22 @@ Prompt template:
     A/B comparison or byte-identical legacy output. Affects only
     `Add`/`Sub`; `Mul` (multi-wrap) and `IntAdd`/`IntSub`
     (unwrapped) are unchanged.
+  - Scalar inlining: `--inline-scalars` substitutes the RHS of
+    static `AssignExpCmd` defs at every use site for a conservative
+    set of "simple linear" shapes — `ConstExpr`, `SymbolRef` (alias),
+    binary `Add`/`Sub`/`IntAdd`/`IntSub`/`Mul`/`IntMul` with at
+    least one constant operand and a `SymbolRef` other operand,
+    optionally wrapped by `safe_math_narrow_bvN`. Equality and
+    `declare-const` for the inlined symbol are dropped. Useful for
+    eliminating named-index intermediates so EUF and LIA see
+    offsets directly in `M(_)` reads. Skips dynamic (DSA-merged)
+    defs, havocs, map symbols, JumpiCmd conditions, and any RHS
+    with non-`SymbolRef` / non-`ConstExpr` operand or a non-linear
+    op between two non-consts. Under `--narrow-range` the bv256-
+    domain axiom is re-instantiated on the inlined RHS rather than
+    the eliminated symbol. Off by default — inlining can move
+    terms into NL contexts (harming the NLA tactic) or duplicate
+    subexpressions.
   - Bytemap Store-over-Store reduction: `--store-reduce` builds a
     per-map chain data structure during encoding. Prunes shadowed
     `Store` entries when a later Store at the same key supersedes

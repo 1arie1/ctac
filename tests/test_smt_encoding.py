@@ -1040,3 +1040,377 @@ def test_bv_add_sub_axiom_legacy_mode_byte_identical_pre_change_shape() -> None:
     assert "(assert (= y (mod (+ x 2) BV256_MOD)))" in rendered
 
 
+
+
+# ----------------------------- inline-scalars
+
+# Block `ok` has a static `R1 = narrow(IntAdd(0x18, R0))` and reads
+# `M[R1]`. Used to check that `--inline-scalars` substitutes the rhs at
+# the index site and drops both the equality and the declaration.
+TAC_INLINE_NARROW_INDEX = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tcond:bool
+\tR0:bv256
+\tR1:bv256
+\tM:bytemap
+\tx:bv256
+\tb:bool
+}
+Program {
+\tBlock entry Succ [ok, bad] {
+\t\tAssignHavocCmd R0
+\t\tAssignHavocCmd M
+\t\tAssignExpCmd cond true
+\t\tJumpiCmd ok bad cond
+\t}
+\tBlock ok Succ [] {
+\t\tAssignExpCmd R1 Apply(safe_math_narrow_bv256:bif IntAdd(0x18 R0))
+\t\tAssignExpCmd x Select(M R1)
+\t\tAssignExpCmd b Eq(x 0x0)
+\t\tAssertCmd b "ok"
+\t}
+\tBlock bad Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_inline_scalars_default_off_is_byte_identical() -> None:
+    tac = parse_string(TAC_INLINE_NARROW_INDEX, path="<string>")
+    a = render_smt_script(build_vc(tac))
+    b = render_smt_script(build_vc(tac, inline_scalars=False))
+    assert a == b
+
+
+def test_inline_scalars_on_inlines_narrow_intadd_index() -> None:
+    """User's specific case: `R = narrow(IntAdd(const, base)); R' = M[R]`
+    should produce `(M (+ const base))` directly, no `R` decl/eq."""
+    tac = parse_string(TAC_INLINE_NARROW_INDEX, path="<string>")
+    rendered = render_smt_script(build_vc(tac, inline_scalars=True))
+    assert "(M (+ 24 R0))" in rendered
+    # No equality binding R1, no declare-const for R1.
+    assert "(= R1 " not in rendered
+    assert "(declare-const R1 " not in rendered
+
+
+def test_inline_scalars_on_inlines_const_offset_index() -> None:
+    """No-narrow variant: bare `R = IntAdd(const, base); R' = M[R]`."""
+    tac_text = TAC_INLINE_NARROW_INDEX.replace(
+        "Apply(safe_math_narrow_bv256:bif IntAdd(0x18 R0))",
+        "IntAdd(0x18 R0)",
+    )
+    tac = parse_string(tac_text, path="<string>")
+    rendered = render_smt_script(build_vc(tac, inline_scalars=True))
+    assert "(M (+ 24 R0))" in rendered
+    assert "(= R1 " not in rendered
+
+
+TAC_INLINE_ALIAS = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tcond:bool
+\tR0:bv256
+\tR1:bv256
+\tM:bytemap
+\tx:bv256
+\tb:bool
+}
+Program {
+\tBlock entry Succ [ok, bad] {
+\t\tAssignHavocCmd R0
+\t\tAssignHavocCmd M
+\t\tAssignExpCmd cond true
+\t\tJumpiCmd ok bad cond
+\t}
+\tBlock ok Succ [] {
+\t\tAssignExpCmd R1 R0
+\t\tAssignExpCmd x Select(M R1)
+\t\tAssignExpCmd b Eq(x 0x0)
+\t\tAssertCmd b "ok"
+\t}
+\tBlock bad Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_inline_scalars_on_inlines_alias() -> None:
+    tac = parse_string(TAC_INLINE_ALIAS, path="<string>")
+    rendered = render_smt_script(build_vc(tac, inline_scalars=True))
+    assert "(M R0)" in rendered
+    assert "(declare-const R1 " not in rendered
+    assert "(= R1 R0)" not in rendered
+
+
+# `R = Mul(R0, R0)` — nonlinear (Mul between two non-consts). Filter
+# must reject so `R` is NOT inlined.
+TAC_INLINE_NONLINEAR = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tcond:bool
+\tR0:bv256
+\tR1:bv256
+\tx:bv256
+\tb:bool
+}
+Program {
+\tBlock entry Succ [ok, bad] {
+\t\tAssignHavocCmd R0
+\t\tAssignExpCmd cond true
+\t\tJumpiCmd ok bad cond
+\t}
+\tBlock ok Succ [] {
+\t\tAssignExpCmd R1 Mul(R0 R0)
+\t\tAssignExpCmd x R1
+\t\tAssignExpCmd b Eq(x 0x0)
+\t\tAssertCmd b "ok"
+\t}
+\tBlock bad Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_inline_scalars_on_skips_nonlinear() -> None:
+    tac = parse_string(TAC_INLINE_NONLINEAR, path="<string>")
+    rendered = render_smt_script(build_vc(tac, inline_scalars=True))
+    # R1 stays declared and equality stays in the SMT.
+    assert "(declare-const R1 " in rendered
+    assert "(= R1 " in rendered
+
+
+def test_inline_scalars_on_inlines_const_scaled_mul() -> None:
+    """`Mul(const, var)` is linear scaling; should be inlined."""
+    tac_text = TAC_INLINE_NONLINEAR.replace(
+        "Mul(R0 R0)", "Mul(0x4 R0)"
+    )
+    tac = parse_string(tac_text, path="<string>")
+    rendered = render_smt_script(build_vc(tac, inline_scalars=True))
+    # x is itself an alias R1, so x inlines to (* 4 R0) too.
+    assert "(* 4 R0)" in rendered
+    assert "(declare-const R1 " not in rendered
+
+
+# `R = narrow(Mul(R0, R0))` — narrow over nonlinear inner. Peeling
+# narrow exposes Mul(R0, R0), which fails the linear filter.
+TAC_INLINE_NARROW_OVER_NL = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tcond:bool
+\tR0:bv256
+\tR1:bv256
+\tx:bv256
+\tb:bool
+}
+Program {
+\tBlock entry Succ [ok, bad] {
+\t\tAssignHavocCmd R0
+\t\tAssignExpCmd cond true
+\t\tJumpiCmd ok bad cond
+\t}
+\tBlock ok Succ [] {
+\t\tAssignExpCmd R1 Apply(safe_math_narrow_bv256:bif Mul(R0 R0))
+\t\tAssignExpCmd x R1
+\t\tAssignExpCmd b Eq(x 0x0)
+\t\tAssertCmd b "ok"
+\t}
+\tBlock bad Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_inline_scalars_on_skips_narrow_over_nonlinear() -> None:
+    tac = parse_string(TAC_INLINE_NARROW_OVER_NL, path="<string>")
+    rendered = render_smt_script(build_vc(tac, inline_scalars=True))
+    assert "(declare-const R1 " in rendered
+    assert "(= R1 " in rendered
+
+
+# Alias chain: `R1 = IntAdd(0x8, R0); R2 = R1; R3 = M[R2]`. Expected:
+# the inner reference at the M(_) call collapses transitively to
+# `(+ 8 R0)`.
+TAC_INLINE_ALIAS_CHAIN = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tcond:bool
+\tR0:bv256
+\tR1:bv256
+\tR2:bv256
+\tM:bytemap
+\tx:bv256
+\tb:bool
+}
+Program {
+\tBlock entry Succ [ok, bad] {
+\t\tAssignHavocCmd R0
+\t\tAssignHavocCmd M
+\t\tAssignExpCmd cond true
+\t\tJumpiCmd ok bad cond
+\t}
+\tBlock ok Succ [] {
+\t\tAssignExpCmd R1 IntAdd(0x8 R0)
+\t\tAssignExpCmd R2 R1
+\t\tAssignExpCmd x Select(M R2)
+\t\tAssignExpCmd b Eq(x 0x0)
+\t\tAssertCmd b "ok"
+\t}
+\tBlock bad Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_inline_scalars_on_chains_through_aliases() -> None:
+    tac = parse_string(TAC_INLINE_ALIAS_CHAIN, path="<string>")
+    rendered = render_smt_script(build_vc(tac, inline_scalars=True))
+    # R1, R2 both eliminated; the M lookup uses (+ 8 R0) directly.
+    assert "(M (+ 8 R0))" in rendered
+    assert "(declare-const R1 " not in rendered
+    assert "(declare-const R2 " not in rendered
+
+
+def test_inline_scalars_on_skips_havoc() -> None:
+    """Havoc'd symbols are never in inline_subs."""
+    tac = parse_string(TAC_INLINE_NARROW_INDEX, path="<string>")
+    rendered = render_smt_script(build_vc(tac, inline_scalars=True))
+    # R0 is havoc'd in entry; it stays declared.
+    assert "(declare-const R0 " in rendered
+
+
+def test_inline_scalars_on_skips_jumpi_condition() -> None:
+    """Symbols referenced by JumpiCmd condition string are not inlined,
+    even if their RHS matches the filter — the CFG section names them."""
+    tac = parse_string(TAC_INLINE_NARROW_INDEX, path="<string>")
+    rendered = render_smt_script(build_vc(tac, inline_scalars=True))
+    # `cond` is the JumpiCmd condition (entry block); RHS is `true`
+    # which would match the filter, but `cond` must stay declared.
+    assert "(declare-const cond Bool)" in rendered
+
+
+def test_inline_scalars_on_with_guard_statics_combines() -> None:
+    """Combining flags: inlined symbol's eq is dropped from the
+    block-conjunction; remaining statics + assumes still compose under
+    `(=> BLK_X (and ...))`. Sanity: rendered SMT contains the inlined
+    index and the expected guard structure."""
+    tac = parse_string(TAC_INLINE_NARROW_INDEX, path="<string>")
+    rendered = render_smt_script(
+        build_vc(tac, inline_scalars=True, guard_statics=True)
+    )
+    assert "(M (+ 24 R0))" in rendered
+    assert "(= R1 " not in rendered
+    # `(=> BLK_ok ...)` still wraps remaining statics.
+    assert "(=> BLK_ok" in rendered
+
+
+def test_inline_scalars_on_with_narrow_range_keeps_axiom_on_inlined_rhs() -> None:
+    """Per AG: --narrow-range axiom is preserved on the inlined RHS
+    rather than the now-eliminated symbol."""
+    tac = parse_string(TAC_INLINE_NARROW_INDEX, path="<string>")
+    rendered = render_smt_script(
+        build_vc(tac, inline_scalars=True, narrow_range=True)
+    )
+    # bv256 LHS-domain bound is on the inlined expression directly.
+    assert "(<= 0 (+ 24 R0) BV256_MAX)" in rendered
+    # Not on the now-gone symbol.
+    assert "(<= 0 R1 BV256_MAX)" not in rendered
+
+
+# Two-block diamond with a DSA-dynamic `v` (assigned in both branches).
+# Confirms that dynamic symbols are skipped by the inline pre-pass,
+# even if their RHS would otherwise match the filter.
+TAC_INLINE_DYNAMIC_SKIP = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tcond:bool
+\tR0:bv256
+\tv:bv256
+\tb:bool
+}
+Program {
+\tBlock entry Succ [a, b] {
+\t\tAssignHavocCmd R0
+\t\tAssignExpCmd cond true
+\t\tJumpiCmd a b cond
+\t}
+\tBlock a Succ [join] {
+\t\tAssignExpCmd v IntAdd(0x1 R0)
+\t\tJumpCmd join
+\t}
+\tBlock b Succ [join] {
+\t\tAssignExpCmd v IntAdd(0x2 R0)
+\t\tJumpCmd join
+\t}
+\tBlock join Succ [] {
+\t\tAssignExpCmd b Eq(v 0x0)
+\t\tAssertCmd b "join"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_inline_scalars_on_skips_dynamic_assignment() -> None:
+    tac = parse_string(TAC_INLINE_DYNAMIC_SKIP, path="<string>")
+    rendered = render_smt_script(build_vc(tac, inline_scalars=True))
+    # `v` is DSA-dynamic; its decl and merged definition stay live.
+    assert "(declare-const v " in rendered

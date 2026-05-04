@@ -15,6 +15,7 @@ from ctac.ast.nodes import (
     AssignHavocCmd,
     AssumeExpCmd,
     ConstExpr,
+    JumpiCmd,
     SymbolRef,
     TacExpr,
 )
@@ -57,6 +58,41 @@ _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _BV256_MOD = 1 << 256
 _BV256_MAX = _BV256_MOD - 1
 _BLANK_LINE_MARKER = "__CTAC_BLANK_LINE__"
+
+_INLINE_LINEAR_OPS = frozenset({"Add", "Sub", "IntAdd", "IntSub"})
+_INLINE_LINEAR_SCALE_OPS = frozenset({"Mul", "IntMul"})
+
+
+def _peel_narrow(expr: TacExpr) -> TacExpr:
+    """Peel ``safe_math_narrow_bvN`` wrappers — the encoder treats
+    them as identity, so for inlining-shape purposes
+    ``narrow(IntAdd(k, R))`` is structurally just ``IntAdd(k, R)``."""
+    while (
+        isinstance(expr, ApplyExpr)
+        and expr.op == "Apply"
+        and len(expr.args) >= 2
+        and isinstance(expr.args[0], SymbolRef)
+        and _SAFE_MATH_NARROW_BIF.fullmatch(expr.args[0].name)
+    ):
+        expr = expr.args[1]
+    return expr
+
+
+def _is_inlinable_rhs(expr: TacExpr) -> bool:
+    """Conservative shape filter for ``--inline-scalars``: accepts
+    constants, aliases, and one-level binary linear arithmetic with a
+    constant operand."""
+    expr = _peel_narrow(expr)
+    if isinstance(expr, (ConstExpr, SymbolRef)):
+        return True
+    if isinstance(expr, ApplyExpr) and len(expr.args) == 2:
+        if expr.op in _INLINE_LINEAR_OPS or expr.op in _INLINE_LINEAR_SCALE_OPS:
+            has_const = any(isinstance(a, ConstExpr) for a in expr.args)
+            all_simple = all(
+                isinstance(a, (ConstExpr, SymbolRef)) for a in expr.args
+            )
+            return has_const and all_simple
+    return False
 
 
 def _sort_from_tag(tag: str) -> str | None:
@@ -347,6 +383,10 @@ class SeaVcEncoder(SmtEncoder):
             )
 
         dynamic_symbols = {x.symbol for x in dsa.dynamic_assignments}
+        # Populated below (post `maps_with_store_def`) when
+        # ``--inline-scalars`` is set. Lookup-only inside ``emit_expr``,
+        # so an empty dict is the no-op.
+        inline_subs: dict[str, str] = {}
         raw_sorts = _parse_symbol_sorts(ctx.tac_file.symbol_table_text)
         symbols: set[str] = set(du.symbol_to_id)
         bool_hints: set[str] = set()
@@ -671,6 +711,12 @@ class SeaVcEncoder(SmtEncoder):
 
             if isinstance(expr, SymbolRef):
                 sym = canonical_symbol(expr.name, strip_var_suffixes=True)
+                if sym in inline_subs:
+                    # ``--inline-scalars``: the symbol's static def has
+                    # been substituted at every use site. The pre-pass
+                    # populated ``inline_subs[sym]`` with the SMT form
+                    # of the RHS already.
+                    return inline_subs[sym], symbol_sort[sym]
                 if sym not in symbol_term:
                     raise SmtEncodingError(f"unknown symbol in expression: {expr.name!r}")
                 return symbol_term[sym], symbol_sort[sym]
@@ -1011,6 +1057,52 @@ class SeaVcEncoder(SmtEncoder):
             uf_decl_lines.discard(
                 f"(declare-fun {symbol_term[mem_sym]} (Int) Int)"
             )
+
+        # Inline-scalars pre-pass. Populates ``inline_subs`` (already
+        # in scope, consulted by ``emit_expr``) for static
+        # ``AssignExpCmd`` defs whose RHS matches the conservative
+        # linear-shape filter. Iterating in DSA order means alias
+        # chains collapse transitively (later defs see earlier ones
+        # already in ``inline_subs`` via the SymbolRef branch).
+        if ctx.inline_scalars:
+            # Symbols referenced by name (not as TacExpr) cannot be
+            # inlined safely: their declarations need to stay live
+            # because the reference site bypasses ``emit_expr``. Today
+            # this is just JumpiCmd conditions, which are name strings
+            # consumed by the CFG section.
+            jumpi_cond_syms: set[str] = set()
+            for blk in program.blocks:
+                for cmd in blk.commands:
+                    if isinstance(cmd, JumpiCmd):
+                        jumpi_cond_syms.add(
+                            canonical_symbol(cmd.condition, strip_var_suffixes=True)
+                        )
+            for ds in du.definitions:
+                if ds.symbol in dynamic_symbols:
+                    continue
+                if ds.symbol in maps_with_store_def:
+                    continue
+                if ds.symbol in memory_symbols:
+                    # Memory symbols are functions, not inlinable scalars.
+                    continue
+                if ds.symbol in jumpi_cond_syms:
+                    # The CFG section references the symbol by name;
+                    # inlining would leave dangling text.
+                    continue
+                b = block_by_id(program, ds.block_id)
+                cmd = b.commands[ds.cmd_index]
+                if not isinstance(cmd, AssignExpCmd):
+                    continue
+                if not _is_inlinable_rhs(cmd.rhs):
+                    continue
+                with _with_source(
+                    f"inline rhs of {ds.symbol} in block {ds.block_id} "
+                    f"cmd {ds.cmd_index}"
+                ), _with_block(ds.block_id):
+                    rhs_smt, _ = emit_expr(
+                        cmd.rhs, expected_sort=symbol_sort[ds.symbol]
+                    )
+                inline_subs[ds.symbol] = rhs_smt
 
         # ──────────────────────────────────────────────────────────
         # Per-bytemap chain construction (only under --store-reduce).
@@ -1373,6 +1465,18 @@ class SeaVcEncoder(SmtEncoder):
             b = block_by_id(program, ds.block_id)
             cmd = b.commands[ds.cmd_index]
             if isinstance(cmd, AssignExpCmd):
+                if ctx.inline_scalars and ds.symbol in inline_subs:
+                    # Equality is unnecessary — every use of ``ds.symbol``
+                    # has been substituted by ``inline_subs[ds.symbol]``
+                    # via ``emit_expr``. Re-instantiate the narrow-range
+                    # axiom on the inlined RHS so the bv256-domain bound
+                    # stays in the SMT (now binding the substituted
+                    # expression rather than the now-eliminated symbol).
+                    if _rhs_is_top_level_narrow(cmd.rhs):
+                        add_narrow_range_if_bv256(
+                            ds.symbol, inline_subs[ds.symbol]
+                        )
+                    continue
                 lhs = symbol_term[ds.symbol]
                 with _with_source(
                     f"static rhs of {ds.symbol} in block {ds.block_id} cmd {ds.cmd_index}"
@@ -1753,6 +1857,13 @@ class SeaVcEncoder(SmtEncoder):
             logic = "QF_NIA"
         else:
             logic = "QF_UFNIA"
+
+        # Filter out declarations for inlined scalars: those symbols
+        # have been substituted at every use site, so their
+        # ``declare-const`` lines would be orphans.
+        if ctx.inline_scalars and inline_subs:
+            inlined_decl_names = {symbol_term[s] for s in inline_subs}
+            decls = [d for d in decls if d.name not in inlined_decl_names]
 
         return SmtScript(
             logic=logic,

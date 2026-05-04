@@ -244,6 +244,20 @@ def smt_cmd(
             "output for the existing eager emission."
         ),
     ),
+    inline_scalars: bool = typer.Option(
+        False,
+        "--inline-scalars/--no-inline-scalars",
+        help=(
+            "Inline statics whose RHS is a simple linear expression "
+            "(constant, alias, +/- with constant, * by constant, "
+            "optionally wrapped by safe_math_narrow_bvN) at every use "
+            "site, dropping the equality and the LHS declaration. "
+            "Reduces named-index intermediates so EUF and LIA see "
+            "offsets directly in M(_) reads. Off by default — may push "
+            "terms into NL contexts (harming the NLA tactic) or "
+            "duplicate subexpressions."
+        ),
+    ),
     debug: bool = typer.Option(
         False,
         "--debug/--no-debug",
@@ -278,6 +292,7 @@ def smt_cmd(
             narrow_range=narrow_range,
             bv_add_sub_axiom="mod" if bv_add_sub_mod_axiom else "no-mod",
             store_reduce=store_reduce,
+            inline_scalars=inline_scalars,
         )
         smt_text = render_smt_script(script)
     except ParseError as e:

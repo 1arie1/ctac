@@ -42,6 +42,7 @@ def build_vc(
     narrow_range: bool = False,
     bv_add_sub_axiom: str = "no-mod",
     store_reduce: bool = False,
+    inline_scalars: bool = False,
 ) -> SmtScript:
     if bv_add_sub_axiom not in _BV_ADD_SUB_AXIOM_VARIANTS:
         known = ", ".join(_BV_ADD_SUB_AXIOM_VARIANTS)
@@ -67,6 +68,7 @@ def build_vc(
             narrow_range=narrow_range,
             bv_add_sub_axiom=bv_add_sub_axiom,
             store_reduce=store_reduce,
+            inline_scalars=inline_scalars,
         )
     )
 
