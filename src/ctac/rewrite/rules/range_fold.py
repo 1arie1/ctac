@@ -26,6 +26,16 @@ from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
 from ctac.rewrite.range_infer import infer_expr_range
 
+# bv256 ops that wrap mod 2^256. ``infer_expr_range`` returns the
+# *unwrapped* range (so callers like ``ADD_BV_TO_INT`` can detect
+# whether a wrap could occur); RangeFold has to apply the bv-wrap
+# itself before emitting a constant. Without this, ``Add(1, BV256_MAX)``
+# would fold to ``2^256`` instead of ``0`` — out of the bv256 domain
+# and unsound (this was rule_hits=RangeFold causing ``assert ok`` to
+# rewrite to ``assert false``).
+_BV256_WRAP_OPS = frozenset({"Add", "Sub", "Mul"})
+_BV256_MOD = 1 << 256
+
 
 def _rewrite_range_fold(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     # Only fold compound expressions; constants are already folded and
@@ -38,9 +48,15 @@ def _rewrite_range_fold(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     lo, hi = r
     if lo != hi:
         return None
-    # Emit the constant in hex for consistency with other rule outputs.
-    if lo < 0:
+    if expr.op in _BV256_WRAP_OPS:
+        # bv256 wrap-mod-2^256. ``lo`` is the unwrapped scalar; reduce
+        # to the bv256 domain before emitting a literal.
+        lo = lo % _BV256_MOD
+    elif lo < 0:
+        # IntSub etc. can be negative; we don't have a TAC literal form
+        # for that, leave it for downstream rules to handle.
         return None
+    # Emit the constant in hex for consistency with other rule outputs.
     return ConstExpr(f"0x{lo:x}")
 
 

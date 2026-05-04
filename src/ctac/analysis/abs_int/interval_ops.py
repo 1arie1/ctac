@@ -85,6 +85,29 @@ def join(a: Interval, b: Interval) -> Interval:
     return Interval(lo, hi)
 
 
+def bv_clamp(interval: Interval, width: int) -> Interval:
+    """Clamp an unwrapped-Int interval into the bv-``width`` domain
+    ``[0, 2^width - 1]``. If ``interval`` already fits, return it
+    unchanged — the bv result equals the unwrapped interval. Otherwise
+    return the full bv range, the smallest sound overapproximation
+    across the wraparound.
+
+    Use this whenever lifting a bv``width`` op (e.g. TAC ``Add``,
+    ``Sub``, ``Mul``) — the underlying ``add``/``sub``/``mul_nonneg``
+    primitives compute in unbounded Int and would otherwise let
+    constant folds escape the bv domain (e.g. ``Add(1, BV256_MAX)``
+    folding to ``2^256``)."""
+    bound = (1 << width) - 1
+    if (
+        interval.lo is not None
+        and interval.lo >= 0
+        and interval.hi is not None
+        and interval.hi <= bound
+    ):
+        return interval
+    return bv_width_iv(width)
+
+
 def add(a: Interval, b: Interval) -> Interval:
     lo = None if a.lo is None or b.lo is None else a.lo + b.lo
     hi = None if a.hi is None or b.hi is None else a.hi + b.hi

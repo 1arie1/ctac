@@ -36,6 +36,13 @@ _NARROW_WIDTHS = {
 
 _BV_SORT_PREFIX = "bv"
 
+# Note on bv256 semantics: TAC ``Add`` / ``Sub`` / ``Mul`` are wrap-mod-2^256
+# but the unwrapped range computed here is the *upper bound on the
+# pre-wrap result*. Callers that need a wrapped (in-domain) value (e.g.
+# ``RangeFold``) apply ``iv.bv_clamp`` themselves; callers reasoning about
+# whether wrap occurs (e.g. ``ADD_BV_TO_INT``) need the unwrapped form
+# directly.
+
 
 def _narrow_width(fn_name: str) -> int | None:
     core = fn_name[:-4] if fn_name.endswith(":bif") else fn_name

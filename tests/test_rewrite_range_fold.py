@@ -175,3 +175,75 @@ def test_range_fold_cascades_through_mod():
     )
     rhs = _rhs(res.program, "C")
     assert rhs == ConstExpr("0x0")
+
+
+# --- bv256 wrap-on-fold (regression) ---------------------------------------
+#
+# RangeFold previously emitted the unwrapped scalar even for the bv256
+# wrap ops Add/Sub/Mul, so e.g. ``Add(0x1, BV256_MAX)`` folded to
+# ``0x1...0`` (= 2^256), out of the bv256 domain. Downstream EqFold
+# would then conclude ``Eq(2^256, 0) = false`` and turn a tautological
+# ``assert ok`` into ``assert false``. The bug was caught by
+# ``ctac rw-eq`` on a 4-line program. RangeFold now wraps mod-2^256
+# before emitting the constant for ``Add``/``Sub``/``Mul``.
+
+_BV256_MAX_HEX = "0x" + "f" * 64
+
+
+def test_range_fold_wraps_add_bv256_overflow():
+    # Add(0x1, BV256_MAX) = 0 in bv256. Pre-fix folded to 2^256.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            f"\t\tAssignExpCmd V {_BV256_MAX_HEX}\n"
+            "\t\tAssignExpCmd C Add(0x1 V)\n"
+            "\t}",
+            syms="V:bv256\n\tC:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (RANGE_FOLD,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "C")
+    assert rhs == ConstExpr("0x0")
+
+
+def test_range_fold_wraps_sub_bv256_underflow():
+    # Sub(0x0, 0x1) = BV256_MAX in bv256. Pre-fix folded to -1
+    # (and the lo<0 guard would skip the fold; with the wrap it folds
+    # explicitly to BV256_MAX).
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignExpCmd V 0x0\n"
+            "\t\tAssignExpCmd C Sub(V 0x1)\n"
+            "\t}",
+            syms="V:bv256\n\tC:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (RANGE_FOLD,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "C")
+    assert rhs == ConstExpr(_BV256_MAX_HEX)
+
+
+def test_range_fold_wraps_mul_bv256_overflow():
+    # Mul(2^255, 0x2) = 2^256 = 0 in bv256. Pre-fix folded to 2^256.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignExpCmd V 0x8000000000000000000000000000000000000000000000000000000000000000\n"
+            "\t\tAssignExpCmd C Mul(V 0x2)\n"
+            "\t}",
+            syms="V:bv256\n\tC:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (RANGE_FOLD,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "C")
+    assert rhs == ConstExpr("0x0")

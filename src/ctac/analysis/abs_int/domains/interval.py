@@ -71,21 +71,7 @@ def _interval_lattice() -> Lattice[Interval]:
     return Lattice(top=iv.TOP, meet=iv.meet, join=iv.join)
 
 
-def _bv_clamp(interval: Interval, width: int) -> Interval:
-    """If ``interval`` fits in ``[0, 2^width - 1]`` (i.e. the
-    un-wrapped result does not overflow bv``width``), return it
-    unchanged — the bv result equals the un-wrapped interval.
-    Otherwise return the full bv range, the smallest sound
-    overapproximation across the wraparound."""
-    bound = (1 << width) - 1
-    if (
-        interval.lo is not None
-        and interval.lo >= 0
-        and interval.hi is not None
-        and interval.hi <= bound
-    ):
-        return interval
-    return iv.bv_width_iv(width)
+_bv_clamp = iv.bv_clamp  # shared with rewriter's range_infer
 
 
 class IntervalDomain:
