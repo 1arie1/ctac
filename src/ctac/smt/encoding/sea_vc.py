@@ -1352,11 +1352,15 @@ class SeaVcEncoder(SmtEncoder):
 
         # Static assignment encoding and assume constraints. Under
         # --guard-statics we batch the equalities by defining block and
-        # emit one ``(=> BLK_b (and eq1 eq2 ...))`` per block instead of
-        # per-equality implications: the block guard is the same fact
-        # for every static def in that block, so a single conjunction
-        # avoids handing the SAT/SMT core N copies of the same premise
-        # to discharge.
+        # also fold each block's assume conditions into the same
+        # conjunction, emitting one
+        # ``(=> BLK_b (and eq1 eq2 ... cond1 cond2 ...))`` per block
+        # instead of per-equality / per-assume implications: solve-eqs
+        # extracts the equalities (including those nested in assumes
+        # like ``assume R == 0``) under a single shared guard, which it
+        # cannot do across separate implications. Without --guard-statics
+        # the default stream-based shape is preserved byte-for-byte:
+        # bare ``(= lhs rhs)`` for statics, ``(=> BLK cond)`` per assume.
         grouped_static_eqs: dict[str, list[str]] = {}
         for ds in du.definitions:
             if ds.symbol in dynamic_symbols:
@@ -1383,12 +1387,18 @@ class SeaVcEncoder(SmtEncoder):
                     add_narrow_range_if_bv256(ds.symbol, lhs)
             elif isinstance(cmd, AssignHavocCmd):
                 add_havoc_range_if_bv256(ds.symbol, symbol_term[ds.symbol], block_id=ds.block_id, cmd_index=ds.cmd_index)
-        if ctx.guard_statics:
-            for block_id, eqs in grouped_static_eqs.items():
-                guard = block_guard(block_id, entry_block_id=entry_block_id)
-                add_constraint(implies(guard, and_terms(eqs)))
-        static_end = len(constraints)
 
+        # Default-path: statics already emitted; freeze static_end here
+        # so the per-section banners stay byte-identical to today's
+        # output. Under --guard-statics the combined emission lands
+        # later and we re-freeze static_end after it.
+        if not ctx.guard_statics:
+            static_end_default = len(constraints)
+
+        # Assume conditions: under --guard-statics, collect into the
+        # per-block conjunction; otherwise emit per-cmd as a guarded
+        # implication (today's default).
+        grouped_assume_conds: dict[str, list[str]] = {}
         for block in program.blocks:
             guard = block_guard(block.id, entry_block_id=entry_block_id)
             has_assume_in_block = any(isinstance(c, AssumeExpCmd) for c in block.commands)
@@ -1427,12 +1437,39 @@ class SeaVcEncoder(SmtEncoder):
                         cond, s = emit_expr(cond_expr, expected_sort="Bool")
                     if s != "Bool":
                         raise SmtEncodingError("Assume condition must be Bool")
-                    add_constraint(implies(guard, cond))
-            if has_assume_in_block:
+                    if ctx.guard_statics:
+                        grouped_assume_conds.setdefault(block.id, []).append(cond)
+                    else:
+                        add_constraint(implies(guard, cond))
+            if has_assume_in_block and not ctx.guard_statics:
                 remaining_blocks = program.blocks[program.blocks.index(block) + 1 :]
                 if any(any(isinstance(c, AssumeExpCmd) for c in b.commands) for b in remaining_blocks):
                     constraints.append(_BLANK_LINE_MARKER)
-        assume_end = len(constraints)
+
+        if ctx.guard_statics:
+            # Combined per-block emission: statics first (in
+            # du.definitions order, already deterministic), then assume
+            # conds (in command order). Iterate program.blocks for
+            # deterministic between-block ordering and blank-line
+            # placement.
+            blocks_with_emission = [
+                b for b in program.blocks
+                if b.id in grouped_static_eqs or b.id in grouped_assume_conds
+            ]
+            for i, block in enumerate(blocks_with_emission):
+                eqs = grouped_static_eqs.get(block.id, [])
+                conds = grouped_assume_conds.get(block.id, [])
+                guard = block_guard(block.id, entry_block_id=entry_block_id)
+                add_constraint(implies(guard, and_terms(eqs + conds)))
+                if i < len(blocks_with_emission) - 1:
+                    constraints.append(_BLANK_LINE_MARKER)
+            # All static + assume content lives in the "Static" section.
+            # The "Assumptions" section is empty.
+            static_end = len(constraints)
+            assume_end = static_end
+        else:
+            static_end = static_end_default
+            assume_end = len(constraints)
 
         # Dynamic assignment groups as compact ITEs.
         dynamic_by_symbol: dict[str, list] = defaultdict(list)

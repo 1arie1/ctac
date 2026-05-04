@@ -219,6 +219,206 @@ def test_guard_statics_default_off_is_byte_identical() -> None:
     assert a == b
 
 
+# Block `ok` has one static def (`v = 0x1`) and one assume that
+# constrains a fresh symbol. Used to check that `--guard-statics`
+# folds the assume into the same conjunction as the static.
+TAC_NON_ENTRY_STATIC_AND_ASSUME = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tcond:bool
+\tv:bv256
+\tw:bv256
+\tp:bool
+}
+Program {
+\tBlock entry Succ [ok, bad] {
+\t\tAssignExpCmd cond true
+\t\tAssignHavocCmd w
+\t\tJumpiCmd ok bad cond
+\t}
+\tBlock ok Succ [] {
+\t\tAssignExpCmd v 0x1
+\t\tAssumeExpCmd Eq(w 0x0)
+\t\tAssignExpCmd p Eq(v 0x1)
+\t\tAssertCmd p "v == 1"
+\t}
+\tBlock bad Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_guard_statics_on_folds_assume_into_block_conjunction() -> None:
+    tac = parse_string(TAC_NON_ENTRY_STATIC_AND_ASSUME, path="<string>")
+    rendered = render_smt_script(build_vc(tac, guard_statics=True))
+    # Combined emission: the assume condition (= w 0) joins the static
+    # equalities (= v 1) and (= p ...) inside the same `(and ...)`.
+    assert "(=> BLK_ok (and (= v 1) (= p (= v 1)) (= w 0)))" in rendered
+    # No per-assume guarded implication for the merged block.
+    assert "(assert (=> BLK_ok (= w 0)))" not in rendered
+
+
+def test_guard_statics_off_keeps_assume_separately_guarded() -> None:
+    tac = parse_string(TAC_NON_ENTRY_STATIC_AND_ASSUME, path="<string>")
+    rendered = render_smt_script(build_vc(tac))
+    # Statics remain bare; assume condition keeps its own implication.
+    assert "(assert (= v 1))" in rendered
+    assert "(assert (=> BLK_ok (= w 0)))" in rendered
+    assert "(=> BLK_ok (and" not in rendered
+
+
+# Two assumes in a non-entry block, no statics. Confirms multiple
+# assumes fold into a single conjunction.
+TAC_NON_ENTRY_ONLY_ASSUMES = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tcond:bool
+\tx:bv256
+\ty:bv256
+}
+Program {
+\tBlock entry Succ [ok, bad] {
+\t\tAssignExpCmd cond true
+\t\tAssignHavocCmd x
+\t\tAssignHavocCmd y
+\t\tJumpiCmd ok bad cond
+\t}
+\tBlock ok Succ [] {
+\t\tAssumeExpCmd Eq(x 0x0)
+\t\tAssumeExpCmd Eq(y 0x1)
+\t\tAssertCmd cond "ok-assert"
+\t}
+\tBlock bad Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_guard_statics_on_combines_multiple_assumes() -> None:
+    tac = parse_string(TAC_NON_ENTRY_ONLY_ASSUMES, path="<string>")
+    rendered = render_smt_script(build_vc(tac, guard_statics=True))
+    # Two assumes folded into a single block-guarded conjunction.
+    assert "(=> BLK_ok (and (= x 0) (= y 1)))" in rendered
+    # No per-assume implications.
+    assert "(assert (=> BLK_ok (= x 0)))" not in rendered
+    assert "(assert (=> BLK_ok (= y 1)))" not in rendered
+
+
+# Entry-block assumes — entry guard is `true`, so under
+# --guard-statics the merged emission collapses (`implies(true, X) ->
+# X`) and the conjunction appears bare. Mirrors the existing
+# test_guard_statics_on_leaves_entry_static_unguarded.
+TAC_ENTRY_ASSUMES = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tcond:bool
+\tx:bv256
+\ty:bv256
+}
+Program {
+\tBlock entry Succ [fail] {
+\t\tAssignHavocCmd x
+\t\tAssignHavocCmd y
+\t\tAssumeExpCmd Eq(x 0x0)
+\t\tAssumeExpCmd Eq(y 0x1)
+\t\tAssignExpCmd cond true
+\t\tJumpCmd fail
+\t}
+\tBlock fail Succ [] {
+\t\tAssertCmd cond "entry-assert"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_guard_statics_on_entry_assumes_unguarded_and_grouped() -> None:
+    tac = parse_string(TAC_ENTRY_ASSUMES, path="<string>")
+    rendered = render_smt_script(build_vc(tac, guard_statics=True))
+    # Entry-guard reduces to `true`; the conjunction is bare. Static
+    # `cond := true` and the two assumes share the conjunction.
+    assert "(=> BLK_entry" not in rendered
+    assert "(assert (and (= cond true) (= x 0) (= y 1)))" in rendered
+
+
+# Triggers the havoc-refinement preprocessing: a havoc immediately
+# followed by an assume on a bv256 var gets bv256-domain bounds chained
+# into the assume. The test confirms the chained assume still ends up
+# inside the combined `(and ...)` under --guard-statics.
+TAC_HAVOC_REFINED_ASSUME = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tcond:bool
+\tv:bv256
+\th:bv256
+}
+Program {
+\tBlock entry Succ [ok, bad] {
+\t\tAssignExpCmd cond true
+\t\tJumpiCmd ok bad cond
+\t}
+\tBlock ok Succ [] {
+\t\tAssignExpCmd v 0x1
+\t\tAssignHavocCmd h
+\t\tAssumeExpCmd Le(h 0x10)
+\t\tAssertCmd cond "havoc-refine"
+\t}
+\tBlock bad Succ [] {
+\t\tAssumeExpCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_guard_statics_on_havoc_refined_assume_combines() -> None:
+    tac = parse_string(TAC_HAVOC_REFINED_ASSUME, path="<string>")
+    rendered = render_smt_script(build_vc(tac, guard_statics=True))
+    # The single (=> BLK_ok ...) emission carries both the static (= v 1)
+    # and the assume on h (refined with the bv256 lower bound 0). Spot-
+    # check the shared conjunction prefix; the exact refined form is
+    # checked by the havoc-refinement tests.
+    assert "(=> BLK_ok (and (= v 1)" in rendered
+    # Assume isn't emitted under its own implication.
+    assert "(assert (=> BLK_ok (<= h " not in rendered
+
+
 # Two-block diamond with a DSA-dynamic var: `v` is assigned in both
 # `a` and `b` (different RHSes), then read in the join block. The
 # encoder treats `v` as dynamic and merges the two defs.

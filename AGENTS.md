@@ -281,11 +281,15 @@ Prompt template:
   - SAT model export: `--model <path>` writes TAC model text compatible with `ctac run --model`.
   - Unsat-core mode: `--unsat-core` names asserts and prints the core on UNSAT.
   - Static-def guarding: `--guard-statics` emits one
-    `(=> BLK_<bid> (and (= lhs1 rhs1) (= lhs2 rhs2) ...))` per
+    `(=> BLK_<bid> (and (= lhs1 rhs1) ... cond1 cond2 ...))` per
     defining block — a single block guard shared across that
-    block's static equalities — instead of the default bare
-    `(= lhs rhs)` per def. Off by default; entry-block defs are
-    unaffected (entry guard is `true`).
+    block's static equalities **and assume conditions** —
+    instead of the default bare `(= lhs rhs)` per static and
+    `(=> BLK cond)` per assume. The combined conjunction lets
+    `solve-eqs` extract equalities nested in assumes (e.g.
+    `assume R == 0`) under the same guard. Off by default;
+    entry-block defs/assumes are unaffected (entry guard is
+    `true`, so the conjunction is bare).
   - Dynamic-def guarding: `--guard-dynamics` encodes each dynamic
     (DSA-merged) assignment as a per-defining-block guarded
     equality `(=> BLK_<bid> (= lhs rhs))` instead of the default
