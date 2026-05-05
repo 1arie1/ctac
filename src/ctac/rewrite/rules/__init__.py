@@ -5,6 +5,7 @@ Exported: :data:`default_pipeline` — the ordered tuple of rules used by
 """
 
 from ctac.rewrite.framework import Rule
+from ctac.rewrite.rules.and_lift_eq import AND_LIFT_EQ_DECREMENT
 from ctac.rewrite.rules.bitfield import (
     N1_SHIFTED_BWAND,
     N2_LOW_MASK,
@@ -149,6 +150,13 @@ simplify_pipeline: tuple[Rule, ...] = (
     # introduced by `ctac pin --bind`.
     BOOL_CONST_FOLD,
     ITE_BOOL,
+    # ``LAnd(Ge(X, c), Eq(IntSub(X, c), 0)) -> Eq(X, c)``. Recovers the
+    # singleton-equality shape that ``ADD_BV_MAX_TO_ITE`` + ``EqIte`` +
+    # ``IteBool`` produce when an outer ``Eq(_, 0)`` distributes through
+    # an unfolded ``Add(BV256_MAX, X)`` decrement. Must run after
+    # ``ITE_BOOL`` (which produces this LAnd shape) and before
+    # ``EqIte`` / ``SelectOverStore`` re-pick up the simplified Eq.
+    AND_LIFT_EQ_DECREMENT,
     # Range-driven Ite folding: decide `cond` via interval inference
     # and collapse to the then/else branch. Paired with ADD_BV_MAX_TO_ITE
     # below, which always emits an Ite; COND_FOLD collapses it when the
@@ -253,6 +261,7 @@ all_rule_names: tuple[str, ...] = (
     ITE_SHARED_LEAF.name,
     BOOL_CONST_FOLD.name,
     ITE_BOOL.name,
+    AND_LIFT_EQ_DECREMENT.name,
     ITE_COND_FOLD.name,
     BOOL_ABSORB.name,
     DE_MORGAN.name,
@@ -274,6 +283,7 @@ __all__ = [
     "ADD_BV_MAX_TO_ITE",
     "ADD_BV_TO_INT",
     "ADD_ITE_DIST",
+    "AND_LIFT_EQ_DECREMENT",
     "BOOL_ABSORB",
     "BOOL_CONST_FOLD",
     "CHUNKED_MUL_BY_2N",
