@@ -651,6 +651,11 @@ def _subst_in_cmd(cmd: TacCmd, mapping: Mapping[str, TacExpr]) -> TacCmd:
     is a name, not an expression — handled separately by terminator
     surgery, not by this expression substitution.
 
+    Re-renders ``cmd.raw`` after substituting, so ``render_program``
+    (which serializes from ``cmd.raw``) emits the substituted form.
+    Without this, downstream tools that parse the written file see the
+    original symbol references and the bind has no observable effect.
+
     The caller is responsible for ensuring ``mapping`` covers every
     DSA-suffixed variant the substitution should hit (use
     :func:`_expand_with_suffixes`).
@@ -659,17 +664,17 @@ def _subst_in_cmd(cmd: TacCmd, mapping: Mapping[str, TacExpr]) -> TacCmd:
         new_rhs = subst_symbol_to_expr(cmd.rhs, mapping)
         if new_rhs is cmd.rhs:
             return cmd
-        return replace(cmd, rhs=new_rhs)
+        return canonicalize_cmd(replace(cmd, rhs=new_rhs))
     if isinstance(cmd, AssumeExpCmd):
         new_cond = subst_symbol_to_expr(cmd.condition, mapping)
         if new_cond is cmd.condition:
             return cmd
-        return replace(cmd, condition=new_cond)
+        return canonicalize_cmd(replace(cmd, condition=new_cond))
     if isinstance(cmd, AssertCmd):
         new_pred = subst_symbol_to_expr(cmd.predicate, mapping)
         if new_pred is cmd.predicate:
             return cmd
-        return replace(cmd, predicate=new_pred)
+        return canonicalize_cmd(replace(cmd, predicate=new_pred))
     return cmd
 
 

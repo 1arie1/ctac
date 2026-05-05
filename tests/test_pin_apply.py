@@ -63,6 +63,35 @@ def test_bind_substitutes_in_assume():
     # Substituted, but not folded — apply() does folding via cleanup.
     from ctac.ast.nodes import ApplyExpr
     assert cond.condition == ApplyExpr("LAnd", (T, SymbolRef("B1")))
+    # ``raw`` is re-rendered from the substituted AST so
+    # ``render_program`` (which writes ``cmd.raw``) reflects the bind.
+    assert "B0" not in cond.raw
+    assert "true" in cond.raw
+
+
+def test_bind_re_renders_raw_for_round_trip():
+    """Substituted commands' ``raw`` must reflect the new AST so the
+    written-back .tac file parses to the same substituted program."""
+    from ctac.ast.nodes import AssignExpCmd
+    from ctac.parse.tac_file import render_tac_file
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignExpCmd R1 Add(R0 R0)\n"
+            "\t\tAssumeExpCmd Eq(R1 0x0)\n"
+            "\t}\n",
+            syms="R0:bv256\n\tR1:bv256",
+        ),
+        path="<s>",
+    )
+    out = bind(tac.program, [("R0", ConstExpr("0x0"))])
+    text = render_tac_file(tac, program=out)
+    # Round-trip through the parser should yield the substituted form.
+    re_parsed = parse_string(text, path="<s>")
+    rhs = re_parsed.program.blocks[0].commands[0]
+    assert isinstance(rhs, AssignExpCmd)
+    # R1 = Add(0x0, 0x0) — no R0 reference left.
+    assert "R0" not in rhs.raw
 
 
 def test_bind_rejects_rc_var():
