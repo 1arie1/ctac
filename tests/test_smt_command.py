@@ -110,9 +110,10 @@ Metas {
 }
 """
 
-# Bareword `AssumeCmd <sym> "msg"` — the parser doesn't recognize this
-# shape, so it falls through to RawCmd and the encoder used to silently
-# skip it (dropping the assumption from the VC, which is unsound).
+# Bareword AssumeCmd / AssumeNotCmd. Parser canonicalizes both into
+# AssumeExpCmd, so encoding succeeds and the assumption shows up in
+# the VC. (Earlier these landed as RawCmd and were silently dropped —
+# kept as a fixture so encoded output can be pinned.)
 TAC_BAREWORD_ASSUME = """TACSymbolTable {
 \tUserDefined {
 \t}
@@ -122,15 +123,46 @@ TAC_BAREWORD_ASSUME = """TACSymbolTable {
 \t}
 \tb:bool
 \tg:bool
+\th:bool
 }
 Program {
 \tBlock entry Succ [chk] {
 \t\tAssignExpCmd b true
-\t\tAssignExpCmd g false
+\t\tAssignExpCmd g true
+\t\tAssignExpCmd h false
 \t\tJumpCmd chk
 \t}
 \tBlock chk Succ [] {
-\t\tAssumeCmd g "drop me"
+\t\tAssumeCmd g "g must hold"
+\t\tAssumeNotCmd h "h must not hold"
+\t\tAssertCmd b "must hold"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+# A truly-unsupported command shape: parser falls back to RawCmd and
+# the encoder must refuse rather than silently drop the line.
+TAC_UNSUPPORTED_CMD = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tb:bool
+}
+Program {
+\tBlock entry Succ [chk] {
+\t\tAssignExpCmd b true
+\t\tJumpCmd chk
+\t}
+\tBlock chk Succ [] {
+\t\tWeirdMysteryCmd whatever
 \t\tAssertCmd b "must hold"
 \t}
 }
@@ -258,10 +290,10 @@ def test_smt_cli_rejects_assert_not_last(tmp_path: Path) -> None:
     assert "AssertCmd must be the last command in block entry" in res.stdout
 
 
-def test_smt_cli_rejects_bareword_assume_cmd(tmp_path: Path) -> None:
-    """`AssumeCmd <sym> "msg"` parses to RawCmd; encoding it would silently
-    drop the assumption. ctac smt must refuse with a clear, located error."""
-    p = _write_tac(tmp_path, TAC_BAREWORD_ASSUME, "bareword-assume.tac")
+def test_smt_cli_rejects_unsupported_cmd(tmp_path: Path) -> None:
+    """Truly-unrecognized command shapes (parser fallback to RawCmd)
+    must be refused with a located error, not silently dropped."""
+    p = _write_tac(tmp_path, TAC_UNSUPPORTED_CMD, "unsupported.tac")
     out = tmp_path / "out.smt2"
     runner = CliRunner()
     res = runner.invoke(app, ["smt", str(p), "-o", str(out), "--plain"])
@@ -269,9 +301,27 @@ def test_smt_cli_rejects_bareword_assume_cmd(tmp_path: Path) -> None:
     assert "unsupported command" in res.output
     # Error names where the offending command lives and what it is.
     assert "chk:0" in res.output, res.output
-    assert "AssumeCmd" in res.output
+    assert "WeirdMysteryCmd" in res.output
     # No SMT output should be written when encoding fails.
     assert not out.exists(), f"smt file written despite encoding error: {out}"
+
+
+def test_smt_cli_accepts_bareword_assume_forms(tmp_path: Path) -> None:
+    """AssumeCmd / AssumeNotCmd are bareword shapes the parser
+    canonicalizes to AssumeExpCmd. ctac smt should encode them as
+    real assumptions in the VC, not drop them."""
+    p = _write_tac(tmp_path, TAC_BAREWORD_ASSUME, "bareword-assume.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain"])
+    assert res.exit_code == 0, res.output
+    out = res.stdout
+    # VC must mention each assumed symbol and the negation of `h`.
+    assert "(check-sat)" in out
+    # `assume g` -> g appears as a Bool guard somewhere in the assertions.
+    assert "g" in out and "h" in out
+    # The negated assumption shows up as a `(not h)` term (or equivalent
+    # `(=> ... (not h))` form once block guards are layered in).
+    assert "(not h)" in out, out
 
 
 def test_smt_cli_rejects_cyclic_cfg(tmp_path: Path) -> None:

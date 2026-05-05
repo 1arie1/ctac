@@ -111,6 +111,46 @@ def test_canonicalize_cmd_updates_raw_after_rewrite():
     assert canon.raw == "AssignExpCmd:7 R29 Div(R26 0x64)"
 
 
+def test_parse_assume_cmd_bareword_to_assume_exp():
+    """`AssumeCmd <sym> "msg"` canonicalizes to AssumeExpCmd(SymbolRef(sym))."""
+    cmd = parse_command_line('AssumeCmd g "g must hold"')
+    assert isinstance(cmd, AssumeExpCmd)
+    assert cmd.condition == SymbolRef("g")
+    assert cmd.meta_index is None
+    # Raw text round-trips verbatim — render_program will emit the
+    # bareword form unchanged.
+    assert cmd.raw == 'AssumeCmd g "g must hold"'
+
+
+def test_parse_assume_not_cmd_bareword_to_assume_exp_lnot():
+    """`AssumeNotCmd <sym> "msg"` canonicalizes to AssumeExpCmd(LNot(sym))."""
+    cmd = parse_command_line('AssumeNotCmd h "h must not hold"')
+    assert isinstance(cmd, AssumeExpCmd)
+    assert cmd.condition == ApplyExpr("LNot", (SymbolRef("h"),))
+
+
+def test_parse_assume_cmd_without_message():
+    """The trailing message is optional."""
+    cmd = parse_command_line("AssumeCmd g")
+    assert isinstance(cmd, AssumeExpCmd)
+    assert cmd.condition == SymbolRef("g")
+
+
+def test_parse_assume_cmd_preserves_meta_index():
+    """`AssumeCmd:42 g "msg"` keeps its meta_index through canonicalization."""
+    cmd = parse_command_line('AssumeCmd:42 g "msg"')
+    assert isinstance(cmd, AssumeExpCmd)
+    assert cmd.meta_index == 42
+    assert cmd.condition == SymbolRef("g")
+
+
+def test_parse_assume_not_cmd_with_meta_and_message():
+    cmd = parse_command_line('AssumeNotCmd:7 b "boundary"')
+    assert isinstance(cmd, AssumeExpCmd)
+    assert cmd.meta_index == 7
+    assert cmd.condition == ApplyExpr("LNot", (SymbolRef("b"),))
+
+
 def test_command_roundtrip_through_parser():
     lines = [
         "AssignExpCmd:7 R29 Div(R26 0x64)",

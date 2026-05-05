@@ -7,6 +7,7 @@ import re
 
 from ctac.ast.nodes import (
     AnnotationCmd,
+    ApplyExpr,
     AssertCmd,
     AssignExpCmd,
     AssignHavocCmd,
@@ -115,6 +116,24 @@ def parse_command_line(line: str, *, weak_is_strong: bool = False) -> TacCmd:
             cond = parse_expr(rest)
         except ValueError:
             cond = parse_expr_safe(rest)
+        return AssumeExpCmd(raw=raw, meta_index=meta, condition=cond)
+
+    # Bareword forms: `AssumeCmd <sym> "msg"` and `AssumeNotCmd <sym> "msg"`
+    # name a single boolean symbol (optionally followed by a quoted
+    # human-readable message). We canonicalize to AssumeExpCmd at parse
+    # time so downstream passes (encoder, rewriter, pretty printer) only
+    # have one assume shape to handle. cmd.raw is preserved verbatim, so
+    # the on-disk shape round-trips through render_program unchanged.
+    if base in ("AssumeCmd", "AssumeNotCmd"):
+        pred_text = rest
+        tm = _TRAILING_MSG.search(pred_text)
+        if tm is not None:
+            pred_text = pred_text[: tm.start()].rstrip()
+        toks = pred_text.split()
+        if not toks:
+            return RawCmd(raw=raw, head=base, tail=rest, meta_index=meta)
+        sym_ref = SymbolRef(toks[0])
+        cond = ApplyExpr("LNot", (sym_ref,)) if base == "AssumeNotCmd" else sym_ref
         return AssumeExpCmd(raw=raw, meta_index=meta, condition=cond)
 
     if base == "AssignHavocCmd":
