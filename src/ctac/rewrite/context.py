@@ -285,6 +285,33 @@ class RewriteCtx:
         """
         return self.static_defs.get(canonical_symbol(var_name, strip_var_suffixes=_STRIP_SUFFIXES))
 
+    def def_rhs_expressions(self, var_name: str) -> tuple[TacExpr, ...] | None:
+        """Every defining RHS expression of ``var_name``, in def-site order.
+
+        Returns ``None`` when at least one definition is non-:class:`AssignExpCmd`
+        (e.g. a havoc), since the def-set can't be fully described by RHS
+        expressions; callers fall back to a sound TOP. For DSA-static vars
+        with a unique :class:`AssignExpCmd` def the result is a 1-tuple
+        equivalent to :meth:`definition`. For DSA-dynamic vars the tuple
+        collects every def's RHS so callers can convex-hull-join their
+        intervals.
+        """
+        canonical = canonical_symbol(var_name, strip_var_suffixes=_STRIP_SUFFIXES)
+        defs = self.du.definitions_by_symbol.get(canonical, ())
+        if not defs:
+            return None
+        by_id = self.program.block_by_id()
+        rhs: list[TacExpr] = []
+        for ds in defs:
+            block = by_id.get(ds.block_id)
+            if block is None:
+                return None
+            cmd = block.commands[ds.cmd_index]
+            if not isinstance(cmd, AssignExpCmd):
+                return None
+            rhs.append(cmd.rhs)
+        return tuple(rhs)
+
     def lookthrough(self, expr: TacExpr) -> TacExpr:
         """Transitively peel away static defs and ``safe_math_narrow`` wrappers.
 

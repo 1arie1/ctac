@@ -33,7 +33,7 @@ from __future__ import annotations
 from ctac.ast.nodes import ApplyExpr, ConstExpr, TacExpr
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
-from ctac.rewrite.range_infer import infer_expr_range
+from ctac.rewrite.range_infer import infer_unwrapped_op
 from ctac.rewrite.rules.common import const_to_int
 
 _BV256_MOD = 1 << 256
@@ -41,7 +41,11 @@ _BV256_MAX = _BV256_MOD - 1
 
 
 def _fits_in_bv256(expr: ApplyExpr, ctx: RewriteCtx) -> bool:
-    r = infer_expr_range(expr, ctx)
+    # Need the *unwrapped* range of the binop: the bv op equals the int
+    # op iff the unwrapped result already fits in [0, 2^256). A bv-clamped
+    # range trivially fits, so it can't decide wraparound — must use the
+    # pre-clamp form.
+    r = infer_unwrapped_op(expr.op, list(expr.args), ctx)
     if r is None:
         return False
     lo, hi = r

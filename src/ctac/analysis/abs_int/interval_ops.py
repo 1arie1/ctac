@@ -88,9 +88,11 @@ def join(a: Interval, b: Interval) -> Interval:
 def bv_clamp(interval: Interval, width: int) -> Interval:
     """Clamp an unwrapped-Int interval into the bv-``width`` domain
     ``[0, 2^width - 1]``. If ``interval`` already fits, return it
-    unchanged — the bv result equals the unwrapped interval. Otherwise
-    return the full bv range, the smallest sound overapproximation
-    across the wraparound.
+    unchanged — the bv result equals the unwrapped interval. For a
+    singleton outside the bv range the precise wrapped value is
+    ``v mod 2^width``, so return that as a point. Otherwise return
+    the full bv range, the smallest sound overapproximation across
+    the wraparound.
 
     Use this whenever lifting a bv``width`` op (e.g. TAC ``Add``,
     ``Sub``, ``Mul``) — the underlying ``add``/``sub``/``mul_nonneg``
@@ -105,6 +107,16 @@ def bv_clamp(interval: Interval, width: int) -> Interval:
         and interval.hi <= bound
     ):
         return interval
+    if (
+        interval.lo is not None
+        and interval.hi is not None
+        and interval.lo == interval.hi
+    ):
+        # Singleton outside the bv range: wrap precisely. Python's ``%``
+        # returns a non-negative result for any sign of the dividend, so
+        # this is sound for negative singletons (e.g. ``Sub(0, 1)``
+        # unwrapped to -1) too.
+        return point(interval.lo % (bound + 1))
     return bv_width_iv(width)
 
 

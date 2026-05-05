@@ -517,7 +517,10 @@ def test_intadd_and_bv_add_dispatch_to_distinct_transfer_functions() -> None:
     bv_result = analyze_intervals(
         bv_program, symbol_sorts={"X": "bv256", "Y": "bv256"}
     )
-    assert bv_result.static["Y"] == Interval(0, (1 << 256) - 1)
+    # Add(half, half) = 2^256, which wraps to 0 in bv256. The bv_clamp
+    # singleton case keeps the precise wrapped value rather than
+    # overapproximating to the full bv range.
+    assert bv_result.static["Y"] == Interval(0, 0)
 
 
 def test_intsub_propagates_intervals() -> None:

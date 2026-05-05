@@ -9,7 +9,11 @@ from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 
 MAX_U256 = (1 << 256) - 1
 _TYPED_CONST = re.compile(
-    r"^(?P<num>(?:-?[0-9]+|0[xX][0-9a-fA-F_]+))\((?P<tag>[A-Za-z0-9_]+)\)$"
+    # ``num`` accepts decimal (``-?\d+``) or hex with optional sign in
+    # either position: ``-0x...`` (sign in front) or ``0x-...`` (sign
+    # after the ``0x`` prefix — TAC uses this for typed negative hex
+    # like ``0x-48(int)``).
+    r"^(?P<num>(?:-?[0-9]+|-?0[xX]-?[0-9a-fA-F_]+))\((?P<tag>[A-Za-z0-9_]+)\)$"
 )
 _VAR_SUFFIX = re.compile(r":\d+$")
 
@@ -50,8 +54,15 @@ def const_expr_to_int(expr: TacExpr) -> int | None:
     m = _TYPED_CONST.fullmatch(tok)
     if m is not None:
         tok = m.group("num")
+    # TAC's negative-hex form ``0x-48`` writes the sign after the ``0x``
+    # prefix; ``int(..., 16)`` rejects that. Normalize ``0x-N`` /
+    # ``-0x-N`` to a single leading sign before parsing.
+    if tok.startswith(("0x-", "0X-")):
+        tok = "-" + tok[:2] + tok[3:]
+    elif tok.startswith(("-0x-", "-0X-")):
+        tok = tok[:3] + tok[4:]
     try:
-        if tok.startswith(("0x", "0X")):
+        if tok.startswith(("0x", "0X", "-0x", "-0X")):
             return int(tok, 16)
         return int(tok, 10)
     except ValueError:
@@ -94,9 +105,16 @@ def _normalize_inclusive_cmp(
 
 
 def _normalize_symbol_const_cmp(
-    expr: TacExpr, *, strip_var_suffixes: bool
+    expr: TacExpr, *, strip_var_suffixes: bool, allow_eq: bool = False
 ) -> tuple[str, str, int] | None:
-    if not (isinstance(expr, ApplyExpr) and expr.op in {"Lt", "Le", "Gt", "Ge"} and len(expr.args) == 2):
+    ops = {"Lt", "Le", "Gt", "Ge"}
+    if allow_eq:
+        ops = ops | {"Eq"}
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op in ops
+        and len(expr.args) == 2
+    ):
         return None
     left, right = expr.args
     left_const = const_expr_to_int(left)
@@ -112,6 +130,7 @@ def _normalize_symbol_const_cmp(
             "Le": "Ge",
             "Gt": "Lt",
             "Ge": "Le",
+            "Eq": "Eq",
         }[expr.op]
         return flipped, sym, left_const
     return None
@@ -147,8 +166,19 @@ def match_symbol_interval_constraint(
     Match comparison/range forms into an inclusive integer interval.
 
     Supports:
-    - single comparisons: X <= c, X < c, X >= c, X > c (including flipped-operand forms)
-    - conjunction of two supported constraints over the same symbol.
+    - single comparisons: ``X <= c``, ``X < c``, ``X >= c``, ``X > c``
+      (including flipped-operand forms);
+    - conjunction (``LAnd``) of two supported constraints on the same
+      symbol — intersection of their intervals;
+    - disjunction (``LOr``) of two supported constraints on the same
+      symbol — convex hull of their intervals (sound over-approximation:
+      the symbol's value is in either arm, so it's in the hull). Disjuncts
+      may also be ``Eq(X, c)`` (treated as ``[c, c]``).
+
+    Top-level ``Eq(X, c)`` is *not* matched here — that's a singleton
+    pin, semantically distinct from a range. Callers reasoning about
+    range-shaped constraints (e.g. UCE's "interval intersects u256")
+    should not collapse a singleton equality into the same bucket.
     """
     if isinstance(expr, ApplyExpr) and expr.op == "LAnd" and len(expr.args) == 2:
         left = match_symbol_interval_constraint(
@@ -169,6 +199,31 @@ def match_symbol_interval_constraint(
             high = right.upper if high is None else min(high, right.upper)
         return SymbolIntervalConstraint(symbol=left.symbol, lower=low, upper=high)
 
+    if isinstance(expr, ApplyExpr) and expr.op == "LOr" and len(expr.args) == 2:
+        left = _match_disjunct(
+            expr.args[0], strip_var_suffixes=strip_var_suffixes
+        )
+        right = _match_disjunct(
+            expr.args[1], strip_var_suffixes=strip_var_suffixes
+        )
+        if left is None or right is None or left.symbol != right.symbol:
+            return None
+        # Convex hull: a side that's open in either arm is open in the
+        # hull (the disjunction admits values reaching that ±∞).
+        low = (
+            None
+            if left.lower is None or right.lower is None
+            else min(left.lower, right.lower)
+        )
+        high = (
+            None
+            if left.upper is None or right.upper is None
+            else max(left.upper, right.upper)
+        )
+        if low is None and high is None:
+            return None
+        return SymbolIntervalConstraint(symbol=left.symbol, lower=low, upper=high)
+
     norm = _normalize_symbol_const_cmp(expr, strip_var_suffixes=strip_var_suffixes)
     if norm is None:
         return None
@@ -182,6 +237,24 @@ def match_symbol_interval_constraint(
     if op == "Gt":
         return SymbolIntervalConstraint(symbol=sym, lower=c + 1, upper=None)
     return None
+
+
+def _match_disjunct(
+    expr: TacExpr, *, strip_var_suffixes: bool
+) -> SymbolIntervalConstraint | None:
+    """Match a disjunct inside an ``LOr`` — same shapes as the top-level
+    matcher, plus ``Eq(X, c)``. Used only when an ``Eq`` arm is one of
+    several alternatives, not as a stand-alone interval constraint."""
+    norm = _normalize_symbol_const_cmp(
+        expr, strip_var_suffixes=strip_var_suffixes, allow_eq=True
+    )
+    if norm is not None:
+        op, sym, c = norm
+        if op == "Eq":
+            return SymbolIntervalConstraint(symbol=sym, lower=c, upper=c)
+    return match_symbol_interval_constraint(
+        expr, strip_var_suffixes=strip_var_suffixes
+    )
 
 
 def interval_constraint_intersects_u256(constraint: SymbolIntervalConstraint) -> bool:

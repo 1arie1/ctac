@@ -213,7 +213,7 @@ def test_r1_collapses_bitfield_with_dominating_range():
         syms="R0:bv256\n\tR1:bv256\n\tR2:bv256\n\tR3:bv256",
     )
     tac = parse_string(tac_src, path="<s>")
-    res = rewrite_program(tac.program, default_pipeline)
+    res = rewrite_program(tac.program, default_pipeline, symbol_sorts=tac.symbol_sorts)
     # N1 + R1 + CP should fire at least once each; DCE happens outside rewrite.
     assert res.hits_by_rule.get("N1", 0) == 1
     assert res.hits_by_rule.get("R1", 0) == 1
@@ -232,7 +232,7 @@ def test_r1_requires_range_to_fit():
         syms="R0:bv256\n\tR1:bv256\n\tR2:bv256\n\tR3:bv256",
     )
     tac = parse_string(tac_src, path="<s>")
-    res = rewrite_program(tac.program, default_pipeline)
+    res = rewrite_program(tac.program, default_pipeline, symbol_sorts=tac.symbol_sorts)
     assert res.hits_by_rule.get("N1", 0) == 1
     assert res.hits_by_rule.get("R1", 0) == 0
 
@@ -459,7 +459,7 @@ Metas {
 }
 """
     tac = parse_string(tac_src, path="<s>")
-    res = rewrite_program(tac.program, default_pipeline)
+    res = rewrite_program(tac.program, default_pipeline, symbol_sorts=tac.symbol_sorts)
     # The Le(R0, 0xff) assume in L does not dominate use in J -> R1 must not fire.
     assert res.hits_by_rule.get("R1", 0) == 0
 
@@ -500,7 +500,7 @@ Metas {
 """
     tac = parse_string(tac_src, path="<s>")
     # depth=4 (default): R1 fires. depth=0: bails at the Ite, so R1 doesn't fire.
-    deep = rewrite_program(tac.program, default_pipeline)
+    deep = rewrite_program(tac.program, default_pipeline, symbol_sorts=tac.symbol_sorts)
     shallow = rewrite_program(tac.program, default_pipeline, ite_max_depth=0)
     assert deep.hits_by_rule.get("R1", 0) == 1
     assert shallow.hits_by_rule.get("R1", 0) == 0
@@ -543,7 +543,7 @@ Metas {
 }
 """
     tac = parse_string(tac_src, path="<s>")
-    res = rewrite_program(tac.program, default_pipeline)
+    res = rewrite_program(tac.program, default_pipeline, symbol_sorts=tac.symbol_sorts)
     assert res.hits_by_rule.get("N1", 0) == 1
     assert res.hits_by_rule.get("R1", 0) == 1, res.hits_by_rule
 
@@ -580,5 +580,5 @@ Metas {
 }
 """
     tac = parse_string(tac_src, path="<s>")
-    res = rewrite_program(tac.program, default_pipeline)
+    res = rewrite_program(tac.program, default_pipeline, symbol_sorts=tac.symbol_sorts)
     assert res.hits_by_rule.get("R1", 0) == 0, res.hits_by_rule
