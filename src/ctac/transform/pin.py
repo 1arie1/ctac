@@ -21,6 +21,7 @@ dangling halts, no unreachable orphans).
 from __future__ import annotations
 
 import itertools
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 
@@ -31,6 +32,7 @@ from ctac.ast.nodes import (
     ApplyExpr,
     AssertCmd,
     AssignExpCmd,
+    AssignHavocCmd,
     AssumeExpCmd,
     ConstExpr,
     JumpCmd,
@@ -41,6 +43,7 @@ from ctac.ast.nodes import (
 )
 from ctac.analysis.passes import analyze_dsa, analyze_use_before_def
 from ctac.analysis.symbols import canonical_symbol
+from ctac.ast.range_constraints import const_expr_to_int
 from ctac.ast.subst import subst_symbol_to_expr
 from ctac.ir.models import NBId, TacBlock, TacProgram
 from ctac.rewrite import rewrite_program
@@ -1245,6 +1248,210 @@ def assert_no_new_dsa_issues(
 _ = AnnotationCmd
 
 
+# ---------------------------------------------------- AssumeRange (--assume-range)
+
+
+@dataclass(frozen=True)
+class AssumeRange:
+    """One ``--assume-range`` entry — an inclusive integer interval
+    on a single TAC symbol.
+
+    ``lo`` / ``hi`` are the bound values (``None`` means "no bound on
+    that side"). ``lo_strict`` / ``hi_strict`` flip the corresponding
+    side from non-strict (``Le``) to strict (``Lt``). At least one of
+    ``lo`` / ``hi`` must be non-None.
+
+    Path-restriction tool: pin emits the assume into the program
+    unconditionally, creating a sub-problem where the bound holds.
+    Soundness w.r.t. the original program is the user's responsibility,
+    same as ``--bind`` / ``--drop``.
+    """
+
+    var: str
+    lo: int | None = None
+    lo_strict: bool = False
+    hi: int | None = None
+    hi_strict: bool = False
+
+    def __post_init__(self) -> None:
+        if self.lo is None and self.hi is None:
+            raise ValueError("assume-range needs at least one bound")
+        if self.lo is not None and self.hi is not None:
+            lo_eff = self.lo + 1 if self.lo_strict else self.lo
+            hi_eff = self.hi - 1 if self.hi_strict else self.hi
+            if lo_eff > hi_eff:
+                lo_op = "<" if self.lo_strict else "<="
+                hi_op = "<" if self.hi_strict else "<="
+                raise ValueError(
+                    f"contradictory assume-range on {self.var}: "
+                    f"{self.lo} {lo_op} {self.var} {hi_op} {self.hi}"
+                )
+
+
+_ASSUME_RANGE_RX = re.compile(
+    r"^\s*"
+    r"(?:(?P<c1>-?(?:0[xX]-?[0-9a-fA-F_]+|\d+))\s*(?P<o1><=|<|>=|>)\s*)?"
+    r"(?P<var>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s*(?P<o2><=|<|>=|>)\s*(?P<c2>-?(?:0[xX]-?[0-9a-fA-F_]+|\d+)))?"
+    r"\s*$"
+)
+
+
+def _parse_int_const(text: str) -> int:
+    """Parse a TAC integer literal: decimal, ``0xff``, ``0x-48``, ``-0x48``."""
+    val = const_expr_to_int(ConstExpr(text))
+    if val is None:
+        raise ValueError(f"unparseable integer literal: {text!r}")
+    return val
+
+
+def parse_assume_range(text: str) -> AssumeRange:
+    """Parse ``[const op] VAR [op const]`` into an :class:`AssumeRange`.
+
+    Each ``op`` is one of ``<``, ``<=``, ``>``, ``>=``. Mixed-direction
+    chains (``LO <= VAR >= HI``) are rejected. Constants accept
+    decimal, hex (``0xff``), and TAC's signed hex (``0x-48``).
+    """
+    m = _ASSUME_RANGE_RX.match(text)
+    if m is None:
+        raise ValueError(f"unparseable assume-range: {text!r}")
+    if m.group("c1") is None and m.group("c2") is None:
+        raise ValueError(f"assume-range needs at least one bound: {text!r}")
+
+    var = m.group("var")
+    lo: int | None = None
+    lo_strict = False
+    hi: int | None = None
+    hi_strict = False
+
+    def _set_lo(val: int, strict: bool) -> None:
+        nonlocal lo, lo_strict
+        if lo is not None:
+            raise ValueError(f"assume-range gives lo bound twice: {text!r}")
+        lo, lo_strict = val, strict
+
+    def _set_hi(val: int, strict: bool) -> None:
+        nonlocal hi, hi_strict
+        if hi is not None:
+            raise ValueError(f"assume-range gives hi bound twice: {text!r}")
+        hi, hi_strict = val, strict
+
+    if m.group("c1") is not None:
+        c1 = _parse_int_const(m.group("c1"))
+        op = m.group("o1")
+        # ``LO op VAR``: ``<`` / ``<=`` are lower bounds; ``>`` / ``>=`` are upper.
+        if op in ("<=", "<"):
+            _set_lo(c1, op == "<")
+        else:
+            _set_hi(c1, op == ">")
+    if m.group("c2") is not None:
+        c2 = _parse_int_const(m.group("c2"))
+        op = m.group("o2")
+        # ``VAR op HI``: ``<`` / ``<=`` are upper bounds; ``>`` / ``>=`` are lower.
+        if op in ("<=", "<"):
+            _set_hi(c2, op == "<")
+        else:
+            _set_lo(c2, op == ">")
+
+    return AssumeRange(
+        var=var, lo=lo, lo_strict=lo_strict, hi=hi, hi_strict=hi_strict
+    )
+
+
+def _fmt_const(v: int) -> str:
+    """Untagged hex literal, signed via the TAC ``0x-N`` form."""
+    if v < 0:
+        return f"0x-{-v:x}"
+    return f"0x{v:x}"
+
+
+def _build_assume_cmd(ar: AssumeRange) -> AssumeExpCmd:
+    """Construct an :class:`AssumeExpCmd` whose ``raw`` is freshly rendered.
+
+    ``LAnd`` is used when both bounds are present; otherwise the single
+    comparison is the assume's condition directly.
+    """
+    var = SymbolRef(ar.var)
+    parts: list[TacExpr] = []
+    if ar.lo is not None:
+        op = "Lt" if ar.lo_strict else "Le"
+        parts.append(ApplyExpr(op, (ConstExpr(_fmt_const(ar.lo)), var)))
+    if ar.hi is not None:
+        op = "Lt" if ar.hi_strict else "Le"
+        parts.append(ApplyExpr(op, (var, ConstExpr(_fmt_const(ar.hi)))))
+    cond: TacExpr = parts[0] if len(parts) == 1 else ApplyExpr("LAnd", tuple(parts))
+    cmd = AssumeExpCmd(raw="", condition=cond)
+    return canonicalize_cmd(cmd)
+
+
+def _inject_assume_ranges(
+    program: TacProgram,
+    ranges: tuple[AssumeRange, ...],
+) -> TacProgram:
+    """Insert one ``AssumeExpCmd`` per :class:`AssumeRange`.
+
+    For DSA-static vars (single def), insert immediately after the def
+    in the same block. For DSA-dynamic vars (multiple defs), insert as
+    the first cmd of every unique successor block of any def-block:
+    that's where the def's value enters the post-merge frontier and
+    every reachable use is dominated.
+    """
+    if not ranges:
+        return program
+
+    dsa = analyze_dsa(program, strip_var_suffixes=True)
+    dynamic = {a.symbol for a in dsa.dynamic_assignments}
+    by_id = program.block_by_id()
+
+    inserts: list[tuple[BlockId, int, AssumeExpCmd]] = []
+    for ar in ranges:
+        canon = _canon(ar.var)
+        def_sites: list[tuple[BlockId, int]] = []
+        for blk in program.blocks:
+            # Module shadows ``enumerate`` with the multi-case enumerator;
+            # iterate via index to avoid the collision.
+            for idx in range(len(blk.commands)):
+                cmd = blk.commands[idx]
+                if isinstance(cmd, (AssignExpCmd, AssignHavocCmd)):
+                    if _canon(cmd.lhs) == canon:
+                        def_sites.append((blk.id, idx))
+        if not def_sites:
+            raise ValueError(
+                f"--assume-range: no def found for variable {ar.var!r}"
+            )
+
+        assume_cmd = _build_assume_cmd(ar)
+        if canon not in dynamic:
+            for (blk_id, idx) in def_sites:
+                inserts.append((blk_id, idx + 1, assume_cmd))
+        else:
+            successors: set[BlockId] = set()
+            for (blk_id, _idx) in def_sites:
+                blk = by_id.get(blk_id)
+                if blk is None:
+                    continue
+                successors.update(blk.successors)
+            for s in successors:
+                inserts.append((s, 0, assume_cmd))
+
+    by_block: dict[BlockId, list[tuple[int, AssumeExpCmd]]] = {}
+    for blk_id, pos, cmd in inserts:
+        by_block.setdefault(blk_id, []).append((pos, cmd))
+
+    new_blocks: list[TacBlock] = []
+    for blk in program.blocks:
+        if blk.id not in by_block:
+            new_blocks.append(blk)
+            continue
+        cmds = list(blk.commands)
+        # Insert in descending position order so earlier insertions
+        # don't shift later positions.
+        for pos, cmd in sorted(by_block[blk.id], key=lambda x: -x[0]):
+            cmds.insert(pos, cmd)
+        new_blocks.append(replace(blk, commands=cmds))
+    return TacProgram(blocks=new_blocks)
+
+
 # ----------------------------------------------------- PinPlan / apply()
 
 
@@ -1259,6 +1466,7 @@ class PinPlan:
     drops: tuple[BlockId, ...] = ()
     binds: tuple[Bind, ...] = ()
     splits: tuple[BlockId, ...] = ()
+    assume_ranges: tuple[AssumeRange, ...] = ()
     cleanup: bool = True
 
 
@@ -1368,6 +1576,16 @@ def apply(
             "drops": list(plan.drops),
             "binds": [(var, val.value) for var, val in plan.binds],
             "splits": list(plan.splits),
+            "assume_ranges": [
+                {
+                    "var": ar.var,
+                    "lo": ar.lo,
+                    "lo_strict": ar.lo_strict,
+                    "hi": ar.hi,
+                    "hi_strict": ar.hi_strict,
+                }
+                for ar in plan.assume_ranges
+            ],
             "cleanup": plan.cleanup,
         },
         "source_blocks": len(program.blocks),
@@ -1461,6 +1679,18 @@ def apply(
     program = _drop_ite_arms_with_dropped_def(
         program, source_defs=source_def_blocks, dead=dead
     )
+    if plan.assume_ranges:
+        program = _inject_assume_ranges(program, plan.assume_ranges)
+        for ar in plan.assume_ranges:
+            tr.emit({
+                "event": "assume-range-injected",
+                "phase": "transform",
+                "var": ar.var,
+                "lo": ar.lo,
+                "lo_strict": ar.lo_strict,
+                "hi": ar.hi,
+                "hi_strict": ar.hi_strict,
+            })
 
     if plan.cleanup:
         program = _cleanup(program)

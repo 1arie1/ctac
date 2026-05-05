@@ -32,6 +32,7 @@ from ctac.tracing import JsonlTrace, NullTrace
 from ctac.transform.pin import (
     PinPlan,
     apply,
+    parse_assume_range,
 )
 from ctac.transform.pin import enumerate as pin_enumerate
 from ctac.transform.pin_manifest import (
@@ -160,6 +161,22 @@ def pin_cmd(
             ),
         ),
     ] = None,
+    assume_range: Annotated[
+        list[str],
+        typer.Option(
+            "--assume-range",
+            help=(
+                "Inject an inclusive integer-interval assume on a TAC "
+                "variable: 'lo <= VAR', 'VAR <= hi', or "
+                "'lo <= VAR <= hi' (use '<' for strict). Inserted "
+                "after the def for static vars; at the start of each "
+                "def-successor block for dynamic vars. Repeatable. "
+                "Path-restriction tool — pin creates a sub-problem "
+                "where the assume holds, may not be sound w.r.t. the "
+                "original program."
+            ),
+        ),
+    ] = None,
     output_path: Annotated[
         Optional[Path],
         typer.Option(
@@ -218,12 +235,21 @@ def pin_cmd(
     drop = drop or []
     bind = bind or []
     split = split or []
+    assume_range = assume_range or []
 
     drops = _split_csv(drop)
     splits = _split_csv(split)
     try:
         binds = tuple(_parse_bind(s) for s in bind)
     except typer.BadParameter as e:
+        c.print(
+            f"error: {e}" if plain else f"[red]error:[/red] {e}",
+            markup=not plain,
+        )
+        raise typer.Exit(2) from e
+    try:
+        assume_ranges = tuple(parse_assume_range(s) for s in assume_range)
+    except ValueError as e:
         c.print(
             f"error: {e}" if plain else f"[red]error:[/red] {e}",
             markup=not plain,
@@ -274,6 +300,7 @@ def pin_cmd(
         drops=drops,
         binds=binds,
         splits=splits,
+        assume_ranges=assume_ranges,
         cleanup=not no_cleanup,
     )
 
@@ -302,7 +329,8 @@ def pin_cmd(
                 )
                 raise typer.Exit(2)
             command_str = _reconstruct_command(
-                str(path), drops, binds, splits, output_path, no_cleanup
+                str(path), drops, binds, splits, output_path, no_cleanup,
+                assume_ranges=assume_ranges,
             )
 
             def _populate_split_dir(dst: Path) -> None:
@@ -380,6 +408,7 @@ def _reconstruct_command(
     splits: tuple[str, ...],
     output: Optional[Path],
     no_cleanup: bool,
+    assume_ranges: "tuple[object, ...]" = (),
 ) -> str:
     parts = ["ctac pin", input_path]
     for d in drops:
@@ -388,8 +417,32 @@ def _reconstruct_command(
         parts.extend(["--bind", f"{var}={val.value}"])
     for s in splits:
         parts.extend(["--split", s])
+    for ar in assume_ranges:
+        parts.extend(["--assume-range", _format_assume_range_cli(ar)])
     if output is not None:
         parts.extend(["-o", str(output)])
     if no_cleanup:
         parts.append("--no-cleanup")
     return " ".join(parts)
+
+
+def _format_assume_range_cli(ar) -> str:  # type: ignore[no-untyped-def]
+    """Recreate the CLI text form of an :class:`AssumeRange`.
+
+    ``1 <= R <= 32`` / ``R < 0xff`` / ``R > 0`` etc.
+    """
+    lo_op = "<" if ar.lo_strict else "<="
+    hi_op = "<" if ar.hi_strict else "<="
+    if ar.lo is not None and ar.hi is not None:
+        return f"{_fmt_int(ar.lo)} {lo_op} {ar.var} {hi_op} {_fmt_int(ar.hi)}"
+    if ar.lo is not None:
+        return f"{_fmt_int(ar.lo)} {lo_op} {ar.var}"
+    return f"{ar.var} {hi_op} {_fmt_int(ar.hi)}"
+
+
+def _fmt_int(v: int) -> str:
+    if v < 0:
+        return f"-0x{-v:x}"
+    if v >= 16:
+        return f"0x{v:x}"
+    return str(v)

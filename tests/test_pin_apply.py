@@ -13,9 +13,11 @@ from ctac.ast.nodes import (
 from ctac.parse import parse_string
 from ctac.tracing import MemoryTrace
 from ctac.transform.pin import (
+    AssumeRange,
     PinPlan,
     apply,
     bind,
+    parse_assume_range,
 )
 
 
@@ -458,3 +460,228 @@ def test_apply_no_cleanup_skips_cleanup_phase():
     # No cleanup-complete event.
     events = [e["event"] for e in trace.events]
     assert "cleanup-complete" not in events
+
+
+# -------------------------------------------------- parse_assume_range()
+
+
+def test_parse_assume_range_single_lo():
+    ar = parse_assume_range("1 <= R")
+    assert ar == AssumeRange(var="R", lo=1, lo_strict=False)
+
+
+def test_parse_assume_range_single_hi_strict():
+    ar = parse_assume_range("R < 0xff")
+    assert ar == AssumeRange(var="R", hi=255, hi_strict=True)
+
+
+def test_parse_assume_range_two_sided_mixed_strict():
+    ar = parse_assume_range("0 < R <= 31")
+    assert ar == AssumeRange(
+        var="R", lo=0, lo_strict=True, hi=31, hi_strict=False
+    )
+
+
+def test_parse_assume_range_var_first_form():
+    """``R >= 1`` and ``R > 0`` are accepted as lower bounds."""
+    assert parse_assume_range("R >= 1") == AssumeRange(var="R", lo=1)
+    assert parse_assume_range("R > 0") == AssumeRange(
+        var="R", lo=0, lo_strict=True
+    )
+
+
+def test_parse_assume_range_var_first_upper():
+    """``R <= 32`` / ``R < 32`` are accepted as upper bounds."""
+    assert parse_assume_range("R <= 32") == AssumeRange(var="R", hi=32)
+
+
+def test_parse_assume_range_signed_hex():
+    ar = parse_assume_range("0x-48 <= R <= 0x8b8")
+    assert ar == AssumeRange(var="R", lo=-72, hi=2232)
+
+
+def test_parse_assume_range_decimal():
+    assert parse_assume_range("1 <= R <= 32").lo == 1
+
+
+def test_parse_assume_range_rejects_no_bound():
+    with pytest.raises(ValueError, match="at least one bound"):
+        parse_assume_range("R")
+
+
+def test_parse_assume_range_rejects_mixed_direction():
+    """``LO <= R >= HI`` is malformed."""
+    with pytest.raises(ValueError):
+        parse_assume_range("1 <= R >= 32")
+
+
+def test_parse_assume_range_rejects_contradiction():
+    with pytest.raises(ValueError, match="contradictory"):
+        parse_assume_range("5 <= R <= 4")
+
+
+def test_parse_assume_range_rejects_strict_collapse():
+    """``5 < R < 6`` admits no integers (lo_eff=6, hi_eff=5)."""
+    with pytest.raises(ValueError, match="contradictory"):
+        parse_assume_range("5 < R < 6")
+
+
+def test_parse_assume_range_rejects_eq_op():
+    with pytest.raises(ValueError, match="unparseable"):
+        parse_assume_range("R == 0")
+
+
+# -------------------------------------------------- assume_range injection
+
+
+def test_apply_assume_range_static_var_after_havoc():
+    """For a static (havoc-defined) var, the assume is the next cmd
+    after the havoc in the same block."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [exit] {\n"
+            "\t\tAssignHavocCmd R0\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="R0:bv256",
+        ),
+        path="<s>",
+    )
+    plan = PinPlan(
+        assume_ranges=(AssumeRange(var="R0", lo=1, hi=32),),
+        cleanup=False,
+    )
+    res = apply(tac.program, plan)
+    e = next(b for b in res.program.blocks if b.id == "e")
+    # cmd 0 = havoc, cmd 1 = injected assume, cmd 2 = jump.
+    assert isinstance(e.commands[1], AssumeExpCmd)
+    cond = e.commands[1].condition
+    from ctac.ast.nodes import ApplyExpr
+    expected = ApplyExpr(
+        "LAnd",
+        (
+            ApplyExpr("Le", (ConstExpr("0x1"), SymbolRef("R0"))),
+            ApplyExpr("Le", (SymbolRef("R0"), ConstExpr("0x20"))),
+        ),
+    )
+    assert cond == expected
+    assert "0x1" in e.commands[1].raw and "R0" in e.commands[1].raw
+
+
+def test_apply_assume_range_round_trips_through_parser():
+    """Injected assume's ``raw`` is well-formed and re-parses to the
+    same AST, so downstream tools see the bound."""
+    from ctac.parse.tac_file import render_tac_file
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [exit] {\n"
+            "\t\tAssignHavocCmd R0\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="R0:bv256",
+        ),
+        path="<s>",
+    )
+    plan = PinPlan(
+        assume_ranges=(AssumeRange(var="R0", lo=1, hi=32),),
+        cleanup=False,
+    )
+    res = apply(tac.program, plan)
+    text = render_tac_file(tac, program=res.program)
+    re_parsed = parse_string(text, path="<s>")
+    e = next(b for b in re_parsed.program.blocks if b.id == "e")
+    assert isinstance(e.commands[1], AssumeExpCmd)
+
+
+def test_apply_assume_range_one_sided_lo():
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [exit] {\n"
+            "\t\tAssignHavocCmd R0\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="R0:bv256",
+        ),
+        path="<s>",
+    )
+    plan = PinPlan(
+        assume_ranges=(AssumeRange(var="R0", lo=1, lo_strict=True),),
+        cleanup=False,
+    )
+    res = apply(tac.program, plan)
+    e = next(b for b in res.program.blocks if b.id == "e")
+    cond = e.commands[1].condition
+    from ctac.ast.nodes import ApplyExpr
+    # Single-bound: the comparison is the assume's condition directly,
+    # not wrapped in LAnd.
+    assert cond == ApplyExpr("Lt", (ConstExpr("0x1"), SymbolRef("R0")))
+
+
+def test_apply_assume_range_unknown_var_rejected():
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [exit] {\n"
+            "\t\tAssignHavocCmd R0\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="R0:bv256",
+        ),
+        path="<s>",
+    )
+    plan = PinPlan(
+        assume_ranges=(AssumeRange(var="UnknownVar", lo=1, hi=32),),
+    )
+    with pytest.raises(ValueError, match="UnknownVar"):
+        apply(tac.program, plan)
+
+
+def test_apply_assume_range_dynamic_var_in_successors():
+    """For a DSA-dynamic var, assume is inserted at the start of every
+    unique successor of any def-block."""
+    # R is defined in both 'a' and 'b', both joining to 's'.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [s] {\n"
+            "\t\tAssignExpCmd R Add(0x1 0x2)\n"
+            "\t\tJumpCmd s\n"
+            "\t}\n"
+            "\tBlock b Succ [s] {\n"
+            "\t\tAssignExpCmd R Add(0x3 0x4)\n"
+            "\t\tJumpCmd s\n"
+            "\t}\n"
+            "\tBlock s Succ [exit] {\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="B0:bool\n\tR:bv256",
+        ),
+        path="<s>",
+    )
+    plan = PinPlan(
+        assume_ranges=(AssumeRange(var="R", lo=1, hi=32),),
+        cleanup=False,
+    )
+    res = apply(tac.program, plan)
+    s = next(b for b in res.program.blocks if b.id == "s")
+    # First cmd of s is the injected assume.
+    assert isinstance(s.commands[0], AssumeExpCmd)
+    # 'a' / 'b' are unchanged.
+    a = next(b for b in res.program.blocks if b.id == "a")
+    assert not isinstance(a.commands[0], AssumeExpCmd)
