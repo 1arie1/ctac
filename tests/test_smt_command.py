@@ -110,6 +110,37 @@ Metas {
 }
 """
 
+# Bareword `AssumeCmd <sym> "msg"` — the parser doesn't recognize this
+# shape, so it falls through to RawCmd and the encoder used to silently
+# skip it (dropping the assumption from the VC, which is unsound).
+TAC_BAREWORD_ASSUME = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tb:bool
+\tg:bool
+}
+Program {
+\tBlock entry Succ [chk] {
+\t\tAssignExpCmd b true
+\t\tAssignExpCmd g false
+\t\tJumpCmd chk
+\t}
+\tBlock chk Succ [] {
+\t\tAssumeCmd g "drop me"
+\t\tAssertCmd b "must hold"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
 TAC_CYCLIC = """TACSymbolTable {
 \tUserDefined {
 \t}
@@ -225,6 +256,22 @@ def test_smt_cli_rejects_assert_not_last(tmp_path: Path) -> None:
     res = runner.invoke(app, ["smt", str(p), "--plain"])
     assert res.exit_code == 1
     assert "AssertCmd must be the last command in block entry" in res.stdout
+
+
+def test_smt_cli_rejects_bareword_assume_cmd(tmp_path: Path) -> None:
+    """`AssumeCmd <sym> "msg"` parses to RawCmd; encoding it would silently
+    drop the assumption. ctac smt must refuse with a clear, located error."""
+    p = _write_tac(tmp_path, TAC_BAREWORD_ASSUME, "bareword-assume.tac")
+    out = tmp_path / "out.smt2"
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "-o", str(out), "--plain"])
+    assert res.exit_code == 1, res.output
+    assert "unsupported command" in res.output
+    # Error names where the offending command lives and what it is.
+    assert "chk:0" in res.output, res.output
+    assert "AssumeCmd" in res.output
+    # No SMT output should be written when encoding fails.
+    assert not out.exists(), f"smt file written despite encoding error: {out}"
 
 
 def test_smt_cli_rejects_cyclic_cfg(tmp_path: Path) -> None:

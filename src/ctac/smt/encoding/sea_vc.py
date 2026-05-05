@@ -10,13 +10,16 @@ from ctac.analysis import analyze_dsa, analyze_use_before_def, extract_def_use
 from ctac.analysis.model import DefinitionSite
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
+    AnnotationCmd,
     ApplyExpr,
     AssertCmd,
     AssignExpCmd,
     AssignHavocCmd,
     AssumeExpCmd,
     ConstExpr,
+    JumpCmd,
     JumpiCmd,
+    LabelCmd,
     SymbolRef,
     TacExpr,
 )
@@ -58,6 +61,21 @@ _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 _BV256_MOD = 1 << 256
 _BV256_MAX = _BV256_MOD - 1
+
+# Commands the sea_vc encoder is willing to consume. Everything else
+# (notably RawCmd — the parser's fallback for unrecognized heads, and
+# the bareword AssumeCmd form) is rejected up front so we never emit
+# an encoding that silently drops a cmd's semantic effect.
+_SUPPORTED_CMD_TYPES: tuple[type, ...] = (
+    AssignExpCmd,
+    AssignHavocCmd,
+    AssumeExpCmd,
+    AssertCmd,
+    JumpCmd,
+    JumpiCmd,
+    AnnotationCmd,
+    LabelCmd,
+)
 _BLANK_LINE_MARKER = "__CTAC_BLANK_LINE__"
 
 _INLINE_LINEAR_OPS = frozenset({"Add", "Sub", "IntAdd", "IntSub"})
@@ -382,6 +400,32 @@ class SeaVcEncoder(SmtEncoder):
                 f"{first.block_id}:{first.cmd_index} "
                 f"({first.cmd_kind}) — symbol used with no reaching def"
             )
+
+        # Supported-command precondition. The encoder's main dispatch
+        # only branches on the kinds listed below; anything else (most
+        # commonly a parser-fallback ``RawCmd`` for an unrecognized
+        # head, or a bareword ``AssumeCmd`` that the parser didn't
+        # model as ``AssumeExpCmd``) would pass through silently and
+        # the cmd's semantic effect would be dropped from the VC.
+        # Refuse loudly instead of producing an unsound encoding.
+        for block in program.blocks:
+            for idx, cmd in enumerate(block.commands):
+                if isinstance(cmd, _SUPPORTED_CMD_TYPES):
+                    continue
+                kind = type(cmd).__name__
+                head = getattr(cmd, "head", None)
+                head_part = f", head={head!r}" if head else ""
+                raw = (getattr(cmd, "raw", "") or "").strip()
+                raise SmtEncodingError(
+                    f"unsupported command at {block.id}:{idx} "
+                    f"({kind}{head_part}): {raw!r}. "
+                    f"sea_vc encodes only AssignExpCmd, AssignHavocCmd, "
+                    f"AssumeExpCmd, AssertCmd, JumpCmd, JumpiCmd, "
+                    f"AnnotationCmd, LabelCmd; silently skipping any "
+                    f"other command would change program semantics. "
+                    f"For the bareword AssumeCmd form (`AssumeCmd "
+                    f"<sym> \"msg\"`), rewrite to AssumeExpCmd <sym>."
+                )
 
         dynamic_symbols = {x.symbol for x in dsa.dynamic_assignments}
         # Inline-scalars state. ``inline_candidates`` is an eligibility
