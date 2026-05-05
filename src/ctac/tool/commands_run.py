@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -416,14 +417,34 @@ def run(
                 cur_block = ev.block_id
                 c.print(f"[bold]{cur_block}:[/bold]" if not plain else f"{cur_block}:")
                 if not plain:
-                    block_table = Table.grid(expand=True)
-                    block_table.add_column(ratio=3, overflow="ellipsis")
-                    block_table.add_column(
-                        ratio=1,
-                        justify="left",
-                        no_wrap=True,
-                        overflow="ellipsis",
-                    )
+                    # When stdout is a real terminal, expand the grid so
+                    # cmd / value columns line up across rows; share the
+                    # width 1:1 (the value pane needs room for both the
+                    # scalar value and the optional memory_repr like
+                    # `0xdead  M[0x100]`). When stdout is redirected,
+                    # console() has set the Console width to 10**9 so
+                    # individual `c.print(line)` calls don't wrap; that
+                    # same width would make `expand=True` pad each row
+                    # by ~10**9 spaces. Switch to content-sized columns
+                    # there.
+                    is_tty = sys.stdout.isatty()
+                    if is_tty:
+                        block_table = Table.grid(expand=True)
+                        block_table.add_column(ratio=1, overflow="ellipsis")
+                        block_table.add_column(
+                            ratio=1,
+                            justify="left",
+                            no_wrap=True,
+                            overflow="ellipsis",
+                        )
+                    else:
+                        # Grid pads cells with `padding=(0, n)` to put `n`
+                        # spaces between columns; the default for grids
+                        # is 0, which crams left and right cells together
+                        # when expand=False.
+                        block_table = Table.grid(expand=False, padding=(0, 2))
+                        block_table.add_column()
+                        block_table.add_column(justify="left", no_wrap=True)
                 else:
                     block_table = None
 

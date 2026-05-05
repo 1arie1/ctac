@@ -803,16 +803,18 @@ def _app_callback(
 
 def console(plain: bool) -> Console:
     force_terminal = False if plain else None
-    # In plain mode, output is for agents / scripts — never re-flow
-    # to fit a terminal column. Rich would otherwise wrap at the
-    # detected width, fragmenting tokens like ``bytemap-rw`` across
-    # lines and breaking grep / pattern matching. A very large width
-    # disables wrapping while keeping Console's other plain-text
-    # behaviors.
-    width: int | None = 10**9 if plain else None
+    is_tty = sys.stdout.isatty()
+    # When output isn't an interactive terminal — either plain mode
+    # (agent/script consumer) or stdout redirected to a file/pipe —
+    # use an effectively unbounded width. Rich's default behavior
+    # otherwise clamps to 80 cols on non-TTY stdout, which truncates
+    # `pp` lines and the `run --trace` value column at column ratios.
+    # The non-TTY consumer is a file or pipe, where each logical line
+    # belongs on one physical line for grep / diff / paging.
+    width: int | None = 10**9 if (plain or not is_tty) else None
     return Console(
         force_terminal=force_terminal,
-        no_color=plain or bool(os.environ.get("NO_COLOR")) or not sys.stdout.isatty(),
+        no_color=plain or bool(os.environ.get("NO_COLOR")) or not is_tty,
         highlight=False,
         theme=TAC_THEME,
         width=width,
