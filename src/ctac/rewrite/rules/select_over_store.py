@@ -52,10 +52,12 @@ run alongside).
 
 from __future__ import annotations
 
+from ctac.analysis.abs_int import interval_ops as iv
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
+from ctac.rewrite.range_infer import infer_expr_range
 
 
 _BYTEMAP_SORTS = frozenset({"bytemap", "ghostmap"})
@@ -79,7 +81,9 @@ def _const_value(expr: TacExpr) -> str | None:
     return None
 
 
-def _key_relation(a: TacExpr, b: TacExpr) -> str:
+def _key_relation(
+    a: TacExpr, b: TacExpr, ctx: RewriteCtx | None = None
+) -> str:
     """Compare two TAC keys. Returns ``"eq"`` if syntactically equal
     (after canonicalization), ``"neq"`` if both are constants and
     unequal, ``"unknown"`` otherwise.
@@ -89,7 +93,15 @@ def _key_relation(a: TacExpr, b: TacExpr) -> str:
     semantically equal; we use the canonical form ``ConstExpr.value``
     text directly. False negatives are sound (we just don't fire);
     false positives would be unsound but are precluded by syntactic
-    equality on the same constructor."""
+    equality on the same constructor.
+
+    When ``ctx`` is supplied and ``ctx.use_interval_select`` is set,
+    additionally consult :func:`infer_expr_range` and report ``"neq"``
+    whenever the inferred intervals are disjoint. This catches symbolic
+    offsets that share a base register but provably can't alias (e.g.
+    ``R + 8`` vs ``R + 16``). Callers without a ``RewriteCtx`` (the
+    SMT encoder's map-chain pruner) pass ``None`` and skip this
+    check."""
     a_canon = _canonical_expr(a)
     b_canon = _canonical_expr(b)
     if a_canon == b_canon:
@@ -98,6 +110,13 @@ def _key_relation(a: TacExpr, b: TacExpr) -> str:
     b_v = _const_value(b)
     if a_v is not None and b_v is not None and a_v != b_v:
         return "neq"
+    if ctx is not None and ctx.use_interval_select:
+        a_range = infer_expr_range(a, ctx)
+        b_range = infer_expr_range(b, ctx)
+        if a_range is not None and b_range is not None and iv.disjoint(
+            iv.from_pair(a_range), iv.from_pair(b_range)
+        ):
+            return "neq"
     return "unknown"
 
 
@@ -165,7 +184,7 @@ def _resolve_in_def(
     if isinstance(def_rhs, ApplyExpr):
         if def_rhs.op == "Store" and len(def_rhs.args) == 3:
             m_old, k_store, v = def_rhs.args
-            rel = _key_relation(k_store, idx_expr)
+            rel = _key_relation(k_store, idx_expr, ctx)
             if rel == "eq":
                 return v
             if rel == "neq":

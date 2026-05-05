@@ -131,6 +131,14 @@ class RewriteCtx:
     # Default-on; ``ctac rw --no-ceildiv-op`` flips it for benchmark
     # comparison against the legacy emission.
     use_int_ceil_div: bool = True
+    # When True, ``SelectOverStore`` may peel a Store at key ``k`` past
+    # a Select at index ``a`` when :func:`infer_expr_range` proves ``k``
+    # and ``a`` have disjoint intervals — even if neither key is a
+    # literal constant. Off by default because the rule then depends on
+    # inferred ranges, which can be imprecise (silent under-fire) or
+    # surprising (firing when keys close in source intent end up disjoint
+    # under inferred bounds).
+    use_interval_select: bool = False
     du: DefUseResult = field(init=False)
     dsa: DsaResult = field(init=False)
     static_symbols: frozenset[str] = field(init=False)

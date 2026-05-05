@@ -246,6 +246,7 @@ def rewrite_program(
     ite_max_depth: int = 4,
     symbol_sorts: dict[str, str] | None = None,
     use_int_ceil_div: bool = True,
+    use_interval_select: bool = False,
     phase: str = "",
     trace_sink: TraceSink | None = None,
 ) -> RewriteResult:
@@ -291,6 +292,7 @@ def rewrite_program(
             fresh_counter_start=fresh_counter,
             symbol_sorts=symbol_sorts or {},
             use_int_ceil_div=use_int_ceil_div,
+            use_interval_select=use_interval_select,
         )
         changed_this_iter = False
         new_blocks: list[TacBlock] = []

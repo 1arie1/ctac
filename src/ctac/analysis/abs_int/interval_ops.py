@@ -85,6 +85,21 @@ def join(a: Interval, b: Interval) -> Interval:
     return Interval(lo, hi)
 
 
+def disjoint(a: Interval, b: Interval) -> bool:
+    """True iff the closed intervals share no integer.
+
+    Conservative under unbounded sides: ``a`` and ``b`` are disjoint
+    iff ``a.hi < b.lo`` or ``b.hi < a.lo`` with both relevant bounds
+    known. An open side facing the other interval can extend through
+    it, so the answer is False.
+    """
+    if a.hi is not None and b.lo is not None and a.hi < b.lo:
+        return True
+    if b.hi is not None and a.lo is not None and b.hi < a.lo:
+        return True
+    return False
+
+
 def bv_clamp(interval: Interval, width: int) -> Interval:
     """Clamp an unwrapped-Int interval into the bv-``width`` domain
     ``[0, 2^width - 1]``. If ``interval`` already fits, return it

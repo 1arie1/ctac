@@ -282,6 +282,16 @@ def rewrite_cmd(
             "the legacy emission as the performance benchmark."
         ),
     ),
+    interval_select: bool = typer.Option(
+        False,
+        "--interval-select/--no-interval-select",
+        help=(
+            "Let SelectOverStore peel a Store-key past a Select-index "
+            "when their inferred intervals are disjoint, in addition to "
+            "the syntactic-constant inequality check. Default off — "
+            "depends on range inference, which can be imprecise."
+        ),
+    ),
     materialize_assumes_flag: bool = typer.Option(
         True,
         "--materialize-assumes/--no-materialize-assumes",
@@ -354,6 +364,7 @@ def rewrite_cmd(
             ite_max_depth=ite_max_depth,
             symbol_sorts=tac.symbol_sorts,
             use_int_ceil_div=ceildiv_op,
+            use_interval_select=interval_select,
             phase="chain",
             trace_sink=trace_sink,
         )
@@ -370,6 +381,7 @@ def rewrite_cmd(
             ite_max_depth=ite_max_depth,
             symbol_sorts=tac.symbol_sorts,
             use_int_ceil_div=ceildiv_op,
+            use_interval_select=interval_select,
             phase="cse-early",
             trace_sink=trace_sink,
         )
@@ -382,6 +394,7 @@ def rewrite_cmd(
             ite_max_depth=ite_max_depth,
             symbol_sorts=tac.symbol_sorts,
             use_int_ceil_div=ceildiv_op,
+            use_interval_select=interval_select,
             phase="simplify",
             trace_sink=trace_sink,
         )
@@ -403,6 +416,7 @@ def rewrite_cmd(
             ite_max_depth=ite_max_depth,
             symbol_sorts=tac.symbol_sorts,
             use_int_ceil_div=ceildiv_op,
+            use_interval_select=interval_select,
             phase="div-purify",
             trace_sink=trace_sink,
         )
@@ -460,6 +474,7 @@ def rewrite_cmd(
                 ite_max_depth=ite_max_depth,
                 symbol_sorts=tac.symbol_sorts,
                 use_int_ceil_div=ceildiv_op,
+                use_interval_select=interval_select,
                 phase="purify",
                 trace_sink=trace_sink,
             )
@@ -485,6 +500,7 @@ def rewrite_cmd(
                     ite_max_depth=ite_max_depth,
                     symbol_sorts=tac.symbol_sorts,
                     use_int_ceil_div=ceildiv_op,
+                    use_interval_select=interval_select,
                     phase="cse-late",
                     trace_sink=trace_sink,
                 )
@@ -508,6 +524,7 @@ def rewrite_cmd(
                     ite_max_depth=ite_max_depth,
                     symbol_sorts=tac.symbol_sorts,
                     use_int_ceil_div=ceildiv_op,
+                    use_interval_select=interval_select,
                     phase="cp-cleanup",
                     trace_sink=trace_sink,
                 )
