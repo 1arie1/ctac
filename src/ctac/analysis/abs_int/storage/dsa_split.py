@@ -155,12 +155,22 @@ class DsaSplitStorage(Generic[V]):
 
         ``static`` is shared (any of the inputs has the same dict
         reference). ``local`` is the lattice ``join`` over the inputs'
-        local maps, evaluated at every var that appears in at least one
-        input's local. For a var present in only some inputs, the
-        absent inputs contribute the value the read-path would return
-        (``static[var]`` if DSA-static, else ``top``) — that's exactly
-        what the read-path yields and exactly what the convex-hull join
-        needs.
+        local maps. The handling of "var present in only some inputs"
+        depends on the var's DSA classification:
+
+        - **DSA-static var with a refinement on some inputs**: absent
+          inputs contribute ``static[var]`` (the universal value) and
+          the result is the convex hull. Sound: the static value bounds
+          every path.
+        - **DSA-dynamic var defined on some inputs but not all**: the
+          var is dropped from the joined ``local`` entirely. A use
+          downstream of the join is reaching from a path that did not
+          define the var — those paths are spurious in DSA-correct code,
+          and reasoning about the var there would over-approximate. The
+          downstream ``get`` returns ``top`` via the static-lookup
+          fallback, which means "no info" rather than a polluting
+          convex-hull-with-top. The materialization / explain views
+          show the var only at blocks where it's genuinely live.
         """
         if not states:
             return DsaSplitState(static=self._shared_static, local={})
@@ -172,11 +182,22 @@ class DsaSplitStorage(Generic[V]):
         for s in states:
             all_keys.update(s.local.keys())
         for var in all_keys:
+            # DSA-dynamic vars are scoped to def-reaching paths.
+            # Missing in any input means there's a path into this
+            # join that didn't define the var; drop it from local
+            # so downstream uses see "no info" via the read-path
+            # fallback (TOP) instead of TOP-degraded convex hulls.
+            if var in self._dsa_dynamic and any(
+                var not in s.local for s in states
+            ):
+                continue
             acc: V | None = None
             for s in states:
                 v = s.local.get(var)
                 if v is None:
-                    # Absent in this input — fall through to static or top.
+                    # Absent in this input. Var is DSA-static here
+                    # (dynamic was filtered above) — fall through to
+                    # static's universal value, top if not even there.
                     v = s.static.get(var, self._lattice.top)
                 acc = v if acc is None else self._lattice.join(acc, v)
             assert acc is not None
