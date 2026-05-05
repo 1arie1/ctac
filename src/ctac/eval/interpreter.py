@@ -646,11 +646,20 @@ def run_program(
             if isinstance(cmd, AssignExpCmd):
                 lhs_key = normalize_symbol(cmd.lhs)
                 is_bm = ev._is_bytemap_name(cmd.lhs)
+                # Compute the symbolic store/load annotation up-front:
+                # it only needs the key and val expressions, which can
+                # usually be model-evaluated even when the source
+                # bytemap's contents are unknown (the common case for
+                # production traces — bytemap symbols are huge and
+                # rarely fully populated in the model).
+                if is_bm:
+                    mem_repr = _format_bytemap_store_repr(ev, cmd.rhs)
+                else:
+                    mem_repr = _format_bytemap_select_reprs(ev, cmd.rhs)
                 try:
                     if is_bm:
                         mm = ev._eval_bytemap_expr(cmd.rhs)
                         ev.memory_store[lhs_key] = mm
-                        mem_repr = _format_bytemap_store_repr(ev, cmd.rhs)
                         events.append(RunEvent(
                             current, cmd, rendered,
                             note="bytemap update", memory_repr=mem_repr,
@@ -658,7 +667,6 @@ def run_program(
                     else:
                         val = ev.eval_expr(cmd.rhs)
                         ev.store[lhs_key] = val
-                        mem_repr = _format_bytemap_select_reprs(ev, cmd.rhs)
                         events.append(RunEvent(
                             current, cmd, rendered,
                             value=val, memory_repr=mem_repr,
@@ -667,13 +675,18 @@ def run_program(
                     if is_bm:
                         # Source map is unknown; drop the LHS so downstream
                         # reads also go Unknown and fall back to the model.
+                        # The annotation still surfaces what the program
+                        # tried to write and where, which is the only
+                        # actionable info for a CEX reader.
                         ev.memory_store.pop(lhs_key, None)
-                        events.append(RunEvent(current, cmd, rendered, note="bytemap unknown"))
+                        events.append(RunEvent(
+                            current, cmd, rendered,
+                            note="bytemap unknown", memory_repr=mem_repr,
+                        ))
                     else:
                         v = ev.model_values.get(lhs_key)
                         if v is not None:
                             ev.store[lhs_key] = v
-                            mem_repr = _format_bytemap_select_reprs(ev, cmd.rhs)
                             events.append(RunEvent(
                                 current, cmd, rendered,
                                 value=v, note="from model", memory_repr=mem_repr,

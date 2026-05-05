@@ -375,6 +375,29 @@ def test_memory_repr_select_concretizes_symbolic_key():
     assert sel_ev.value.data == 0xdead
 
 
+def test_memory_repr_store_surfaces_even_when_source_map_unknown():
+    """When the source bytemap (M0) isn't in memory_store,
+    `_eval_bytemap_expr` raises before ever looking at the key/val
+    args. The store annotation must still be emitted: a CEX reader
+    only cares about *what* and *where* was being stored, not the
+    M0 contents (which we never want to print in full anyway)."""
+    tac = parse_string(_RW_SYMBOLIC_KEY, path="<sym-key>")
+    cfg = RunConfig(
+        # Deliberately do NOT seed memory_store with M0 — havoc on R5
+        # then Store(M0, R5, 0xdead) will hit `bytemap unknown`.
+        symbol_sorts=tac.symbol_sorts,
+        model_values={"R5": Value("bv", 0x100)},
+        havoc_mode="ask",
+        ask_value=lambda sym, kind: Value("bv", 0x100) if sym == "R5" else Value(kind, 0),
+    )
+    res = run_program(tac.program, config=cfg)
+    assert res.status == "done"
+    store_ev = next(ev for ev in res.events if "Store" in (ev.cmd.raw or ""))
+    assert store_ev.note == "bytemap unknown"
+    # Critically: the annotation is present despite the unknown source map.
+    assert store_ev.memory_repr == "M0[0x100 := 0xdead]", store_ev.memory_repr
+
+
 def test_memory_repr_omitted_when_key_is_const():
     """When key & val are both constants, no annotation is needed — the
     cmd line already shows the literal indices."""
