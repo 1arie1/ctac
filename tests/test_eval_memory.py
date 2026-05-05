@@ -491,6 +491,129 @@ def test_ctac_run_trace_marks_default_sentinel_havoc(tmp_path):
     assert "(default)" not in r2_line, r2_line
 
 
+def test_ctac_run_trace_with_address_prefixes_grepable_hex(tmp_path):
+    """`ctac run --trace --with-address` prefixes traced cmds with the
+    SBF bytecode address from sbf.bytecode.address metadata, formatted
+    as `0x{addr:x}` (lowercase, no separators) so it `grep`'s verbatim
+    against external disassembler output. Cmds without the metadata key
+    get blank padding but still render."""
+    from typer.testing import CliRunner
+
+    from ctac.tool.main import app
+
+    tac = (
+        "TACSymbolTable {\n"
+        "\tUserDefined {\n\t}\n"
+        "\tBuiltinFunctions {\n\t}\n"
+        "\tUninterpretedFunctions {\n\t}\n"
+        "\tR0:bv256\n"
+        "\tR1:bv256\n"
+        "\tR2:bv256\n"
+        "}\n"
+        "Program {\n"
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignExpCmd:1 R0 0x1\n"
+        "\t\tAssignExpCmd:2 R1 0x2\n"
+        "\t\tAssignExpCmd R2 Add(R0 R1)\n"
+        "\t}\n"
+        "}\n"
+        "Axioms {\n}\n"
+        # 60000 = 0xea60, 60004 = 0xea64. R2's AssignExpCmd has no
+        # meta_index -> blank-pad in the address column.
+        'Metas {\n'
+        '  "1": [\n'
+        '    {\n'
+        '      "key": {\n'
+        '        "name": "sbf.bytecode.address",\n'
+        '        "type": "java.lang.Long",\n'
+        '        "erasureStrategy": "Canonical"\n'
+        '      },\n'
+        '      "value": 60000\n'
+        '    }\n'
+        '  ],\n'
+        '  "2": [\n'
+        '    {\n'
+        '      "key": {\n'
+        '        "name": "sbf.bytecode.address",\n'
+        '        "type": "java.lang.Long",\n'
+        '        "erasureStrategy": "Canonical"\n'
+        '      },\n'
+        '      "value": 60004\n'
+        '    }\n'
+        '  ]\n'
+        '}\n'
+    )
+    tac_path = tmp_path / "addrs.tac"
+    tac_path.write_text(tac)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["run", str(tac_path), "--plain", "--trace", "--with-address"],
+    )
+    assert result.exit_code in (0, 2, 3), result.output
+    out = result.output
+
+    # Addresses appear as grepable hex.
+    assert "0xea60" in out
+    assert "0xea64" in out
+    # Decimal storage must not bleed through.
+    assert "60000" not in out
+    assert "60004" not in out
+
+    # Pinned to the right command line: R0 = 1 carries 0xea60.
+    r0_line = next(ln for ln in out.splitlines() if "R0 = 1" in ln)
+    assert "0xea60" in r0_line, r0_line
+    r1_line = next(ln for ln in out.splitlines() if "R1 = 2" in ln)
+    assert "0xea64" in r1_line, r1_line
+
+    # R2's cmd has no metadata - line is still emitted, with a blank
+    # 10-char address column (2 spaces of indent + 10 spaces of pad +
+    # 2 spaces between columns = 14 leading spaces).
+    r2_line = next(ln for ln in out.splitlines() if "R2 = R0 + R1" in ln)
+    assert "0x" not in r2_line.split("R2")[0], r2_line  # no addr prefix
+    assert r2_line.startswith("  " + " " * 10 + "  "), r2_line
+
+
+def test_ctac_run_trace_without_with_address_unchanged(tmp_path):
+    """Without --with-address, trace output carries no hex address tokens."""
+    from typer.testing import CliRunner
+
+    from ctac.tool.main import app
+
+    tac = (
+        "TACSymbolTable {\n"
+        "\tUserDefined {\n\t}\n"
+        "\tBuiltinFunctions {\n\t}\n"
+        "\tUninterpretedFunctions {\n\t}\n"
+        "\tR0:bv256\n"
+        "}\n"
+        "Program {\n"
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignExpCmd:1 R0 0x1\n"
+        "\t}\n"
+        "}\n"
+        "Axioms {\n}\n"
+        'Metas {\n'
+        '  "1": [\n'
+        '    {\n'
+        '      "key": {\n'
+        '        "name": "sbf.bytecode.address",\n'
+        '        "type": "java.lang.Long",\n'
+        '        "erasureStrategy": "Canonical"\n'
+        '      },\n'
+        '      "value": 60000\n'
+        '    }\n'
+        '  ]\n'
+        '}\n'
+    )
+    tac_path = tmp_path / "addrs.tac"
+    tac_path.write_text(tac)
+    runner = CliRunner()
+    result = runner.invoke(app, ["run", str(tac_path), "--plain", "--trace"])
+    assert result.exit_code in (0, 2, 3), result.output
+    assert "0xea60" not in result.output
+
+
 def test_ctac_run_executes_bytemap_rw_with_model_fallback(tmp_path):
     """End-to-end: source map absent → Select propagates Unknown → model
     fills the scalar LHS at the AssignExpCmd."""

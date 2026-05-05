@@ -11,6 +11,7 @@ from ctac.ast.highlight import highlight_tac_line
 from ctac.ast.nodes import AssignExpCmd, AssignHavocCmd
 from ctac.ast.run_format import (
     MODEL_HAVOC_FALLBACK_NUM,
+    bytecode_addr_for_cmd,
     coerce_value_kind,
     format_value_plain_local,
     format_value_rich,
@@ -117,6 +118,15 @@ def run(
         True,
         "--human/--no-human",
         help="Enable human-oriented pattern rewrites in trace pretty-printer (default: on).",
+    ),
+    with_address: bool = typer.Option(
+        False,
+        "--with-address",
+        help=(
+            "In --trace output, prefix each command with its SBF bytecode "
+            "address in hex (from the sbf.bytecode.address metadata key). "
+            "Commands without an address get blank padding."
+        ),
     ),
     model: Annotated[
         Optional[Path],
@@ -384,6 +394,16 @@ def run(
         c.print(f"# validate: mismatches={mismatch_count}, missing_expected={missing_expected}")
     c.print(f"# status: {res.status} ({res.reason})")
 
+    # Bytecode address column: same grepable hex format as `ctac pp`
+    # (`0x{addr:x}`, lowercase, no separators), 10-char width with
+    # blank padding for cmds whose metadata is missing.
+    def _addr_col(cmd: object) -> str:
+        if not with_address:
+            return ""
+        addr = bytecode_addr_for_cmd(cmd, tac.metas)
+        prefix = f"0x{addr:x}" if addr is not None else ""
+        return f"{prefix:<10}  "
+
     if trace:
         cur_block: str | None = None
         block_table: Table | None = None
@@ -410,6 +430,8 @@ def run(
             if not ev.rendered and not ev.note:
                 continue
 
+            addr_col = _addr_col(ev.cmd)
+
             if plain:
                 if src_prefix:
                     c.print(f"  {src_prefix}")
@@ -419,11 +441,11 @@ def run(
                         suffix = "    (default)"
                     if ev.mismatch and ev.expected is not None:
                         suffix += f"    !! expected {format_value_plain_local(ev.expected)}"
-                    c.print(f"  {ev.rendered}    {format_value_plain_local(ev.value)}{suffix}")
+                    c.print(f"  {addr_col}{ev.rendered}    {format_value_plain_local(ev.value)}{suffix}")
                 elif ev.note:
-                    c.print(f"  {ev.rendered}    {ev.note}")
+                    c.print(f"  {addr_col}{ev.rendered}    {ev.note}")
                 else:
-                    c.print(f"  {ev.rendered}")
+                    c.print(f"  {addr_col}{ev.rendered}")
                 continue
 
             assert block_table is not None
@@ -432,6 +454,8 @@ def run(
 
             left_style = ev.color if ev.color else None
             left = highlight_tac_line(ev.rendered or "", base_style=left_style)
+            if addr_col:
+                left = Text(addr_col, style="grey50") + left
 
             if ev.value is not None:
                 right = format_value_rich(ev.value)
