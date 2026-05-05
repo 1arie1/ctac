@@ -8,8 +8,9 @@ from typing import Annotated, Optional
 
 import typer
 
-from ctac.ast.pretty import DEFAULT_PRINTERS, configured_printer, pretty_lines
-from ctac.ast.run_format import pp_terminator_line
+from ctac.ast.nodes import JumpCmd, JumpiCmd
+from ctac.ast.pretty import DEFAULT_PRINTERS, configured_printer
+from ctac.ast.run_format import bytecode_addr_for_cmd, pp_terminator_line
 from ctac.eval import Value
 from ctac.graph import Cfg, CfgFilter, CfgStyle
 from ctac.parse import ParseError, parse_path
@@ -72,6 +73,22 @@ def build_cfg_filter(
         cmd_contains=cmd_contains,
         exclude_ids=Cfg.parse_csv_ids(exclude),
     )
+
+
+def parse_address_range(text: str) -> tuple[int, int]:
+    """Parse an inclusive ``LO-HI`` address range; each side hex (``0x...``) or decimal."""
+    s = text.strip()
+    parts = s.split("-", 1)
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+        raise ValueError(f"--address-range must be 'LO-HI', got {text!r}")
+    try:
+        lo = int(parts[0].strip(), 0)
+        hi = int(parts[1].strip(), 0)
+    except ValueError as e:
+        raise ValueError(f"--address-range endpoints must be integers, got {text!r}") from e
+    if lo > hi:
+        raise ValueError(f"--address-range: LO (0x{lo:x}) > HI (0x{hi:x})")
+    return lo, hi
 
 
 def parse_user_value(text: str, kind: str) -> Value:
@@ -569,6 +586,27 @@ def pp(
         "--human/--no-human",
         help="Enable human-oriented pattern rewrites in pretty output (default: on).",
     ),
+    with_address: bool = typer.Option(
+        False,
+        "--with-address",
+        help=(
+            "Prefix each command with its SBF bytecode address in hex "
+            "(from the sbf.bytecode.address metadata key). Commands "
+            "without an address get blank padding."
+        ),
+    ),
+    address_range: Annotated[
+        Optional[str],
+        typer.Option(
+            "--address-range",
+            metavar="LO-HI",
+            help=(
+                "Show only commands whose SBF bytecode address is in the "
+                "inclusive range [LO, HI]. LO/HI accept hex (0x...) or "
+                "decimal. Implies --with-address."
+            ),
+        ),
+    ] = None,
     max_blocks: Annotated[
         Optional[int],
         typer.Option("--max-blocks", help="List at most this many blocks in file order."),
@@ -617,6 +655,18 @@ def pp(
         else:
             c.print(f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
+
+    rng: tuple[int, int] | None = None
+    if address_range is not None:
+        try:
+            rng = parse_address_range(address_range)
+        except ValueError as e:
+            if plain:
+                c.print(f"input error: {e}")
+            else:
+                c.print(f"[red]input error:[/red] {e}")
+            raise typer.Exit(1) from e
+        with_address = True
 
     flt = build_cfg_filter(
         to_block=to_block,
@@ -671,22 +721,54 @@ def pp(
     if flt.any_active():
         _emit(f"# filter: {len(filtered_cfg.blocks)} of {len(tac.program.blocks)} block(s)")
 
+    # Address column rendered as "0x{addr:x}" — lowercase hex, no
+    # underscores or grouping, so the token is grep'able verbatim
+    # against external bytecode-disassembler output. Width 10 covers
+    # "0x" + 8 hex digits; wider addresses widen this line only.
+    def _fmt_line(line: str, addr: int | None) -> str:
+        if not with_address:
+            return f"  {line}"
+        prefix = f"0x{addr:x}" if addr is not None else ""
+        return f"  {prefix:<10}  {line}"
+
     shown = 0
     for b in filtered_cfg.ordered_blocks():
         if max_blocks is not None and shown >= max_blocks:
             rest = len(filtered_cfg.blocks) - shown
             _emit(f"# ... truncated: {rest} more block(s) not listed (--max-blocks {max_blocks})")
             break
-        _emit(f"{b.id}:", highlight=True)
-        for cmd_line in pretty_lines(b.commands, printer=pp_backend):
-            _emit(f"  {cmd_line}", highlight=True)
+
+        body: list[tuple[str, int | None]] = []
+        for cmd in b.commands:
+            line = pp_backend.print_cmd(cmd)
+            if line is None or line == "":
+                continue
+            addr = bytecode_addr_for_cmd(cmd, tac.metas) if (with_address or rng) else None
+            if rng is not None and (addr is None or not (rng[0] <= addr <= rng[1])):
+                continue
+            body.append((line, addr))
+
+        # Under --address-range, drop blocks that contributed nothing.
+        if rng is not None and not body:
+            continue
+
+        term_cmd = None
+        for cmd in reversed(b.commands):
+            if isinstance(cmd, (JumpCmd, JumpiCmd)):
+                term_cmd = cmd
+                break
         term_line = pp_terminator_line(b, strip_var_suffixes=strip_var_suffixes)
+        term_addr = bytecode_addr_for_cmd(term_cmd, tac.metas) if (with_address and term_cmd is not None) else None
+
+        _emit(f"{b.id}:", highlight=True)
+        for line, addr in body:
+            _emit(_fmt_line(line, addr), highlight=True)
         if term_line is not None:
-            _emit(f"  {term_line}", highlight=True)
+            _emit(_fmt_line(term_line, term_addr), highlight=True)
         elif b.successors:
-            _emit(f"  goto {', '.join(b.successors)}", highlight=True)
+            _emit(_fmt_line(f"goto {', '.join(b.successors)}", None), highlight=True)
         else:
-            _emit("  stop", highlight=True)
+            _emit(_fmt_line("stop", None), highlight=True)
         _emit("")
         shown += 1
 

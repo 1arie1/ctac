@@ -86,6 +86,30 @@ def trim_path_left(path: str, max_chars: int) -> str:
     return "…/" + tail
 
 
+def bytecode_addr_for_cmd(cmd: Any, metas: dict[str, Any]) -> int | None:
+    """Return the SBF bytecode address attached to a command, or None.
+
+    Looks up the ``sbf.bytecode.address`` metadata entry (a ``java.lang.Long``
+    in the upstream Prover dump, decoded here as a Python ``int``).
+    """
+    meta_idx = getattr(cmd, "meta_index", None)
+    if meta_idx is None:
+        return None
+    bucket = metas.get(str(meta_idx))
+    if not isinstance(bucket, list):
+        return None
+    for ent in bucket:
+        if not isinstance(ent, dict):
+            continue
+        key = ent.get("key")
+        val = ent.get("value")
+        if not isinstance(key, dict):
+            continue
+        if key.get("name") == "sbf.bytecode.address" and isinstance(val, int):
+            return val
+    return None
+
+
 def source_prefix_for_cmd(cmd: Any, metas: dict[str, Any], *, max_path_chars: int = 56) -> str | None:
     meta_idx = getattr(cmd, "meta_index", None)
     if meta_idx is None:
