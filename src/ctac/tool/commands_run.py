@@ -439,9 +439,16 @@ def run(
                     suffix = ""
                     if ev.value_source == "default":
                         suffix = "    (default)"
+                    if ev.memory_repr:
+                        suffix += f"    {ev.memory_repr}"
                     if ev.mismatch and ev.expected is not None:
                         suffix += f"    !! expected {format_value_plain_local(ev.expected)}"
                     c.print(f"  {addr_col}{ev.rendered}    {format_value_plain_local(ev.value)}{suffix}")
+                elif ev.memory_repr:
+                    # Bytemap update: the concretized store annotation is
+                    # strictly more informative than the bare "bytemap
+                    # update" note, so it replaces it.
+                    c.print(f"  {addr_col}{ev.rendered}    {ev.memory_repr}")
                 elif ev.note:
                     c.print(f"  {addr_col}{ev.rendered}    {ev.note}")
                 else:
@@ -462,10 +469,15 @@ def run(
                 if ev.value_source == "default":
                     right.append("  ")
                     right.append("(default)", style="bold yellow")
+                if ev.memory_repr:
+                    right.append("  ")
+                    right.append(ev.memory_repr, style="grey50")
                 if ev.mismatch and ev.expected is not None:
                     right.append("  ")
                     right.append("!= expected ", style="bold red")
                     right.append(format_value_plain_local(ev.expected), style="bold red")
+            elif ev.memory_repr:
+                right = Text(ev.memory_repr, style="grey50", justify="left")
             elif ev.note:
                 note_style = f"bold {ev.color}" if ev.color else "bold cyan"
                 right = Text(ev.note, style=note_style, justify="left")

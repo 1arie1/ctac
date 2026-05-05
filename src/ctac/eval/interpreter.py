@@ -80,6 +80,14 @@ class RunEvent:
     # ``"default"`` (unconstrained sentinel = MODEL_HAVOC_FALLBACK_NUM).
     # ``None`` for everything else (computed values, no --model run, etc.).
     value_source: str | None = None
+    # Concretized memory-op annotation for display in the trace's value
+    # pane. Only set when an AssignExpCmd's RHS is a bytemap Store or
+    # contains a Select with a *symbolic* key/val operand — otherwise the
+    # cmd line itself already shows the literal indices and there's no
+    # extra information to surface. Stores look like
+    # ``M0[<key_hex> := <val_hex>]``; loads like ``M[<key_hex>]`` (one
+    # entry per Select, comma-joined when multiple).
+    memory_repr: str | None = None
 
 
 @dataclass
@@ -296,6 +304,67 @@ def _havoc_value(symbol: str, mode: HavocMode, ask_value: Callable[[str, ValueKi
     if k == "int":
         return _mk_int(secrets.randbelow(1 << 64))
     return _mk_bv(secrets.randbelow(MOD_256))
+
+
+def _format_bytemap_store_repr(ev: "Evaluator", rhs: TacExpr) -> str | None:
+    """If ``rhs`` (descending through Ite wrappers along the chosen branch)
+    bottoms out at ``Store(M0, key, val)`` and at least one of key/val is
+    not a literal constant, return ``"M0[<key_hex> := <val_hex>]"`` using
+    the live evaluator's view of those operands. Returns ``None`` when the
+    shape doesn't match or when the model can't concretize the operands —
+    callers should treat this as "no extra info to surface".
+    """
+    expr = rhs
+    while isinstance(expr, ApplyExpr) and expr.op == "Ite" and len(expr.args) == 3:
+        try:
+            cond = ev.eval_expr(expr.args[0])
+        except UnknownValueError:
+            return None
+        expr = expr.args[1] if _as_bool(cond) else expr.args[2]
+    if not (isinstance(expr, ApplyExpr) and expr.op == "Store" and len(expr.args) == 3):
+        return None
+    m_arg, k_arg, v_arg = expr.args
+    if isinstance(k_arg, ConstExpr) and isinstance(v_arg, ConstExpr):
+        return None
+    try:
+        k_val = ev.eval_expr(k_arg)
+        v_val = ev.eval_expr(v_arg)
+    except UnknownValueError:
+        return None
+    m_name = m_arg.name if isinstance(m_arg, SymExpr) else "?"
+    return f"{m_name}[{value_to_text(k_val)} := {value_to_text(v_val)}]"
+
+
+def _format_bytemap_select_reprs(ev: "Evaluator", rhs: TacExpr) -> str | None:
+    """Walk ``rhs``; for every ``Select(M, k)`` whose key is not a literal
+    constant, format ``"M[<key_hex>]"`` using the live evaluator.
+    Multiple Selects in the same RHS (rare but possible) are joined with
+    ``", "``. Returns ``None`` if no symbolic Select is reached.
+    """
+    parts: list[str] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _walk(e: TacExpr) -> None:
+        if not isinstance(e, ApplyExpr):
+            return
+        if e.op == "Select" and len(e.args) == 2:
+            m_arg, k_arg = e.args
+            if not isinstance(k_arg, ConstExpr):
+                try:
+                    k_val = ev.eval_expr(k_arg)
+                except UnknownValueError:
+                    return
+                m_name = m_arg.name if isinstance(m_arg, SymExpr) else "?"
+                key = (m_name, value_to_text(k_val))
+                if key not in seen:
+                    seen.add(key)
+                    parts.append(f"{m_name}[{key[1]}]")
+                return  # don't dig past the Select boundary
+        for a in e.args:
+            _walk(a)
+
+    _walk(rhs)
+    return ", ".join(parts) if parts else None
 
 
 class Evaluator:
@@ -581,11 +650,19 @@ def run_program(
                     if is_bm:
                         mm = ev._eval_bytemap_expr(cmd.rhs)
                         ev.memory_store[lhs_key] = mm
-                        events.append(RunEvent(current, cmd, rendered, note="bytemap update"))
+                        mem_repr = _format_bytemap_store_repr(ev, cmd.rhs)
+                        events.append(RunEvent(
+                            current, cmd, rendered,
+                            note="bytemap update", memory_repr=mem_repr,
+                        ))
                     else:
                         val = ev.eval_expr(cmd.rhs)
                         ev.store[lhs_key] = val
-                        events.append(RunEvent(current, cmd, rendered, value=val))
+                        mem_repr = _format_bytemap_select_reprs(ev, cmd.rhs)
+                        events.append(RunEvent(
+                            current, cmd, rendered,
+                            value=val, memory_repr=mem_repr,
+                        ))
                 except UnknownValueError:
                     if is_bm:
                         # Source map is unknown; drop the LHS so downstream
@@ -596,7 +673,11 @@ def run_program(
                         v = ev.model_values.get(lhs_key)
                         if v is not None:
                             ev.store[lhs_key] = v
-                            events.append(RunEvent(current, cmd, rendered, value=v, note="from model"))
+                            mem_repr = _format_bytemap_select_reprs(ev, cmd.rhs)
+                            events.append(RunEvent(
+                                current, cmd, rendered,
+                                value=v, note="from model", memory_repr=mem_repr,
+                            ))
                         else:
                             ev.store.pop(lhs_key, None)
                             events.append(RunEvent(current, cmd, rendered, note="unknown"))

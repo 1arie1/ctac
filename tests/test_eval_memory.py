@@ -308,6 +308,87 @@ Metas {
 """
 
 
+_RW_SYMBOLIC_KEY = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR0:bv256
+\tR5:bv256
+\tM0:bytemap
+\tM1:bytemap
+}
+Program {
+\tBlock e Succ [] {
+\t\tAssignHavocCmd R5
+\t\tAssignExpCmd M1 Store(M0 R5 0xdead)
+\t\tAssignExpCmd R0 Select(M1 R5)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_memory_repr_store_concretizes_symbolic_key():
+    """Store(M0, R5, 0xdead) with R5 supplied by --model surfaces a
+    `M0[<R5_hex> := 0xdead]` annotation on the bytemap-update event."""
+    tac = parse_string(_RW_SYMBOLIC_KEY, path="<sym-key>")
+    cfg = RunConfig(
+        memory_store={"M0": MemoryModel(entries={}, default=0)},
+        symbol_sorts=tac.symbol_sorts,
+        # R5 model value -> 0x100. The havoc consults the model when ask
+        # callback is set; for this test we just plant it in the store
+        # via model_values plus the run-program "ask" path that prefers
+        # model_values.
+        model_values={"R5": Value("bv", 0x100)},
+        havoc_mode="ask",
+        ask_value=lambda sym, kind: Value("bv", 0x100) if sym == "R5" else Value(kind, 0),
+    )
+    res = run_program(tac.program, config=cfg)
+    assert res.status == "done"
+    store_ev = next(ev for ev in res.events if "Store" in (ev.cmd.raw or ""))
+    assert store_ev.memory_repr == "M0[0x100 := 0xdead]", store_ev.memory_repr
+
+
+def test_memory_repr_select_concretizes_symbolic_key():
+    """Select(M1, R5) with symbolic R5 surfaces `M1[<R5_hex>]` alongside the loaded value."""
+    tac = parse_string(_RW_SYMBOLIC_KEY, path="<sym-key>")
+    cfg = RunConfig(
+        memory_store={"M0": MemoryModel(entries={}, default=0)},
+        symbol_sorts=tac.symbol_sorts,
+        model_values={"R5": Value("bv", 0x100)},
+        havoc_mode="ask",
+        ask_value=lambda sym, kind: Value("bv", 0x100) if sym == "R5" else Value(kind, 0),
+    )
+    res = run_program(tac.program, config=cfg)
+    assert res.status == "done"
+    sel_ev = next(ev for ev in res.events if "Select" in (ev.cmd.raw or ""))
+    assert sel_ev.memory_repr == "M1[0x100]", sel_ev.memory_repr
+    # The loaded value is still on the event (cmd line dictates the LHS scalar).
+    assert sel_ev.value is not None
+    assert sel_ev.value.data == 0xdead
+
+
+def test_memory_repr_omitted_when_key_is_const():
+    """When key & val are both constants, no annotation is needed — the
+    cmd line already shows the literal indices."""
+    tac = parse_string(_RW, path="<rw>")
+    cfg = RunConfig(
+        memory_store={"M0": MemoryModel(entries={}, default=0)},
+        symbol_sorts=tac.symbol_sorts,
+    )
+    res = run_program(tac.program, config=cfg)
+    assert all(ev.memory_repr is None for ev in res.events), [
+        (ev.cmd.raw, ev.memory_repr) for ev in res.events
+    ]
+
+
 def test_run_program_executes_store_with_modeled_source_map():
     tac = parse_string(_RW, path="<rw>")
     cfg = RunConfig(
