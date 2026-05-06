@@ -89,23 +89,34 @@ def trim_path_left(path: str, max_chars: int) -> str:
 def bytecode_addr_for_cmd(cmd: Any, metas: dict[str, Any]) -> int | None:
     """Return the SBF bytecode address attached to a command, or None.
 
-    Looks up the ``sbf.bytecode.address`` metadata entry (a ``java.lang.Long``
-    in the upstream Prover dump, decoded here as a Python ``int``).
+    Two on-disk metadata shapes are supported:
+
+    * ``.tac`` dump (Prover): ``metas[idx]`` is a list of
+      ``{"key": {"name": "sbf.bytecode.address", ...}, "value": <int>}``
+      entries (the upstream Prover encodes the ``java.lang.Long`` as a
+      Python ``int``).
+    * ``.sbf.json`` (SBF compiler): ``metas[idx]`` is a flat dict whose
+      ``"sbf_bytecode_address"`` field holds the address directly. The
+      key uses underscores in this format (vs. dots in the TAC dump).
     """
     meta_idx = getattr(cmd, "meta_index", None)
     if meta_idx is None:
         return None
     bucket = metas.get(str(meta_idx))
-    if not isinstance(bucket, list):
+    if isinstance(bucket, list):
+        for ent in bucket:
+            if not isinstance(ent, dict):
+                continue
+            key = ent.get("key")
+            val = ent.get("value")
+            if not isinstance(key, dict):
+                continue
+            if key.get("name") == "sbf.bytecode.address" and isinstance(val, int):
+                return val
         return None
-    for ent in bucket:
-        if not isinstance(ent, dict):
-            continue
-        key = ent.get("key")
-        val = ent.get("value")
-        if not isinstance(key, dict):
-            continue
-        if key.get("name") == "sbf.bytecode.address" and isinstance(val, int):
+    if isinstance(bucket, dict):
+        val = bucket.get("sbf_bytecode_address")
+        if isinstance(val, int):
             return val
     return None
 
