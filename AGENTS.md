@@ -162,6 +162,24 @@ Prompt template:
     - `--show-unchanged` — include zero-delta stats (audit view).
     - `--json` — machine-readable.
 
+- `ctac sbf-tac <sbf.json> <tac> --plain`
+  - Joins each SBF instruction with the TAC commands at the same
+    `sbf_bytecode_address` (or `sbf.bytecode.address`). Three
+    columns: address, SBF instruction, TAC command. The first row of
+    each address group carries the SBF instruction; continuation
+    rows leave the SBF column blank for additional TAC cmds. TAC
+    cmds without an SBF address are not shown.
+  - Useful for debugging the SBF → TAC lowering, and for propagating
+    annotations from TAC back to SBF (`grep <addr>` on the joined
+    view).
+  - Key flags:
+    - SBF CFG filters (same set as `ctac pp`, applied to the SBF
+      side only): `--from`, `--to`, `--only`, `--id-contains`,
+      `--id-regex`, `--cmd-contains`, `--exclude`.
+    - `--printer human|raw`, `--strip-var-suffix`, `--human` —
+      identical defaults to `ctac pp`.
+    - `-o PATH` — write joined output to a file.
+
 - `ctac df <file> --plain`
   - Data-flow analyses: `def-use`, `liveness`, `dce`,
     `use-before-def`, `dsa`, `control-dependence`, `uce`
