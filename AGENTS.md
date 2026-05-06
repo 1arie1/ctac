@@ -176,6 +176,9 @@ Prompt template:
     - SBF CFG filters (same set as `ctac pp`, applied to the SBF
       side only): `--from`, `--to`, `--only`, `--id-contains`,
       `--id-regex`, `--cmd-contains`, `--exclude`.
+    - `--address-range LO-HI` — keep only SBF rows whose bytecode
+      address is in the inclusive window (same flag spelling as
+      `ctac pp --address-range`).
     - `--printer human|raw`, `--strip-var-suffix`, `--human` —
       identical defaults to `ctac pp`.
     - `-o PATH` — write joined output to a file.

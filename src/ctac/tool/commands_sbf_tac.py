@@ -29,7 +29,11 @@ from ctac.tool.cli_runtime import (
     console,
     plain_requested,
 )
-from ctac.tool.commands_cfg_pp_search import build_cfg_filter, normalize_printer_name
+from ctac.tool.commands_cfg_pp_search import (
+    build_cfg_filter,
+    normalize_printer_name,
+    parse_address_range,
+)
 from ctac.tool.input_resolution import resolve_tac_input_path
 from ctac.tool.project_io import ingest_or_write_text
 
@@ -52,6 +56,8 @@ _SBF_TAC_EPILOG = (
     "[cyan]ctac sbf-tac prog.sbf.json prog.tac --plain[/cyan]\n\n"
     "[cyan]ctac sbf-tac prog.sbf.json prog.tac --plain --from B12[/cyan]"
     "  [dim]# slice from sbf block B12[/dim]\n\n"
+    "[cyan]ctac sbf-tac prog.sbf.json prog.tac --plain --address-range 0x5f000-0x5f200[/cyan]"
+    "  [dim]# pin a bytecode window[/dim]\n\n"
     "[cyan]ctac sbf-tac prog.sbf.json prog.tac --plain | grep 0x5f088[/cyan]"
     "  [dim]# all rows for one bytecode address[/dim]"
 )
@@ -139,6 +145,19 @@ def sbf_tac(
     exclude: Annotated[
         Optional[str], typer.Option("--exclude", help=FILTER_EXCLUDE_HELP)
     ] = None,
+    address_range: Annotated[
+        Optional[str],
+        typer.Option(
+            "--address-range",
+            metavar="LO-HI",
+            help=(
+                "Show only SBF instructions whose bytecode address is in "
+                "the inclusive range [LO, HI]. LO/HI accept hex (0x...) "
+                "or decimal. Blocks left with no rows are skipped. "
+                "(Same flag spelling as `ctac pp --address-range`.)"
+            ),
+        ),
+    ] = None,
     weak_is_strong: bool = typer.Option(
         False,
         "--weak-is-strong",
@@ -160,6 +179,14 @@ def sbf_tac(
     except ValueError as e:
         c.print(f"input error: {e}" if plain else f"[red]input error:[/red] {e}")
         raise typer.Exit(1) from e
+
+    addr_rng: tuple[int, int] | None = None
+    if address_range is not None:
+        try:
+            addr_rng = parse_address_range(address_range)
+        except ValueError as e:
+            c.print(f"input error: {e}" if plain else f"[red]input error:[/red] {e}")
+            raise typer.Exit(1) from e
 
     flt = build_cfg_filter(
         to_block=to_block,
@@ -243,8 +270,6 @@ def sbf_tac(
     # occurrence gets the full TAC join, which is what makes the
     # lowering visible at every callsite.
     for b in filtered_sbf.ordered_blocks():
-        _emit(f"{b.id}:")
-
         table = Table.grid(expand=False, padding=(0, 2))
         table.add_column(no_wrap=True, overflow="ellipsis")  # address
         table.add_column()  # sbf instruction
@@ -257,6 +282,10 @@ def sbf_tac(
                 continue
             sbf_line = _compact_sbf_line(sbf_line)
             addr = bytecode_addr_for_cmd(cmd, sbf_tac_file.metas)
+            if addr_rng is not None and (
+                addr is None or not (addr_rng[0] <= addr <= addr_rng[1])
+            ):
+                continue
             addr_text = f"0x{addr:x}" if addr is not None else ""
             tac_lines = tac_index.get(addr, []) if addr is not None else []
 
@@ -273,9 +302,12 @@ def sbf_tac(
                     table.add_row(Text(""), Text(""), cont)
             rows += 1
 
+        # Skip blocks that lost every row to the address filter — printing
+        # a header for an empty block is just visual noise.
         if rows:
+            _emit(f"{b.id}:")
             _emit_table(table)
-        _emit("")
+            _emit("")
 
     if to_buffer:
         text = "\n".join(file_lines) + ("\n" if file_lines else "")

@@ -307,6 +307,69 @@ def test_sbf_tac_inline_comments_stripped(tmp_path: Path) -> None:
     assert "call CVT_foo" in out
 
 
+def test_sbf_tac_address_range_keeps_in_range_rows(tmp_path: Path) -> None:
+    """`--address-range 0xea60-0xea64` keeps only SBF rows in that
+    inclusive window; the 0xea70 row drops out."""
+    sbf = _write_sbf(tmp_path, "demo.sbf.json", _SBF_TWO_BLOCKS)
+    tac = _write_tac(tmp_path, "demo.tac", _TAC_LOWERING)
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["sbf-tac", str(sbf), str(tac), "--plain", "--address-range", "0xea60-0xea64"],
+    )
+    assert res.exit_code == 0, res.output
+    out = res.output
+    assert "0xea60" in out
+    assert "0xea64" in out
+    assert "0xea70" not in out
+    # The 0xea60 row's TAC join is preserved.
+    assert "R10 = 7" in out
+
+
+def test_sbf_tac_address_range_accepts_decimal(tmp_path: Path) -> None:
+    """Decimal endpoints work alongside hex (matches pp's contract)."""
+    sbf = _write_sbf(tmp_path, "demo.sbf.json", _SBF_TWO_BLOCKS)
+    tac = _write_tac(tmp_path, "demo.tac", _TAC_LOWERING)
+    runner = CliRunner()
+    # 0xea60 = 60000, 0xea64 = 60004
+    res = runner.invoke(
+        app,
+        ["sbf-tac", str(sbf), str(tac), "--plain", "--address-range", "60000-60004"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "0xea60" in res.output
+    assert "0xea64" in res.output
+    assert "0xea70" not in res.output
+
+
+def test_sbf_tac_address_range_drops_blocks_with_no_surviving_rows(tmp_path: Path) -> None:
+    """Block headers don't print when every cmd in that block was filtered out."""
+    sbf = _write_sbf(tmp_path, "demo.sbf.json", _SBF_TWO_BLOCKS)
+    tac = _write_tac(tmp_path, "demo.tac", _TAC_LOWERING)
+    runner = CliRunner()
+    # Only block A's 0xea60 survives; block B (only 0xea70) should disappear.
+    res = runner.invoke(
+        app,
+        ["sbf-tac", str(sbf), str(tac), "--plain", "--address-range", "0xea60-0xea60"],
+    )
+    assert res.exit_code == 0, res.output
+    out = res.output
+    assert "A:" in out
+    assert "B:" not in out
+
+
+def test_sbf_tac_address_range_invalid_token(tmp_path: Path) -> None:
+    """Bad `--address-range` exits non-zero with a helpful message."""
+    sbf = _write_sbf(tmp_path, "demo.sbf.json", _SBF_TWO_BLOCKS)
+    tac = _write_tac(tmp_path, "demo.tac", _TAC_LOWERING)
+    runner = CliRunner()
+    res = runner.invoke(
+        app, ["sbf-tac", str(sbf), str(tac), "--plain", "--address-range", "nope"]
+    )
+    assert res.exit_code != 0
+    assert "address-range" in res.output
+
+
 def test_sbf_tac_writes_output_file(tmp_path: Path) -> None:
     """`-o FILE` writes the joined view; stdout gets only the confirmation."""
     sbf = _write_sbf(tmp_path, "demo.sbf.json", _SBF_TWO_BLOCKS)
