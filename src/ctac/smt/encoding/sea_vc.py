@@ -23,6 +23,7 @@ from ctac.ast.nodes import (
     SymbolRef,
     TacExpr,
 )
+from ctac.graph.cfg import Cfg
 from ctac.smt.cfg import CFG_ENCODERS, CfgEmit, build_cfg_input
 from ctac.smt.encoding.base import EncoderContext, SmtEncodingError, SmtEncoder
 from ctac.smt.encoding.map_chain import (
@@ -1498,55 +1499,33 @@ class SeaVcEncoder(SmtEncoder):
         # cannot do across separate implications. Without --guard-statics
         # the default stream-based shape is preserved byte-for-byte:
         # bare ``(= lhs rhs)`` for statics, ``(=> BLK cond)`` per assume.
-        # Inline-scalar macros: topo-sort candidates by RHS-symbol
-        # dependencies and emit ``(define-fun s () Sort rhs)`` for each
-        # in dependency order. ``program.blocks`` source order is not a
-        # topological sort across blocks, so a candidate's RHS may
-        # reference a later-emitted candidate without an explicit sort.
-        # SSA guarantees the dep graph is acyclic.
+        # Inline-scalar macros: emit ``(define-fun s () Sort rhs)`` for
+        # each candidate. Walking ``Cfg.ordered_blocks()`` (topological,
+        # file-position-stable for ties) ensures every candidate's
+        # RHS-symbol references — including other candidates — already
+        # have their macros emitted textually earlier. SSA guarantees
+        # the def-use DAG is acyclic so the topological order exists.
         inline_macro_lines: list[str] = []
         if ctx.inline_scalars and inline_candidates:
-            inline_topo: list[str] = []
-            inline_seen: set[str] = set()
-            inline_stack: set[str] = set()
-
-            def _emit_candidate(sym: str) -> None:
-                if sym in inline_seen:
-                    return
-                if sym in inline_stack:
-                    raise SmtEncodingError(
-                        f"inline-scalars dependency cycle through {sym}; "
-                        "expected SSA-acyclic"
+            for blk in Cfg(program).ordered_blocks():
+                for idx, cmd in enumerate(blk.commands):
+                    if not isinstance(cmd, AssignExpCmd):
+                        continue
+                    sym = canonical_symbol(cmd.lhs, strip_var_suffixes=True)
+                    if sym not in inline_candidates:
+                        continue
+                    with _with_source(
+                        f"inline rhs of {sym} in block {blk.id} cmd {idx}"
+                    ), _with_block(blk.id):
+                        rhs_smt, _ = emit_expr(
+                            cmd.rhs, expected_sort=symbol_sort[sym]
+                        )
+                    inline_macro_lines.append(
+                        f"(define-fun {symbol_term[sym]} () "
+                        f"{symbol_sort[sym]} {rhs_smt})"
                     )
-                inline_stack.add(sym)
-                cand_ds = inline_candidates[sym]
-                cand_cmd = block_by_id(
-                    program, cand_ds.block_id
-                ).commands[cand_ds.cmd_index]
-                assert isinstance(cand_cmd, AssignExpCmd)
-                for ref in _iter_expr_symbols(cand_cmd.rhs):
-                    ref_sym = canonical_symbol(ref, strip_var_suffixes=True)
-                    if ref_sym in inline_candidates:
-                        _emit_candidate(ref_sym)
-                with _with_source(
-                    f"inline rhs of {sym} in block "
-                    f"{cand_ds.block_id} cmd {cand_ds.cmd_index}"
-                ), _with_block(cand_ds.block_id):
-                    rhs_smt, _ = emit_expr(
-                        cand_cmd.rhs, expected_sort=symbol_sort[sym]
-                    )
-                inline_macro_lines.append(
-                    f"(define-fun {symbol_term[sym]} () "
-                    f"{symbol_sort[sym]} {rhs_smt})"
-                )
-                if _rhs_is_top_level_narrow(cand_cmd.rhs):
-                    add_narrow_range_if_bv256(sym, symbol_term[sym])
-                inline_stack.discard(sym)
-                inline_seen.add(sym)
-                inline_topo.append(sym)
-
-            for sym in inline_candidates:
-                _emit_candidate(sym)
+                    if _rhs_is_top_level_narrow(cmd.rhs):
+                        add_narrow_range_if_bv256(sym, symbol_term[sym])
 
         grouped_static_eqs: dict[str, list[str]] = {}
         for ds in du.definitions:
