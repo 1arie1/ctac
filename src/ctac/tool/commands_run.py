@@ -504,6 +504,20 @@ def run(
     c.print(f"executed_blocks: {len(res.executed_blocks)}")
     c.print(f"assert_ok: {res.assert_ok}")
     c.print(f"assert_fail: {res.assert_fail}")
+    # Warnings encountered along the executed path. Surface them with
+    # the count even at zero so the field is always present, then list
+    # the messages so they stay visible when --trace is off.
+    # Dedupe to keep the summary readable when the same warning fires
+    # repeatedly (e.g. a stack-read PTA over-approximation hit on
+    # every loop iteration); the count is occurrences, not unique-count.
+    c.print(f"warnings: {len(res.warnings)}")
+    if res.warnings:
+        seen: dict[str, int] = {}
+        for w in res.warnings:
+            seen[w] = seen.get(w, 0) + 1
+        for text, n in seen.items():
+            suffix = f"  (x{n})" if n > 1 else ""
+            c.print(f"  {text}{suffix}", style="bold bright_red", markup=False)
 
     if res.status == "stopped":
         raise typer.Exit(2)

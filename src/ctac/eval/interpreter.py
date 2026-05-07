@@ -100,6 +100,11 @@ class RunResult:
     assert_ok: int
     assert_fail: int
     events: list[RunEvent]
+    # Soundness-relevant warning lines encountered along the executed
+    # path (rendered by the human printer with a leading `!!!` marker).
+    # Surfaced in run summary so warnings stay visible even when --trace
+    # is off.
+    warnings: list[str] = field(default_factory=list)
 
 
 def infer_kind(symbol: str) -> ValueKind:
@@ -611,6 +616,7 @@ def run_program(
     assert_fail = 0
     events: list[RunEvent] = []
     executed_blocks: list[str] = []
+    warnings: list[str] = []
     seen = set()
 
     current = entry
@@ -882,9 +888,14 @@ def run_program(
                     # Warnings (rendered with a leading `!!!` marker by the
                     # human printer) get the same loud bold-red treatment
                     # used by `ctac pp`, so soundness-relevant snippets
-                    # stand out in --trace too.
-                    color = "bold bright_red" if rendered.lstrip().startswith("!!!") else None
-                    events.append(RunEvent(current, cmd, rendered, color=color))
+                    # stand out in --trace too. The warning text is also
+                    # collected on RunResult.warnings so the run summary
+                    # surfaces them even when --trace is off.
+                    if rendered.lstrip().startswith("!!!"):
+                        events.append(RunEvent(current, cmd, rendered, color="bold bright_red"))
+                        warnings.append(rendered.lstrip())
+                    else:
+                        events.append(RunEvent(current, cmd, rendered))
                 continue
 
             if isinstance(cmd, (LabelCmd, RawCmd)):
@@ -926,4 +937,5 @@ def run_program(
         assert_ok=assert_ok,
         assert_fail=assert_fail,
         events=events,
+        warnings=warnings,
     )

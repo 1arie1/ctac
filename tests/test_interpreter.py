@@ -256,3 +256,64 @@ def test_run_warning_annotation_emits_red_event_with_human_printer() -> None:
     assert "Warning: spurious counterexample possible." in ev.rendered
     assert "R1842" in ev.rendered
     assert ev.color == "bold bright_red"
+
+
+def test_run_collects_warnings_into_result() -> None:
+    """Warnings encountered along the executed path are recorded on
+    RunResult.warnings so the summary surfaces them even with --trace
+    off. Each occurrence is recorded — dedupe is the renderer's job."""
+    from ctac.ast.pretty import DEFAULT_PRINTERS
+
+    tac = parse_string(WARNING_ANNOTATION_TAC, path="<string>")
+    human = DEFAULT_PRINTERS.get("human")
+    res = run_program(tac.program, config=RunConfig(), pretty_cmd=human.print_cmd)
+    assert len(res.warnings) == 1
+    w = res.warnings[0]
+    assert w.startswith("!!! WARNING")
+    assert "[debug.pta_split_or_merge]" in w
+    assert "R1842" in w
+
+
+def test_run_no_warnings_when_path_does_not_hit_them() -> None:
+    """RunResult.warnings is empty when no warning annotations execute."""
+    tac = parse_string(RUN_TAC, path="<string>")
+    res = run_program(tac.program, config=RunConfig())
+    assert res.warnings == []
+
+
+def test_ctac_run_summary_shows_warnings_without_trace(tmp_path) -> None:
+    """`ctac run --plain` (no --trace) lists encountered warnings in
+    the summary so they're never silently lost — the whole point of
+    threading them onto RunResult."""
+    from typer.testing import CliRunner
+
+    from ctac.tool.main import app
+
+    p = tmp_path / "warn.tac"
+    p.write_text(WARNING_ANNOTATION_TAC)
+    runner = CliRunner()
+    res = runner.invoke(app, ["run", str(p), "--plain"])
+    assert res.exit_code == 0, res.output
+    out = res.output
+    # Trace lines (per-block headers) must NOT be present without --trace.
+    assert "entry:" not in out
+    # Summary still surfaces the warning, with count and full text.
+    assert "warnings: 1" in out
+    assert "!!! WARNING" in out
+    assert "[debug.pta_split_or_merge]" in out
+    assert "R1842" in out
+
+
+def test_ctac_run_summary_warnings_zero_when_path_clean(tmp_path) -> None:
+    """`warnings: 0` is always printed so consumers can grep for the
+    field unconditionally."""
+    from typer.testing import CliRunner
+
+    from ctac.tool.main import app
+
+    p = tmp_path / "clean.tac"
+    p.write_text(RUN_TAC)
+    runner = CliRunner()
+    res = runner.invoke(app, ["run", str(p), "--plain"])
+    assert res.exit_code in (0, 2, 3), res.output
+    assert "warnings: 0" in res.output
