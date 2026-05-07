@@ -706,6 +706,14 @@ def pp(
     def _emit(text: str, *, highlight: bool = False) -> None:
         if to_buffer:
             file_lines.append(text)
+            return
+        # Warning lines (rendered by the human printer with a leading
+        # `!!!` marker) bypass the syntax highlighter and go out in
+        # bold red so they stand out against the surrounding TAC.
+        # `markup=False` because the `[annotation.name]` segment in the
+        # warning would otherwise look like a Rich markup tag.
+        if text.lstrip().startswith("!!!"):
+            c.print(text, style="bold bright_red", markup=False)
         elif highlight:
             c.print(highlight_tac_line(text))
         else:

@@ -215,3 +215,44 @@ def test_run_snippet_weak_use_dangling_does_not_materialize_store() -> None:
     missing_event = next(e for e in res.events if e.rendered.strip() == "missing")
     assert missing_event.note == "dangling weak use: R9"
     assert "R9" not in res.final_store
+
+
+WARNING_ANNOTATION_TAC = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR1:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignExpCmd R1 0x1
+\t\tAnnotationCmd JSON{"key":{"name":"debug.pta_split_or_merge","type":"sbf.tac.DebugSnippet"},"value":{"msg":"Warning: spurious counterexample possible.","symbols":[{"namePrefix":"R1842"}]}}
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_run_warning_annotation_emits_red_event_with_human_printer() -> None:
+    """Warning-style debug snippets bubble up as RunEvents with the
+    `!!! WARNING` marker (from the human printer) and bold red color
+    so --trace surfaces them prominently."""
+    from ctac.ast.pretty import DEFAULT_PRINTERS
+
+    tac = parse_string(WARNING_ANNOTATION_TAC, path="<string>")
+    human = DEFAULT_PRINTERS.get("human")
+    res = run_program(tac.program, config=RunConfig(), pretty_cmd=human.print_cmd)
+    warn_events = [e for e in res.events if e.rendered.startswith("!!! WARNING")]
+    assert len(warn_events) == 1
+    ev = warn_events[0]
+    assert "[debug.pta_split_or_merge]" in ev.rendered
+    assert "Warning: spurious counterexample possible." in ev.rendered
+    assert "R1842" in ev.rendered
+    assert ev.color == "bold bright_red"

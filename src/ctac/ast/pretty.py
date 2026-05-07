@@ -344,6 +344,30 @@ class HumanPrettyPrinter(PrettyPrinter):
                 return f"assume {var_txt} in [{lo_txt}, {hi_txt}]"
         return super().visit_AssumeExpCmd(node)
 
+    def _format_warning_line(self, key: dict, val: dict) -> str | None:
+        # Warnings are debug-snippet annotations whose `value.msg` starts
+        # with "Warning". They flag soundness-relevant over-approximations
+        # (e.g. pointer-analysis split/merge) that can produce spurious
+        # counterexamples and are crucial for debugging — so the human
+        # printer must surface them rather than swallow the annotation.
+        msg = val.get("msg")
+        if not isinstance(msg, str):
+            return None
+        if not msg.lstrip().lower().startswith("warning"):
+            return None
+        name = key.get("name")
+        name_part = f" [{name}]" if isinstance(name, str) else ""
+        syms = val.get("symbols")
+        sym_tokens: list[str] = []
+        if isinstance(syms, list):
+            for ent in syms:
+                if isinstance(ent, dict):
+                    p = ent.get("namePrefix")
+                    if isinstance(p, str):
+                        sym_tokens.append(self._fmt_symbol_token(p))
+        sym_part = f" ({', '.join(sym_tokens)})" if sym_tokens else ""
+        return f"!!! WARNING{name_part}: {msg}{sym_part}"
+
     def visit_AnnotationCmd(self, node: AnnotationCmd) -> str | None:
         payload = node.payload.strip()
         if not payload.startswith("JSON"):
@@ -358,6 +382,9 @@ class HumanPrettyPrinter(PrettyPrinter):
         val = obj.get("value")
         if not isinstance(key, dict) or not isinstance(val, dict):
             return None
+        warn = self._format_warning_line(key, val)
+        if warn is not None:
+            return warn
         if key.get("name") != "snippet.cmd":
             return None
         klass = val.get("#class")

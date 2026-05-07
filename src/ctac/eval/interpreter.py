@@ -879,7 +879,12 @@ def run_program(
                         events.append(RunEvent(current, cmd, f"  {tag}", color="cyan"))
                         continue
                 if rendered:
-                    events.append(RunEvent(current, cmd, rendered))
+                    # Warnings (rendered with a leading `!!!` marker by the
+                    # human printer) get the same loud bold-red treatment
+                    # used by `ctac pp`, so soundness-relevant snippets
+                    # stand out in --trace too.
+                    color = "bold bright_red" if rendered.lstrip().startswith("!!!") else None
+                    events.append(RunEvent(current, cmd, rendered, color=color))
                 continue
 
             if isinstance(cmd, (LabelCmd, RawCmd)):

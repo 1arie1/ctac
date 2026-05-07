@@ -187,6 +187,50 @@ def test_human_renders_scope_annotations_as_calls() -> None:
     assert lines == ['clog_scope_start("pre")', 'clog_scope_end("pre")']
 
 
+def test_human_renders_pta_split_or_merge_warning_prominently() -> None:
+    """`debug.pta_split_or_merge` annotations carry a `Warning:` msg flagging
+    pointer-analysis over-approximation. The human printer surfaces them
+    with a `!!! WARNING` marker so they aren't lost in pp output."""
+    cmd = parse_command_line(
+        'AnnotationCmd JSON{"key":{"name":"debug.pta_split_or_merge","type":"sbf.tac.DebugSnippet","erasureStrategy":"Canonical"},'
+        '"value":{"msg":"Warning: this read on the stack does not match the last written bytes.",'
+        '"symbols":[{"namePrefix":"R1842:7","tag":{"#class":"tac.Tag.Bit256"},"callIndex":0}]}}'
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert len(lines) == 1
+    line = lines[0]
+    assert line.startswith("!!! WARNING")
+    assert "[debug.pta_split_or_merge]" in line
+    assert "Warning: this read on the stack" in line
+    assert "(R1842)" in line  # symbol listed, var-suffix stripped
+
+
+def test_human_warning_detection_is_generic_to_msg_prefix() -> None:
+    """Warning detection keys off `value.msg` starting with 'Warning'
+    (case-insensitive), not a hardcoded annotation name — so future
+    warning kinds surface without code changes."""
+    cmd = parse_command_line(
+        'AnnotationCmd JSON{"key":{"name":"debug.future_warning_kind"},'
+        '"value":{"msg":"WARNING: some new diagnostic","symbols":[]}}'
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ["!!! WARNING [debug.future_warning_kind]: WARNING: some new diagnostic"]
+
+
+def test_human_skips_non_warning_debug_snippet() -> None:
+    """`debug.symbols` and other informational debug snippets carry a
+    `msg` that does NOT start with 'Warning' — those stay hidden."""
+    cmd = parse_command_line(
+        'AnnotationCmd JSON{"key":{"name":"debug.symbols","type":"sbf.tac.DebugSnippet"},'
+        '"value":{"msg":"Start dualEncoding.pack","symbols":[{"namePrefix":"R466"}]}}'
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == []
+
+
 def test_human_renders_int_ceil_div_as_function_call() -> None:
     """``IntCeilDiv(a, b)`` is a TAC concept (not a primitive op). The human
     printer renders it as ``int_div_ceil(a, b)`` (Rust naming convention);

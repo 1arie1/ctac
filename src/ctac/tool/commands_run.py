@@ -437,8 +437,14 @@ def run(
             addr_col = _addr_col(ev.cmd)
 
             if plain:
+                # `markup=False` for the trace lines: rendered TAC text
+                # legitimately contains square brackets (`[2^64]`,
+                # `[debug.pta_split_or_merge]`, range bounds, bit slices)
+                # that Rich would otherwise try to parse as markup and
+                # eat. Plain mode must round-trip the printer's output
+                # byte-for-byte.
                 if src_prefix:
-                    c.print(f"  {src_prefix}")
+                    c.print(f"  {src_prefix}", markup=False)
                 if ev.value is not None:
                     suffix = ""
                     if ev.value_source == "default":
@@ -447,16 +453,16 @@ def run(
                         suffix += f"    {ev.memory_repr}"
                     if ev.mismatch and ev.expected is not None:
                         suffix += f"    !! expected {format_value_plain_local(ev.expected)}"
-                    c.print(f"  {addr_col}{ev.rendered}    {format_value_plain_local(ev.value)}{suffix}")
+                    c.print(f"  {addr_col}{ev.rendered}    {format_value_plain_local(ev.value)}{suffix}", markup=False)
                 elif ev.memory_repr:
                     # Bytemap update: the concretized store annotation is
                     # strictly more informative than the bare "bytemap
                     # update" note, so it replaces it.
-                    c.print(f"  {addr_col}{ev.rendered}    {ev.memory_repr}")
+                    c.print(f"  {addr_col}{ev.rendered}    {ev.memory_repr}", markup=False)
                 elif ev.note:
-                    c.print(f"  {addr_col}{ev.rendered}    {ev.note}")
+                    c.print(f"  {addr_col}{ev.rendered}    {ev.note}", markup=False)
                 else:
-                    c.print(f"  {addr_col}{ev.rendered}")
+                    c.print(f"  {addr_col}{ev.rendered}", markup=False)
                 continue
 
             assert block_table is not None

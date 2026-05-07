@@ -255,3 +255,64 @@ def test_pp_address_range_implies_with_address(tmp_path: Path) -> None:
     res = runner.invoke(app, ["pp", str(tac), "--plain", "--address-range", "0xea00-0xeaff"])
     assert res.exit_code == 0, res.output
     assert "0xea60" in res.output
+
+
+# Synthetic TAC carrying a `debug.pta_split_or_merge` warning annotation.
+# The warning lives mid-block; the human printer must surface it as a
+# `!!! WARNING` line in pp output rather than swallow it silently.
+TAC_WITH_WARNING = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\ta:bv256
+\tb:bool
+}
+Program {
+\tBlock entry Succ [next] {
+\t\tAssignExpCmd a 0x1
+\t\tAnnotationCmd JSON{"key":{"name":"debug.pta_split_or_merge","type":"sbf.tac.DebugSnippet","erasureStrategy":"Canonical"},"value":{"msg":"Warning: this read on the stack does not match the last written bytes.","symbols":[{"namePrefix":"R1842","tag":{"#class":"tac.Tag.Bit256"},"callIndex":0}]}}
+\t\tAssignExpCmd b true
+\t\tJumpCmd next
+\t}
+\tBlock next Succ [] {
+\t\tAssertCmd b "must hold"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_pp_surfaces_warning_annotation(tmp_path: Path) -> None:
+    """A debug-snippet annotation whose msg starts with 'Warning:' renders
+    as a `!!! WARNING` line in pp output (default human printer)."""
+    tac = _write_tac(tmp_path, TAC_WITH_WARNING, "warn.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["pp", str(tac), "--plain"])
+    assert res.exit_code == 0, res.output
+    out = res.output
+    assert "!!! WARNING" in out
+    assert "[debug.pta_split_or_merge]" in out
+    assert "Warning: this read on the stack" in out
+    assert "R1842" in out
+    # Surrounding TAC still renders normally.
+    assert "a = 1" in out
+    assert "b = true" in out
+
+
+def test_pp_warning_appears_in_output_file(tmp_path: Path) -> None:
+    """Warning marker propagates through `-o FILE` ingestion too."""
+    tac = _write_tac(tmp_path, TAC_WITH_WARNING, "warn2.tac")
+    out = tmp_path / "warn.htac"
+    runner = CliRunner()
+    res = runner.invoke(app, ["pp", str(tac), "-o", str(out), "--plain"])
+    assert res.exit_code == 0, res.output
+    text = out.read_text(encoding="utf-8")
+    assert "!!! WARNING" in text
+    assert "Warning: this read on the stack" in text
