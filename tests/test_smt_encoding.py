@@ -1095,10 +1095,13 @@ def test_inline_scalars_default_off_is_byte_identical() -> None:
 
 def test_inline_scalars_on_inlines_narrow_intadd_index() -> None:
     """User's specific case: `R = narrow(IntAdd(const, base)); R' = M[R]`
-    should produce `(M (+ const base))` directly, no `R` decl/eq."""
+    is bound by a 0-arg ``define-fun`` macro for R, with the use site
+    referencing R by name. z3 expands at parse time so post-parse the
+    AST is identical to direct source-level inlining."""
     tac = parse_string(TAC_INLINE_NARROW_INDEX, path="<string>")
     rendered = render_smt_script(build_vc(tac, inline_scalars=True))
-    assert "(M (+ 24 R0))" in rendered
+    assert "(define-fun R1 () Int (+ 24 R0))" in rendered
+    assert "(M R1)" in rendered
     # No equality binding R1, no declare-const for R1.
     assert "(= R1 " not in rendered
     assert "(declare-const R1 " not in rendered
@@ -1112,7 +1115,8 @@ def test_inline_scalars_on_inlines_const_offset_index() -> None:
     )
     tac = parse_string(tac_text, path="<string>")
     rendered = render_smt_script(build_vc(tac, inline_scalars=True))
-    assert "(M (+ 24 R0))" in rendered
+    assert "(define-fun R1 () Int (+ 24 R0))" in rendered
+    assert "(M R1)" in rendered
     assert "(= R1 " not in rendered
 
 
@@ -1158,7 +1162,8 @@ Metas {
 def test_inline_scalars_on_inlines_alias() -> None:
     tac = parse_string(TAC_INLINE_ALIAS, path="<string>")
     rendered = render_smt_script(build_vc(tac, inline_scalars=True))
-    assert "(M R0)" in rendered
+    assert "(define-fun R1 () Int R0)" in rendered
+    assert "(M R1)" in rendered
     assert "(declare-const R1 " not in rendered
     assert "(= R1 R0)" not in rendered
 
@@ -1315,8 +1320,11 @@ Metas {
 def test_inline_scalars_on_chains_through_aliases() -> None:
     tac = parse_string(TAC_INLINE_ALIAS_CHAIN, path="<string>")
     rendered = render_smt_script(build_vc(tac, inline_scalars=True))
-    # R1, R2 both eliminated; the M lookup uses (+ 8 R0) directly.
-    assert "(M (+ 8 R0))" in rendered
+    # R1, R2 both bound as macros; z3 expands the alias chain at parse
+    # time so the M lookup transitively resolves to (+ 8 R0).
+    assert "(define-fun R1 () Int (+ 8 R0))" in rendered
+    assert "(define-fun R2 () Int R1)" in rendered
+    assert "(M R2)" in rendered
     assert "(declare-const R1 " not in rendered
     assert "(declare-const R2 " not in rendered
 
@@ -1342,29 +1350,31 @@ def test_inline_scalars_on_skips_jumpi_condition() -> None:
 def test_inline_scalars_on_with_guard_statics_combines() -> None:
     """Combining flags: inlined symbol's eq is dropped from the
     block-conjunction; remaining statics + assumes still compose under
-    `(=> BLK_X (and ...))`. Sanity: rendered SMT contains the inlined
-    index and the expected guard structure."""
+    `(=> BLK_X (and ...))`. Sanity: rendered SMT contains the inline
+    macro for R1 and the expected guard structure."""
     tac = parse_string(TAC_INLINE_NARROW_INDEX, path="<string>")
     rendered = render_smt_script(
         build_vc(tac, inline_scalars=True, guard_statics=True)
     )
-    assert "(M (+ 24 R0))" in rendered
+    assert "(define-fun R1 () Int (+ 24 R0))" in rendered
+    assert "(M R1)" in rendered
     assert "(= R1 " not in rendered
     # `(=> BLK_ok ...)` still wraps remaining statics.
     assert "(=> BLK_ok" in rendered
 
 
 def test_inline_scalars_on_with_narrow_range_keeps_axiom_on_inlined_rhs() -> None:
-    """Per AG: --narrow-range axiom is preserved on the inlined RHS
-    rather than the now-eliminated symbol."""
+    """--narrow-range axiom references the inline macro symbol; z3
+    expands the macro at parse time so post-parse the bound applies
+    to the inlined RHS expression."""
     tac = parse_string(TAC_INLINE_NARROW_INDEX, path="<string>")
     rendered = render_smt_script(
         build_vc(tac, inline_scalars=True, narrow_range=True)
     )
-    # bv256 LHS-domain bound is on the inlined expression directly.
-    assert "(<= 0 (+ 24 R0) BV256_MAX)" in rendered
-    # Not on the now-gone symbol.
-    assert "(<= 0 R1 BV256_MAX)" not in rendered
+    # Macro defines R1 := (+ 24 R0); bound is asserted on R1 (which
+    # parser-substitutes to the same expression).
+    assert "(define-fun R1 () Int (+ 24 R0))" in rendered
+    assert "(<= 0 R1 BV256_MAX)" in rendered
 
 
 # Two-block diamond with a DSA-dynamic `v` (assigned in both branches).
