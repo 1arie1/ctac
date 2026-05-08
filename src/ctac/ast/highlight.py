@@ -10,7 +10,7 @@ class TacHighlighter(RegexHighlighter):
 
     base_style = "ctac."
     highlights = [
-        r"(?P<keyword>\b(?:assume|assert|goto|stop|havoc)\b)",
+        r"(?P<keyword>\b(?:assume|assert|goto|stop|havoc|enter|leave)\b)",
         r"(?P<control>\b(?:if|else)\b)",
         r"(?P<block>(?<=\bgoto\s)[A-Za-z0-9_]+)",
         r"(?P<block>(?<=,\s)[A-Za-z0-9_]+(?!\^))",

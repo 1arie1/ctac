@@ -209,6 +209,85 @@ def test_human_renders_sbf_call_rawcmd_without_inline_comments() -> None:
     assert "/* 0xb6710 */" in pretty_lines([cmd], printer=raw)[0]
 
 
+def test_human_renders_inline_scope_open_with_inlined_function_name() -> None:
+    """`call CVT_save_scratch_registers` opens an inlined-function scope.
+    The human printer reads the inline metadata (`call_id`, full
+    `inlined_function_name`) and synthesises an `enter NAME id:N`
+    marker so readers can navigate inlined regions in pp output."""
+    from ctac.ast.nodes import RawCmd
+
+    cmd = RawCmd(
+        raw=(
+            "call CVT_save_scratch_registers  /* 0xb770 */ /*call_id=23*/ "
+            "/*inlined_function_name=cvlr_mathint::nativeint_u64::is_u64*/ "
+            "/*inlined_function_size=9*/"
+        ),
+        meta_index=None,
+        head="CallCmd",
+        tail="CVT_save_scratch_registers",
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    assert pretty_lines([cmd], printer=human) == [
+        "enter cvlr_mathint::nativeint_u64::is_u64 id:23"
+    ]
+
+
+def test_human_renders_inline_scope_close() -> None:
+    from ctac.ast.nodes import RawCmd
+
+    cmd = RawCmd(
+        raw=(
+            "call CVT_restore_scratch_registers  /* 0xb770 */ /*call_id=23*/ "
+            "/*inlined_function_name=cvlr_mathint::nativeint_u64::is_u64*/ "
+            "/*inlined_function_size=9*/"
+        ),
+        meta_index=None,
+        head="CallCmd",
+        tail="CVT_restore_scratch_registers",
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    assert pretty_lines([cmd], printer=human) == [
+        "leave cvlr_mathint::nativeint_u64::is_u64 id:23"
+    ]
+
+
+def test_human_renders_inline_scope_for_promoted_helper() -> None:
+    """Promoted helpers (e.g. `promoted_memcpy_zext`) carry a bare
+    `/*<name>*/` annotation rather than `inlined_function_name=...`.
+    The bare-name path still produces a properly tagged marker."""
+    from ctac.ast.nodes import RawCmd
+
+    cmd = RawCmd(
+        raw=(
+            "call CVT_save_scratch_registers  /* 0xb728 */ /*call_id=78*/ "
+            "/*promoted_memcpy_zext*/"
+        ),
+        meta_index=None,
+        head="CallCmd",
+        tail="CVT_save_scratch_registers",
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    assert pretty_lines([cmd], printer=human) == [
+        "enter promoted_memcpy_zext id:78"
+    ]
+
+
+def test_human_inline_scope_falls_back_when_metadata_absent() -> None:
+    """A bare `call CVT_save_scratch_registers` with no inline metadata
+    has nothing to ground the marker — render as a literal call
+    rather than an `enter ?` line."""
+    from ctac.ast.nodes import RawCmd
+
+    cmd = RawCmd(
+        raw="call CVT_save_scratch_registers",
+        meta_index=None,
+        head="CallCmd",
+        tail="CVT_save_scratch_registers",
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    assert pretty_lines([cmd], printer=human) == ["call CVT_save_scratch_registers"]
+
+
 def test_human_renders_sbf_exit_and_callx_rawcmd() -> None:
     from ctac.ast.nodes import RawCmd
 

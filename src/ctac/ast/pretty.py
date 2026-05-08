@@ -336,6 +336,52 @@ class HumanPrettyPrinter(PrettyPrinter):
     # mode strips them from RawCmd lines so call/store shapes don't
     # render with debug metadata trailing.
     _INLINE_COMMENT_RE = re.compile(r"\s*/\*.*?\*/")
+    # Each /*...*/ comment, captured without the surrounding markers.
+    _COMMENT_BODY_RE = re.compile(r"/\*\s*(.*?)\s*\*/")
+    # Bytecode address comments (e.g. `/* 0xb728 */`) — recognised so
+    # we can skip them when looking for the bare name annotation.
+    _HEX_ADDR_RE = re.compile(r"^0[xX][0-9a-fA-F]+$")
+    # SBF inlining scaffolding: `call CVT_save_scratch_registers` opens
+    # an inlined scope, the matching `CVT_restore_scratch_registers`
+    # closes it. The name + call_id come from the call's inline
+    # metadata comments (`/*inlined_function_name=...*/`,
+    # `/*call_id=N*/`, or a bare `/*<helper_name>*/` for promoted
+    # helpers like `promoted_memcpy_zext`).
+    _INLINE_SCOPE_OPEN = "CVT_save_scratch_registers"
+    _INLINE_SCOPE_CLOSE = "CVT_restore_scratch_registers"
+
+    @classmethod
+    def _parse_inline_metadata(cls, raw: str) -> tuple[str | None, str | None]:
+        """Return ``(name, call_id)`` parsed from a CVT_{save,restore}
+        call's inline ``/*...*/`` comments. Either may be None if
+        absent.
+
+        The name is taken from ``inlined_function_name=...`` when
+        present (full Rust path), otherwise from the first bare
+        comment that isn't a bytecode address or another known
+        ``key=value`` annotation (covers promoted helpers like
+        ``promoted_memcpy_zext`` whose name appears as a bare tag).
+        """
+        name: str | None = None
+        bare_name: str | None = None
+        call_id: str | None = None
+        for body in cls._COMMENT_BODY_RE.findall(raw):
+            if body.startswith("inlined_function_name="):
+                name = body[len("inlined_function_name="):]
+                continue
+            if body.startswith("call_id="):
+                call_id = body[len("call_id="):]
+                continue
+            if body.startswith("inlined_function_size="):
+                continue
+            if cls._HEX_ADDR_RE.match(body):
+                continue
+            if "=" in body:
+                # Some other key=value annotation we don't care about.
+                continue
+            if bare_name is None:
+                bare_name = body
+        return (name or bare_name), call_id
 
     def visit_RawCmd(self, node: RawCmd) -> str:
         # Reconstruct the SBF call/callx/exit shapes from the parsed
@@ -345,6 +391,19 @@ class HumanPrettyPrinter(PrettyPrinter):
         # parser computed; for TAC RawCmds (no inline comments)
         # tail is identical to the meaningful part of raw.
         if node.head == "CallCmd":
+            verb = (
+                "enter" if node.tail == self._INLINE_SCOPE_OPEN
+                else "leave" if node.tail == self._INLINE_SCOPE_CLOSE
+                else None
+            )
+            if verb is not None:
+                name, cid = self._parse_inline_metadata(node.raw)
+                if name is not None:
+                    cid_part = f" id:{cid}" if cid is not None else ""
+                    return f"{verb} {name}{cid_part}"
+                # No metadata to ground the marker — fall through to
+                # the literal call rendering rather than emit a
+                # half-broken `enter ?` line.
             return f"call {node.tail}"
         if node.head == "CallxCmd":
             return f"callx {node.tail}"
