@@ -83,3 +83,80 @@ def test_sbf_program_works_with_cfg_text_views() -> None:
     assert "B0 -> B1" in lines
     assert "B0 -> B2" in lines
     assert "B1 -> B2" in lines
+
+
+SBF_TYPE_SUFFIX_WITH_SPACES = """{
+  "name": "ts",
+  "entry": "B0",
+  "blocks": [
+    {
+      "label": "B0",
+      "predecessors": [],
+      "successors": ["B1"],
+      "instructions": [
+        {"inst": "r6:num([0, 1]) = r6:num([0, 1]) and 1 /* 0xb9dd0 */", "meta": 1},
+        {"inst": "r1:num([0, 1]) = r6:num([0, 1]) /* 0xb9dd8 */", "meta": 2},
+        {"inst": "assert(r1:num([0, 1]) != 0) /* 0xb9de0 */", "meta": 3},
+        {"inst": "if (r1:num([0, 1]) == 0) then goto B1 else goto B0", "meta": 4}
+      ]
+    },
+    {"label": "B1", "predecessors": [], "successors": [], "instructions": []}
+  ]
+}"""
+
+
+def test_parse_sbf_type_suffix_with_spaces() -> None:
+    """Type suffixes that contain spaces inside balanced brackets — e.g.
+    ``r6:num([0, 1])`` — used to break the line-shape regexes (``\\S+``
+    can't span the embedded space) and fall through to ``RawCmd``.
+    The bracket-aware ``_strip_types_in_text`` removes them before
+    matching, so the assignment / assert / jumpi shapes parse normally."""
+    tac = parse_sbf_string(SBF_TYPE_SUFFIX_WITH_SPACES, path="<sbf>")
+    cmds = tac.program.block_by_id()["B0"].commands
+
+    # `r6 = r6 and 1` — bin op with both operands type-suffixed.
+    assert isinstance(cmds[0], AssignExpCmd)
+    assert cmds[0].lhs == "r6"
+    assert isinstance(cmds[0].rhs, ApplyExpr)
+    assert cmds[0].rhs.op == "BWAnd"
+
+    # `r1 = r6` — move-like with both sides type-suffixed.
+    assert isinstance(cmds[1], AssignExpCmd)
+    assert cmds[1].lhs == "r1"
+
+    # `assert(r1 != 0)` — predicate parsed structurally instead of
+    # collapsing to bare `r1` (the prior failure mode).
+    from ctac.ast.nodes import AssertCmd
+
+    assert isinstance(cmds[2], AssertCmd)
+    pred = cmds[2].predicate
+    assert isinstance(pred, ApplyExpr)
+    assert pred.op == "LNot"  # `!=` rewrites to LNot(Eq(...))
+
+    # `if (r1 == 0) then goto B1 else goto B0` — guard text type-stripped.
+    assert isinstance(cmds[3], JumpiCmd)
+    assert "num([0, 1])" not in cmds[3].condition
+    assert cmds[3].condition.strip() == "r1 == 0"
+
+
+def test_parse_sbf_type_suffix_with_path_inside() -> None:
+    """The ``r1:global(program/src/...)`` shape contains slashes and
+    dots inside the type — must not be confused for a comment or a
+    line break."""
+    sbf = """{
+      "name": "g",
+      "entry": "B0",
+      "blocks": [
+        {
+          "label": "B0",
+          "predecessors": [], "successors": [],
+          "instructions": [
+            {"inst": "r1:global(program/src/certora/specs/equiv.rs) = 2299433 /*set_global*/", "meta": 1}
+          ]
+        }
+      ]
+    }"""
+    tac = parse_sbf_string(sbf)
+    cmds = tac.program.block_by_id()["B0"].commands
+    assert isinstance(cmds[0], AssignExpCmd)
+    assert cmds[0].lhs == "r1"

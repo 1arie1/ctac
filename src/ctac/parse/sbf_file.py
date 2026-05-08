@@ -42,6 +42,7 @@ _COND_RE = re.compile(
 _INT_RE = re.compile(r"^-?\d+$")
 _HEX_RE = re.compile(r"^-?0[xX][0-9a-fA-F]+$")
 _REG_TYPED_RE = re.compile(r"^(r\d+):.+$")
+_REG_PREFIX_RE = re.compile(r"r\d+:")
 
 _BIN_OPS: dict[str, str] = {
     "+": "Add",
@@ -143,13 +144,18 @@ def _parse_inst_line(raw: str, *, meta_index: object) -> TacCmd:
     if not core:
         return RawCmd(raw=raw, meta_index=mi, head="", tail="")
 
+    # Strip ``:<type>`` suffixes (which may contain spaces inside
+    # brackets, e.g. ``r6:num([0, 1])``) up front so the line-shape
+    # regexes don't have to know about them. The original line stays
+    # in `raw` for the raw printer.
+    core = _strip_types_in_text(core)
+
     # Terminators/guards
     m = _IF_GOTO_RE.match(core)
     if m:
         tdst = m.group("t")
         fdst = m.group("f")
-        cond_text = _strip_types_in_text(m.group("cond"))
-        return JumpiCmd(raw=raw, meta_index=mi, then_target=tdst, else_target=(fdst or ""), condition=cond_text)
+        return JumpiCmd(raw=raw, meta_index=mi, then_target=tdst, else_target=(fdst or ""), condition=m.group("cond"))
 
     m = _GOTO_RE.match(core)
     if m:
@@ -239,7 +245,48 @@ def _parse_value_expr(tok: str) -> TacExpr:
 
 
 def _strip_types_in_text(text: str) -> str:
-    return _REG_TYPED_RE.sub(r"\1", text)
+    """Remove ``:<type>`` suffixes from every ``r<N>`` register token.
+
+    The type can contain balanced ``()``, ``[]``, ``{}`` with interior
+    spaces — e.g. ``r6:num([0, 1])``, ``r1:global(program/x.rs)``. We
+    walk the string and consume the suffix at bracket-depth tracking,
+    stopping at the next top-level whitespace or comma. Returning a
+    type-free line lets the line-shape regexes (``_ASSIGN_RE``,
+    ``_COND_RE``, ...) match without choking on the embedded space.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        prev = text[i - 1] if i > 0 else ""
+        at_boundary = i == 0 or not (prev.isalnum() or prev == "_")
+        m = _REG_PREFIX_RE.match(text, i) if at_boundary else None
+        if m is None:
+            out.append(text[i])
+            i += 1
+            continue
+        colon = m.end() - 1
+        out.append(text[i:colon])  # `r<N>` without the ':'
+        j = m.end()
+        depth = 0
+        while j < n:
+            c = text[j]
+            if c in "([{":
+                depth += 1
+                j += 1
+            elif c in ")]}":
+                if depth == 0:
+                    break  # unbalanced closer: leave for the caller
+                depth -= 1
+                j += 1
+            elif depth > 0:
+                j += 1
+            elif c.isspace() or c == ",":
+                break
+            else:
+                j += 1
+        i = j
+    return "".join(out)
 
 
 def _parse_condition_expr(text: str) -> TacExpr:
