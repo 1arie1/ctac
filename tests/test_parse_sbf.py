@@ -139,6 +139,56 @@ def test_parse_sbf_type_suffix_with_spaces() -> None:
     assert cmds[3].condition.strip() == "r1 == 0"
 
 
+def test_parse_sbf_strips_non_register_type_annotations() -> None:
+    """Type annotations also appear on memory expressions
+    (``(r10 + -2576):sp(5616)``) and on register results
+    (``r6:input(top)``) — every ``:<ident>(<balanced>)`` form must be
+    stripped, not just ``r<N>:<type>``."""
+    sbf = """{
+      "name": "ts2",
+      "entry": "B0",
+      "blocks": [
+        {
+          "label": "B0",
+          "predecessors": [], "successors": [],
+          "instructions": [
+            {"inst": "if r3 == 0 goto T else F", "meta": 1}
+          ]
+        },
+        {"label": "T", "predecessors": [], "successors": [], "instructions": []},
+        {"label": "F", "predecessors": [], "successors": [], "instructions": []}
+      ]
+    }"""
+    tac = parse_sbf_string(sbf)
+    cmds = tac.program.block_by_id()["B0"].commands
+    # The no-paren / no-then if-goto form parses as JumpiCmd.
+    assert isinstance(cmds[0], JumpiCmd)
+    assert cmds[0].then_target == "T"
+    assert cmds[0].else_target == "F"
+    assert cmds[0].condition.strip() == "r3 == 0"
+
+
+def test_strip_types_in_text_handles_non_register_annotations() -> None:
+    """Direct unit test for ``_strip_types_in_text`` — the function is
+    called on every line before regex matching, so its semantics
+    matter beyond any one parser path."""
+    from ctac.parse.sbf_file import _strip_types_in_text
+
+    # Register type with embedded space.
+    assert _strip_types_in_text("r6:num([0, 1])") == "r6"
+    # Memory expression type.
+    assert _strip_types_in_text("(r10 + -8):sp(16376)") == "(r10 + -8)"
+    # Multiple annotations on one line.
+    assert (
+        _strip_types_in_text("*(u64 *) (r10 + -2576):sp(5616) = r6:input(top)")
+        == "*(u64 *) (r10 + -2576) = r6"
+    )
+    # Bare ``:foo`` (no parens) is left alone.
+    assert _strip_types_in_text("r1:0 = r2") == "r1:0 = r2"
+    # Plain text (no annotations) passes through untouched.
+    assert _strip_types_in_text("call CVT_rule_location") == "call CVT_rule_location"
+
+
 def test_parse_sbf_type_suffix_with_path_inside() -> None:
     """The ``r1:global(program/src/...)`` shape contains slashes and
     dots inside the type — must not be confused for a comment or a

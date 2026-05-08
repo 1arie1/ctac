@@ -42,7 +42,12 @@ _COND_RE = re.compile(
 _INT_RE = re.compile(r"^-?\d+$")
 _HEX_RE = re.compile(r"^-?0[xX][0-9a-fA-F]+$")
 _REG_TYPED_RE = re.compile(r"^(r\d+):.+$")
-_REG_PREFIX_RE = re.compile(r"r\d+:")
+# Alt no-paren if-goto shape: `if cond goto T else F` (no parens around
+# cond, no `then`, single `goto`). Used by some SBF lowerings; the
+# original `_IF_GOTO_RE` covers the parenthesised+then variant.
+_IF_GOTO_NOPAREN_RE = re.compile(
+    r"^if\s+(?P<cond>.+?)\s+goto\s+(?P<t>\S+)\s+else\s+(?P<f>\S+)$"
+)
 
 _BIN_OPS: dict[str, str] = {
     "+": "Add",
@@ -152,6 +157,8 @@ def _parse_inst_line(raw: str, *, meta_index: object) -> TacCmd:
 
     # Terminators/guards
     m = _IF_GOTO_RE.match(core)
+    if m is None:
+        m = _IF_GOTO_NOPAREN_RE.match(core)
     if m:
         tdst = m.group("t")
         fdst = m.group("f")
@@ -245,47 +252,55 @@ def _parse_value_expr(tok: str) -> TacExpr:
 
 
 def _strip_types_in_text(text: str) -> str:
-    """Remove ``:<type>`` suffixes from every ``r<N>`` register token.
+    """Remove ``:<ident>(<balanced>)`` annotations everywhere they appear.
 
-    The type can contain balanced ``()``, ``[]``, ``{}`` with interior
-    spaces — e.g. ``r6:num([0, 1])``, ``r1:global(program/x.rs)``. We
-    walk the string and consume the suffix at bracket-depth tracking,
-    stopping at the next top-level whitespace or comma. Returning a
-    type-free line lets the line-shape regexes (``_ASSIGN_RE``,
-    ``_COND_RE``, ...) match without choking on the embedded space.
+    Two shapes are stripped:
+
+    * Register types — ``r6:num([0, 1])``, ``r1:global(program/x.rs)``.
+    * Expression / memory result types — ``(r10 + -2576):sp(5616)``,
+      ``r6:input(top)``.
+
+    The bracket body may contain spaces and nested brackets, so a
+    naive ``\\S+`` regex on the line shape can't span them. By
+    eagerly stripping every ``:<ident>(<balanced>)`` we hand the
+    line-shape regexes (``_ASSIGN_RE`` / ``_COND_RE`` / ``_IF_GOTO_*``)
+    a clean token stream. Bare ``:<ident>`` (no brackets) is left
+    alone — the parens form is unambiguous, the bare form is rare in
+    SBF text and we don't want to chew through TAC-style ``:N`` meta
+    suffixes that may appear in other contexts.
     """
     out: list[str] = []
     i = 0
     n = len(text)
     while i < n:
-        prev = text[i - 1] if i > 0 else ""
-        at_boundary = i == 0 or not (prev.isalnum() or prev == "_")
-        m = _REG_PREFIX_RE.match(text, i) if at_boundary else None
-        if m is None:
-            out.append(text[i])
+        c = text[i]
+        if c != ":":
+            out.append(c)
             i += 1
             continue
-        colon = m.end() - 1
-        out.append(text[i:colon])  # `r<N>` without the ':'
-        j = m.end()
-        depth = 0
-        while j < n:
-            c = text[j]
-            if c in "([{":
+        # Look ahead: '<ident>(<balanced>)'?
+        j = i + 1
+        id_start = j
+        while j < n and (text[j].isalnum() or text[j] == "_"):
+            j += 1
+        if j == id_start or j >= n or text[j] not in "([{":
+            out.append(c)
+            i += 1
+            continue
+        depth = 1
+        k = j + 1
+        while k < n and depth > 0:
+            if text[k] in "([{":
                 depth += 1
-                j += 1
-            elif c in ")]}":
-                if depth == 0:
-                    break  # unbalanced closer: leave for the caller
+            elif text[k] in ")]}":
                 depth -= 1
-                j += 1
-            elif depth > 0:
-                j += 1
-            elif c.isspace() or c == ",":
-                break
-            else:
-                j += 1
-        i = j
+            k += 1
+        if depth != 0:
+            # Unbalanced — leave the colon and identifier in place.
+            out.append(c)
+            i += 1
+            continue
+        i = k
     return "".join(out)
 
 
