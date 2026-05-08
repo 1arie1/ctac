@@ -29,6 +29,7 @@ from ctac.analysis import (
     extract_def_use,
 )
 from ctac.analysis.model import ProgramPoint
+from ctac.ast.nodes import JumpCmd, JumpiCmd
 from ctac.ast.pretty import configured_printer
 from ctac.ast.run_format import pp_terminator_line
 from ctac.graph import Cfg
@@ -228,6 +229,12 @@ def _render_slice_pp(
         body: list[str] = []
         last_was_elision = False
         for idx, cmd in enumerate(b.commands):
+            # Terminators are rendered separately by `pp_terminator_line`
+            # below; skipping them in the body keeps the raw printer
+            # from double-printing the goto (the human printer
+            # already self-skips by returning None).
+            if isinstance(cmd, (JumpCmd, JumpiCmd)):
+                continue
             line = pp_backend.print_cmd(cmd)
             if line is None or line == "":
                 continue

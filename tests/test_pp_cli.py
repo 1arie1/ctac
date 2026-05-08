@@ -316,3 +316,18 @@ def test_pp_warning_appears_in_output_file(tmp_path: Path) -> None:
     text = out.read_text(encoding="utf-8")
     assert "!!! WARNING" in text
     assert "Warning: this read on the stack" in text
+
+
+def test_pp_raw_printer_does_not_double_print_terminator(tmp_path: Path) -> None:
+    """Block terminators are emitted by `pp_terminator_line`, separate
+    from the body loop. The raw printer's `print_cmd` returns the
+    verbatim line for every cmd including JumpCmd, so without the
+    body-level filter a `goto X` would appear twice. Pin one
+    occurrence per block."""
+    tac = _write_tac(tmp_path, TAC_SMALL, "small_raw.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["pp", str(tac), "--plain", "--printer", "raw"])
+    assert res.exit_code == 0, res.output
+    # Exactly one `goto next` line in the output.
+    goto_lines = [ln for ln in res.output.splitlines() if "goto next" in ln]
+    assert len(goto_lines) == 1, res.output

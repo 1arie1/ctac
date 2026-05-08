@@ -748,6 +748,15 @@ def pp(
 
         body: list[tuple[str, int | None]] = []
         for cmd in b.commands:
+            # Block terminators are rendered separately from the CFG by
+            # `pp_terminator_line` below. Including them in the body
+            # would double-print under the raw printer (whose
+            # `print_cmd` returns the verbatim line for every cmd).
+            # The human printer's `visit_JumpCmd`/`visit_JumpiCmd`
+            # already return None and would self-skip, but filtering
+            # at the body level keeps the two printers consistent.
+            if isinstance(cmd, (JumpCmd, JumpiCmd)):
+                continue
             line = pp_backend.print_cmd(cmd)
             if line is None or line == "":
                 continue
