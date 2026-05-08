@@ -187,6 +187,55 @@ def test_human_renders_scope_annotations_as_calls() -> None:
     assert lines == ['clog_scope_start("pre")', 'clog_scope_end("pre")']
 
 
+def test_human_renders_sbf_call_rawcmd_without_inline_comments() -> None:
+    """SBF call lines parse as ``RawCmd(head='CallCmd', tail='<name>')``.
+    The base printer renders them as ``node.raw`` (preserving inline
+    ``/* ... */`` debug comments) — but the human printer should
+    reconstruct ``call <name>`` from the parsed shape so the comment
+    metadata stays in raw mode only."""
+    from ctac.ast.nodes import RawCmd
+
+    cmd = RawCmd(
+        raw="call CVT_save_scratch_registers  /* 0xb6710 */ /*call_id=30*/",
+        meta_index=None,
+        head="CallCmd",
+        tail="CVT_save_scratch_registers",
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    raw = DEFAULT_PRINTERS.get("raw")
+    assert pretty_lines([cmd], printer=human) == ["call CVT_save_scratch_registers"]
+    # Raw printer keeps the verbatim line including comments.
+    assert pretty_lines([cmd], printer=raw)[0].startswith("call CVT_save_scratch_registers")
+    assert "/* 0xb6710 */" in pretty_lines([cmd], printer=raw)[0]
+
+
+def test_human_renders_sbf_exit_and_callx_rawcmd() -> None:
+    from ctac.ast.nodes import RawCmd
+
+    exit_cmd = RawCmd(raw="exit /* 0x1 */", meta_index=None, head="ExitCmd", tail="exit")
+    callx_cmd = RawCmd(raw="callx r5  /* 0x2 */", meta_index=None, head="CallxCmd", tail="r5")
+    human = DEFAULT_PRINTERS.get("human")
+    assert pretty_lines([exit_cmd], printer=human) == ["exit"]
+    assert pretty_lines([callx_cmd], printer=human) == ["callx r5"]
+
+
+def test_human_rawcmd_falls_back_to_tail_when_unrecognised_shape() -> None:
+    """For RawCmds the SBF parser couldn't structurally identify
+    (e.g. memory stores), human mode renders ``node.tail`` — which
+    has been comment- and type-stripped at parse time — instead of
+    the raw line."""
+    from ctac.ast.nodes import RawCmd
+
+    cmd = RawCmd(
+        raw="*(u64 *) (r10 + -2576):sp(5616) = r6:input(top) /* 0xb6708 */",
+        meta_index=None,
+        head="*(u64",
+        tail="*(u64 *) (r10 + -2576) = r6",
+    )
+    human = DEFAULT_PRINTERS.get("human")
+    assert pretty_lines([cmd], printer=human) == ["*(u64 *) (r10 + -2576) = r6"]
+
+
 def test_human_renders_pta_split_or_merge_warning_prominently() -> None:
     """`debug.pta_split_or_merge` annotations carry a `Warning:` msg flagging
     pointer-analysis over-approximation. The human printer surfaces them

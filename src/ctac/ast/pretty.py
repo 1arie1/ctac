@@ -331,6 +331,29 @@ class HumanPrettyPrinter(PrettyPrinter):
     def visit_AssignHavocCmd(self, node: AssignHavocCmd) -> str:
         return f"{self._fmt_symbol_token(node.lhs)} = havoc"
 
+    # SBF-style inline /* ... */ comments don't carry user-visible
+    # information that survives the parser; raw mode keeps them, human
+    # mode strips them from RawCmd lines so call/store shapes don't
+    # render with debug metadata trailing.
+    _INLINE_COMMENT_RE = re.compile(r"\s*/\*.*?\*/")
+
+    def visit_RawCmd(self, node: RawCmd) -> str:
+        # Reconstruct the SBF call/callx/exit shapes from the parsed
+        # head + tail rather than `node.raw` (which carries inline
+        # comments). Falling back to `tail` for other RawCmd shapes
+        # gives the comment-and-type-stripped core text the SBF
+        # parser computed; for TAC RawCmds (no inline comments)
+        # tail is identical to the meaningful part of raw.
+        if node.head == "CallCmd":
+            return f"call {node.tail}"
+        if node.head == "CallxCmd":
+            return f"callx {node.tail}"
+        if node.head == "ExitCmd":
+            return "exit"
+        if node.tail:
+            return node.tail
+        return self._INLINE_COMMENT_RE.sub("", node.raw).rstrip() or node.raw
+
     def visit_AssumeExpCmd(self, node: AssumeExpCmd) -> str:
         if self.human_patterns:
             rng = match_inclusive_range_constraint(
