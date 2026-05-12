@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from ctac.ast.bit_mask import high_mask_clear_low_k, low_mask_width, shifted_contiguous_mask
 from ctac.smt.vc.config import OpConfig, OpMode
 from ctac.smt.vc.script import DefineFun
 from ctac.smt.vc.terms import (
@@ -13,6 +14,7 @@ from ctac.smt.vc.terms import (
     and_,
     app,
     div,
+    eq,
     ge,
     gt,
     implies,
@@ -25,12 +27,14 @@ from ctac.smt.vc.terms import (
 )
 
 _LEMMA_BOUNDS = "bounds"
+_LEMMA_BOOL = "bool"
 _LEMMA_BV256_RANGE = "bv256_range"
 
 
 class _OpName:
     INT_MUL_DIV = "int.mul_div"
     INT_CEIL_DIV = "int.ceil_div"
+    BV256_XOR = "int.bv256_xor"
 
     @staticmethod
     def narrow(width: int) -> str:
@@ -56,10 +60,31 @@ class _SmtName:
     def narrow(width: int) -> str:
         return f"narrow.bv{width}"
 
+    @staticmethod
+    def bv256_shl_const(k: int) -> str:
+        return f"bv256.shl_{k}"
+
+    @staticmethod
+    def bv256_lshr_const(k: int) -> str:
+        return f"bv256.lshr_{k}"
+
+    @staticmethod
+    def bv256_and_low_mask(k: int) -> str:
+        return f"bv256.and_{_hex_mask_suffix((1 << k) - 1)}"
+
+    @staticmethod
+    def bv256_and_clear_low(k: int) -> str:
+        return f"bv256.and_clear_low_{k}"
+
+    @staticmethod
+    def bv256_and_slice(lo: int, width: int) -> str:
+        return f"bv256.and_slice_{lo}_{width}"
+
 
 class _LemmaName:
     INT_MUL_DIV_BOUNDS = "lemma_int_mul_div_bounds"
     INT_CEIL_DIV_BOUNDS = "lemma_int_ceil_div_bounds"
+    BV256_XOR_BOOL = "lemma_bv256_xor_bool"
 
     @staticmethod
     def narrow_range(width: int) -> str:
@@ -75,6 +100,18 @@ _Y = "y"
 _BINARY_PARAMS = ((_X, Int), (_Y, Int))
 
 
+def _hex_mask_suffix(value: int) -> str:
+    return f"{value:X}"
+
+
+def _literal_value(term_: Term) -> int | None:
+    text = term_.text
+    try:
+        return int(text, 0)
+    except ValueError:
+        return None
+
+
 class _Builder(Protocol):
     def op_config(self, name: str, default: OpConfig) -> OpConfig: ...
 
@@ -87,6 +124,8 @@ class _Builder(Protocol):
     def require_lemma_def(self, lemma: "LemmaSchema") -> None: ...
 
     def int_lit(self, value: int) -> Term: ...
+
+    def define_int_const(self, name: str, value: int | Term | str) -> Term: ...
 
     def bv256_mod(self) -> Term: ...
 
@@ -320,9 +359,54 @@ class NarrowOps:
         return (self.bv32, self.bv64, self.bv128, self.bv256)
 
 
+class Bv256XorBoolLemma(LemmaSchema):
+    name = _LemmaName.BV256_XOR_BOOL
+    params = ((_X, Int), (_Y, Int))
+
+    def body(self, vc: _Builder, params: tuple[Term, ...]) -> Term:
+        x, y = params
+        zero = vc.int_lit(0)
+        one = vc.int_lit(1)
+        return implies(
+            and_(le(zero, x), le(x, one), le(zero, y), le(y, one)),
+            eq(
+                app(_SmtName.BV256_XOR, [x, y], Int),
+                app(_SmtName.ITE, [eq(x, y), zero, one], Int),
+            ),
+        )
+
+    def instance_args(self, call: CallSite) -> tuple[Term, ...]:
+        return call.args
+
+
+class Bv256XorOp(OpModel):
+    name = _OpName.BV256_XOR
+    default_config = OpConfig(
+        mode=OpMode.UF,
+        lemmas=(_LEMMA_BOOL,),
+        instantiate_lemmas=True,
+    )
+    lemmas = {_LEMMA_BOOL: Bv256XorBoolLemma()}
+
+    def __call__(self, a: Term, b: Term) -> Term:
+        cfg = self.config()
+        if cfg.mode is not OpMode.UF:
+            raise ValueError(f"{self.name} supports only UF mode")
+        self.vc.declare_fun(_SmtName.BV256_XOR, (Int, Int), Int)
+        raw = app(_SmtName.BV256_XOR, [a, b], Int)
+        call = self.vc.record_call(self.name, (a, b), raw)
+        return Term(
+            raw.text,
+            raw.sort,
+            callsites=raw.callsites + (call,),
+            direct_callsite=call,
+        )
+
+
 class Bv256Ops:
     def __init__(self, vc: _Builder) -> None:
         self.vc = vc
+        self.xor_model = Bv256XorOp(vc)
 
     def range(self, x: Term) -> Term:
         return self.vc.bv_range(256, x)
@@ -354,16 +438,89 @@ class Bv256Ops:
         return app(_SmtName.BV256_MOD, [a, b], Int)
 
     def shl(self, a: Term, b: Term) -> Term:
+        k = _literal_value(b)
+        if k is not None:
+            return self.shl_const(a, k)
         return self._uf(_SmtName.BV256_SHL, a, b)
 
+    def shl_const(self, a: Term, k: int) -> Term:
+        if k < 0:
+            raise ValueError("negative shift is unsupported")
+        name = _SmtName.bv256_shl_const(k)
+        x = term(_X, Int)
+        self.vc.define_fun(name, ((_X, Int),), Int, mul(x, self._pow2(k)))
+        return app(name, [a], Int)
+
     def lshr(self, a: Term, b: Term) -> Term:
+        k = _literal_value(b)
+        if k is not None:
+            return self.lshr_const(a, k)
         return self._uf(_SmtName.BV256_LSHR, a, b)
 
+    def lshr_const(self, a: Term, k: int) -> Term:
+        if k < 0:
+            raise ValueError("negative shift is unsupported")
+        name = _SmtName.bv256_lshr_const(k)
+        x = term(_X, Int)
+        self.vc.define_fun(name, ((_X, Int),), Int, div(x, self._pow2(k)))
+        return app(name, [a], Int)
+
     def and_(self, a: Term, b: Term) -> Term:
+        a_value = _literal_value(a)
+        if a_value is not None:
+            return self.and_mask(b, a_value)
+        b_value = _literal_value(b)
+        if b_value is not None:
+            return self.and_mask(a, b_value)
         return self._uf(_SmtName.BV256_AND, a, b)
 
+    def and_mask(self, x: Term, mask: int) -> Term:
+        low_width = low_mask_width(mask)
+        if low_width is not None:
+            return self.and_low_mask(x, low_width)
+        clear_low = high_mask_clear_low_k(mask)
+        if clear_low is not None:
+            return self.and_clear_low(x, clear_low)
+        slice_mask = shifted_contiguous_mask(mask)
+        if slice_mask is not None:
+            lo, width = slice_mask
+            if lo > 0:
+                return self.and_slice(x, lo, width)
+        return self._uf(_SmtName.BV256_AND, x, self.vc.int_lit(mask))
+
+    def and_low_mask(self, x: Term, width: int) -> Term:
+        if width < 0:
+            raise ValueError("negative mask width is unsupported")
+        name = _SmtName.bv256_and_low_mask(width)
+        arg = term(_X, Int)
+        self.vc.define_fun(name, ((_X, Int),), Int, mod(arg, self._pow2(width)))
+        return app(name, [x], Int)
+
+    def and_clear_low(self, x: Term, width: int) -> Term:
+        if width < 0:
+            raise ValueError("negative mask width is unsupported")
+        name = _SmtName.bv256_and_clear_low(width)
+        arg = term(_X, Int)
+        pow_width = self._pow2(width)
+        self.vc.define_fun(name, ((_X, Int),), Int, mul(div(arg, pow_width), pow_width))
+        return app(name, [x], Int)
+
+    def and_slice(self, x: Term, lo: int, width: int) -> Term:
+        if lo < 0 or width < 0:
+            raise ValueError("negative mask offset or width is unsupported")
+        name = _SmtName.bv256_and_slice(lo, width)
+        arg = term(_X, Int)
+        pow_lo = self._pow2(lo)
+        pow_width = self._pow2(width)
+        body = mul(mod(div(arg, pow_lo), pow_width), pow_lo)
+        self.vc.define_fun(name, ((_X, Int),), Int, body)
+        return app(name, [x], Int)
+
+    def _pow2(self, k: int) -> Term:
+        return self.vc.define_int_const(f"POW2_{k}", 1 << k)
+
     def xor(self, a: Term, b: Term) -> Term:
-        return self._uf(_SmtName.BV256_XOR, a, b)
+        return self.xor_model(a, b)
 
     def or_(self, a: Term, b: Term) -> Term:
         return self._uf(_SmtName.BV256_OR, a, b)
@@ -424,6 +581,7 @@ class Ops:
         self._by_name = {
             self.int_mul_div.name: self.int_mul_div,
             self.int_ceil_div.name: self.int_ceil_div,
+            self.bv256.xor_model.name: self.bv256.xor_model,
         }
         self._by_name.update((op.name, op) for op in self.narrow.models())
 

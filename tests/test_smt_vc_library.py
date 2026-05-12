@@ -388,3 +388,37 @@ def test_bv256_opaque_ops_use_uf_declarations() -> None:
     ):
         assert f"(declare-fun {name} (Int Int) Int)" in text
         assert f"({name} X Y)" in text
+
+    assert "(define-fun lemma_bv256_xor_bool ((x Int) (y Int)) Bool" in text
+    assert "(assert (lemma_bv256_xor_bool X Y))" in text
+
+
+def test_bv256_constant_shift_and_mask_ops_use_readable_define_funs() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+    shl = vc.const("SHL", Int)
+    lshr = vc.const("LSHR", Int)
+    low = vc.const("LOW", Int)
+    high = vc.const("HIGH", Int)
+    slc = vc.const("SLC", Int)
+
+    with vc.block("entry") as b:
+        b.def_(shl, vc.ops.bv256.shl(x, vc.int_lit(8)))
+        b.def_(lshr, vc.ops.bv256.lshr(x, vc.int_lit(8)))
+        b.def_(low, vc.ops.bv256.and_(x, vc.int_lit(0xFF)))
+        b.def_(high, vc.ops.bv256.and_clear_low(x, 8))
+        b.def_(slc, vc.ops.bv256.and_mask(x, 0xFF00))
+
+    text = render_vc_script(vc.script())
+
+    assert "(define-fun POW2_8 () Int\n  256\n)" in text
+    assert "(define-fun bv256.shl_8 ((x Int)) Int\n  (* x POW2_8)\n)" in text
+    assert "(define-fun bv256.lshr_8 ((x Int)) Int\n  (div x POW2_8)\n)" in text
+    assert "(define-fun bv256.and_FF ((x Int)) Int\n  (mod x POW2_8)\n)" in text
+    assert "(define-fun bv256.and_clear_low_8 ((x Int)) Int\n  (* (div x POW2_8) POW2_8)\n)" in text
+    assert "(define-fun bv256.and_slice_8_8 ((x Int)) Int\n  (* (mod (div x POW2_8) POW2_8) POW2_8)\n)" in text
+    assert "(assert (=> BLK_entry (= SHL (bv256.shl_8 X))))" in text
+    assert "(assert (=> BLK_entry (= LSHR (bv256.lshr_8 X))))" in text
+    assert "(assert (=> BLK_entry (= LOW (bv256.and_FF X))))" in text
+    assert "(assert (=> BLK_entry (= HIGH (bv256.and_clear_low_8 X))))" in text
+    assert "(assert (=> BLK_entry (= SLC (bv256.and_slice_8_8 X))))" in text
