@@ -81,7 +81,15 @@ class BlockBuilder:
         self.vc = vc
         self.scope = scope
 
-    def def_(self, lhs: Term, rhs: Term, *, name: str | None = None, inline: bool = False) -> None:
+    def def_(
+        self,
+        lhs: Term,
+        rhs: Term,
+        *,
+        name: str | None = None,
+        inline: bool = False,
+        placement: FactPlacement = FactPlacement.SCOPED,
+    ) -> None:
         if inline:
             self.vc.inline_def(lhs, rhs)
             self._bind_direct_result(rhs, lhs)
@@ -92,6 +100,7 @@ class BlockBuilder:
             scope=self.scope,
             name=name or self.vc.auto_name("def", lhs.text),
             origin="def",
+            placement=placement,
         )
         self._bind_direct_result(rhs, lhs)
 
@@ -574,6 +583,11 @@ class VCBuilder:
 
     def _effective_scope(self, fact: VCFact) -> Scope | None:
         if fact.placement is FactPlacement.GLOBAL:
+            return None
+        if (
+            fact.placement is FactPlacement.ELIGIBLE_GLOBAL
+            and self.config.globalize_eligible_facts
+        ):
             return None
         return fact.scope
 

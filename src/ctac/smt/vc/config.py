@@ -58,5 +58,6 @@ class VCConfig:
     check_sat: bool = True
     fact_lowerer: FactLowerer | None = None
     assertion_policy: AssertionPolicy = field(default_factory=AssertionPolicy)
+    globalize_eligible_facts: bool = False
     bytemap: BytemapConfig = field(default_factory=BytemapConfig)
     op_models: dict[str, OpConfig] = field(default_factory=dict)

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from ctac.parse import parse_string
 from ctac.smt.vc import (
     TacLoweringOptions,
+    VCLoweringError,
     VCBuilder,
     VCConfig,
     lower_tac_file,
@@ -65,6 +68,172 @@ def test_tac_lowering_collapses_havoc_followed_by_range_assume() -> None:
 
     assert "(assert (=> BLK_entry (<= 0 X 255)))" in text
     assert "(assert (=> BLK_entry (and (<= 0 X) (<= X 255))))" not in text
+
+
+def test_tac_lowering_rejects_int_where_bool_is_required() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssumeExpCmd X
+\t}
+""",
+            "\tX:bv256",
+        )
+    )
+
+    with pytest.raises(VCLoweringError, match="expected Bool expression"):
+        lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+
+
+def test_tac_lowering_rejects_int_ite_condition() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignExpCmd R Ite(X 1 2)
+\t}
+""",
+            "\tX:bv256\n\tR:bv256",
+        )
+    )
+
+    with pytest.raises(VCLoweringError, match="expected Bool expression"):
+        lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+
+
+def test_tac_lowering_accepts_bool_ite_in_bool_assignment() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignExpCmd b Ite(C true false)
+\t\tAssertCmd b
+\t}
+""",
+            "\tC:bool\n\tb:bool",
+        )
+    )
+
+    vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+    text = render_vc_script(vc.script())
+
+    assert "(assert (=> BLK_entry (= b (ite C true false))))" in text
+    assert "(assert (=> BLK_entry b))" in text
+
+
+def test_tac_lowering_rejects_bool_ite_in_int_assignment() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignExpCmd R Ite(C true false)
+\t}
+""",
+            "\tC:bool\n\tR:bv256",
+        )
+    )
+
+    with pytest.raises(VCLoweringError, match="assignment sort mismatch"):
+        lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+
+
+def test_tac_lowering_rejects_int_ite_in_bool_assignment() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignExpCmd b Ite(C 1 0)
+\t}
+""",
+            "\tC:bool\n\tb:bool",
+        )
+    )
+
+    with pytest.raises(VCLoweringError, match="assignment sort mismatch"):
+        lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+
+
+def test_tac_lowering_rejects_mixed_sort_equality() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignExpCmd b Eq(R true)
+\t}
+""",
+            "\tR:bv256\n\tb:bool",
+        )
+    )
+
+    with pytest.raises(VCLoweringError, match="sort mismatch"):
+        lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+
+
+def test_tac_lowering_rejects_bool_operand_to_int_operator() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignExpCmd R Add(b 1)
+\t}
+""",
+            "\tb:bool\n\tR:bv256",
+        )
+    )
+
+    with pytest.raises(VCLoweringError, match="expected Int expression"):
+        lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+
+
+def test_tac_lowering_strips_tac_symbol_annotations() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignExpCmd R:2 Add(X:1 1)
+\t\tAssumeExpCmd Le(R:2 10)
+\t\tAssertCmd Ge(R:2 0)
+\t}
+""",
+            "\tX:bv256:1\n\tR:bv256:2",
+        )
+    )
+
+    vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+    text = render_vc_script(vc.script())
+
+    assert "(declare-const X Int)" in text
+    assert "(declare-const R Int)" in text
+    assert "(assert (=> BLK_entry (= R (int.bv256_add X 1))))" in text
+    assert "(declare-const X:1" not in text
+    assert "(declare-const R:2" not in text
+    assert "(assert (=> BLK_entry (= R:2" not in text
+
+
+def test_tac_lowering_strips_bytemap_symbol_annotations() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd M0:1
+\t\tAssignExpCmd M1:2 Store(M0:1 I:3 V:4)
+\t\tAssignExpCmd R:5 Select(M1:2 I:3)
+\t}
+""",
+            "\tM0:bytemap:1\n\tM1:bytemap:2\n\tI:bv256:3\n\tV:bv256:4\n\tR:bv256:5",
+        )
+    )
+
+    vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+    text = render_vc_script(vc.script())
+
+    assert "(declare-fun M0 (Int) Int)" in text
+    assert "(define-fun M1 ((idx Int)) Int" in text
+    assert "(assert (=> BLK_entry (= R (M1 I))))" in text
+    assert "(declare-fun M0:1" not in text
+    assert "(define-fun M1:2" not in text
+    assert "(assert (=> BLK_entry (= R:5" not in text
 
 
 def test_tac_lowering_executes_bytemap_store_and_select() -> None:

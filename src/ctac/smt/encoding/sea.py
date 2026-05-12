@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from ctac.analysis import analyze_dsa, analyze_use_before_def, extract_def_use
+from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
     ApplyExpr,
     AssertCmd,
@@ -26,7 +27,7 @@ from ctac.smt.encoding.path_skeleton import (
     blk_var_name,
     sanitize_ident,
 )
-from ctac.smt.vc.builder import VCBuilder
+from ctac.smt.vc.builder import BlockBuilder, VCBuilder
 from ctac.smt.vc.config import (
     AssertionPolicy,
     FactKind,
@@ -35,7 +36,7 @@ from ctac.smt.vc.config import (
 )
 from ctac.smt.vc.script import VCScript
 from ctac.smt.vc.tac import TacExprLowerer, _range_bounds_for_symbol
-from ctac.smt.vc.terms import Bool, Int, Sort, Term, eq, term, true
+from ctac.smt.vc.terms import Bool, Int, Sort, Term, term, true
 
 
 _SUPPORTED_CMD_TYPES = (
@@ -77,10 +78,11 @@ class SeaEncoder(SmtEncoder):
 
         entry = program.blocks[0].id
         dynamic_points = {(row.block_id, row.cmd_index) for row in dsa.dynamic_assignments}
-        symbol_sorts = dict(ctx.tac_file.symbol_sorts)
+        symbol_sorts = _canonical_symbol_sorts(ctx.tac_file.symbol_sorts)
         vc = VCBuilder(
             VCConfig(
                 produce_unsat_cores=ctx.unsat_core,
+                globalize_eligible_facts=not ctx.guard_statics,
                 assertion_policy=AssertionPolicy(
                     grouped_kinds=(
                         frozenset({FactKind.DEF, FactKind.ASSUME, FactKind.RANGE})
@@ -99,7 +101,6 @@ class SeaEncoder(SmtEncoder):
             program,
             entry,
             dynamic_points,
-            guard_statics=ctx.guard_statics,
         )
         self._emit_dynamic_defs(
             vc,
@@ -153,12 +154,10 @@ class SeaEncoder(SmtEncoder):
         program: TacProgram,
         entry: str,
         dynamic_points: set[tuple[str, int]],
-        *,
-        guard_statics: bool,
     ) -> None:
         for block in Cfg(program).ordered_blocks():
             guard = _block_guard_term(vc, block.id, entry)
-            with vc.block(block.id, guard=guard):
+            with vc.block(block.id, guard=guard) as builder:
                 i = 0
                 while i < len(block.commands):
                     if (block.id, i) in dynamic_points:
@@ -167,20 +166,19 @@ class SeaEncoder(SmtEncoder):
                     havoc_range = _havoc_range_event(block, i)
                     if havoc_range is not None:
                         cmd, lo, hi = havoc_range
-                        if cmd.lhs in expr.symbol_aliases:
+                        lhs = _canon(cmd.lhs)
+                        if lhs in expr.symbol_aliases:
                             i += 2
                             continue
-                        x = vc.const(cmd.lhs, _sort_for(symbol_sorts=expr.symbol_sorts, name=cmd.lhs))
-                        placement = (
-                            FactPlacement.SCOPED if guard_statics else FactPlacement.GLOBAL
-                        )
+                        x = vc.const(lhs, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs))
+                        expr.require_sort(x, Int, lhs)
                         vc.range(
                             x,
                             lo=lo,
                             hi=hi,
                             scope="current",
                             name=vc.auto_name("havoc_range", x.text),
-                            placement=placement,
+                            placement=FactPlacement.ELIGIBLE_GLOBAL,
                         )
                         i += 2
                         continue
@@ -188,43 +186,43 @@ class SeaEncoder(SmtEncoder):
                     with vc.stmt(cmd.meta_index, cmd.raw):
                         self._emit_static_command(
                             vc,
+                            builder,
                             expr,
                             cmd,
                             block.id,
-                            guard_statics=guard_statics,
                         )
                     i += 1
 
     def _emit_static_command(
         self,
         vc: VCBuilder,
+        builder: BlockBuilder,
         expr: TacExprLowerer,
         cmd: TacCmd,
         block_id: str,
-        *,
-        guard_statics: bool,
     ) -> None:
         if isinstance(cmd, AssignExpCmd):
-            if _is_map(expr.symbol_sorts, cmd.lhs):
+            lhs_name = _canon(cmd.lhs)
+            if _is_map(expr.symbol_sorts, lhs_name):
                 _emit_map_store(vc, expr, cmd)
                 return
-            lhs = vc.const(cmd.lhs, _sort_for(symbol_sorts=expr.symbol_sorts, name=cmd.lhs))
+            lhs = vc.const(lhs_name, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs_name))
             rhs = expr.lower_scalar(cmd.rhs)
-            vc.fact(
-                FactKind.DEF,
-                eq(lhs, rhs),
-                scope="current",
+            expr.require_assignment_sort(lhs, rhs, cmd.rhs)
+            builder.def_(
+                lhs,
+                rhs,
                 name=vc.auto_name("def", lhs.text),
-                origin="def",
-                placement=FactPlacement.SCOPED if guard_statics else FactPlacement.GLOBAL,
+                placement=FactPlacement.ELIGIBLE_GLOBAL,
             )
         elif isinstance(cmd, AssignHavocCmd):
-            if cmd.lhs in expr.symbol_aliases:
+            lhs = _canon(cmd.lhs)
+            if lhs in expr.symbol_aliases:
                 return
-            if _is_map(expr.symbol_sorts, cmd.lhs):
-                vc.bytemap.havoc(cmd.lhs)
+            if _is_map(expr.symbol_sorts, lhs):
+                vc.bytemap.havoc(lhs)
             else:
-                vc.const(cmd.lhs, _sort_for(symbol_sorts=expr.symbol_sorts, name=cmd.lhs))
+                vc.const(lhs, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs))
         elif isinstance(cmd, AssumeExpCmd):
             vc.fact(
                 FactKind.ASSUME,
@@ -254,9 +252,10 @@ class SeaEncoder(SmtEncoder):
         by_id = program.block_by_id()
         rows_by_symbol: dict[str, list] = defaultdict(list)
         for row in rows:
-            if _is_map(symbol_sorts, row.symbol):
+            sym = _canon(row.symbol)
+            if _is_map(symbol_sorts, sym):
                 raise SmtEncodingError("encoding 'sea' does not support dynamic bytemaps yet")
-            rows_by_symbol[row.symbol].append(row)
+            rows_by_symbol[sym].append(row)
         block_pos = {b.id: i for i, b in enumerate(Cfg(program).ordered_blocks())}
         for sym, sym_rows in sorted(rows_by_symbol.items()):
             cases: list[tuple[Term, Term]] = []
@@ -279,6 +278,11 @@ class SeaEncoder(SmtEncoder):
                         raise SmtEncodingError(
                             f"dynamic assignment for {sym} must be AssignExpCmd/AssignHavocCmd"
                         )
+                    expr.require_assignment_sort(
+                        vc.const(sym, _sort_for(symbol_sorts=symbol_sorts, name=sym)),
+                        rhs,
+                        cmd.rhs if isinstance(cmd, AssignExpCmd) else sym,
+                    )
                 cases.append((guard, rhs))
             vc.dynamic_def(
                 vc.const(sym, _sort_for(symbol_sorts=symbol_sorts, name=sym)),
@@ -336,6 +340,7 @@ def _define_reachability_aliases(
     aliases: dict[str, Term] = {}
     block_ids = {block.id for block in program.blocks}
     for name in sorted(symbol_sorts):
+        name = _canon(name)
         block_id = block_id_for_reachability_var(name)
         if block_id not in block_ids:
             continue
@@ -356,9 +361,9 @@ def _emit_map_store(vc: VCBuilder, expr: TacExprLowerer, cmd: AssignExpCmd) -> N
     if not isinstance(cmd.rhs, ApplyExpr) or cmd.rhs.op != "Store" or len(cmd.rhs.args) != 3:
         raise SmtEncodingError(f"bytemap assignment {cmd.lhs!r} requires Store RHS")
     base = expr.lower_map(cmd.rhs.args[0])
-    index = expr.lower_scalar(cmd.rhs.args[1])
-    value = expr.lower_scalar(cmd.rhs.args[2])
-    vc.bytemap.store(cmd.lhs, base, index, value)
+    index = expr.lower_int(cmd.rhs.args[1])
+    value = expr.lower_int(cmd.rhs.args[2])
+    vc.bytemap.store(_canon(cmd.lhs), base, index, value)
 
 
 def _havoc_range_event(block: TacBlock, index: int) -> tuple[AssignHavocCmd, int, int] | None:
@@ -368,7 +373,7 @@ def _havoc_range_event(block: TacBlock, index: int) -> tuple[AssignHavocCmd, int
     assume = block.commands[index + 1]
     if not isinstance(cmd, AssignHavocCmd) or not isinstance(assume, AssumeExpCmd):
         return None
-    bounds = _range_bounds_for_symbol(assume.condition, cmd.lhs)
+    bounds = _range_bounds_for_symbol(assume.condition, _canon(cmd.lhs))
     if bounds is None:
         return None
     lo, hi = bounds
@@ -389,8 +394,16 @@ def _fresh_havoc(
 
 
 def _is_map(symbol_sorts: dict[str, str], name: str) -> bool:
-    return symbol_sorts.get(name) in {"bytemap", "ghostmap"}
+    return symbol_sorts.get(_canon(name)) in {"bytemap", "ghostmap"}
 
 
 def _sort_for(*, symbol_sorts: dict[str, str], name: str) -> Sort:
-    return Bool if symbol_sorts.get(name) == "bool" else Int
+    return Bool if symbol_sorts.get(_canon(name)) == "bool" else Int
+
+
+def _canon(symbol: str) -> str:
+    return canonical_symbol(symbol, strip_var_suffixes=True)
+
+
+def _canonical_symbol_sorts(symbol_sorts: dict[str, str]) -> dict[str, str]:
+    return {_canon(name): sort for name, sort in symbol_sorts.items()}

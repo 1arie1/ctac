@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import re
 from typing import NoReturn
 
+from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
     ApplyExpr,
     AssertCmd,
@@ -102,7 +103,7 @@ def lower_tac_program(
     options: TacLoweringOptions | None = None,
 ) -> tuple[VCBuilder, tuple[BlockControl, ...]]:
     builder = vc or VCBuilder()
-    executor = TacBlockExecutor(builder, symbol_sorts, options=options)
+    executor = TacBlockExecutor(builder, _canonical_symbol_sorts(symbol_sorts), options=options)
     opts = options or TacLoweringOptions()
     blocks = _ordered_blocks(program, opts.block_order)
     controls = tuple(executor.execute_block(block) for block in blocks)
@@ -118,8 +119,10 @@ class TacExprLowerer:
         symbol_aliases: dict[str, Term] | None = None,
     ) -> None:
         self.vc = vc
-        self.symbol_sorts = symbol_sorts
-        self.symbol_aliases = symbol_aliases or {}
+        self.symbol_sorts = _canonical_symbol_sorts(symbol_sorts)
+        self.symbol_aliases = {
+            _canon(name): term for name, term in (symbol_aliases or {}).items()
+        }
 
     def lower(self, expr: TacExpr) -> ScalarOrMap:
         if isinstance(expr, SymbolRef):
@@ -138,11 +141,43 @@ class TacExprLowerer:
 
     def lower_bool(self, expr: TacExpr) -> Term:
         out = self.lower_scalar(expr)
-        if out.sort is Bool:
-            return out
-        return eq(out, self.vc.int_lit(1))
+        self.require_sort(out, Bool, expr)
+        return out
+
+    def lower_int(self, expr: TacExpr) -> Term:
+        out = self.lower_scalar(expr)
+        self.require_sort(out, Int, expr)
+        return out
+
+    def require_sort(self, term: Term, expected: Sort, source: TacExpr | str) -> None:
+        if term.sort is expected:
+            return
+        raise VCLoweringError(
+            f"expected {expected.smt()} expression, got {term.sort.smt()}: {source!r}"
+        )
+
+    def require_same_sort(self, left: Term, right: Term, source: TacExpr | str) -> None:
+        if left.sort is right.sort:
+            return
+        raise VCLoweringError(
+            f"sort mismatch: {left.sort.smt()} vs {right.sort.smt()}: {source!r}"
+        )
+
+    def require_assignment_sort(self, lhs: Term, rhs: Term, source: TacExpr | str) -> None:
+        if lhs.sort is rhs.sort:
+            return
+        raise VCLoweringError(
+            f"assignment sort mismatch for {lhs.text}: expected {lhs.sort.smt()}, "
+            f"got {rhs.sort.smt()}: {source!r}"
+        )
+
+    def require_int_term(self, term: Term, source: TacExpr | str) -> None:
+        if term.sort is Int:
+            return
+        raise VCLoweringError(f"expected Int expression, got {term.sort.smt()}: {source!r}")
 
     def symbol(self, name: str) -> ScalarOrMap:
+        name = _canon(name)
         if name in self.symbol_aliases:
             return self.symbol_aliases[name]
         if self._is_map(name):
@@ -165,18 +200,18 @@ class TacExprLowerer:
             if len(args) != 2:
                 self.unsupported(expr, "Select expects two args")
             map_term = self.lower_map(args[0])
-            index = self.lower_scalar(args[1])
+            index = self.lower_int(args[1])
             return self.vc.bytemap.select(map_term, index)
         if op == "Store":
             self.unsupported(expr, "Store requires assignment context for map name")
         if op == "Ite":
             if len(args) != 3:
                 self.unsupported(expr, "Ite expects three args")
-            return app(
-                "ite",
-                [self.lower_bool(args[0]), self.lower_scalar(args[1]), self.lower_scalar(args[2])],
-                Int,
-            )
+            cond = self.lower_bool(args[0])
+            then_term = self.lower_scalar(args[1])
+            else_term = self.lower_scalar(args[2])
+            self.require_same_sort(then_term, else_term, expr)
+            return app("ite", [cond, then_term, else_term], then_term.sort)
         if op in {"Eq", "Ne", "Lt", "Le", "Gt", "Ge"}:
             return self.compare(op, args)
         if op in {"LAnd", "LOr"}:
@@ -188,8 +223,8 @@ class TacExprLowerer:
             return not_(self.lower_bool(args[0]))
         if len(args) != 2:
             self.unsupported(expr, f"{op} expects two args")
-        a = self.lower_scalar(args[0])
-        b = self.lower_scalar(args[1])
+        a = self.lower_int(args[0])
+        b = self.lower_int(args[1])
         if op == "Add":
             return self.vc.ops.bv256.add(a, b)
         if op == "Sub":
@@ -228,9 +263,13 @@ class TacExprLowerer:
         a = self.lower_scalar(args[0])
         b = self.lower_scalar(args[1])
         if op == "Eq":
+            self.require_same_sort(a, b, ApplyExpr(op, args))
             return eq(a, b)
         if op == "Ne":
+            self.require_same_sort(a, b, ApplyExpr(op, args))
             return not_(eq(a, b))
+        self.require_int_term(a, ApplyExpr(op, args))
+        self.require_int_term(b, ApplyExpr(op, args))
         if op == "Lt":
             return lt(a, b)
         if op == "Le":
@@ -250,7 +289,7 @@ class TacExprLowerer:
         if callee.name == "safe_math_narrow_bv256:bif":
             if len(args) != 2:
                 raise VCLoweringError("safe_math_narrow_bv256:bif expects one arg")
-            return self.vc.ops.narrow.bv256(self.lower_scalar(args[1]))
+            return self.vc.ops.narrow.bv256(self.lower_int(args[1]))
         raise VCLoweringError(f"unsupported Apply callee {callee.name!r}")
 
     def lower_map(self, expr: TacExpr) -> MapTerm:
@@ -281,7 +320,8 @@ class TacBlockExecutor:
         self.vc = vc
         self.symbol_sorts = symbol_sorts
         self.options = options or TacLoweringOptions()
-        self.expr = TacExprLowerer(vc, symbol_sorts)
+        self.symbol_sorts = _canonical_symbol_sorts(symbol_sorts)
+        self.expr = TacExprLowerer(vc, self.symbol_sorts)
 
     def execute_block(self, block: TacBlock) -> BlockControl:
         guard = self.vc.const(f"BLK_{sanitize_name(block.id)}", Bool)
@@ -324,26 +364,30 @@ class TacBlockExecutor:
             return
 
     def assign(self, cmd: AssignExpCmd, builder: BlockBuilder) -> None:
-        lhs = cmd.lhs
+        lhs = _canon(cmd.lhs)
         if self._is_map(lhs):
             self.assign_map(cmd)
             return
         rhs = self.expr.lower_scalar(cmd.rhs)
-        builder.def_(self.vc.const(lhs, self._sort(lhs)), rhs, inline=self.options.inline_defs)
+        lhs_term = self.vc.const(lhs, self._sort(lhs))
+        self.expr.require_assignment_sort(lhs_term, rhs, cmd.rhs)
+        builder.def_(lhs_term, rhs, inline=self.options.inline_defs)
 
     def assign_map(self, cmd: AssignExpCmd) -> None:
         if not isinstance(cmd.rhs, ApplyExpr) or cmd.rhs.op != "Store" or len(cmd.rhs.args) != 3:
             raise VCLoweringError(f"bytemap assignment {cmd.lhs!r} requires Store RHS")
+        lhs = _canon(cmd.lhs)
         base = self.expr.lower_map(cmd.rhs.args[0])
-        index = self.expr.lower_scalar(cmd.rhs.args[1])
-        value = self.expr.lower_scalar(cmd.rhs.args[2])
-        self.vc.bytemap.store(cmd.lhs, base, index, value)
+        index = self.expr.lower_int(cmd.rhs.args[1])
+        value = self.expr.lower_int(cmd.rhs.args[2])
+        self.vc.bytemap.store(lhs, base, index, value)
 
     def havoc(self, cmd: AssignHavocCmd) -> None:
-        if self._is_map(cmd.lhs):
-            self.vc.bytemap.havoc(cmd.lhs)
+        lhs = _canon(cmd.lhs)
+        if self._is_map(lhs):
+            self.vc.bytemap.havoc(lhs)
         else:
-            self.vc.const(cmd.lhs, self._sort(cmd.lhs))
+            self.vc.const(lhs, self._sort(lhs))
 
     def _classify_window(
         self, block_id: str, commands: list[TacCmd], index: int
@@ -356,18 +400,20 @@ class TacBlockExecutor:
             return None
         if (block_id, index + 1) in self.options.skip_command_points:
             return None
-        if self._is_map(first.lhs):
+        lhs = _canon(first.lhs)
+        if self._is_map(lhs):
             return None
-        bounds = _range_bounds_for_symbol(second.condition, first.lhs)
+        bounds = _range_bounds_for_symbol(second.condition, lhs)
         if bounds is None:
             return None
         lo, hi = bounds
         if lo > hi:
             raise VCLoweringError(f"invalid havoc range for {first.lhs}: {lo} > {hi}")
-        return HavocRangeEvent(first.lhs, lo, hi, (first, second))
+        return HavocRangeEvent(lhs, lo, hi, (first, second))
 
     def _emit_havoc_range(self, event: HavocRangeEvent, builder: BlockBuilder) -> None:
         lhs = self.vc.const(event.lhs, self._sort(event.lhs))
+        self.expr.require_sort(lhs, Int, event.lhs)
         raw = " ; ".join(cmd.raw for cmd in event.source_cmds)
         with self.vc.stmt(event.source_cmds[0].meta_index, raw):
             builder.range(lhs, lo=event.lo, hi=event.hi, name=self.vc.auto_name("havoc_range", lhs.text))
@@ -378,7 +424,7 @@ class TacBlockExecutor:
         last = block.commands[-1]
         if not isinstance(last, JumpiCmd):
             return ()
-        cond = self.vc.const(last.condition, Bool)
+        cond = self.vc.const(_canon(last.condition), Bool)
         return ((last.then_target, cond), (last.else_target, not_(cond)))
 
     def _sort(self, name: str) -> Sort:
@@ -404,6 +450,14 @@ def _parse_int(raw: str) -> int:
         raise VCLoweringError(f"unsupported constant {raw!r}") from e
 
 
+def _canon(symbol: str) -> str:
+    return canonical_symbol(symbol, strip_var_suffixes=True)
+
+
+def _canonical_symbol_sorts(symbol_sorts: dict[str, str]) -> dict[str, str]:
+    return {_canon(name): sort for name, sort in symbol_sorts.items()}
+
+
 def _ordered_blocks(program: TacProgram, order: str) -> list[TacBlock]:
     if order == "program":
         return list(program.blocks)
@@ -413,6 +467,7 @@ def _ordered_blocks(program: TacProgram, order: str) -> list[TacBlock]:
 
 
 def _range_bounds_for_symbol(expr: TacExpr, symbol: str) -> tuple[int, int] | None:
+    symbol = _canon(symbol)
     constraints = _flatten_lands(expr)
     lo: int | None = None
     hi: int | None = None
@@ -459,4 +514,4 @@ def _one_sided_bound(expr: TacExpr, symbol: str) -> tuple[str, int] | None:
 
 
 def _is_symbol(expr: TacExpr, symbol: str) -> bool:
-    return isinstance(expr, SymbolRef) and expr.name == symbol
+    return isinstance(expr, SymbolRef) and _canon(expr.name) == _canon(symbol)

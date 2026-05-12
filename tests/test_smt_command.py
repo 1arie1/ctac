@@ -379,6 +379,42 @@ def test_smt_cli_sea_encoding_smoke(tmp_path: Path) -> None:
     assert "(assert BLK_EXIT)" in res.stdout
 
 
+def test_smt_cli_sea_guard_statics_keeps_static_defs_scoped(tmp_path: Path) -> None:
+    tac = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tb:bool
+}
+Program {
+\tBlock entry Succ [mid] {
+\t\tJumpCmd mid
+\t}
+\tBlock mid Succ [ok] {
+\t\tAssignExpCmd b true
+\t\tJumpCmd ok
+\t}
+\tBlock ok Succ [] {
+\t\tAssertCmd b "must hold"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    p = _write_tac(tmp_path, tac, "ok-sea-guarded.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--guard-statics"])
+    assert res.exit_code == 0, res.output
+    assert "(assert (=> BLK_mid (= b true)))" in res.stdout
+    assert "(assert (= b true))" not in res.stdout
+
+
 def test_smt_cli_sea_aliases_reachability_certora_symbols(tmp_path: Path) -> None:
     tac = """TACSymbolTable {
 \tUserDefined {
@@ -413,6 +449,51 @@ Metas {
     assert "(define-fun ReachabilityCertoraok () Bool\n  BLK_ok\n)" in res.stdout
     assert "(declare-const ReachabilityCertoraok Bool)" not in res.stdout
     assert "(assert (= b ReachabilityCertoraok))" in res.stdout
+
+
+def test_smt_cli_sea_strips_tac_symbol_annotations(tmp_path: Path) -> None:
+    tac = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tX:bv256:1
+\tR:bv256:2
+\tb:bool:3
+}
+Program {
+\tBlock entry Succ [ok] {
+\t\tAssignHavocCmd X:1
+\t\tAssignExpCmd R:2 Add(X:1 1)
+\t\tAssignExpCmd b:3 Le(R:2 10)
+\t\tJumpCmd ok
+\t}
+\tBlock ok Succ [] {
+\t\tAssertCmd b:3 "must hold"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    p = _write_tac(tmp_path, tac, "annotated-sea.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    assert res.exit_code == 0, res.output
+    assert "(declare-const X Int)" in res.stdout
+    assert "(declare-const R Int)" in res.stdout
+    assert "(declare-const b Bool)" in res.stdout
+    assert "(assert (= R (int.bv256_add X 1)))" in res.stdout
+    assert "(assert (= b (<= R 10)))" in res.stdout
+    assert "(declare-const X:1" not in res.stdout
+    assert "(declare-const R:2" not in res.stdout
+    assert "(declare-const b:3" not in res.stdout
+    assert "(assert (= R:2" not in res.stdout
+    assert "(assert (= b:3" not in res.stdout
 
 
 def test_smt_cli_run_sat_writes_model(tmp_path: Path, monkeypatch) -> None:

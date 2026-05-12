@@ -107,6 +107,23 @@ def test_global_fact_placement_elides_scope() -> None:
     assert "(assert (=> BLK_BB7 (= X 1)))" not in text
 
 
+def test_eligible_global_fact_placement_is_configured_at_lowering_time() -> None:
+    scoped = VCBuilder(VCConfig(check_sat=False, globalize_eligible_facts=False))
+    scoped_x = scoped.const("X", Int)
+    with scoped.block("BB7") as block:
+        block.def_(scoped_x, scoped.int_lit(1), placement=FactPlacement.ELIGIBLE_GLOBAL)
+    scoped_text = render_vc_script(scoped.script())
+    assert "(assert (=> BLK_BB7 (= X 1)))" in scoped_text
+
+    globalized = VCBuilder(VCConfig(check_sat=False, globalize_eligible_facts=True))
+    global_x = globalized.const("X", Int)
+    with globalized.block("BB7") as block:
+        block.def_(global_x, globalized.int_lit(1), placement=FactPlacement.ELIGIBLE_GLOBAL)
+    global_text = render_vc_script(globalized.script())
+    assert "(assert (= X 1))" in global_text
+    assert "(assert (=> BLK_BB7 (= X 1)))" not in global_text
+
+
 def test_raw_cfg_fact_is_emitted_globally() -> None:
     vc = VCBuilder(VCConfig(check_sat=False))
     vc.raw_fact("(=> BLK_a BLK_b)", origin="cfg")
