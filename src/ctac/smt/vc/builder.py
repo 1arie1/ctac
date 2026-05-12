@@ -315,7 +315,10 @@ class VCBuilder:
                 constraints.append(le(self._literal_or_term(lo), x))
             if hi is not None:
                 constraints.append(le(x, self._literal_or_term(hi)))
-            constraint = and_(*constraints)
+            if lo is not None and hi is not None:
+                constraint = app("<=", [self._literal_or_term(lo), x, self._literal_or_term(hi)], Bool)
+            else:
+                constraint = and_(*constraints)
         self.fact(
             FactKind.RANGE,
             constraint,
