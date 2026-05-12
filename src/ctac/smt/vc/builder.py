@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Literal, Sequence
 
+from ctac.smt.vc.bytemap import UfDefineFunBytemap
 from ctac.smt.vc.config import FactKind, OpConfig, VCConfig
 from ctac.smt.vc.ops import CallSite, LemmaSchema, Ops
 from ctac.smt.vc.script import Assertion, ConstDecl, DefineFun, FunDecl, Scope, VCScript
@@ -82,8 +83,7 @@ class BlockBuilder:
     def def_(self, lhs: Term, rhs: Term, *, name: str | None = None, inline: bool = False) -> None:
         if inline:
             self.vc.inline_def(lhs, rhs)
-            if isinstance(rhs.direct_callsite, CallSite):
-                rhs.direct_callsite.bound_result = lhs
+            self._bind_direct_result(rhs, lhs)
             return
         self.vc.fact(
             FactKind.DEF,
@@ -92,8 +92,12 @@ class BlockBuilder:
             name=name or self.vc.auto_name("def", lhs.text),
             origin="def",
         )
-        if isinstance(rhs.direct_callsite, CallSite):
-            rhs.direct_callsite.bound_result = lhs
+        self._bind_direct_result(rhs, lhs)
+
+    def _bind_direct_result(self, rhs: Term, lhs: Term) -> None:
+        site = rhs.direct_callsite
+        if site is not None and hasattr(site, "bound_result"):
+            site.bound_result = lhs
 
     def assume(self, phi: Term, *, name: str | None = None) -> None:
         self.vc.fact(
@@ -137,6 +141,7 @@ class VCBuilder:
         self.scope_stack: list[Scope] = []
         self.stmt_stack: list[StmtContext] = []
         self.ops = Ops(self)
+        self.bytemap = UfDefineFunBytemap(self, self.config.bytemap)
         self._finalized = False
 
     def const(self, name: str, sort: Sort) -> Term:
@@ -405,6 +410,7 @@ class VCBuilder:
         if self._finalized:
             return
         self.generate_lemma_instances()
+        self.bytemap.finalize()
         self._finalized = True
 
     def lower_facts_to_assertions(self) -> tuple[Assertion, ...]:

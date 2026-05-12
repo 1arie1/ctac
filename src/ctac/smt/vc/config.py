@@ -22,6 +22,13 @@ class FactLowerer(Protocol):
     def lower(self, builder: Any) -> tuple[Any, ...]: ...
 
 
+@dataclass(frozen=True)
+class BytemapConfig:
+    select_range: str = "binder"  # "none" | "binder"
+    store_reduce: bool = False
+    model: str = "uf-define-fun"
+
+
 class OpMode(Enum):
     INLINE = auto()
     DEFINE_FUN = auto()
@@ -44,4 +51,5 @@ class VCConfig:
     check_sat: bool = True
     fact_lowerer: FactLowerer | None = None
     assertion_policy: AssertionPolicy = field(default_factory=AssertionPolicy)
+    bytemap: BytemapConfig = field(default_factory=BytemapConfig)
     op_models: dict[str, OpConfig] = field(default_factory=dict)

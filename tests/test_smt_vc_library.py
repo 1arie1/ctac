@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ctac.smt.vc import (
     AssertionPolicy,
+    BytemapConfig,
     FactKind,
     Int,
     IntRange,
@@ -316,6 +317,47 @@ def test_bv256_arithmetic_uses_named_define_funs() -> None:
     assert "(assert (=> BLK_entry (= M (int.bv256_mul X Y))))" in text
     assert "(assert (=> BLK_entry (= D (int.bv256_div X Y))))" in text
     assert "(assert (=> BLK_entry (= REM (int.bv256_mod X Y))))" in text
+
+
+def test_bytemap_havoc_store_select_uses_binder_range_axiom() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    idx = vc.const("I", Int)
+    val = vc.const("V", Int)
+    result = vc.const("R", Int)
+    m0 = vc.bytemap.havoc("M0")
+    m1 = vc.bytemap.store("M1", m0, idx, val)
+
+    with vc.block("entry") as block:
+        block.def_(result, vc.bytemap.select(m1, idx))
+
+    text = render_vc_script(vc.script())
+
+    assert "(declare-fun M0 (Int) Int)" in text
+    assert "(define-fun M1 ((idx Int)) Int\n  (ite (= idx I) V (M0 idx))\n)" in text
+    assert "(assert (=> BLK_entry (= R (M1 I))))" in text
+    assert "(assert (int.in_bv256 R))" in text
+    assert "(int.in_bv256 (M1 I))" not in text
+    assert "(int.in_bv256 (ite" not in text
+
+
+def test_bytemap_select_range_axiom_can_be_disabled() -> None:
+    vc = VCBuilder(
+        VCConfig(
+            check_sat=False,
+            bytemap=BytemapConfig(select_range="none"),
+        )
+    )
+    idx = vc.const("I", Int)
+    result = vc.const("R", Int)
+    m0 = vc.bytemap.havoc("M0")
+
+    with vc.block("entry") as block:
+        block.def_(result, vc.bytemap.select(m0, idx))
+
+    text = render_vc_script(vc.script())
+
+    assert "(assert (=> BLK_entry (= R (M0 I))))" in text
+    assert "int.in_bv256 R" not in text
 
 
 def test_bv256_opaque_ops_use_uf_declarations() -> None:

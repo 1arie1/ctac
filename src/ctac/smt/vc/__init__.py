@@ -1,7 +1,16 @@
 from __future__ import annotations
 
 from ctac.smt.vc.builder import BlockBuilder, IntRange, VCBuilder, VCFact, sanitize_name
-from ctac.smt.vc.config import AssertionPolicy, FactKind, FactLowerer, OpConfig, OpMode, VCConfig
+from ctac.smt.vc.bytemap import MapTerm, SelectSite, UfDefineFunBytemap
+from ctac.smt.vc.config import (
+    AssertionPolicy,
+    BytemapConfig,
+    FactKind,
+    FactLowerer,
+    OpConfig,
+    OpMode,
+    VCConfig,
+)
 from ctac.smt.vc.lowering import LeinoEdge, LeinoLowerer
 from ctac.smt.vc.ops import CallSite, LemmaSchema, OpModel, Ops
 from ctac.smt.vc.script import (
@@ -43,6 +52,7 @@ __all__ = [
     "AssertionPolicy",
     "BlockBuilder",
     "Bool",
+    "BytemapConfig",
     "CallSite",
     "ConstDecl",
     "DefineFun",
@@ -54,13 +64,16 @@ __all__ = [
     "LemmaSchema",
     "LeinoEdge",
     "LeinoLowerer",
+    "MapTerm",
     "OpConfig",
     "OpMode",
     "OpModel",
     "Ops",
     "Scope",
+    "SelectSite",
     "Sort",
     "Term",
+    "UfDefineFunBytemap",
     "VCBuilder",
     "VCConfig",
     "VCFact",
