@@ -181,6 +181,8 @@ class OpModel:
         raise NotImplementedError
 
 
+# Lemma: if c > 0 and r = int.mul_div(a, b, c), then r is the floor
+# quotient of a*b by c: c*r <= a*b < c*(r + 1).
 class IntMulDivBoundsLemma(LemmaSchema):
     name = _LemmaName.INT_MUL_DIV_BOUNDS
     params = ((_A, Int), (_B, Int), (_C, Int), (_R, Int))
@@ -243,6 +245,8 @@ class IntMulDivOp(OpModel):
         )
 
 
+# Lemma: if b > 0 and r = int.ceil_div(a, b), then r is the ceiling
+# quotient of a by b: b*r >= a and b*r < a + b.
 class IntCeilDivBoundsLemma(LemmaSchema):
     name = _LemmaName.INT_CEIL_DIV_BOUNDS
     params = ((_A, Int), (_B, Int), (_R, Int))
@@ -302,6 +306,8 @@ class IntCeilDivOp(OpModel):
         )
 
 
+# Lemma: if r is the result of narrow.bvN(x), then r is in the unsigned
+# N-bit range: 0 <= r <= 2^N - 1.
 class NarrowRangeLemma(LemmaSchema):
     params = ((_R, Int),)
 
@@ -359,6 +365,8 @@ class NarrowOps:
         return (self.bv32, self.bv64, self.bv128, self.bv256)
 
 
+# Lemma: if x and y are Boolean integers (0 or 1), then int.bv256_xor(x, y)
+# is Boolean xor: it is 0 when x = y and 1 otherwise.
 class Bv256XorBoolLemma(LemmaSchema):
     name = _LemmaName.BV256_XOR_BOOL
     params = ((_X, Int), (_Y, Int))
