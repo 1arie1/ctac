@@ -66,7 +66,12 @@ class BlockBuilder:
         self.vc = vc
         self.scope = scope
 
-    def def_(self, lhs: Term, rhs: Term, *, name: str | None = None) -> None:
+    def def_(self, lhs: Term, rhs: Term, *, name: str | None = None, inline: bool = False) -> None:
+        if inline:
+            self.vc.inline_def(lhs, rhs)
+            if isinstance(rhs.direct_callsite, CallSite):
+                rhs.direct_callsite.bound_result = lhs
+            return
         self.vc.fact(
             FactKind.DEF,
             eq(lhs, rhs),
@@ -136,6 +141,10 @@ class VCBuilder:
         body: Term,
     ) -> None:
         self.define_funs.setdefault(name, DefineFun(name, tuple(params), ret, body))
+
+    def inline_def(self, lhs: Term, rhs: Term) -> None:
+        self.const_decls.pop(lhs.text, None)
+        self.define_fun(lhs.text, (), lhs.sort, rhs)
 
     def define_int_const(self, name: str, value: int | Term | str) -> Term:
         if isinstance(value, Term):

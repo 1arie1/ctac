@@ -65,6 +65,24 @@ def test_assertion_policy_groups_selected_facts_by_block_scope() -> None:
     assert "(assert (=> BLK_BB7 (= Y (int.bv256_add X 2))))" not in text
 
 
+def test_def_can_emit_inline_define_fun_instead_of_assertion() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+    y = vc.const("Y", Int)
+
+    with vc.block("BB7") as b:
+        b.def_(y, add(x, vc.int_lit(1)), inline=True)
+        b.assume(ge(y, vc.int_lit(0)))
+
+    text = render_vc_script(vc.script())
+
+    assert "(declare-const X Int)" in text
+    assert "(declare-const Y Int)" not in text
+    assert "(define-fun Y () Int\n  (+ X 1)\n)" in text
+    assert "(assert (=> BLK_BB7 (= Y (+ X 1))))" not in text
+    assert "(assert (=> BLK_BB7 (>= Y 0)))" in text
+
+
 def test_leino_lowerer_emits_ok_equations_from_external_cfg() -> None:
     vc = VCBuilder(
         VCConfig(
