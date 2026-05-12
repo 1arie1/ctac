@@ -145,3 +145,77 @@ def test_bv256_range_uses_readable_named_constants() -> None:
     assert "(define-fun BV256_MOD () Int" in text
     assert "(define-fun BV256_MAX () Int\n  (- BV256_MOD 1)\n)" in text
     assert "(assert (=> BLK_entry (and (<= 0 X) (<= X BV256_MAX))))" in text
+
+
+def test_bv256_add_uses_define_fun_with_ite_body() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+    y = vc.const("Y", Int)
+    r = vc.const("R", Int)
+
+    with vc.block("entry") as b:
+        b.def_(r, vc.ops.bv256.add(x, y))
+
+    text = render_vc_script(vc.script())
+
+    assert "(define-fun int.bv256_add ((x Int) (y Int)) Int" in text
+    assert "(ite (<= (+ x y) BV256_MAX) (+ x y) (- (+ x y) BV256_MOD))" in text
+    assert "(assert (=> BLK_entry (= R (int.bv256_add X Y))))" in text
+
+
+def test_bv256_arithmetic_uses_named_define_funs() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+    y = vc.const("Y", Int)
+    s = vc.const("S", Int)
+    m = vc.const("M", Int)
+    d = vc.const("D", Int)
+    rem = vc.const("REM", Int)
+
+    with vc.block("entry") as b:
+        b.def_(s, vc.ops.bv256.sub(x, y))
+        b.def_(m, vc.ops.bv256.mul(x, y))
+        b.def_(d, vc.ops.bv256.div(x, y))
+        b.def_(rem, vc.ops.bv256.mod(x, y))
+
+    text = render_vc_script(vc.script())
+
+    assert "(define-fun int.bv256_sub ((x Int) (y Int)) Int" in text
+    assert "(ite (>= (- x y) 0) (- x y) (+ (- x y) BV256_MOD))" in text
+    assert "(define-fun int.bv256_mul ((x Int) (y Int)) Int\n  (mod (* x y) BV256_MOD)\n)" in text
+    assert "(define-fun int.bv256_div ((x Int) (y Int)) Int\n  (div x y)\n)" in text
+    assert "(define-fun int.bv256_mod ((x Int) (y Int)) Int\n  (mod x y)\n)" in text
+    assert "(assert (=> BLK_entry (= S (int.bv256_sub X Y))))" in text
+    assert "(assert (=> BLK_entry (= M (int.bv256_mul X Y))))" in text
+    assert "(assert (=> BLK_entry (= D (int.bv256_div X Y))))" in text
+    assert "(assert (=> BLK_entry (= REM (int.bv256_mod X Y))))" in text
+
+
+def test_bv256_opaque_ops_use_uf_declarations() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+    y = vc.const("Y", Int)
+    left = vc.const("L", Int)
+    r = vc.const("R", Int)
+    a = vc.const("A", Int)
+    xo = vc.const("XO", Int)
+    o = vc.const("O", Int)
+
+    with vc.block("entry") as b:
+        b.def_(left, vc.ops.bv256.shl(x, y))
+        b.def_(r, vc.ops.bv256.lshr(x, y))
+        b.def_(a, vc.ops.bv256.and_(x, y))
+        b.def_(xo, vc.ops.bv256.xor(x, y))
+        b.def_(o, vc.ops.bv256.or_(x, y))
+
+    text = render_vc_script(vc.script())
+
+    for name in (
+        "int.bv256_shl",
+        "int.bv256_lshr",
+        "int.bv256_and",
+        "int.bv256_xor",
+        "int.bv256_or",
+    ):
+        assert f"(declare-fun {name} (Int Int) Int)" in text
+        assert f"({name} X Y)" in text

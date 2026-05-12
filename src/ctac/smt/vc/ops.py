@@ -18,9 +18,48 @@ from ctac.smt.vc.terms import (
     implies,
     le,
     lt,
+    mod,
     mul,
+    sub,
     term,
 )
+
+_LEMMA_BOUNDS = "bounds"
+
+
+class _OpName:
+    INT_MUL_DIV = "int.mul_div"
+    INT_CEIL_DIV = "int.ceil_div"
+
+
+class _SmtName:
+    INT_MUL_DIV = "int_mul_div"
+    INT_CEIL_DIV = "int_ceil_div"
+    BV256_ADD = "int.bv256_add"
+    BV256_SUB = "int.bv256_sub"
+    BV256_MUL = "int.bv256_mul"
+    BV256_DIV = "int.bv256_div"
+    BV256_MOD = "int.bv256_mod"
+    BV256_SHL = "int.bv256_shl"
+    BV256_LSHR = "int.bv256_lshr"
+    BV256_AND = "int.bv256_and"
+    BV256_XOR = "int.bv256_xor"
+    BV256_OR = "int.bv256_or"
+    ITE = "ite"
+
+
+class _LemmaName:
+    INT_MUL_DIV_BOUNDS = "lemma_int_mul_div_bounds"
+    INT_CEIL_DIV_BOUNDS = "lemma_int_ceil_div_bounds"
+
+
+_A = "a"
+_B = "b"
+_C = "c"
+_R = "r"
+_X = "x"
+_Y = "y"
+_BINARY_PARAMS = ((_X, Int), (_Y, Int))
 
 
 class _Builder(Protocol):
@@ -35,6 +74,10 @@ class _Builder(Protocol):
     def require_lemma_def(self, lemma: "LemmaSchema") -> None: ...
 
     def int_lit(self, value: int) -> Term: ...
+
+    def bv256_mod(self) -> Term: ...
+
+    def bv256_max(self) -> Term: ...
 
 
 @dataclass
@@ -85,8 +128,8 @@ class OpModel:
 
 
 class IntMulDivBoundsLemma(LemmaSchema):
-    name = "lemma_int_mul_div_bounds"
-    params = (("a", Int), ("b", Int), ("c", Int), ("r", Int))
+    name = _LemmaName.INT_MUL_DIV_BOUNDS
+    params = ((_A, Int), (_B, Int), (_C, Int), (_R, Int))
 
     def body(self, vc: _Builder, params: tuple[Term, ...]) -> Term:
         a, b, c, r = params
@@ -107,13 +150,13 @@ class IntMulDivBoundsLemma(LemmaSchema):
 
 
 class IntMulDivOp(OpModel):
-    name = "int.mul_div"
+    name = _OpName.INT_MUL_DIV
     default_config = OpConfig(
         mode=OpMode.UF,
-        lemmas=("bounds",),
+        lemmas=(_LEMMA_BOUNDS,),
         instantiate_lemmas=True,
     )
-    lemmas = {"bounds": IntMulDivBoundsLemma()}
+    lemmas = {_LEMMA_BOUNDS: IntMulDivBoundsLemma()}
 
     def __call__(self, a: Term, b: Term, c: Term) -> Term:
         cfg = self.config()
@@ -121,10 +164,10 @@ class IntMulDivOp(OpModel):
             return div(mul(a, b), c)
         if cfg.mode is OpMode.DEFINE_FUN:
             self._require_define_fun()
-            return app("int_mul_div", [a, b, c], Int)
+            return app(_SmtName.INT_MUL_DIV, [a, b, c], Int)
         if cfg.mode is OpMode.UF:
-            self.vc.declare_fun("int_mul_div", (Int, Int, Int), Int)
-            raw = app("int_mul_div", [a, b, c], Int)
+            self.vc.declare_fun(_SmtName.INT_MUL_DIV, (Int, Int, Int), Int)
+            raw = app(_SmtName.INT_MUL_DIV, [a, b, c], Int)
             call = self.vc.record_call(self.name, (a, b, c), raw)
             return Term(
                 raw.text,
@@ -135,20 +178,20 @@ class IntMulDivOp(OpModel):
         raise ValueError(cfg.mode)
 
     def _require_define_fun(self) -> None:
-        a = term("a", Int)
-        b = term("b", Int)
-        c = term("c", Int)
+        a = term(_A, Int)
+        b = term(_B, Int)
+        c = term(_C, Int)
         self.vc.define_fun(
-            "int_mul_div",
-            (("a", Int), ("b", Int), ("c", Int)),
+            _SmtName.INT_MUL_DIV,
+            ((_A, Int), (_B, Int), (_C, Int)),
             Int,
             div(mul(a, b), c),
         )
 
 
 class IntCeilDivBoundsLemma(LemmaSchema):
-    name = "lemma_int_ceil_div_bounds"
-    params = (("a", Int), ("b", Int), ("r", Int))
+    name = _LemmaName.INT_CEIL_DIV_BOUNDS
+    params = ((_A, Int), (_B, Int), (_R, Int))
 
     def body(self, vc: _Builder, params: tuple[Term, ...]) -> Term:
         a, b, r = params
@@ -167,13 +210,13 @@ class IntCeilDivBoundsLemma(LemmaSchema):
 
 
 class IntCeilDivOp(OpModel):
-    name = "int.ceil_div"
+    name = _OpName.INT_CEIL_DIV
     default_config = OpConfig(
         mode=OpMode.UF,
-        lemmas=("bounds",),
+        lemmas=(_LEMMA_BOUNDS,),
         instantiate_lemmas=True,
     )
-    lemmas = {"bounds": IntCeilDivBoundsLemma()}
+    lemmas = {_LEMMA_BOUNDS: IntCeilDivBoundsLemma()}
 
     def __call__(self, a: Term, b: Term) -> Term:
         cfg = self.config()
@@ -181,10 +224,10 @@ class IntCeilDivOp(OpModel):
             return div(add(a, b), b)
         if cfg.mode is OpMode.DEFINE_FUN:
             self._require_define_fun()
-            return app("int_ceil_div", [a, b], Int)
+            return app(_SmtName.INT_CEIL_DIV, [a, b], Int)
         if cfg.mode is OpMode.UF:
-            self.vc.declare_fun("int_ceil_div", (Int, Int), Int)
-            raw = app("int_ceil_div", [a, b], Int)
+            self.vc.declare_fun(_SmtName.INT_CEIL_DIV, (Int, Int), Int)
+            raw = app(_SmtName.INT_CEIL_DIV, [a, b], Int)
             call = self.vc.record_call(self.name, (a, b), raw)
             return Term(
                 raw.text,
@@ -195,11 +238,11 @@ class IntCeilDivOp(OpModel):
         raise ValueError(cfg.mode)
 
     def _require_define_fun(self) -> None:
-        a = term("a", Int)
-        b = term("b", Int)
+        a = term(_A, Int)
+        b = term(_B, Int)
         self.vc.define_fun(
-            "int_ceil_div",
-            (("a", Int), ("b", Int)),
+            _SmtName.INT_CEIL_DIV,
+            ((_A, Int), (_B, Int)),
             Int,
             div(add(a, b), b),
         )
@@ -213,16 +256,91 @@ class Bv256Ops:
         return and_(le(self.vc.int_lit(0), x), le(x, self.vc.bv256_max()))
 
     def add(self, a: Term, b: Term) -> Term:
-        raw = add(a, b)
-        return app(
-            "ite",
-            [
-                le(raw, self.vc.bv256_max()),
-                raw,
-                app("-", [raw, self.vc.bv256_mod()], Int),
-            ],
-            Int,
+        self._require_add_define_fun()
+        return app(_SmtName.BV256_ADD, [a, b], Int)
+
+    def sub(self, a: Term, b: Term) -> Term:
+        self._require_sub_define_fun()
+        return app(_SmtName.BV256_SUB, [a, b], Int)
+
+    def mul(self, a: Term, b: Term) -> Term:
+        x, y = self._binary_args()
+        self._require_binary_define_fun(
+            _SmtName.BV256_MUL,
+            mod(mul(x, y), self.vc.bv256_mod()),
         )
+        return app(_SmtName.BV256_MUL, [a, b], Int)
+
+    def div(self, a: Term, b: Term) -> Term:
+        x, y = self._binary_args()
+        self._require_binary_define_fun(_SmtName.BV256_DIV, div(x, y))
+        return app(_SmtName.BV256_DIV, [a, b], Int)
+
+    def mod(self, a: Term, b: Term) -> Term:
+        x, y = self._binary_args()
+        self._require_binary_define_fun(_SmtName.BV256_MOD, mod(x, y))
+        return app(_SmtName.BV256_MOD, [a, b], Int)
+
+    def shl(self, a: Term, b: Term) -> Term:
+        return self._uf(_SmtName.BV256_SHL, a, b)
+
+    def lshr(self, a: Term, b: Term) -> Term:
+        return self._uf(_SmtName.BV256_LSHR, a, b)
+
+    def and_(self, a: Term, b: Term) -> Term:
+        return self._uf(_SmtName.BV256_AND, a, b)
+
+    def xor(self, a: Term, b: Term) -> Term:
+        return self._uf(_SmtName.BV256_XOR, a, b)
+
+    def or_(self, a: Term, b: Term) -> Term:
+        return self._uf(_SmtName.BV256_OR, a, b)
+
+    def _require_add_define_fun(self) -> None:
+        x, y = self._binary_args()
+        raw = add(x, y)
+        self.vc.define_fun(
+            _SmtName.BV256_ADD,
+            _BINARY_PARAMS,
+            Int,
+            app(
+                _SmtName.ITE,
+                [
+                    le(raw, self.vc.bv256_max()),
+                    raw,
+                    app("-", [raw, self.vc.bv256_mod()], Int),
+                ],
+                Int,
+            ),
+        )
+
+    def _require_sub_define_fun(self) -> None:
+        x, y = self._binary_args()
+        raw = sub(x, y)
+        self.vc.define_fun(
+            _SmtName.BV256_SUB,
+            _BINARY_PARAMS,
+            Int,
+            app(
+                _SmtName.ITE,
+                [
+                    ge(raw, self.vc.int_lit(0)),
+                    raw,
+                    add(raw, self.vc.bv256_mod()),
+                ],
+                Int,
+            ),
+        )
+
+    def _require_binary_define_fun(self, name: str, body: Term) -> None:
+        self.vc.define_fun(name, _BINARY_PARAMS, Int, body)
+
+    def _binary_args(self) -> tuple[Term, Term]:
+        return term(_X, Int), term(_Y, Int)
+
+    def _uf(self, name: str, a: Term, b: Term) -> Term:
+        self.vc.declare_fun(name, (Int, Int), Int)
+        return app(name, [a, b], Int)
 
 
 class Ops:
