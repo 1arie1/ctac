@@ -1,0 +1,321 @@
+from __future__ import annotations
+
+import re
+from collections import OrderedDict
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Iterator, Literal, Sequence
+
+from ctac.smt.vc.config import OpConfig, VCConfig
+from ctac.smt.vc.ops import CallSite, LemmaSchema, Ops
+from ctac.smt.vc.script import Assertion, ConstDecl, DefineFun, FunDecl, Scope, VCScript
+from ctac.smt.vc.terms import Bool, Int, Sort, Term, and_, app, eq, le, term
+
+_BV256_MOD = 1 << 256
+_BV256_MAX = _BV256_MOD - 1
+
+
+@dataclass(frozen=True)
+class StmtContext:
+    block: str | None
+    stmt_id: str | int | None
+    comment: str | None = None
+
+
+@dataclass(frozen=True)
+class IntRange:
+    lo: int | Term | None = None
+    hi: int | Term | None = None
+
+    @staticmethod
+    def bv256() -> "IntRange":
+        return IntRange(0, _BV256_MAX)
+
+    @staticmethod
+    def u64() -> "IntRange":
+        return IntRange(0, (1 << 64) - 1)
+
+
+def sanitize_name(raw: str) -> str:
+    out = re.sub(r"[^A-Za-z0-9_]", "_", raw)
+    if not out:
+        return "_"
+    if out[0].isdigit():
+        return "_" + out
+    return out
+
+
+def _is_pow2(n: int) -> int | None:
+    if n <= 0 or n & (n - 1):
+        return None
+    return n.bit_length() - 1
+
+
+class BlockBuilder:
+    def __init__(self, vc: "VCBuilder", scope: Scope) -> None:
+        self.vc = vc
+        self.scope = scope
+
+    def def_(self, lhs: Term, rhs: Term, *, name: str | None = None) -> None:
+        self.vc.assert_(
+            eq(lhs, rhs),
+            scope=self.scope,
+            name=name or self.vc.auto_name("def", lhs.text),
+            origin="def",
+        )
+        if isinstance(rhs.direct_callsite, CallSite):
+            rhs.direct_callsite.bound_result = lhs
+
+    def assume(self, phi: Term, *, name: str | None = None) -> None:
+        self.vc.assert_(
+            phi,
+            scope=self.scope,
+            name=name or self.vc.auto_name("assume"),
+            origin="assume",
+        )
+
+    def assert_(self, phi: Term, *, name: str | None = None) -> None:
+        self.vc.assert_(
+            phi,
+            scope=self.scope,
+            name=name or self.vc.auto_name("assert"),
+            origin="assert",
+        )
+
+    def range(
+        self,
+        x: Term,
+        r: IntRange | None = None,
+        *,
+        lo: int | Term | None = None,
+        hi: int | Term | None = None,
+        name: str | None = None,
+    ) -> None:
+        self.vc.range(x, r, lo=lo, hi=hi, scope=self.scope, name=name)
+
+
+class VCBuilder:
+    def __init__(self, config: VCConfig | None = None) -> None:
+        self.config = config or VCConfig()
+        self.const_decls: OrderedDict[str, ConstDecl] = OrderedDict()
+        self.fun_decls: OrderedDict[str, FunDecl] = OrderedDict()
+        self.define_funs: OrderedDict[str, DefineFun] = OrderedDict()
+        self.lemma_defs: OrderedDict[str, DefineFun] = OrderedDict()
+        self.assertions: list[Assertion] = []
+        self.call_sites: list[CallSite] = []
+        self.scope_stack: list[Scope] = []
+        self.stmt_stack: list[StmtContext] = []
+        self.ops = Ops(self)
+        self._finalized = False
+
+    def const(self, name: str, sort: Sort) -> Term:
+        self.const_decls.setdefault(name, ConstDecl(name, sort))
+        return Term(name, sort)
+
+    def declare_fun(self, name: str, args: Sequence[Sort], ret: Sort) -> None:
+        self.fun_decls.setdefault(name, FunDecl(name, tuple(args), ret))
+
+    def define_fun(
+        self,
+        name: str,
+        params: Sequence[tuple[str, Sort]],
+        ret: Sort,
+        body: Term,
+    ) -> None:
+        self.define_funs.setdefault(name, DefineFun(name, tuple(params), ret, body))
+
+    def define_int_const(self, name: str, value: int | Term | str) -> Term:
+        if isinstance(value, Term):
+            body = value
+        else:
+            body = term(str(value), Int)
+        self.define_fun(name, (), Int, body)
+        return term(name, Int)
+
+    def int_lit(self, value: int) -> Term:
+        if abs(value) < (1 << 16):
+            return term(str(value), Int)
+        if value == _BV256_MOD:
+            return self.bv256_mod()
+        if value == _BV256_MAX:
+            return self.bv256_max()
+        pow_k = _is_pow2(value)
+        if pow_k is not None:
+            return self.define_int_const(f"POW2_{pow_k}", value)
+        prefix = "NEG_" if value < 0 else ""
+        return self.define_int_const(f"{prefix}C_{abs(value)}", value)
+
+    def bv256_mod(self) -> Term:
+        return self.define_int_const("BV256_MOD", _BV256_MOD)
+
+    def bv256_max(self) -> Term:
+        return self.define_int_const(
+            "BV256_MAX",
+            app("-", [self.bv256_mod(), self.int_lit(1)], Int),
+        )
+
+    @contextmanager
+    def block(self, name: str, guard: Term | None = None) -> Iterator[BlockBuilder]:
+        if guard is None:
+            guard = self.const(f"BLK_{sanitize_name(name)}", Bool)
+        scope = Scope(name=name, guard=guard)
+        self.scope_stack.append(scope)
+        try:
+            yield BlockBuilder(self, scope)
+        finally:
+            self.scope_stack.pop()
+
+    @contextmanager
+    def stmt(
+        self,
+        stmt_id: str | int | None,
+        comment: str | None = None,
+    ) -> Iterator[None]:
+        block = self.current_scope().name if self.current_scope() else None
+        self.stmt_stack.append(StmtContext(block=block, stmt_id=stmt_id, comment=comment))
+        try:
+            yield
+        finally:
+            self.stmt_stack.pop()
+
+    def current_scope(self) -> Scope | None:
+        return self.scope_stack[-1] if self.scope_stack else None
+
+    def current_stmt(self) -> StmtContext | None:
+        return self.stmt_stack[-1] if self.stmt_stack else None
+
+    def assert_(
+        self,
+        phi: Term,
+        *,
+        name: str | None = None,
+        scope: Scope | Literal["current"] | None = "current",
+        comment: str | None = None,
+        origin: str | None = None,
+    ) -> None:
+        resolved = self.current_scope() if scope == "current" else scope
+        stmt = self.current_stmt()
+        self.assertions.append(
+            Assertion(
+                phi,
+                scope=resolved,
+                name=name,
+                comment=comment if comment is not None else (stmt.comment if stmt else None),
+                origin=origin,
+            )
+        )
+
+    def range(
+        self,
+        x: Term,
+        r: IntRange | None = None,
+        *,
+        lo: int | Term | None = None,
+        hi: int | Term | None = None,
+        scope: Scope | Literal["current"] | None = "current",
+        name: str | None = None,
+    ) -> None:
+        if r is not None:
+            lo, hi = r.lo, r.hi
+        constraints: list[Term] = []
+        if lo is not None:
+            constraints.append(le(self._literal_or_term(lo), x))
+        if hi is not None:
+            constraints.append(le(x, self._literal_or_term(hi)))
+        self.assert_(
+            and_(*constraints),
+            scope=scope,
+            name=name or self.auto_name("range", x.text),
+            origin="range",
+        )
+
+    def _literal_or_term(self, value: int | Term) -> Term:
+        if isinstance(value, Term):
+            return value
+        return self.int_lit(value)
+
+    def op_config(self, name: str, default: OpConfig) -> OpConfig:
+        return self.config.op_models.get(name, default)
+
+    def record_call(self, op_name: str, args: tuple[Term, ...], raw_result: Term) -> CallSite:
+        scope = self.current_scope()
+        stmt = self.current_stmt()
+        call = CallSite(
+            id=len(self.call_sites),
+            op_name=op_name,
+            args=args,
+            raw_result=raw_result,
+            bound_result=None,
+            scope=scope,
+            block=scope.name if scope else None,
+            stmt_id=stmt.stmt_id if stmt else None,
+        )
+        self.call_sites.append(call)
+        return call
+
+    def require_lemma_def(self, lemma: LemmaSchema) -> None:
+        self.lemma_defs.setdefault(lemma.name, lemma.define_fun(self))
+
+    def generate_lemma_instances(self) -> None:
+        for call in self.call_sites:
+            cfg = self.op_config(call.op_name, self.ops.by_name(call.op_name).default_config)
+            if not cfg.instantiate_lemmas:
+                continue
+            op = self.ops.by_name(call.op_name)
+            for lemma_key in cfg.lemmas:
+                lemma = op.lemmas[lemma_key]
+                self.require_lemma_def(lemma)
+                args = lemma.instance_args(call)
+                phi = app(lemma.name, args, Bool)
+                if cfg.lemma_scope == "callsite":
+                    scope = call.scope
+                elif cfg.lemma_scope == "none":
+                    scope = None
+                else:
+                    raise ValueError(f"unknown lemma_scope {cfg.lemma_scope!r}")
+                self.assertions.append(
+                    Assertion(
+                        phi,
+                        scope=scope,
+                        name=self.lemma_instance_name(lemma.name, call),
+                        origin="lemma-instance",
+                    )
+                )
+
+    def auto_name(self, kind: str, subject: str | None = None) -> str:
+        parts: list[str] = []
+        scope = self.current_scope()
+        stmt = self.current_stmt()
+        if scope:
+            parts.append(scope.name)
+        if stmt and stmt.stmt_id is not None:
+            parts.append(str(stmt.stmt_id))
+        parts.append(kind)
+        if subject:
+            parts.append(subject)
+        return "_".join(sanitize_name(p) for p in parts)
+
+    def lemma_instance_name(self, lemma_name: str, call: CallSite) -> str:
+        parts = [p for p in [call.block, call.stmt_id, lemma_name, call.id] if p is not None]
+        return "_".join(sanitize_name(str(p)) for p in parts)
+
+    def finalize(self) -> None:
+        if self._finalized:
+            return
+        self.generate_lemma_instances()
+        self._finalized = True
+
+    def script(self) -> VCScript:
+        self.finalize()
+        return VCScript(
+            logic=self.config.logic,
+            const_decls=tuple(self.const_decls.values()),
+            fun_decls=tuple(self.fun_decls.values()),
+            define_funs=tuple(self.define_funs.values()),
+            lemma_defs=tuple(self.lemma_defs.values()),
+            assertions=tuple(self.assertions),
+            comments=("vc: semantic-event SMT builder",),
+            produce_models=self.config.produce_models,
+            produce_unsat_cores=self.config.produce_unsat_cores,
+            check_sat=self.config.check_sat,
+        )
