@@ -79,6 +79,8 @@ class _Builder(Protocol):
 
     def bv256_max(self) -> Term: ...
 
+    def bv_range(self, width: int, x: Term) -> Term: ...
+
 
 @dataclass
 class CallSite:
@@ -253,7 +255,7 @@ class Bv256Ops:
         self.vc = vc
 
     def range(self, x: Term) -> Term:
-        return and_(le(self.vc.int_lit(0), x), le(x, self.vc.bv256_max()))
+        return self.vc.bv_range(256, x)
 
     def add(self, a: Term, b: Term) -> Term:
         self._require_add_define_fun()

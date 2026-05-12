@@ -32,8 +32,9 @@ def test_vc_builder_emits_scoped_defs_ranges_and_unnamed_assertions_by_default()
 
     assert "(declare-const BLK_BB7 Bool)" in text
     assert "(assert (=> BLK_BB7 (= Y (+ X 1))))" in text
-    assert "(assert (=> BLK_BB7 (and (<= 0 Y) (<= Y C_18446744073709551615))))" in text
-    assert "(define-fun C_18446744073709551615 () Int\n  18446744073709551615\n)" in text
+    assert "(define-fun int.in_bv64 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV64_MAX))\n)" in text
+    assert "(define-fun BV64_MAX () Int\n  (- BV64_MOD 1)\n)" in text
+    assert "(assert (=> BLK_BB7 (int.in_bv64 Y)))" in text
     assert ":named" not in text
 
 
@@ -213,17 +214,30 @@ def test_operation_models_can_be_swapped_to_inline_or_define_fun() -> None:
     assert "(assert (=> BLK_math (= R (int_mul_div A B C))))" in define_text
 
 
-def test_bv256_range_uses_readable_named_constants() -> None:
+def test_common_bv_ranges_use_readable_predicate_define_funs() -> None:
     vc = VCBuilder(VCConfig(check_sat=False))
-    x = vc.const("X", Int)
-    with vc.block("entry") as b:
-        b.assume(vc.ops.bv256.range(x))
+    a = vc.const("A", Int)
+    b_val = vc.const("B", Int)
+    c = vc.const("C", Int)
+    d = vc.const("D", Int)
+    with vc.block("entry") as block:
+        block.range(a, IntRange.bv32())
+        block.range(b_val, IntRange.bv64())
+        block.range(c, IntRange.bv128())
+        block.assume(vc.ops.bv256.range(d))
 
     text = render_vc_script(vc.script())
 
-    assert "(define-fun BV256_MOD () Int" in text
+    assert "(define-fun int.in_bv32 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV32_MAX))\n)" in text
+    assert "(define-fun int.in_bv64 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV64_MAX))\n)" in text
+    assert "(define-fun int.in_bv128 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV128_MAX))\n)" in text
+    assert "(define-fun int.in_bv256 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV256_MAX))\n)" in text
+    assert "(define-fun BV64_MAX () Int\n  (- BV64_MOD 1)\n)" in text
     assert "(define-fun BV256_MAX () Int\n  (- BV256_MOD 1)\n)" in text
-    assert "(assert (=> BLK_entry (and (<= 0 X) (<= X BV256_MAX))))" in text
+    assert "(assert (=> BLK_entry (int.in_bv32 A)))" in text
+    assert "(assert (=> BLK_entry (int.in_bv64 B)))" in text
+    assert "(assert (=> BLK_entry (int.in_bv128 C)))" in text
+    assert "(assert (=> BLK_entry (int.in_bv256 D)))" in text
 
 
 def test_bv256_add_uses_define_fun_with_ite_body() -> None:

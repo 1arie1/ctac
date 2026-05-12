@@ -13,6 +13,7 @@ from ctac.smt.vc.terms import Bool, Int, Sort, Term, and_, app, eq, le, term
 
 _BV256_MOD = 1 << 256
 _BV256_MAX = _BV256_MOD - 1
+_COMMON_BV_WIDTHS = (32, 64, 128, 256)
 
 
 @dataclass(frozen=True)
@@ -28,12 +29,24 @@ class IntRange:
     hi: int | Term | None = None
 
     @staticmethod
+    def bv32() -> "IntRange":
+        return IntRange(0, (1 << 32) - 1)
+
+    @staticmethod
+    def bv64() -> "IntRange":
+        return IntRange(0, (1 << 64) - 1)
+
+    @staticmethod
+    def bv128() -> "IntRange":
+        return IntRange(0, (1 << 128) - 1)
+
+    @staticmethod
     def bv256() -> "IntRange":
         return IntRange(0, _BV256_MAX)
 
     @staticmethod
     def u64() -> "IntRange":
-        return IntRange(0, (1 << 64) - 1)
+        return IntRange.bv64()
 
 
 @dataclass(frozen=True)
@@ -176,6 +189,35 @@ class VCBuilder:
             app("-", [self.bv256_mod(), self.int_lit(1)], Int),
         )
 
+    def bv_mod(self, width: int) -> Term:
+        if width == 256:
+            return self.bv256_mod()
+        self._check_common_bv_width(width)
+        return self.define_int_const(f"BV{width}_MOD", 1 << width)
+
+    def bv_max(self, width: int) -> Term:
+        if width == 256:
+            return self.bv256_max()
+        self._check_common_bv_width(width)
+        return self.define_int_const(
+            f"BV{width}_MAX",
+            app("-", [self.bv_mod(width), self.int_lit(1)], Int),
+        )
+
+    def bv_range(self, width: int, x: Term) -> Term:
+        self.require_bv_range_define_fun(width)
+        return app(f"int.in_bv{width}", [x], Bool)
+
+    def require_bv_range_define_fun(self, width: int) -> None:
+        self._check_common_bv_width(width)
+        x = term("x", Int)
+        self.define_fun(
+            f"int.in_bv{width}",
+            (("x", Int),),
+            Bool,
+            and_(le(self.int_lit(0), x), le(x, self.bv_max(width))),
+        )
+
     @contextmanager
     def block(self, name: str, guard: Term | None = None) -> Iterator[BlockBuilder]:
         if guard is None:
@@ -259,18 +301,36 @@ class VCBuilder:
     ) -> None:
         if r is not None:
             lo, hi = r.lo, r.hi
-        constraints: list[Term] = []
-        if lo is not None:
-            constraints.append(le(self._literal_or_term(lo), x))
-        if hi is not None:
-            constraints.append(le(x, self._literal_or_term(hi)))
+        width = self._common_bv_width(lo, hi)
+        if width is not None:
+            constraint = self.bv_range(width, x)
+        else:
+            constraints: list[Term] = []
+            if lo is not None:
+                constraints.append(le(self._literal_or_term(lo), x))
+            if hi is not None:
+                constraints.append(le(x, self._literal_or_term(hi)))
+            constraint = and_(*constraints)
         self.fact(
             FactKind.RANGE,
-            and_(*constraints),
+            constraint,
             scope=scope,
             name=name or self.auto_name("range", x.text),
             origin="range",
         )
+
+    def _common_bv_width(self, lo: int | Term | None, hi: int | Term | None) -> int | None:
+        if lo != 0 or not isinstance(hi, int):
+            return None
+        for width in _COMMON_BV_WIDTHS:
+            if hi == (1 << width) - 1:
+                return width
+        return None
+
+    def _check_common_bv_width(self, width: int) -> None:
+        if width not in _COMMON_BV_WIDTHS:
+            known = ", ".join(str(w) for w in _COMMON_BV_WIDTHS)
+            raise ValueError(f"unsupported common bv width {width}; expected one of {known}")
 
     def _literal_or_term(self, value: int | Term) -> Term:
         if isinstance(value, Term):
