@@ -343,6 +343,7 @@ class VCBuilder:
         hi: int | Term | None = None,
         scope: Scope | Literal["current"] | None = "current",
         name: str | None = None,
+        placement: FactPlacement = FactPlacement.SCOPED,
     ) -> None:
         if r is not None:
             lo, hi = r.lo, r.hi
@@ -365,6 +366,7 @@ class VCBuilder:
             scope=scope,
             name=name or self.auto_name("range", x.text),
             origin="range",
+            placement=placement,
         )
 
     def _common_bv_width(self, lo: int | Term | None, hi: int | Term | None) -> int | None:

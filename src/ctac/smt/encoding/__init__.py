@@ -6,12 +6,14 @@ from ctac.smt.encoding.base import (
     get_encoder,
     register_encoder,
 )
+from ctac.smt.encoding.sea import SeaEncoder
 from ctac.smt.encoding.sea_vc import SeaVcEncoder
 
 __all__ = [
     "EncoderContext",
     "SmtEncoder",
     "SmtEncodingError",
+    "SeaEncoder",
     "SeaVcEncoder",
     "available_encodings",
     "get_encoder",

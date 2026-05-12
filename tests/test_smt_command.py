@@ -367,6 +367,54 @@ def test_smt_cli_sea_vc_encoding_smoke(tmp_path: Path) -> None:
     assert "BLK_EXIT" in res.stdout
 
 
+def test_smt_cli_sea_encoding_smoke(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_OK, "ok-sea-new.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    assert res.exit_code == 0, res.output
+    assert "# encoding: sea" in res.stdout
+    assert "(set-logic QF_UFNIA)" in res.stdout
+    assert "(assert (= b true))" in res.stdout
+    assert "(assert (=> BLK_EXIT (and BLK_ok (not b))))" in res.stdout
+    assert "(assert BLK_EXIT)" in res.stdout
+
+
+def test_smt_cli_sea_aliases_reachability_certora_symbols(tmp_path: Path) -> None:
+    tac = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tb:bool
+\tReachabilityCertoraok:bool
+}
+Program {
+\tBlock entry Succ [ok] {
+\t\tAssignHavocCmd ReachabilityCertoraok
+\t\tJumpCmd ok
+\t}
+\tBlock ok Succ [] {
+\t\tAssignExpCmd b ReachabilityCertoraok
+\t\tAssertCmd b "must hold"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    p = _write_tac(tmp_path, tac, "reachable-alias.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    assert res.exit_code == 0, res.output
+    assert "(define-fun ReachabilityCertoraok () Bool\n  BLK_ok\n)" in res.stdout
+    assert "(declare-const ReachabilityCertoraok Bool)" not in res.stdout
+    assert "(assert (= b ReachabilityCertoraok))" in res.stdout
+
+
 def test_smt_cli_run_sat_writes_model(tmp_path: Path, monkeypatch) -> None:
     p = _write_tac(tmp_path, TAC_OK, "ok-run.tac")
     model_out = tmp_path / "model.txt"

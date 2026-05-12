@@ -10,6 +10,7 @@ from ctac.smt.encoding import (
     get_encoder,
     register_encoder,
 )
+from ctac.smt.encoding.sea import SeaEncoder
 from ctac.smt.encoding.sea_vc import SeaVcEncoder
 from ctac.smt.model import SmtDeclaration, SmtScript
 from ctac.smt.render import render_any_smt_script, render_smt_script
@@ -24,6 +25,7 @@ from ctac.smt.validate import (
 from ctac.smt.vc.script import VCScript
 from ctac.splitcrit import split_critical_edges
 
+register_encoder("sea", SeaEncoder)
 register_encoder("sea_vc", SeaVcEncoder)
 
 

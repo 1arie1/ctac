@@ -110,9 +110,16 @@ def lower_tac_program(
 
 
 class TacExprLowerer:
-    def __init__(self, vc: VCBuilder, symbol_sorts: dict[str, str]) -> None:
+    def __init__(
+        self,
+        vc: VCBuilder,
+        symbol_sorts: dict[str, str],
+        *,
+        symbol_aliases: dict[str, Term] | None = None,
+    ) -> None:
         self.vc = vc
         self.symbol_sorts = symbol_sorts
+        self.symbol_aliases = symbol_aliases or {}
 
     def lower(self, expr: TacExpr) -> ScalarOrMap:
         if isinstance(expr, SymbolRef):
@@ -136,6 +143,8 @@ class TacExprLowerer:
         return eq(out, self.vc.int_lit(1))
 
     def symbol(self, name: str) -> ScalarOrMap:
+        if name in self.symbol_aliases:
+            return self.symbol_aliases[name]
         if self._is_map(name):
             return self.vc.bytemap.ref(name)
         return self.vc.const(name, self._sort(name))
