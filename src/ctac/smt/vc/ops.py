@@ -25,11 +25,16 @@ from ctac.smt.vc.terms import (
 )
 
 _LEMMA_BOUNDS = "bounds"
+_LEMMA_BV256_RANGE = "bv256_range"
 
 
 class _OpName:
     INT_MUL_DIV = "int.mul_div"
     INT_CEIL_DIV = "int.ceil_div"
+
+    @staticmethod
+    def narrow(width: int) -> str:
+        return f"narrow.bv{width}"
 
 
 class _SmtName:
@@ -47,10 +52,18 @@ class _SmtName:
     BV256_OR = "int.bv256_or"
     ITE = "ite"
 
+    @staticmethod
+    def narrow(width: int) -> str:
+        return f"narrow.bv{width}"
+
 
 class _LemmaName:
     INT_MUL_DIV_BOUNDS = "lemma_int_mul_div_bounds"
     INT_CEIL_DIV_BOUNDS = "lemma_int_ceil_div_bounds"
+
+    @staticmethod
+    def narrow_range(width: int) -> str:
+        return f"lemma_narrow_bv{width}_range"
 
 
 _A = "a"
@@ -250,6 +263,63 @@ class IntCeilDivOp(OpModel):
         )
 
 
+class NarrowRangeLemma(LemmaSchema):
+    params = ((_R, Int),)
+
+    def __init__(self, width: int) -> None:
+        self.width = width
+        self.name = _LemmaName.narrow_range(width)
+
+    def body(self, vc: _Builder, params: tuple[Term, ...]) -> Term:
+        (r,) = params
+        return vc.bv_range(self.width, r)
+
+    def instance_args(self, call: CallSite) -> tuple[Term, ...]:
+        return (call.result_for_lemma(),)
+
+
+class NarrowOp(OpModel):
+    def __init__(self, vc: _Builder, width: int) -> None:
+        super().__init__(vc)
+        self.width = width
+        self.name = _OpName.narrow(width)
+        self.default_config = OpConfig(
+            mode=OpMode.DEFINE_FUN,
+            lemmas=(_LEMMA_BV256_RANGE,),
+            instantiate_lemmas=True,
+        )
+        self.lemmas = {_LEMMA_BV256_RANGE: NarrowRangeLemma(width)}
+
+    def __call__(self, x: Term) -> Term:
+        cfg = self.config()
+        if cfg.mode is not OpMode.DEFINE_FUN:
+            raise ValueError(f"{self.name} supports only DEFINE_FUN mode")
+        smt_name = _SmtName.narrow(self.width)
+        self.vc.define_fun(smt_name, ((_X, Int),), Int, term(_X, Int))
+        raw = app(smt_name, [x], Int)
+        call = self.vc.record_call(self.name, (x,), raw)
+        return Term(
+            raw.text,
+            raw.sort,
+            callsites=raw.callsites + (call,),
+            direct_callsite=call,
+        )
+
+
+class NarrowOps:
+    def __init__(self, vc: _Builder) -> None:
+        self.bv32 = NarrowOp(vc, 32)
+        self.bv64 = NarrowOp(vc, 64)
+        self.bv128 = NarrowOp(vc, 128)
+        self.bv256 = NarrowOp(vc, 256)
+
+    def __call__(self, x: Term) -> Term:
+        return self.bv256(x)
+
+    def models(self) -> tuple[NarrowOp, ...]:
+        return (self.bv32, self.bv64, self.bv128, self.bv256)
+
+
 class Bv256Ops:
     def __init__(self, vc: _Builder) -> None:
         self.vc = vc
@@ -349,11 +419,13 @@ class Ops:
     def __init__(self, vc: _Builder) -> None:
         self.int_mul_div = IntMulDivOp(vc)
         self.int_ceil_div = IntCeilDivOp(vc)
+        self.narrow = NarrowOps(vc)
         self.bv256 = Bv256Ops(vc)
         self._by_name = {
             self.int_mul_div.name: self.int_mul_div,
             self.int_ceil_div.name: self.int_ceil_div,
         }
+        self._by_name.update((op.name, op) for op in self.narrow.models())
 
     def by_name(self, name: str) -> OpModel:
         return self._by_name[name]

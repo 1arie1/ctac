@@ -142,7 +142,7 @@ def test_uf_operation_records_callsite_binds_direct_result_and_instantiates_lemm
     assert "(declare-fun int_mul_div (Int Int Int) Int)" in text
     assert "(define-fun lemma_int_mul_div_bounds ((a Int) (b Int) (c Int) (r Int)) Bool" in text
     assert "(assert (=> BLK_math (= R (int_mul_div A B C))))" in text
-    assert "(assert (=> BLK_math (lemma_int_mul_div_bounds A B C R)))" in text
+    assert "(assert (lemma_int_mul_div_bounds A B C R))" in text
     assert len(vc.call_sites) == 1
     assert vc.call_sites[0].bound_result == r
 
@@ -166,8 +166,8 @@ def test_nested_uf_calls_are_tracked_without_incorrect_result_binding() -> None:
     assert len(vc.call_sites) == 2
     assert vc.call_sites[0].bound_result is None
     assert vc.call_sites[1].bound_result is None
-    assert "(assert (=> BLK_math (lemma_int_mul_div_bounds A B C (int_mul_div A B C))))" in text
-    assert "(assert (=> BLK_math (lemma_int_ceil_div_bounds D E (int_ceil_div D E))))" in text
+    assert "(assert (lemma_int_mul_div_bounds A B C (int_mul_div A B C)))" in text
+    assert "(assert (lemma_int_ceil_div_bounds D E (int_ceil_div D E)))" in text
 
 
 def test_operation_models_can_be_swapped_to_inline_or_define_fun() -> None:
@@ -238,6 +238,40 @@ def test_common_bv_ranges_use_readable_predicate_define_funs() -> None:
     assert "(assert (=> BLK_entry (int.in_bv64 B)))" in text
     assert "(assert (=> BLK_entry (int.in_bv128 C)))" in text
     assert "(assert (=> BLK_entry (int.in_bv256 D)))" in text
+
+
+def test_narrow_ops_are_identity_define_funs_with_range_lemmas() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x32 = vc.const("X32", Int)
+    x64 = vc.const("X64", Int)
+    x128 = vc.const("X128", Int)
+    x256 = vc.const("X256", Int)
+    r32 = vc.const("R32", Int)
+    r64 = vc.const("R64", Int)
+    r128 = vc.const("R128", Int)
+    r256 = vc.const("R256", Int)
+
+    with vc.block("entry") as b:
+        b.def_(r32, vc.ops.narrow.bv32(x32))
+        b.def_(r64, vc.ops.narrow.bv64(x64))
+        b.def_(r128, vc.ops.narrow.bv128(x128))
+        b.def_(r256, vc.ops.narrow.bv256(x256))
+
+    text = render_vc_script(vc.script())
+
+    for width in (32, 64, 128, 256):
+        assert f"(define-fun narrow.bv{width} ((x Int)) Int\n  x\n)" in text
+        assert f"(define-fun lemma_narrow_bv{width}_range ((r Int)) Bool" in text
+        assert f"(define-fun int.in_bv{width} ((x Int)) Bool" in text
+    assert "(assert (=> BLK_entry (= R32 (narrow.bv32 X32))))" in text
+    assert "(assert (=> BLK_entry (= R64 (narrow.bv64 X64))))" in text
+    assert "(assert (=> BLK_entry (= R128 (narrow.bv128 X128))))" in text
+    assert "(assert (=> BLK_entry (= R256 (narrow.bv256 X256))))" in text
+    assert "(assert (lemma_narrow_bv32_range R32))" in text
+    assert "(assert (lemma_narrow_bv64_range R64))" in text
+    assert "(assert (lemma_narrow_bv128_range R128))" in text
+    assert "(assert (lemma_narrow_bv256_range R256))" in text
+    assert "lemma_narrow_bv32_range X32" not in text
 
 
 def test_bv256_add_uses_define_fun_with_ite_body() -> None:

@@ -370,9 +370,7 @@ class VCBuilder:
                 self.require_lemma_def(lemma)
                 args = lemma.instance_args(call)
                 phi = app(lemma.name, args, Bool)
-                if cfg.lemma_scope == "callsite":
-                    scope = call.scope
-                elif cfg.lemma_scope == "none":
+                if cfg.lemma_scope in {"callsite", "none"}:
                     scope = None
                 else:
                     raise ValueError(f"unknown lemma_scope {cfg.lemma_scope!r}")
