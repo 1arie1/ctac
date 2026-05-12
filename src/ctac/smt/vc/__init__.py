@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from ctac.smt.vc.builder import BlockBuilder, IntRange, VCBuilder, VCFact, sanitize_name
-from ctac.smt.vc.config import AssertionPolicy, FactKind, OpConfig, OpMode, VCConfig
+from ctac.smt.vc.config import AssertionPolicy, FactKind, FactLowerer, OpConfig, OpMode, VCConfig
+from ctac.smt.vc.lowering import LeinoEdge, LeinoLowerer
 from ctac.smt.vc.ops import CallSite, LemmaSchema, OpModel, Ops
 from ctac.smt.vc.script import (
     Assertion,
@@ -49,7 +50,10 @@ __all__ = [
     "Int",
     "IntRange",
     "FactKind",
+    "FactLowerer",
     "LemmaSchema",
+    "LeinoEdge",
+    "LeinoLowerer",
     "OpConfig",
     "OpMode",
     "OpModel",

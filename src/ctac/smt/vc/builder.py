@@ -341,6 +341,8 @@ class VCBuilder:
         self._finalized = True
 
     def lower_facts_to_assertions(self) -> tuple[Assertion, ...]:
+        if self.config.fact_lowerer is not None:
+            return self.config.fact_lowerer.lower(self)
         grouped_kinds = self.config.assertion_policy.grouped_kinds
         if not grouped_kinds:
             return tuple(self._assertion_from_fact(f) for f in self.facts)
@@ -385,13 +387,14 @@ class VCBuilder:
 
     def script(self) -> VCScript:
         self.finalize()
+        assertions = self.lower_facts_to_assertions()
         return VCScript(
             logic=self.config.logic,
             const_decls=tuple(self.const_decls.values()),
             fun_decls=tuple(self.fun_decls.values()),
             define_funs=tuple(self.define_funs.values()),
             lemma_defs=tuple(self.lemma_defs.values()),
-            assertions=self.lower_facts_to_assertions(),
+            assertions=assertions,
             comments=("vc: semantic-event SMT builder",),
             produce_models=self.config.produce_models,
             produce_unsat_cores=self.config.produce_unsat_cores,

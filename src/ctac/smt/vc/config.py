@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import Any, Protocol
 
 
 class FactKind(Enum):
@@ -15,6 +16,10 @@ class FactKind(Enum):
 @dataclass(frozen=True)
 class AssertionPolicy:
     grouped_kinds: frozenset[FactKind] = frozenset()
+
+
+class FactLowerer(Protocol):
+    def lower(self, builder: Any) -> tuple[Any, ...]: ...
 
 
 class OpMode(Enum):
@@ -37,5 +42,6 @@ class VCConfig:
     produce_models: bool = False
     produce_unsat_cores: bool = False
     check_sat: bool = True
+    fact_lowerer: FactLowerer | None = None
     assertion_policy: AssertionPolicy = field(default_factory=AssertionPolicy)
     op_models: dict[str, OpConfig] = field(default_factory=dict)

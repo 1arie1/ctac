@@ -5,6 +5,8 @@ from ctac.smt.vc import (
     FactKind,
     Int,
     IntRange,
+    LeinoEdge,
+    LeinoLowerer,
     OpConfig,
     OpMode,
     VCBuilder,
@@ -12,6 +14,7 @@ from ctac.smt.vc import (
     add,
     ge,
     render_vc_script,
+    true,
 )
 
 
@@ -60,6 +63,34 @@ def test_assertion_policy_groups_selected_facts_by_block_scope() -> None:
     assert "(assert (=> BLK_BB7 (= X 1)))" not in text
     assert "(assert (=> BLK_BB7 (>= X 0)))" not in text
     assert "(assert (=> BLK_BB7 (= Y (int.bv256_add X 2))))" not in text
+
+
+def test_leino_lowerer_emits_ok_equations_from_external_cfg() -> None:
+    vc = VCBuilder(
+        VCConfig(
+            check_sat=False,
+            fact_lowerer=LeinoLowerer(
+                entry_block="entry",
+                edges=(LeinoEdge("entry", "exit", true()),),
+            ),
+        )
+    )
+    x = vc.const("X", Int)
+
+    with vc.block("entry") as b:
+        b.def_(x, vc.int_lit(1))
+        b.assume(ge(x, vc.int_lit(0)))
+    with vc.block("exit") as b:
+        b.assert_(ge(x, vc.int_lit(1)))
+
+    text = render_vc_script(vc.script())
+
+    assert "(declare-const OK_entry Bool)" in text
+    assert "(declare-const OK_exit Bool)" in text
+    assert "(assert (= OK_entry (=> (and (= X 1) (>= X 0)) OK_exit)))" in text
+    assert "(assert (= OK_exit (>= X 1)))" in text
+    assert "(assert (not OK_entry))" in text
+    assert "(assert (=> BLK_entry (= X 1)))" not in text
 
 
 def test_unsat_core_mode_layers_names_on_assertions() -> None:
