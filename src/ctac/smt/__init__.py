@@ -12,7 +12,7 @@ from ctac.smt.encoding import (
 )
 from ctac.smt.encoding.sea_vc import SeaVcEncoder
 from ctac.smt.model import SmtDeclaration, SmtScript
-from ctac.smt.render import render_smt_script
+from ctac.smt.render import render_any_smt_script, render_smt_script
 from ctac.smt.validate import (
     AssertSite,
     SmtValidationError,
@@ -21,6 +21,7 @@ from ctac.smt.validate import (
     find_assert_site,
     validate_program_for_smt,
 )
+from ctac.smt.vc.script import VCScript
 from ctac.splitcrit import split_critical_edges
 
 register_encoder("sea_vc", SeaVcEncoder)
@@ -43,7 +44,7 @@ def build_vc(
     bv_add_sub_axiom: str = "no-mod",
     store_reduce: bool = False,
     inline_scalars: bool = False,
-) -> SmtScript:
+) -> SmtScript | VCScript:
     if bv_add_sub_axiom not in _BV_ADD_SUB_AXIOM_VARIANTS:
         known = ", ".join(_BV_ADD_SUB_AXIOM_VARIANTS)
         raise SmtEncodingError(
@@ -79,6 +80,7 @@ __all__ = [
     "SmtEncodingError",
     "SmtScript",
     "SmtValidationError",
+    "VCScript",
     "available_encodings",
     "build_vc",
     "ensure_acyclic",
@@ -87,5 +89,6 @@ __all__ = [
     "get_encoder",
     "register_encoder",
     "render_smt_script",
+    "render_any_smt_script",
     "validate_program_for_smt",
 ]

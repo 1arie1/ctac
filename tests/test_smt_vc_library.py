@@ -4,6 +4,7 @@ from ctac.smt.vc import (
     AssertionPolicy,
     BytemapConfig,
     FactKind,
+    FactPlacement,
     Int,
     IntRange,
     LeinoEdge,
@@ -13,10 +14,13 @@ from ctac.smt.vc import (
     VCBuilder,
     VCConfig,
     add,
+    eq,
     ge,
     render_vc_script,
     true,
 )
+from ctac.smt import render_any_smt_script
+from ctac.smt.model import SmtScript
 
 
 def test_vc_builder_emits_scoped_defs_ranges_and_unnamed_assertions_by_default() -> None:
@@ -83,6 +87,90 @@ def test_def_can_emit_inline_define_fun_instead_of_assertion() -> None:
     assert "(define-fun Y () Int\n  (+ X 1)\n)" in text
     assert "(assert (=> BLK_BB7 (= Y (+ X 1))))" not in text
     assert "(assert (=> BLK_BB7 (>= Y 0)))" in text
+
+
+def test_global_fact_placement_elides_scope() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+
+    with vc.block("BB7"):
+        vc.fact(
+            FactKind.DEF,
+            eq(x, vc.int_lit(1)),
+            placement=FactPlacement.GLOBAL,
+            origin="static-def",
+        )
+
+    text = render_vc_script(vc.script())
+
+    assert "(assert (= X 1))" in text
+    assert "(assert (=> BLK_BB7 (= X 1)))" not in text
+
+
+def test_raw_cfg_fact_is_emitted_globally() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    vc.raw_fact("(=> BLK_a BLK_b)", origin="cfg")
+
+    text = render_vc_script(vc.script())
+
+    assert "(assert (=> BLK_a BLK_b))" in text
+
+
+def test_dynamic_def_ite_omits_last_guard() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+    g1 = vc.const("G1", true().sort)
+    g2 = vc.const("G2", true().sort)
+
+    vc.dynamic_def(
+        x,
+        (
+            (g1, vc.int_lit(10)),
+            (g2, vc.int_lit(20)),
+            (true(), vc.int_lit(30)),
+        ),
+    )
+
+    text = render_vc_script(vc.script())
+
+    assert "(assert (= X (ite G1 10 (ite G2 20 30))))" in text
+
+
+def test_dynamic_def_guarded_emits_per_case_implications() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+    g1 = vc.const("G1", true().sort)
+    g2 = vc.const("G2", true().sort)
+
+    vc.dynamic_def(x, ((g1, vc.int_lit(10)), (g2, vc.int_lit(20))), guarded=True)
+
+    text = render_vc_script(vc.script())
+
+    assert "(assert (=> G1 (= X 10)))" in text
+    assert "(assert (=> G2 (= X 20)))" in text
+
+
+def test_assert_failure_objective() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    blk = vc.const("BLK_bad", true().sort)
+    pred = vc.const("P", true().sort)
+    exit_var = vc.const("BLK_EXIT", true().sort)
+
+    vc.assert_failure_objective(exit_var, blk, pred)
+
+    text = render_vc_script(vc.script())
+
+    assert "(assert (=> BLK_EXIT (and BLK_bad (not P))))" in text
+    assert "(assert BLK_EXIT)" in text
+
+
+def test_render_any_smt_script_accepts_legacy_and_vc_scripts() -> None:
+    legacy = SmtScript(logic="QF_UF", assertions=("(assert true)",), check_sat=False)
+    assert "(assert true)" in render_any_smt_script(legacy)
+
+    vc = VCBuilder(VCConfig(check_sat=False))
+    vc.raw_fact("true")
+    assert "(assert true)" in render_any_smt_script(vc.script())
 
 
 def test_leino_lowerer_emits_ok_equations_from_external_cfg() -> None:

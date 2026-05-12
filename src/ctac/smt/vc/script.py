@@ -58,6 +58,7 @@ class VCScript:
     produce_models: bool = False
     produce_unsat_cores: bool = False
     check_sat: bool = True
+    warnings: tuple[str, ...] = field(default_factory=tuple)
 
 
 class SmtWriter:

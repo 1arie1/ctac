@@ -6,6 +6,7 @@ from typing import Callable, Protocol
 from ctac.ir.models import TacFile
 from ctac.smt.model import SmtScript
 from ctac.smt.validate import AssertSite
+from ctac.smt.vc.script import VCScript
 
 
 class SmtEncodingError(ValueError):
@@ -129,7 +130,7 @@ class EncoderContext:
 class SmtEncoder(Protocol):
     name: str
 
-    def encode(self, ctx: EncoderContext) -> SmtScript:
+    def encode(self, ctx: EncoderContext) -> SmtScript | VCScript:
         ...
 
 

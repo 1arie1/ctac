@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 from ctac.parse import parse_string
-from ctac.smt.vc import VCBuilder, VCConfig, lower_tac_file, render_vc_script
+from ctac.smt.vc import (
+    TacLoweringOptions,
+    VCBuilder,
+    VCConfig,
+    lower_tac_file,
+    lower_tac_program,
+    render_vc_script,
+)
 
 
 def _wrap(program: str, symbols: str) -> str:
@@ -107,3 +114,54 @@ def test_tac_lowering_reports_jumpi_edge_conditions_without_assuming_them() -> N
     assert controls[0].edge_conditions[1][0] == "else"
     assert controls[0].edge_conditions[1][1].text == "(not C)"
     assert "(assert (=> BLK_entry C))" not in text
+
+
+def test_tac_lowering_can_skip_assignment_points() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignExpCmd X 1
+\t\tAssignExpCmd Y 2
+\t}
+""",
+            "\tX:bv256\n\tY:bv256",
+        )
+    )
+
+    vc, _controls = lower_tac_file(
+        tac,
+        vc=VCBuilder(VCConfig(check_sat=False)),
+        options=TacLoweringOptions(skip_command_points=frozenset({("entry", 0)})),
+    )
+    text = render_vc_script(vc.script())
+
+    assert "(= X 1)" not in text
+    assert "(assert (=> BLK_entry (= Y 2)))" in text
+
+
+def test_tac_lowering_can_visit_blocks_in_topological_order() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock b Succ [] {
+\t\tAssignExpCmd Y 2
+\t}
+\tBlock a Succ [b] {
+\t\tAssignExpCmd X 1
+\t}
+""",
+            "\tX:bv256\n\tY:bv256",
+        )
+    )
+
+    vc, controls = lower_tac_program(
+        tac.program,
+        tac.symbol_sorts,
+        vc=VCBuilder(VCConfig(check_sat=False)),
+        options=TacLoweringOptions(block_order="topological"),
+    )
+    text = render_vc_script(vc.script())
+
+    assert tuple(c.block for c in controls) == ("a", "b")
+    assert text.index("(= X 1)") < text.index("(= Y 2)")

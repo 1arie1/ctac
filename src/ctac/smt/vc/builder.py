@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from typing import Iterator, Literal, Sequence
 
 from ctac.smt.vc.bytemap import UfDefineFunBytemap
-from ctac.smt.vc.config import FactKind, OpConfig, VCConfig
+from ctac.smt.vc.config import FactKind, FactPlacement, OpConfig, VCConfig
 from ctac.smt.vc.ops import CallSite, LemmaSchema, Ops
 from ctac.smt.vc.script import Assertion, ConstDecl, DefineFun, FunDecl, Scope, VCScript
-from ctac.smt.vc.terms import Bool, Int, Sort, Term, and_, app, eq, le, term
+from ctac.smt.vc.terms import Bool, Int, Sort, Term, and_, app, eq, le, not_, term
 
 _BV256_MOD = 1 << 256
 _BV256_MAX = _BV256_MOD - 1
@@ -58,6 +58,7 @@ class VCFact:
     name: str | None = None
     comment: str | None = None
     origin: str | None = None
+    placement: FactPlacement = FactPlacement.SCOPED
 
 
 def sanitize_name(raw: str) -> str:
@@ -280,6 +281,7 @@ class VCBuilder:
         scope: Scope | Literal["current"] | None = "current",
         comment: str | None = None,
         origin: str | None = None,
+        placement: FactPlacement = FactPlacement.SCOPED,
     ) -> None:
         resolved = self.current_scope() if scope == "current" else scope
         stmt = self.current_stmt()
@@ -291,7 +293,45 @@ class VCBuilder:
                 name=name,
                 comment=comment if comment is not None else (stmt.comment if stmt else None),
                 origin=origin,
+                placement=placement,
             )
+        )
+
+    def raw_fact(
+        self,
+        raw: str,
+        *,
+        kind: FactKind = FactKind.CFG,
+        name: str | None = None,
+        comment: str | None = None,
+        origin: str | None = None,
+    ) -> None:
+        self.fact(
+            kind,
+            term(raw, Bool),
+            scope=None,
+            name=name,
+            comment=comment,
+            origin=origin or kind.name.lower(),
+            placement=FactPlacement.GLOBAL,
+        )
+
+    def cfg_fact(
+        self,
+        phi: Term,
+        *,
+        name: str | None = None,
+        comment: str | None = None,
+        origin: str | None = "cfg",
+    ) -> None:
+        self.fact(
+            FactKind.CFG,
+            phi,
+            scope=None,
+            name=name,
+            comment=comment,
+            origin=origin,
+            placement=FactPlacement.GLOBAL,
         )
 
     def range(
@@ -389,8 +429,87 @@ class VCBuilder:
                         scope=scope,
                         name=self.lemma_instance_name(lemma.name, call),
                         origin="lemma-instance",
+                        placement=FactPlacement.GLOBAL,
                     )
                 )
+
+    def dynamic_def(
+        self,
+        lhs: Term,
+        cases: Sequence[tuple[Term, Term]],
+        *,
+        guarded: bool = False,
+        name: str | None = None,
+    ) -> None:
+        if not cases:
+            raise ValueError("dynamic_def requires at least one case")
+        if len(cases) == 1:
+            guard, rhs = cases[0]
+            if guarded:
+                self.fact(
+                    FactKind.DEF,
+                    eq(lhs, rhs),
+                    scope=Scope(name=f"dynamic_{lhs.text}_0", guard=guard),
+                    name=name or self.auto_name("dynamic_def", lhs.text),
+                    origin="dynamic-def",
+                )
+            else:
+                self.fact(
+                    FactKind.DEF,
+                    eq(lhs, rhs),
+                    scope=None,
+                    name=name or self.auto_name("dynamic_def", lhs.text),
+                    origin="dynamic-def",
+                    placement=FactPlacement.GLOBAL,
+                )
+            return
+        if guarded:
+            for i, (guard, rhs) in enumerate(cases):
+                self.fact(
+                    FactKind.DEF,
+                    eq(lhs, rhs),
+                    scope=Scope(name=f"dynamic_{lhs.text}_{i}", guard=guard),
+                    name=f"{name}_{i}" if name else self.auto_name("dynamic_def", f"{lhs.text}_{i}"),
+                    origin="dynamic-def",
+                )
+            return
+        value = cases[-1][1]
+        for guard, rhs in reversed(cases[:-1]):
+            value = app("ite", [guard, rhs, value], lhs.sort)
+        self.fact(
+            FactKind.DEF,
+            eq(lhs, value),
+            scope=None,
+            name=name or self.auto_name("dynamic_def", lhs.text),
+            origin="dynamic-def",
+            placement=FactPlacement.GLOBAL,
+        )
+
+    def assert_failure_objective(
+        self,
+        exit_var: Term,
+        assert_block_guard: Term,
+        assert_predicate: Term,
+        *,
+        name: str | None = None,
+    ) -> None:
+        self.const(exit_var.text, exit_var.sort)
+        self.fact(
+            FactKind.ASSERT,
+            app("=>", [exit_var, and_(assert_block_guard, not_(assert_predicate))], Bool),
+            scope=None,
+            name=name or "assert_failure_objective",
+            origin="assert-failure-objective",
+            placement=FactPlacement.GLOBAL,
+        )
+        self.fact(
+            FactKind.ASSERT,
+            exit_var,
+            scope=None,
+            name=f"{name}_reachable" if name else "assert_failure_reachable",
+            origin="assert-failure-objective",
+            placement=FactPlacement.GLOBAL,
+        )
 
     def auto_name(self, kind: str, subject: str | None = None) -> str:
         parts: list[str] = []
@@ -427,7 +546,7 @@ class VCBuilder:
         for fact in self.facts:
             if fact.kind not in grouped_kinds:
                 continue
-            grouped.setdefault(fact.scope, []).append(fact)
+            grouped.setdefault(self._effective_scope(fact), []).append(fact)
 
         emitted_groups: set[Scope | None] = set()
         assertions: list[Assertion] = []
@@ -435,27 +554,33 @@ class VCBuilder:
             if fact.kind not in grouped_kinds:
                 assertions.append(self._assertion_from_fact(fact))
                 continue
-            if fact.scope in emitted_groups:
+            scope = self._effective_scope(fact)
+            if scope in emitted_groups:
                 continue
-            emitted_groups.add(fact.scope)
-            assertions.append(self._grouped_assertion(grouped[fact.scope]))
+            emitted_groups.add(scope)
+            assertions.append(self._grouped_assertion(grouped[scope]))
         return tuple(assertions)
 
     def _assertion_from_fact(self, fact: VCFact) -> Assertion:
         return Assertion(
             fact.term,
-            scope=fact.scope,
+            scope=self._effective_scope(fact),
             name=fact.name,
             comment=fact.comment,
             origin=fact.origin,
         )
+
+    def _effective_scope(self, fact: VCFact) -> Scope | None:
+        if fact.placement is FactPlacement.GLOBAL:
+            return None
+        return fact.scope
 
     def _grouped_assertion(self, facts: list[VCFact]) -> Assertion:
         first = facts[0]
         origin = "+".join(dict.fromkeys(f.origin or f.kind.name.lower() for f in facts))
         return Assertion(
             and_(*(f.term for f in facts)),
-            scope=first.scope,
+            scope=self._effective_scope(first),
             name=None,
             comment=None,
             origin=f"grouped:{origin}",

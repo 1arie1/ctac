@@ -11,6 +11,13 @@ class FactKind(Enum):
     RANGE = auto()
     ASSERT = auto()
     LEMMA = auto()
+    CFG = auto()
+
+
+class FactPlacement(Enum):
+    SCOPED = auto()
+    GLOBAL = auto()
+    ELIGIBLE_GLOBAL = auto()
 
 
 @dataclass(frozen=True)

@@ -19,6 +19,7 @@ from ctac.ast.nodes import (
     TacCmd,
     TacExpr,
 )
+from ctac.graph import Cfg
 from ctac.ir.models import TacBlock, TacFile, TacProgram
 from ctac.smt.vc.builder import BlockBuilder, VCBuilder, sanitize_name
 from ctac.smt.vc.bytemap import MapTerm
@@ -53,6 +54,8 @@ class VCLoweringError(ValueError):
 @dataclass(frozen=True)
 class TacLoweringOptions:
     inline_defs: bool = False
+    block_order: str = "program"  # "program" | "topological"
+    skip_command_points: frozenset[tuple[str, int]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -100,7 +103,9 @@ def lower_tac_program(
 ) -> tuple[VCBuilder, tuple[BlockControl, ...]]:
     builder = vc or VCBuilder()
     executor = TacBlockExecutor(builder, symbol_sorts, options=options)
-    controls = tuple(executor.execute_block(block) for block in program.blocks)
+    opts = options or TacLoweringOptions()
+    blocks = _ordered_blocks(program, opts.block_order)
+    controls = tuple(executor.execute_block(block) for block in blocks)
     return builder, controls
 
 
@@ -275,7 +280,10 @@ class TacBlockExecutor:
         with self.vc.block(block.id, guard=guard) as builder:
             i = 0
             while i < len(block.commands):
-                event = self._classify_window(block.commands, i)
+                if (block.id, i) in self.options.skip_command_points:
+                    i += 1
+                    continue
+                event = self._classify_window(block.id, block.commands, i)
                 if event is not None:
                     self._emit_havoc_range(event, builder)
                     i += event.width
@@ -328,12 +336,16 @@ class TacBlockExecutor:
         else:
             self.vc.const(cmd.lhs, self._sort(cmd.lhs))
 
-    def _classify_window(self, commands: list[TacCmd], index: int) -> HavocRangeEvent | None:
+    def _classify_window(
+        self, block_id: str, commands: list[TacCmd], index: int
+    ) -> HavocRangeEvent | None:
         if index + 1 >= len(commands):
             return None
         first = commands[index]
         second = commands[index + 1]
         if not isinstance(first, AssignHavocCmd) or not isinstance(second, AssumeExpCmd):
+            return None
+        if (block_id, index + 1) in self.options.skip_command_points:
             return None
         if self._is_map(first.lhs):
             return None
@@ -381,6 +393,14 @@ def _parse_int(raw: str) -> int:
         return int(raw, 0)
     except ValueError as e:
         raise VCLoweringError(f"unsupported constant {raw!r}") from e
+
+
+def _ordered_blocks(program: TacProgram, order: str) -> list[TacBlock]:
+    if order == "program":
+        return list(program.blocks)
+    if order == "topological":
+        return Cfg(program).ordered_blocks()
+    raise VCLoweringError(f"unknown TAC block order {order!r}")
 
 
 def _range_bounds_for_symbol(expr: TacExpr, symbol: str) -> tuple[int, int] | None:

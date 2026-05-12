@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from ctac.smt.model import SmtScript
+from ctac.smt.vc.script import VCScript, render_vc_script
 
 
-def render_smt_script(script: SmtScript) -> str:
+def render_smt_script(script: SmtScript | VCScript) -> str:
+    return render_any_smt_script(script)
+
+
+def render_any_smt_script(script: SmtScript | VCScript) -> str:
+    if isinstance(script, VCScript):
+        return render_vc_script(script)
     lines: list[str] = []
     if script.unsat_core:
         lines.append("(set-option :produce-unsat-cores true)")
