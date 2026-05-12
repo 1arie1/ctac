@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from ctac.smt.vc.builder import BlockBuilder, IntRange, VCBuilder, sanitize_name
-from ctac.smt.vc.config import OpConfig, OpMode, VCConfig
+from ctac.smt.vc.builder import BlockBuilder, IntRange, VCBuilder, VCFact, sanitize_name
+from ctac.smt.vc.config import AssertionPolicy, FactKind, OpConfig, OpMode, VCConfig
 from ctac.smt.vc.ops import CallSite, LemmaSchema, OpModel, Ops
 from ctac.smt.vc.script import (
     Assertion,
@@ -39,6 +39,7 @@ from ctac.smt.vc.terms import (
 
 __all__ = [
     "Assertion",
+    "AssertionPolicy",
     "BlockBuilder",
     "Bool",
     "CallSite",
@@ -47,6 +48,7 @@ __all__ = [
     "FunDecl",
     "Int",
     "IntRange",
+    "FactKind",
     "LemmaSchema",
     "OpConfig",
     "OpMode",
@@ -57,6 +59,7 @@ __all__ = [
     "Term",
     "VCBuilder",
     "VCConfig",
+    "VCFact",
     "VCScript",
     "add",
     "and_",

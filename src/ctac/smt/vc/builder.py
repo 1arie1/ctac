@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Literal, Sequence
 
-from ctac.smt.vc.config import OpConfig, VCConfig
+from ctac.smt.vc.config import FactKind, OpConfig, VCConfig
 from ctac.smt.vc.ops import CallSite, LemmaSchema, Ops
 from ctac.smt.vc.script import Assertion, ConstDecl, DefineFun, FunDecl, Scope, VCScript
 from ctac.smt.vc.terms import Bool, Int, Sort, Term, and_, app, eq, le, term
@@ -36,6 +36,16 @@ class IntRange:
         return IntRange(0, (1 << 64) - 1)
 
 
+@dataclass(frozen=True)
+class VCFact:
+    kind: FactKind
+    term: Term
+    scope: Scope | None = None
+    name: str | None = None
+    comment: str | None = None
+    origin: str | None = None
+
+
 def sanitize_name(raw: str) -> str:
     out = re.sub(r"[^A-Za-z0-9_]", "_", raw)
     if not out:
@@ -57,7 +67,8 @@ class BlockBuilder:
         self.scope = scope
 
     def def_(self, lhs: Term, rhs: Term, *, name: str | None = None) -> None:
-        self.vc.assert_(
+        self.vc.fact(
+            FactKind.DEF,
             eq(lhs, rhs),
             scope=self.scope,
             name=name or self.vc.auto_name("def", lhs.text),
@@ -67,7 +78,8 @@ class BlockBuilder:
             rhs.direct_callsite.bound_result = lhs
 
     def assume(self, phi: Term, *, name: str | None = None) -> None:
-        self.vc.assert_(
+        self.vc.fact(
+            FactKind.ASSUME,
             phi,
             scope=self.scope,
             name=name or self.vc.auto_name("assume"),
@@ -75,7 +87,8 @@ class BlockBuilder:
         )
 
     def assert_(self, phi: Term, *, name: str | None = None) -> None:
-        self.vc.assert_(
+        self.vc.fact(
+            FactKind.ASSERT,
             phi,
             scope=self.scope,
             name=name or self.vc.auto_name("assert"),
@@ -101,7 +114,7 @@ class VCBuilder:
         self.fun_decls: OrderedDict[str, FunDecl] = OrderedDict()
         self.define_funs: OrderedDict[str, DefineFun] = OrderedDict()
         self.lemma_defs: OrderedDict[str, DefineFun] = OrderedDict()
-        self.assertions: list[Assertion] = []
+        self.facts: list[VCFact] = []
         self.call_sites: list[CallSite] = []
         self.scope_stack: list[Scope] = []
         self.stmt_stack: list[StmtContext] = []
@@ -193,10 +206,30 @@ class VCBuilder:
         comment: str | None = None,
         origin: str | None = None,
     ) -> None:
+        self.fact(
+            FactKind.ASSERT,
+            phi,
+            scope=scope,
+            name=name,
+            comment=comment,
+            origin=origin,
+        )
+
+    def fact(
+        self,
+        kind: FactKind,
+        phi: Term,
+        *,
+        name: str | None = None,
+        scope: Scope | Literal["current"] | None = "current",
+        comment: str | None = None,
+        origin: str | None = None,
+    ) -> None:
         resolved = self.current_scope() if scope == "current" else scope
         stmt = self.current_stmt()
-        self.assertions.append(
-            Assertion(
+        self.facts.append(
+            VCFact(
+                kind,
                 phi,
                 scope=resolved,
                 name=name,
@@ -222,7 +255,8 @@ class VCBuilder:
             constraints.append(le(self._literal_or_term(lo), x))
         if hi is not None:
             constraints.append(le(x, self._literal_or_term(hi)))
-        self.assert_(
+        self.fact(
+            FactKind.RANGE,
             and_(*constraints),
             scope=scope,
             name=name or self.auto_name("range", x.text),
@@ -273,8 +307,9 @@ class VCBuilder:
                     scope = None
                 else:
                     raise ValueError(f"unknown lemma_scope {cfg.lemma_scope!r}")
-                self.assertions.append(
-                    Assertion(
+                self.facts.append(
+                    VCFact(
+                        FactKind.LEMMA,
                         phi,
                         scope=scope,
                         name=self.lemma_instance_name(lemma.name, call),
@@ -305,6 +340,49 @@ class VCBuilder:
         self.generate_lemma_instances()
         self._finalized = True
 
+    def lower_facts_to_assertions(self) -> tuple[Assertion, ...]:
+        grouped_kinds = self.config.assertion_policy.grouped_kinds
+        if not grouped_kinds:
+            return tuple(self._assertion_from_fact(f) for f in self.facts)
+
+        grouped: OrderedDict[Scope | None, list[VCFact]] = OrderedDict()
+        for fact in self.facts:
+            if fact.kind not in grouped_kinds:
+                continue
+            grouped.setdefault(fact.scope, []).append(fact)
+
+        emitted_groups: set[Scope | None] = set()
+        assertions: list[Assertion] = []
+        for fact in self.facts:
+            if fact.kind not in grouped_kinds:
+                assertions.append(self._assertion_from_fact(fact))
+                continue
+            if fact.scope in emitted_groups:
+                continue
+            emitted_groups.add(fact.scope)
+            assertions.append(self._grouped_assertion(grouped[fact.scope]))
+        return tuple(assertions)
+
+    def _assertion_from_fact(self, fact: VCFact) -> Assertion:
+        return Assertion(
+            fact.term,
+            scope=fact.scope,
+            name=fact.name,
+            comment=fact.comment,
+            origin=fact.origin,
+        )
+
+    def _grouped_assertion(self, facts: list[VCFact]) -> Assertion:
+        first = facts[0]
+        origin = "+".join(dict.fromkeys(f.origin or f.kind.name.lower() for f in facts))
+        return Assertion(
+            and_(*(f.term for f in facts)),
+            scope=first.scope,
+            name=None,
+            comment=None,
+            origin=f"grouped:{origin}",
+        )
+
     def script(self) -> VCScript:
         self.finalize()
         return VCScript(
@@ -313,7 +391,7 @@ class VCBuilder:
             fun_decls=tuple(self.fun_decls.values()),
             define_funs=tuple(self.define_funs.values()),
             lemma_defs=tuple(self.lemma_defs.values()),
-            assertions=tuple(self.assertions),
+            assertions=self.lower_facts_to_assertions(),
             comments=("vc: semantic-event SMT builder",),
             produce_models=self.config.produce_models,
             produce_unsat_cores=self.config.produce_unsat_cores,

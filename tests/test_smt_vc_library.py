@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from ctac.smt.vc import (
+    AssertionPolicy,
+    FactKind,
     Int,
     IntRange,
     OpConfig,
@@ -30,6 +32,34 @@ def test_vc_builder_emits_scoped_defs_ranges_and_unnamed_assertions_by_default()
     assert "(assert (=> BLK_BB7 (and (<= 0 Y) (<= Y C_18446744073709551615))))" in text
     assert "(define-fun C_18446744073709551615 () Int\n  18446744073709551615\n)" in text
     assert ":named" not in text
+
+
+def test_assertion_policy_groups_selected_facts_by_block_scope() -> None:
+    vc = VCBuilder(
+        VCConfig(
+            check_sat=False,
+            assertion_policy=AssertionPolicy(
+                grouped_kinds=frozenset({FactKind.DEF, FactKind.ASSUME})
+            ),
+        )
+    )
+    x = vc.const("X", Int)
+    y = vc.const("Y", Int)
+    ok = vc.const("OK", Int)
+
+    with vc.block("BB7") as b:
+        b.def_(x, vc.int_lit(1))
+        b.assume(ge(x, vc.int_lit(0)))
+        b.def_(y, vc.ops.bv256.add(x, vc.int_lit(2)))
+        b.assert_(ge(ok, vc.int_lit(0)))
+
+    text = render_vc_script(vc.script())
+
+    assert "(assert (=> BLK_BB7 (and (= X 1) (>= X 0) (= Y (int.bv256_add X 2)))))" in text
+    assert "(assert (=> BLK_BB7 (>= OK 0)))" in text
+    assert "(assert (=> BLK_BB7 (= X 1)))" not in text
+    assert "(assert (=> BLK_BB7 (>= X 0)))" not in text
+    assert "(assert (=> BLK_BB7 (= Y (int.bv256_add X 2))))" not in text
 
 
 def test_unsat_core_mode_layers_names_on_assertions() -> None:

@@ -4,6 +4,19 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 
+class FactKind(Enum):
+    DEF = auto()
+    ASSUME = auto()
+    RANGE = auto()
+    ASSERT = auto()
+    LEMMA = auto()
+
+
+@dataclass(frozen=True)
+class AssertionPolicy:
+    grouped_kinds: frozenset[FactKind] = frozenset()
+
+
 class OpMode(Enum):
     INLINE = auto()
     DEFINE_FUN = auto()
@@ -24,4 +37,5 @@ class VCConfig:
     produce_models: bool = False
     produce_unsat_cores: bool = False
     check_sat: bool = True
+    assertion_policy: AssertionPolicy = field(default_factory=AssertionPolicy)
     op_models: dict[str, OpConfig] = field(default_factory=dict)
