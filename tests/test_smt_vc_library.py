@@ -39,6 +39,8 @@ def test_vc_builder_emits_scoped_defs_ranges_and_unnamed_assertions_by_default()
     assert "(assert (=> BLK_BB7 (= Y (+ X 1))))" in text
     assert "(define-fun int.in_bv64 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV64_MAX))\n)" in text
     assert "(define-fun BV64_MAX () Int\n  (- BV64_MOD 1)\n)" in text
+    assert "; block BB7" in text
+    assert "; command 17" not in text
     assert "(assert (=> BLK_BB7 (int.in_bv64 Y)))" in text
     assert "; Y = X + 1" not in text
     assert ":named" not in text
@@ -259,7 +261,17 @@ def test_render_any_smt_script_accepts_legacy_and_vc_scripts() -> None:
 
     vc = VCBuilder(VCConfig(check_sat=False))
     vc.raw_fact("true")
-    assert "(assert true)" in render_any_smt_script(vc.script())
+    assert "(assert true)" not in render_any_smt_script(vc.script())
+
+
+def test_vc_builder_drops_true_facts() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    vc.fact(FactKind.ASSUME, true())
+    vc.raw_fact("true")
+
+    text = render_vc_script(vc.script())
+
+    assert "(assert true)" not in text
 
 
 def test_leino_lowerer_emits_ok_equations_from_external_cfg() -> None:

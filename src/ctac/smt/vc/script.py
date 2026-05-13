@@ -34,13 +34,16 @@ class Scope:
 
 @dataclass(frozen=True)
 class Assertion:
-    term: Term
+    term: Term | None
     scope: Scope | None = None
     name: str | None = None
     comment: str | None = None
     origin: str | None = None
+    block: str | None = None
 
     def scoped_term(self) -> Term:
+        if self.term is None:
+            raise ValueError("comment-only assertion has no scoped term")
         if self.scope is None:
             return self.term
         return implies(self.scope.guard, self.term)
@@ -89,6 +92,8 @@ def _emit_define_fun(w: SmtWriter, df: DefineFun) -> None:
 def _emit_assertion(w: SmtWriter, assertion: Assertion, *, name_assertions: bool) -> None:
     if assertion.comment:
         w.comment(assertion.comment)
+    if assertion.term is None:
+        return
     body = assertion.scoped_term().smt()
     if name_assertions and assertion.name:
         w.line(f"(assert (! {body} :named {assertion.name}))")
@@ -122,7 +127,23 @@ def render_vc_script(script: VCScript) -> str:
             _emit_define_fun(w, lemma)
     if script.assertions:
         w.line()
+        last_block: str | None = None
         for assertion in script.assertions:
+            if assertion.term is None:
+                if w.lines and w.lines[-1] != "":
+                    w.line()
+                _emit_assertion(
+                    w,
+                    assertion,
+                    name_assertions=script.produce_unsat_cores,
+                )
+                last_block = None
+                continue
+            if assertion.block is not None and assertion.block != last_block:
+                if w.lines and w.lines[-1] != "":
+                    w.line()
+                w.comment(f"block {assertion.block}")
+                last_block = assertion.block
             _emit_assertion(
                 w,
                 assertion,

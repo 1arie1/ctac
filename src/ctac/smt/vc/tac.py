@@ -334,11 +334,11 @@ class TacBlockExecutor:
                     continue
                 event = self._classify_window(block.id, block.commands, i)
                 if event is not None:
-                    self._emit_havoc_range(event, builder)
+                    self._emit_havoc_range(event, builder, i)
                     i += event.width
                     continue
                 cmd = block.commands[i]
-                with self.vc.stmt(cmd.meta_index, cmd.raw):
+                with self.vc.stmt(_stmt_id(cmd, i), cmd.raw):
                     self.execute_command(cmd, builder)
                 i += 1
         return BlockControl(
@@ -414,11 +414,13 @@ class TacBlockExecutor:
             raise VCLoweringError(f"invalid havoc range for {first.lhs}: {lo} > {hi}")
         return HavocRangeEvent(lhs, lo, hi, (first, second))
 
-    def _emit_havoc_range(self, event: HavocRangeEvent, builder: BlockBuilder) -> None:
+    def _emit_havoc_range(
+        self, event: HavocRangeEvent, builder: BlockBuilder, cmd_index: int
+    ) -> None:
         lhs = self.vc.const(event.lhs, self._sort(event.lhs))
         self.expr.require_sort(lhs, Int, event.lhs)
         raw = " ; ".join(cmd.raw for cmd in event.source_cmds)
-        with self.vc.stmt(event.source_cmds[0].meta_index, raw):
+        with self.vc.stmt(_stmt_id(event.source_cmds[0], cmd_index), raw):
             builder.range(lhs, lo=event.lo, hi=event.hi, name=self.vc.auto_name("havoc_range", lhs.text))
 
     def _edge_conditions(self, block: TacBlock) -> tuple[tuple[str, Term], ...]:
@@ -526,3 +528,7 @@ def _one_sided_bound(expr: TacExpr, symbol: str) -> tuple[str, int] | None:
 
 def _is_symbol(expr: TacExpr, symbol: str) -> bool:
     return isinstance(expr, SymbolRef) and _canon(expr.name) == _canon(symbol)
+
+
+def _stmt_id(cmd: TacCmd, index: int) -> str | int:
+    return cmd.meta_index if cmd.meta_index is not None else index

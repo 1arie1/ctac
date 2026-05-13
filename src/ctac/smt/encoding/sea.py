@@ -105,6 +105,8 @@ class SeaEncoder(SmtEncoder):
             entry,
             dynamic_points,
         )
+        if dsa.dynamic_assignments:
+            vc.section("dynamic assignments")
         self._emit_dynamic_defs(
             vc,
             expr,
@@ -186,7 +188,7 @@ class SeaEncoder(SmtEncoder):
                         i += 2
                         continue
                     cmd = block.commands[i]
-                    with vc.stmt(cmd.meta_index, cmd.raw):
+                    with vc.stmt(_stmt_id(cmd, i), cmd.raw):
                         self._emit_static_command(
                             vc,
                             builder,
@@ -275,7 +277,10 @@ class SeaEncoder(SmtEncoder):
                 block = by_id[row.block_id]
                 cmd = block.commands[row.cmd_index]
                 guard = _block_guard_term(vc, row.block_id, entry)
-                with vc.block(row.block_id, guard=guard), vc.stmt(row.cmd_index, row.raw):
+                with vc.block(row.block_id, guard=guard), vc.stmt(
+                    _stmt_id(cmd, row.cmd_index),
+                    row.raw,
+                ):
                     if isinstance(cmd, AssignExpCmd):
                         rhs = expr.lower_scalar(cmd.rhs)
                     elif isinstance(cmd, AssignHavocCmd):
@@ -333,11 +338,16 @@ class SeaEncoder(SmtEncoder):
             raise SmtEncodingError(
                 f"unknown cfg_encoding {cfg_encoding!r}; available: {', '.join(sorted(CFG_ENCODERS))}"
             )
+        cfg_constraints: list[str] = []
         cfg_emit = CfgEmit(
-            add_constraint=lambda raw: vc.raw_fact(raw, origin="cfg"),
+            add_constraint=cfg_constraints.append,
             add_decl=lambda name, sort: vc.const(name, Bool if sort == "Bool" else Int),
         )
         cfg_encoder(cfg_input, cfg_emit)
+        if cfg_constraints:
+            vc.section("cfg constraints")
+            for raw in cfg_constraints:
+                vc.raw_fact(raw, origin="cfg")
 
     def _emit_assert_objective(
         self,
@@ -432,3 +442,7 @@ def _canonical_symbol_sorts(symbol_sorts: dict[str, str]) -> dict[str, str]:
 
 
 _BV256_MAX = (1 << 256) - 1
+
+
+def _stmt_id(cmd: TacCmd, index: int) -> str | int:
+    return cmd.meta_index if cmd.meta_index is not None else index

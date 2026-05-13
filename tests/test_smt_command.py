@@ -375,7 +375,12 @@ def test_smt_cli_sea_encoding_smoke(tmp_path: Path) -> None:
     assert "# encoding: sea" in res.stdout
     assert "(set-logic QF_UFNIA)" in res.stdout
     assert "(assert (= b true))" in res.stdout
+    assert "; block entry" in res.stdout
+    assert "; command 0" not in res.stdout
     assert "; AssignExpCmd b true" not in res.stdout
+    assert "(assert true)" not in res.stdout
+    assert "; cfg conditions" not in res.stdout
+    assert "; cfg constraints" in res.stdout
     assert "(assert (=> BLK_EXIT (and BLK_ok (not b))))" in res.stdout
     assert "(assert BLK_EXIT)" in res.stdout
 
@@ -420,6 +425,48 @@ Metas {
     assert res.exit_code == 0, res.output
     assert "(assert (int.in_bv64 X))" in res.stdout
     assert "(assert (<= X BV64_MAX))" not in res.stdout
+
+
+def test_smt_cli_sea_marks_dynamic_assignment_section(tmp_path: Path) -> None:
+    tac = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tb:bool
+\tx:bv256
+}
+Program {
+\tBlock entry Succ [left, right] {
+\t\tAssignHavocCmd b
+\t\tJumpiCmd left right b
+\t}
+\tBlock left Succ [join] {
+\t\tAssignExpCmd x 1
+\t\tJumpCmd join
+\t}
+\tBlock right Succ [join] {
+\t\tAssignExpCmd x 2
+\t\tJumpCmd join
+\t}
+\tBlock join Succ [] {
+\t\tAssertCmd Le(x 2) "ok"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    p = _write_tac(tmp_path, tac, "dynamic-section-sea.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    assert res.exit_code == 0, res.output
+    assert "; dynamic assignments" in res.stdout
+    assert res.stdout.index("; dynamic assignments") < res.stdout.index("(assert (= x")
 
 
 def test_smt_cli_sea_skips_annotation_commands(tmp_path: Path) -> None:

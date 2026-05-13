@@ -55,12 +55,14 @@ class IntRange:
 @dataclass(frozen=True)
 class VCFact:
     kind: FactKind
-    term: Term
+    term: Term | None
     scope: Scope | None = None
     name: str | None = None
     comment: str | None = None
     origin: str | None = None
     placement: FactPlacement = FactPlacement.SCOPED
+    block: str | None = None
+    stmt_id: str | int | None = None
 
 
 def sanitize_name(raw: str) -> str:
@@ -350,6 +352,8 @@ class VCBuilder:
         origin: str | None = None,
         placement: FactPlacement = FactPlacement.SCOPED,
     ) -> None:
+        if phi.text == "true":
+            return
         resolved = self.current_scope() if scope == "current" else scope
         stmt = self.current_stmt()
         self.facts.append(
@@ -361,6 +365,21 @@ class VCBuilder:
                 comment=self._fact_comment(comment, stmt),
                 origin=origin,
                 placement=placement,
+                block=self._fact_block(resolved, stmt),
+                stmt_id=stmt.stmt_id if stmt else None,
+            )
+        )
+
+    def section(self, title: str) -> None:
+        self.facts.append(
+            VCFact(
+                FactKind.CFG,
+                None,
+                scope=None,
+                name=None,
+                comment=title,
+                origin="section",
+                placement=FactPlacement.GLOBAL,
             )
         )
 
@@ -461,6 +480,13 @@ class VCBuilder:
             return stmt.comment
         return None
 
+    def _fact_block(self, scope: Scope | None, stmt: StmtContext | None) -> str | None:
+        if stmt is not None:
+            return stmt.block
+        if scope is not None:
+            return scope.name
+        return None
+
     def op_config(self, name: str, default: OpConfig) -> OpConfig:
         return self.config.op_models.get(name, default)
 
@@ -506,6 +532,8 @@ class VCBuilder:
                         name=self.lemma_instance_name(lemma.name, call),
                         origin="lemma-instance",
                         placement=FactPlacement.GLOBAL,
+                        block=call.block,
+                        stmt_id=call.stmt_id,
                     )
                 )
 
@@ -644,6 +672,7 @@ class VCBuilder:
             name=fact.name,
             comment=fact.comment,
             origin=fact.origin,
+            block=fact.block,
         )
 
     def _effective_scope(self, fact: VCFact) -> Scope | None:
@@ -665,6 +694,7 @@ class VCBuilder:
             name=None,
             comment=None,
             origin=f"grouped:{origin}",
+            block=first.block,
         )
 
     def script(self) -> VCScript:
