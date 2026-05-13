@@ -194,12 +194,16 @@ def smt_cmd(
                 "(predecessor). fwd: successor-oriented one-way "
                 "implication. fwd-bwd: fwd plus a backward `BLK_i => "
                 "BLK_idom(i)` clause for each non-entry block (gives "
-                "BCP a 1-hop backward propagation path). fwd-edge / "
+                "BCP a 1-hop backward propagation path). fwd-edg / "
                 "bwd-edge: per-edge Bool variables with biconditional "
-                "block-existence."
+                "block-existence (fwd-edg collapses single-succ/pred "
+                "edge vars). fwd-edg1: edge vars for every edge with "
+                "the biconditional written forward over (BLK_u ∧ g) "
+                "and merge existence delivered by in-edge iff on the "
+                "destination."
             ),
             autocompletion=complete_choices(
-                ["bwd0", "bwd1", "fwd", "fwd-bwd", "fwd-edge", "bwd-edge"]
+                ["bwd0", "bwd1", "fwd", "fwd-bwd", "fwd-edg", "fwd-edg1", "bwd-edge"]
             ),
         ),
     ] = "bwd0",

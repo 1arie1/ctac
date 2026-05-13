@@ -17,7 +17,7 @@ import networkx as nx
 
 from ctac.ir.models import TacProgram
 from ctac.smt.encoding.path_skeleton import block_guard, predecessor_edges
-from ctac.smt.util import and_terms, at_most_one_terms, iff, implies, or_terms
+from ctac.smt.util import and_terms, at_most_one_terms, iff, implies, not_term, or_terms
 
 
 @dataclass(frozen=True)
@@ -170,7 +170,7 @@ def encode_fwd(inp: CfgEncodeInput, emit: CfgEmit) -> None:
     Block existence is one-way ``=>`` (not iff): a node may have
     multiple parents in the CFG, so ``BLK_i ⇔ ⋁ BLK_succ`` would
     be over-tight (a successor reachable via a different parent
-    would force this block reachable too). Use ``fwd-edge`` if a
+    would force this block reachable too). Use ``fwd-edg`` if a
     biconditional is desired — edge variables decouple the
     multi-parent ambiguity and make the iff sound."""
     for i in range(len(inp.block_ids)):
@@ -231,7 +231,7 @@ def encode_fwd_bwd(inp: CfgEncodeInput, emit: CfgEmit) -> None:
         emit.add_constraint(implies(inp.block_guards[i], inp.block_guards[j]))
 
 
-def encode_fwd_edge(inp: CfgEncodeInput, emit: CfgEmit) -> None:
+def encode_fwd_edg(inp: CfgEncodeInput, emit: CfgEmit) -> None:
     """Forward encoding with per-edge Bool variables.
 
     Per non-terminal block i with multiple successors:
@@ -279,9 +279,85 @@ def encode_fwd_edge(inp: CfgEncodeInput, emit: CfgEmit) -> None:
             emit.add_constraint(implies(ev, e.branch_cond))
 
 
+def encode_fwd_edg1(inp: CfgEncodeInput, emit: CfgEmit) -> None:
+    """Edge-based encoding: biconditional edge definition + in-edge
+    block-reachability iff + AMO/ALO over outgoing edges.
+
+    Per edge (u → v) with guard ``g``:
+        (C2)  ``edge_uv ⇔ (BLK_u ∧ g)``        if ``g ≢ ⊤``
+              ``edge_uv ⇔ BLK_u``              if ``g ≡ ⊤``
+
+    Per non-entry block v with in-edge set ``In(v)``:
+        (C3)  ``BLK_v ⇔ ⋁ In(v)``              if ``In(v) ≠ ∅``
+              ``(not BLK_v)``                  if ``In(v) = ∅``
+              (statically unreachable non-entry block)
+
+    Per non-terminal block u with out-edge set ``Out(u)``:
+        (C5)  ``BLK_u => ⋁ Out(u)``
+
+    Per branching block u (``|succ(u)| ≥ 2``):
+        (C4)  at-most-one over ``Out(u)``  (pairwise; ctac branches
+              fan out by 2 via JumpiCmd, so pairwise is optimal —
+              commander/bitwise variants would only matter on
+              non-existent ≥5-way joins)
+
+    Given the precondition that per-block out-guards are mutually
+    exclusive and exhaustive (always true in ctac: JumpiCmd's
+    then/else conds are ``c`` / ``(not c)``; JumpCmd's single edge
+    carries ``true``), (C4) and (C5) are semantically implied by
+    (C2). Emit them anyway: they convert multi-step CDCL into
+    unit propagation and the short binary/ternary clauses are
+    exactly the BCP fuel the encoding is missing today.
+
+    Distinct from ``fwd-edg``:
+      * edge variables are declared for **every** edge — no
+        single-successor or single-predecessor collapse.
+      * the per-edge iff is forward-shaped over (source block, guard)
+        rather than ``fwd-edg``'s per-edge ``ev => BLK_succ`` half.
+        Merge-block existence comes from (C3)'s in-edge iff."""
+    declared: set[str] = set()
+
+    # (C2) Edge definition — one biconditional per edge.
+    for e in inp.edges:
+        ev = _edge_var(e.pred, e.succ)
+        if ev not in declared:
+            emit.add_decl(ev, "Bool")
+            declared.add(ev)
+        pred_guard = inp.block_guards[e.pred]
+        if e.branch_cond == "true":
+            rhs = pred_guard
+        else:
+            rhs = and_terms([pred_guard, e.branch_cond])
+        emit.add_constraint(iff(ev, rhs))
+
+    # (C3) Block reachability — one per non-entry block.
+    for v in range(len(inp.block_ids)):
+        if v == inp.entry:
+            continue
+        v_guard = inp.block_guards[v]
+        in_edges = inp.preds_of(v)
+        if not in_edges:
+            emit.add_constraint(not_term(v_guard))
+            continue
+        edge_terms = [_edge_var(e.pred, e.succ) for e in in_edges]
+        emit.add_constraint(iff(v_guard, or_terms(edge_terms)))
+
+    # (C4) AMO + (C5) ALO over outgoing edges.
+    for u in range(len(inp.block_ids)):
+        out_edges = inp.succs_of(u)
+        if not out_edges:
+            continue
+        u_guard = inp.block_guards[u]
+        out_edge_terms = [_edge_var(e.pred, e.succ) for e in out_edges]
+        emit.add_constraint(implies(u_guard, or_terms(out_edge_terms)))
+        if len(out_edges) >= 2:
+            for amo in at_most_one_terms(out_edge_terms):
+                emit.add_constraint(amo)
+
+
 def encode_bwd_edge(inp: CfgEncodeInput, emit: CfgEmit) -> None:
     """Backward encoding with per-edge Bool variables (analog of
-    bwd1 with the edge variables of fwd-edge).
+    bwd1 with the edge variables of fwd-edg).
 
     Per non-entry block j with multiple predecessors:
       * block existence (iff over edges):
@@ -337,6 +413,7 @@ CFG_ENCODERS: dict[str, CfgEncoder] = {
     "bwd1": encode_bwd1,
     "fwd": encode_fwd,
     "fwd-bwd": encode_fwd_bwd,
-    "fwd-edge": encode_fwd_edge,
+    "fwd-edg": encode_fwd_edg,
+    "fwd-edg1": encode_fwd_edg1,
     "bwd-edge": encode_bwd_edge,
 }

@@ -325,8 +325,8 @@ Prompt template:
     and cheap, always sound to assert. Entry-block-only triggers
     stay bare (entry guard is `true`). Off by default.
   - CFG-constraint encoding: `--cfg-encoding
-    {bwd0,bwd1,fwd,fwd-bwd,fwd-edge,bwd-edge}` selects the
-    constraint shape over block-reachability variables.
+    {bwd0,bwd1,fwd,fwd-bwd,fwd-edg,fwd-edg1,bwd-edge}` selects
+    the constraint shape over block-reachability variables.
     `bwd0` (default) — predecessor-oriented edge-feasibility
     OR-of-ANDs. `bwd1` — predecessor per-edge clausal
     implications (sound under AMO). `fwd` — successor
@@ -334,9 +334,15 @@ Prompt template:
     immediate-dominator clauses `BLK_i => BLK_idom(i)` for
     each non-entry block, giving BCP a 1-hop backward
     propagation path (logically redundant given `fwd`'s
-    transitive chain, but shorter). `fwd-edge` / `bwd-edge`
+    transitive chain, but shorter). `fwd-edg` / `bwd-edge`
     — introduce per-edge Bool variables `e_<i>_<j>` and use
-    a biconditional block-existence over those variables.
+    a biconditional block-existence over those variables
+    (edge vars at single-succ/pred blocks collapse to the
+    block guard). `fwd-edg1` — edge variables for **every**
+    edge (no collapse); biconditional written forward as
+    `e_uv ⇔ (BLK_u ∧ g)`, per-non-entry block reachability
+    as `BLK_v ⇔ ⋁ in-edges`, plus redundant AMO/ALO over
+    outgoing edges as BCP fuel.
   - bv256 Add/Sub axiomatization:
     `--bv-add-sub-no-mod-axiom` (default) emits a single-wrap ITE
     for TAC `Add` and `Sub`:

@@ -60,10 +60,17 @@ class EncoderContext:
       sound under the same AMO.
     ``fwd`` — successor-oriented one-way implication
       (``BLK_i => ⋁ BLK_succ``) + AMO over successors + per-edge guard.
-    ``fwd-edge`` — like ``fwd`` but introduces per-edge Bool variables;
+    ``fwd-edg`` — like ``fwd`` but introduces per-edge Bool variables;
       block existence becomes a biconditional over edge vars
       (sound on diamond CFGs because edge vars decouple parents).
-    ``bwd-edge`` — predecessor analog of ``fwd-edge``."""
+      Edge vars at single-successor / single-predecessor blocks are
+      elided (collapse to ``BLK_u`` / ``BLK_v`` respectively).
+    ``fwd-edg1`` — edge-variable encoding with the biconditional
+      written forward as ``edge_uv ⇔ (BLK_u ∧ g)`` for every edge
+      (no single-succ collapse) and per-non-entry block
+      reachability ``BLK_v ⇔ ⋁ in-edges``. Adds AMO/ALO outgoing
+      clauses as redundant BCP fuel.
+    ``bwd-edge`` — predecessor analog of ``fwd-edg``."""
     narrow_range: bool = False
     """If True, every static or dynamic ``AssignExpCmd`` whose RHS is a
     top-level ``Apply(safe_math_narrow_bvN:bif, ...)`` gets an extra

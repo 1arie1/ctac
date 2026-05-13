@@ -741,9 +741,9 @@ def test_cfg_encoding_fwd_bwd_skips_idom_clause_when_idom_is_entry() -> None:
     assert "(=> BLK_mid true)" not in rendered
 
 
-def test_cfg_encoding_fwd_edge_declares_edge_vars_and_uses_iff() -> None:
+def test_cfg_encoding_fwd_edg_declares_edge_vars_and_uses_iff() -> None:
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
-    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edge"))
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edg"))
     # Edge vars get declared only at branching blocks. Block indices
     # in TAC_DIAMOND_CFG order: entry=0, mid=1, thn=2, els=3. entry
     # has a single successor (mid) so e_0_1 is elided — BLK_entry is
@@ -764,7 +764,7 @@ def test_cfg_encoding_fwd_edge_declares_edge_vars_and_uses_iff() -> None:
     assert "(=> e_1_3 BLK_els)" in rendered
 
 
-def test_cfg_encoding_fwd_edge_single_successor_elides_edge_var() -> None:
+def test_cfg_encoding_fwd_edg_single_successor_elides_edge_var() -> None:
     """When a block has exactly one successor, the edge variable
     e_{i→j} is redundant with BLK_i (BLK_i ⇔ e_{i→j} forces them
     equivalent under vacuous AMO). The encoder emits BLK_i => BLK_j
@@ -797,7 +797,7 @@ Metas {
 }
 """
     tac = parse_string(src, path="<string>")
-    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edge"))
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edg"))
     # No edge variables declared: every non-terminal has one successor.
     assert "declare-const e_" not in rendered
     # BLK_a (the only single-successor non-entry, non-terminal block)
@@ -877,6 +877,59 @@ def test_cfg_encoding_bwd_edge_emits_edge_vars_at_merge_blocks() -> None:
     assert "(=> e_2_3 BLK_b)" in rendered
 
 
+def test_cfg_encoding_fwd_edg1_per_edge_iff_and_in_edge_reachability() -> None:
+    """fwd-edg1 declares an edge var for every edge (no single-succ
+    collapse). Per-edge def is forward-shaped iff against
+    (BLK_u ∧ guard); per non-entry block reachability is iff over
+    in-edges; ALO/AMO over outgoing live as redundant BCP clauses."""
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edg1"))
+    # Edge vars declared for EVERY edge (no single-succ collapse).
+    assert "(declare-const e_0_1 Bool)" in rendered
+    assert "(declare-const e_1_2 Bool)" in rendered
+    assert "(declare-const e_1_3 Bool)" in rendered
+    # (C2) entry→mid: pred_guard=`true` and branch_cond=`true`, so
+    # iff(e_0_1, true) collapses to a bare assertion of e_0_1.
+    assert "(assert e_0_1)" in rendered
+    # (C2) mid→thn / mid→els: rhs = (and BLK_mid <cond>).
+    assert "(= e_1_2 (and BLK_mid c))" in rendered
+    assert "(= e_1_3 (and BLK_mid (not c)))" in rendered
+    # (C3) single-in-edge non-entry blocks: iff collapses to
+    # (= BLK_v e_uv).
+    assert "(= BLK_mid e_0_1)" in rendered
+    assert "(= BLK_thn e_1_2)" in rendered
+    assert "(= BLK_els e_1_3)" in rendered
+    # (C4) AMO outgoing at mid (the only branching block here).
+    assert "(or (not e_1_2) (not e_1_3))" in rendered
+    # (C5) ALO outgoing at mid.
+    assert "(=> BLK_mid (or e_1_2 e_1_3))" in rendered
+
+
+def test_cfg_encoding_fwd_edg1_in_edge_iff_at_merge_block() -> None:
+    """At a true merge (two predecessors), fwd-edg1's (C3) in-edge
+    iff materializes as `(= BLK_v (or e_u1_v e_u2_v))` — the
+    canonical merge form. Entry's outgoing edges carry their
+    JumpiCmd guards directly (entry guard `true` folds out)."""
+    tac = parse_string(TAC_BWD_EDGE_MERGE, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edg1"))
+    # Every edge gets a declared variable.
+    assert "(declare-const e_0_1 Bool)" in rendered
+    assert "(declare-const e_0_2 Bool)" in rendered
+    assert "(declare-const e_1_3 Bool)" in rendered
+    assert "(declare-const e_2_3 Bool)" in rendered
+    # (C2) entry's outgoing: pred_guard=`true` folds out of AND.
+    assert "(= e_0_1 c)" in rendered
+    assert "(= e_0_2 (not c))" in rendered
+    # (C2) a→join / b→join: branch_cond=`true` collapses rhs to
+    # pred_guard.
+    assert "(= e_1_3 BLK_a)" in rendered
+    assert "(= e_2_3 BLK_b)" in rendered
+    # (C3) merge block's in-edge iff.
+    assert "(= BLK_join (or e_1_3 e_2_3))" in rendered
+    # (C4) AMO over entry's two outgoing edges.
+    assert "(or (not e_0_1) (not e_0_2))" in rendered
+
+
 def test_cfg_encoding_all_strategies_close_unsat_on_simple_program() -> None:
     # Soundness sanity: every strategy should accept a clearly
     # unsatisfiable VC (assertion never fails) on a simple CFG.
@@ -907,7 +960,7 @@ Metas {
 }
 """
     tac = parse_string(src, path="<string>")
-    for enc in ("bwd0", "bwd1", "fwd", "fwd-bwd", "fwd-edge", "bwd-edge"):
+    for enc in ("bwd0", "bwd1", "fwd", "fwd-bwd", "fwd-edg", "fwd-edg1", "bwd-edge"):
         rendered = render_smt_script(build_vc(tac, cfg_encoding=enc))
         # Every strategy must produce a well-formed script that
         # mentions BLK_EXIT and the assert predicate.
