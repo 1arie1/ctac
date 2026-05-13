@@ -150,6 +150,40 @@ Metas {
 }
 """
 
+TAC_LEINO_REACHABILITY_CFG = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tReachabilityCertoraleft:bool
+\tc:bool
+}
+Program {
+\tBlock entry Succ [left, right] {
+\t\tAssignHavocCmd ReachabilityCertoraleft
+\t\tAssignExpCmd c true
+\t\tJumpiCmd left right c
+\t}
+\tBlock left Succ [exit] {
+\t\tAssumeExpCmd ReachabilityCertoraleft
+\t\tJumpCmd exit
+\t}
+\tBlock right Succ [exit] {
+\t\tJumpCmd exit
+\t}
+\tBlock exit Succ [] {
+\t\tAssertCmd c "c"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
 
 def test_vc_assertion_is_reachability_and_negated_predicate() -> None:
     tac = parse_string(TAC_ASSERT_FAIL_VC, path="<string>")
@@ -195,6 +229,17 @@ def test_leino_encoding_keeps_terminal_dynamic_assignment_as_block_premise() -> 
     assert "(assert (= OK_entry (=> (= b true) OK_exit)))" in rendered
     assert "(assert (= OK_exit (=> (= x 1) (>= x 1))))" in rendered
     assert "BLK_exit" not in rendered
+
+
+def test_leino_encoding_declares_all_cfg_block_guards_when_cfg_is_needed() -> None:
+    tac = parse_string(TAC_LEINO_REACHABILITY_CFG, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="leino"))
+
+    assert "(define-fun ReachabilityCertoraleft () Bool BLK_left)" in rendered
+    assert "(declare-const BLK_left Bool)" in rendered
+    assert "(declare-const BLK_right Bool)" in rendered
+    assert "(declare-const BLK_exit Bool)" in rendered
+    assert "(assert (=> BLK_exit (or BLK_left BLK_right)))" in rendered
 
 
 def test_vc_rendering_is_deterministic() -> None:

@@ -126,6 +126,9 @@ def needs_cfg_constraints(state: SeaEncodingState) -> bool:
 
 def emit_cfg_constraints(state: SeaEncodingState, cfg_encoding: str) -> None:
     cfg_input = _build_cfg_input(state)
+    for guard in cfg_input.block_guards:
+        if guard != "true":
+            state.vc.const(guard, Bool)
     cfg_encoder = CFG_ENCODERS.get(cfg_encoding)
     if cfg_encoder is None:
         raise SmtEncodingError(
