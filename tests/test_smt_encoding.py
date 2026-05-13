@@ -89,6 +89,67 @@ Metas {
 }
 """
 
+TAC_DYNAMIC_ASSIGNMENT = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+\tc:bool
+}
+Program {
+\tBlock entry Succ [left, right] {
+\t\tAssignExpCmd c true
+\t\tJumpiCmd left right c
+\t}
+\tBlock left Succ [exit] {
+\t\tAssignExpCmd x 0x1
+\t\tJumpCmd exit
+\t}
+\tBlock right Succ [exit] {
+\t\tAssignExpCmd x 0x2
+\t\tJumpCmd exit
+\t}
+\tBlock exit Succ [] {
+\t\tAssertCmd Ge(x 0x1) "x is positive"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+TAC_TERMINAL_DYNAMIC_ASSIGNMENT = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tx:bv256
+\tb:bool
+}
+Program {
+\tBlock entry Succ [exit] {
+\t\tAssignExpCmd b true
+\t\tJumpCmd exit
+\t}
+\tBlock exit Succ [] {
+\t\tAssignExpCmd x 0x1
+\t\tAssertCmd Ge(x 0x1) "x is positive"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
 
 def test_vc_assertion_is_reachability_and_negated_predicate() -> None:
     tac = parse_string(TAC_ASSERT_FAIL_VC, path="<string>")
@@ -100,6 +161,40 @@ def test_vc_assertion_is_reachability_and_negated_predicate() -> None:
     assert "BLK_EXIT" in rendered
     assert "(not " in rendered
     assert "(check-sat)" in rendered
+
+
+def test_leino_encoding_emits_ok_equations_for_tac_cfg() -> None:
+    tac = parse_string(TAC_ASSERT_FAIL_VC, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="leino"))
+
+    assert "(declare-const OK_entry Bool)" in rendered
+    assert "(declare-const OK_ok Bool)" in rendered
+    assert (
+        "(assert (= OK_entry (=> (= b true) (and (=> b OK_ok) (=> (not b) OK_bad)))))" in rendered
+    )
+    assert "(assert (= OK_ok b))" in rendered
+    assert "(assert (not OK_entry))" in rendered
+    assert "BLK_EXIT" not in rendered
+
+
+def test_leino_encoding_puts_dynamic_assignments_on_transitions() -> None:
+    tac = parse_string(TAC_DYNAMIC_ASSIGNMENT, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="leino"))
+
+    assert "(assert (= OK_left (=> (= x 1) OK_exit)))" in rendered
+    assert "(assert (= OK_right (=> (= x 2) OK_exit)))" in rendered
+    assert "(assert (= OK_exit (>= x 1)))" in rendered
+    assert "(assert (= x (ite" not in rendered
+    assert "BLK_left" not in rendered
+
+
+def test_leino_encoding_keeps_terminal_dynamic_assignment_as_block_premise() -> None:
+    tac = parse_string(TAC_TERMINAL_DYNAMIC_ASSIGNMENT, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="leino"))
+
+    assert "(assert (= OK_entry (=> (= b true) OK_exit)))" in rendered
+    assert "(assert (= OK_exit (=> (= x 1) (>= x 1))))" in rendered
+    assert "BLK_exit" not in rendered
 
 
 def test_vc_rendering_is_deterministic() -> None:
@@ -1038,10 +1133,6 @@ def test_bv_add_sub_axiom_legacy_mode_byte_identical_pre_change_shape() -> None:
     tac = parse_string(TAC_SMOKE_OPS, path="<string>")
     rendered = render_smt_script(build_vc(tac, bv_add_sub_axiom="mod"))
     assert "(assert (= y (mod (+ x 2) BV256_MOD)))" in rendered
-
-
-
-
 # ----------------------------- inline-scalars
 
 # Block `ok` has a static `R1 = narrow(IntAdd(0x18, R0))` and reads

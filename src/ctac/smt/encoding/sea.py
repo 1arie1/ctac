@@ -195,9 +195,9 @@ def check_supported_commands(program: TacProgram) -> None:
             )
 
 
-def emit_static_blocks(state: SeaEncodingState) -> None:
+def emit_static_blocks(state: SeaEncodingState, *, use_block_guards: bool = True) -> None:
     for block in Cfg(state.program).ordered_blocks():
-        guard = _block_guard_term(state.vc, block.id, state.entry)
+        guard = _block_guard_term(state.vc, block.id, state.entry) if use_block_guards else true()
         with state.vc.block(block.id, guard=guard) as builder:
             i = 0
             while i < len(block.commands):
@@ -295,6 +295,8 @@ def emit_static_command(
 
 def collect_dynamic_defs(
     state: SeaEncodingState,
+    *,
+    use_block_guards: bool = True,
 ) -> dict[str, tuple[DynamicDefCase, ...]]:
     vc = state.vc
     expr = state.expr
@@ -313,7 +315,7 @@ def collect_dynamic_defs(
         for row in sorted(sym_rows, key=lambda r: block_pos.get(r.block_id, 10**9)):
             block = by_id[row.block_id]
             cmd = block.commands[row.cmd_index]
-            guard = _block_guard_term(vc, row.block_id, state.entry)
+            guard = _block_guard_term(vc, row.block_id, state.entry) if use_block_guards else true()
             with (
                 vc.block(row.block_id, guard=guard),
                 vc.stmt(
