@@ -34,7 +34,9 @@ _LEMMA_BV256_RANGE = "bv256_range"
 class _OpName:
     INT_MUL_DIV = "int.mul_div"
     INT_CEIL_DIV = "int.ceil_div"
+    BV256_AND = "int.bv256_and"
     BV256_XOR = "int.bv256_xor"
+    BV256_OR = "int.bv256_or"
 
     @staticmethod
     def narrow(width: int) -> str:
@@ -86,7 +88,9 @@ class _SmtName:
 class _LemmaName:
     INT_MUL_DIV_BOUNDS = "lemma_int_mul_div_bounds"
     INT_CEIL_DIV_BOUNDS = "lemma_int_ceil_div_bounds"
+    BV256_AND_BOOL = "lemma_bv256_and_bool"
     BV256_XOR_BOOL = "lemma_bv256_xor_bool"
+    BV256_OR_BOOL = "lemma_bv256_or_bool"
 
     @staticmethod
     def narrow_range(width: int) -> str:
@@ -367,43 +371,95 @@ class NarrowOps:
         return (self.bv32, self.bv64, self.bv128, self.bv256)
 
 
-# Lemma: if x and y are Boolean integers (0 or 1), then int.bv256_xor(x, y)
-# is Boolean xor: it is 0 when x = y and 1 otherwise.
-class Bv256XorBoolLemma(LemmaSchema):
-    name = _LemmaName.BV256_XOR_BOOL
+class Bv256BoolLemma(LemmaSchema):
     params = ((_X, Int), (_Y, Int))
+    smt_name: str
+
+    def bool_domain(self, vc: _Builder, x: Term, y: Term) -> Term:
+        zero = vc.int_lit(0)
+        one = vc.int_lit(1)
+        return and_(le(zero, x), le(x, one), le(zero, y), le(y, one))
+
+    def instance_args(self, call: CallSite) -> tuple[Term, ...]:
+        return call.args
+
+
+# Lemma: if x and y are Boolean integers (0 or 1), then int.bv256_and(x, y)
+# is Boolean and: it is 1 exactly when both x and y are 1.
+class Bv256AndBoolLemma(Bv256BoolLemma):
+    name = _LemmaName.BV256_AND_BOOL
+    smt_name = _SmtName.BV256_AND
 
     def body(self, vc: _Builder, params: tuple[Term, ...]) -> Term:
         x, y = params
         zero = vc.int_lit(0)
         one = vc.int_lit(1)
         return implies(
-            and_(le(zero, x), le(x, one), le(zero, y), le(y, one)),
+            self.bool_domain(vc, x, y),
             eq(
-                app(_SmtName.BV256_XOR, [x, y], Int),
+                app(self.smt_name, [x, y], Int),
+                app(_SmtName.ITE, [and_(eq(x, one), eq(y, one)), one, zero], Int),
+            ),
+        )
+
+
+# Lemma: if x and y are Boolean integers (0 or 1), then int.bv256_xor(x, y)
+# is Boolean xor: it is 0 when x = y and 1 otherwise.
+class Bv256XorBoolLemma(Bv256BoolLemma):
+    name = _LemmaName.BV256_XOR_BOOL
+    smt_name = _SmtName.BV256_XOR
+
+    def body(self, vc: _Builder, params: tuple[Term, ...]) -> Term:
+        x, y = params
+        zero = vc.int_lit(0)
+        one = vc.int_lit(1)
+        return implies(
+            self.bool_domain(vc, x, y),
+            eq(
+                app(self.smt_name, [x, y], Int),
                 app(_SmtName.ITE, [eq(x, y), zero, one], Int),
             ),
         )
 
-    def instance_args(self, call: CallSite) -> tuple[Term, ...]:
-        return call.args
+
+# Lemma: if x and y are Boolean integers (0 or 1), then int.bv256_or(x, y)
+# is Boolean or: it is 0 exactly when both x and y are 0.
+class Bv256OrBoolLemma(Bv256BoolLemma):
+    name = _LemmaName.BV256_OR_BOOL
+    smt_name = _SmtName.BV256_OR
+
+    def body(self, vc: _Builder, params: tuple[Term, ...]) -> Term:
+        x, y = params
+        zero = vc.int_lit(0)
+        one = vc.int_lit(1)
+        return implies(
+            self.bool_domain(vc, x, y),
+            eq(
+                app(self.smt_name, [x, y], Int),
+                app(_SmtName.ITE, [and_(eq(x, zero), eq(y, zero)), zero, one], Int),
+            ),
+        )
 
 
-class Bv256XorOp(OpModel):
-    name = _OpName.BV256_XOR
+class Bv256BitwiseBoolOp(OpModel):
     default_config = OpConfig(
         mode=OpMode.UF,
         lemmas=(_LEMMA_BOOL,),
         instantiate_lemmas=True,
     )
-    lemmas = {_LEMMA_BOOL: Bv256XorBoolLemma()}
+
+    def __init__(self, vc: _Builder, *, name: str, smt_name: str, lemma: LemmaSchema) -> None:
+        super().__init__(vc)
+        self.name = name
+        self.smt_name = smt_name
+        self.lemmas = {_LEMMA_BOOL: lemma}
 
     def __call__(self, a: Term, b: Term) -> Term:
         cfg = self.config()
         if cfg.mode is not OpMode.UF:
             raise ValueError(f"{self.name} supports only UF mode")
-        self.vc.declare_fun(_SmtName.BV256_XOR, (Int, Int), Int)
-        raw = app(_SmtName.BV256_XOR, [a, b], Int)
+        self.vc.declare_fun(self.smt_name, (Int, Int), Int)
+        raw = app(self.smt_name, [a, b], Int)
         call = self.vc.record_call(self.name, (a, b), raw)
         return Term(
             raw.text,
@@ -416,7 +472,24 @@ class Bv256XorOp(OpModel):
 class Bv256Ops:
     def __init__(self, vc: _Builder) -> None:
         self.vc = vc
-        self.xor_model = Bv256XorOp(vc)
+        self.and_model = Bv256BitwiseBoolOp(
+            vc,
+            name=_OpName.BV256_AND,
+            smt_name=_SmtName.BV256_AND,
+            lemma=Bv256AndBoolLemma(),
+        )
+        self.xor_model = Bv256BitwiseBoolOp(
+            vc,
+            name=_OpName.BV256_XOR,
+            smt_name=_SmtName.BV256_XOR,
+            lemma=Bv256XorBoolLemma(),
+        )
+        self.or_model = Bv256BitwiseBoolOp(
+            vc,
+            name=_OpName.BV256_OR,
+            smt_name=_SmtName.BV256_OR,
+            lemma=Bv256OrBoolLemma(),
+        )
 
     def range(self, x: Term) -> Term:
         return self.vc.bv_range(256, x)
@@ -514,7 +587,7 @@ class Bv256Ops:
         b_value = _literal_value(b)
         if b_value is not None:
             return self.and_mask(a, b_value)
-        return self._uf(_SmtName.BV256_AND, a, b)
+        return self.and_model(a, b)
 
     def and_mask(self, x: Term, mask: int) -> Term:
         low_width = low_mask_width(mask)
@@ -565,7 +638,7 @@ class Bv256Ops:
         return self.xor_model(a, b)
 
     def or_(self, a: Term, b: Term) -> Term:
-        return self._uf(_SmtName.BV256_OR, a, b)
+        return self.or_model(a, b)
 
     def _require_add_define_fun(self) -> None:
         x, y = self._binary_args()
@@ -623,7 +696,9 @@ class Ops:
         self._by_name = {
             self.int_mul_div.name: self.int_mul_div,
             self.int_ceil_div.name: self.int_ceil_div,
+            self.bv256.and_model.name: self.bv256.and_model,
             self.bv256.xor_model.name: self.bv256.xor_model,
+            self.bv256.or_model.name: self.bv256.or_model,
         }
         self._by_name.update((op.name, op) for op in self.narrow.models())
 

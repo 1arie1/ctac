@@ -578,8 +578,14 @@ def test_bv256_opaque_ops_use_uf_declarations() -> None:
         assert f"(declare-fun {name} (Int Int) Int)" in text
         assert f"({name} X Y)" in text
 
+    assert "(define-fun lemma_bv256_and_bool ((x Int) (y Int)) Bool" in text
     assert "(define-fun lemma_bv256_xor_bool ((x Int) (y Int)) Bool" in text
+    assert "(define-fun lemma_bv256_or_bool ((x Int) (y Int)) Bool" in text
+    assert "(ite (and (= x 1) (= y 1)) 1 0)" in text
+    assert "(ite (and (= x 0) (= y 0)) 0 1)" in text
+    assert "(assert (lemma_bv256_and_bool X Y))" in text
     assert "(assert (lemma_bv256_xor_bool X Y))" in text
+    assert "(assert (lemma_bv256_or_bool X Y))" in text
 
 
 def test_bv256_constant_shift_and_mask_ops_use_readable_define_funs() -> None:
