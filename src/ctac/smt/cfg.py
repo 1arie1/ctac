@@ -301,13 +301,19 @@ def encode_fwd_edg1(inp: CfgEncodeInput, emit: CfgEmit) -> None:
               commander/bitwise variants would only matter on
               non-existent ≥5-way joins)
 
+    Per non-entry merge block v (``|pred(v)| ≥ 2``):
+        (C6)  at-most-one over ``In(v)``  (pairwise; same fan-in
+              shape argument — merges in ctac TAC are joins of
+              2 predecessors per the critical-edge split pass)
+
     Given the precondition that per-block out-guards are mutually
     exclusive and exhaustive (always true in ctac: JumpiCmd's
     then/else conds are ``c`` / ``(not c)``; JumpCmd's single edge
-    carries ``true``), (C4) and (C5) are semantically implied by
-    (C2). Emit them anyway: they convert multi-step CDCL into
-    unit propagation and the short binary/ternary clauses are
-    exactly the BCP fuel the encoding is missing today.
+    carries ``true``), (C4), (C5), and (C6) are semantically
+    implied by (C2) + (C3). Emit them anyway: they convert
+    multi-step CDCL into unit propagation and the short
+    binary/ternary clauses are exactly the BCP fuel the encoding
+    is missing today.
 
     Distinct from ``fwd-edg``:
       * edge variables are declared for **every** edge — no
@@ -330,7 +336,7 @@ def encode_fwd_edg1(inp: CfgEncodeInput, emit: CfgEmit) -> None:
             rhs = and_terms([pred_guard, e.branch_cond])
         emit.add_constraint(iff(ev, rhs))
 
-    # (C3) Block reachability — one per non-entry block.
+    # (C3) Block reachability + (C6) AMO incoming.
     for v in range(len(inp.block_ids)):
         if v == inp.entry:
             continue
@@ -341,6 +347,9 @@ def encode_fwd_edg1(inp: CfgEncodeInput, emit: CfgEmit) -> None:
             continue
         edge_terms = [_edge_var(e.pred, e.succ) for e in in_edges]
         emit.add_constraint(iff(v_guard, or_terms(edge_terms)))
+        if len(in_edges) >= 2:
+            for amo in at_most_one_terms(edge_terms):
+                emit.add_constraint(amo)
 
     # (C4) AMO + (C5) ALO over outgoing edges.
     for u in range(len(inp.block_ids)):

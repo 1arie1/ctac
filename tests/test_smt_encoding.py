@@ -928,6 +928,8 @@ def test_cfg_encoding_fwd_edg1_in_edge_iff_at_merge_block() -> None:
     assert "(= BLK_join (or e_1_3 e_2_3))" in rendered
     # (C4) AMO over entry's two outgoing edges.
     assert "(or (not e_0_1) (not e_0_2))" in rendered
+    # (C6) AMO over join's two incoming edges.
+    assert "(or (not e_1_3) (not e_2_3))" in rendered
 
 
 def test_cfg_encoding_all_strategies_close_unsat_on_simple_program() -> None:
