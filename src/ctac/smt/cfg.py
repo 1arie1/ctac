@@ -279,6 +279,73 @@ def encode_fwd_edg(inp: CfgEncodeInput, emit: CfgEmit) -> None:
             emit.add_constraint(implies(ev, e.branch_cond))
 
 
+def encode_fwd_edg2(inp: CfgEncodeInput, emit: CfgEmit) -> None:
+    """``fwd-edg`` plus (C6) at-most-one over incoming edges at
+    every non-entry merge block (``|pred(v)| ≥ 2``).
+
+    Forward pass is byte-identical to ``encode_fwd_edg``: single-
+    successor blocks collapse their edge variable into ``BLK_i``,
+    multi-successor blocks declare ``e_{i→j}``s and emit the
+    iff/AMO/bidirectional triple.
+
+    Then, for each merge block v, emit pairwise AMO over the
+    in-edge atoms. The atom for an in-edge ``(u → v)`` is
+
+      * ``e_{u→v}``        if ``u`` declared one (``|succ(u)| ≥ 2``)
+      * ``BLK_u``          if ``u`` was the collapsed single-succ
+                            case (``|succ(u)| = 1`` ⇒ ``e_{u→v} ≡ BLK_u``)
+
+    Mixing the two atom shapes in one AMO is sound because the
+    collapse establishes the equivalence ``e_{u→v} ≡ BLK_u`` for
+    single-successor sources. Sound regardless of which mix appears
+    at v.
+
+    AMO is guarded by ``BLK_v`` to match ``fwd-edg``'s
+    source-guarded AMO convention; weaker than unguarded but
+    keeps the constraint inert at unreachable merge blocks."""
+    declared: set[str] = set()
+    for i in range(len(inp.block_ids)):
+        out_edges = inp.succs_of(i)
+        if not out_edges:
+            continue
+        i_guard = inp.block_guards[i]
+        if len(out_edges) == 1:
+            (e,) = out_edges
+            emit.add_constraint(implies(i_guard, inp.block_guards[e.succ]))
+            emit.add_constraint(implies(i_guard, e.branch_cond))
+            continue
+        edge_vars: list[str] = []
+        for e in out_edges:
+            ev = _edge_var(e.pred, e.succ)
+            if ev not in declared:
+                emit.add_decl(ev, "Bool")
+                declared.add(ev)
+            edge_vars.append(ev)
+        emit.add_constraint(iff(i_guard, or_terms(edge_vars)))
+        for amo in at_most_one_terms(edge_vars):
+            emit.add_constraint(implies(i_guard, amo))
+        for e, ev in zip(out_edges, edge_vars):
+            emit.add_constraint(implies(ev, inp.block_guards[e.succ]))
+            emit.add_constraint(implies(ev, e.branch_cond))
+
+    # (C6) AMO incoming at non-entry merge blocks (|pred(v)| ≥ 2).
+    # Mix edge atoms (declared) and block atoms (collapsed
+    # single-successor sources) — sound by e_{i→j} ≡ BLK_i.
+    for v in range(len(inp.block_ids)):
+        if v == inp.entry:
+            continue
+        in_edges = inp.preds_of(v)
+        if len(in_edges) < 2:
+            continue
+        atoms: list[str] = []
+        for e in in_edges:
+            ev = _edge_var(e.pred, e.succ)
+            atoms.append(ev if ev in declared else inp.block_guards[e.pred])
+        v_guard = inp.block_guards[v]
+        for amo in at_most_one_terms(atoms):
+            emit.add_constraint(implies(v_guard, amo))
+
+
 def encode_fwd_edg1(inp: CfgEncodeInput, emit: CfgEmit) -> None:
     """Edge-based encoding: biconditional edge definition + in-edge
     block-reachability iff + AMO/ALO over outgoing edges.
@@ -424,5 +491,6 @@ CFG_ENCODERS: dict[str, CfgEncoder] = {
     "fwd-bwd": encode_fwd_bwd,
     "fwd-edg": encode_fwd_edg,
     "fwd-edg1": encode_fwd_edg1,
+    "fwd-edg2": encode_fwd_edg2,
     "bwd-edge": encode_bwd_edge,
 }

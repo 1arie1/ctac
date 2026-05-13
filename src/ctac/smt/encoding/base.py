@@ -69,7 +69,12 @@ class EncoderContext:
       written forward as ``edge_uv ⇔ (BLK_u ∧ g)`` for every edge
       (no single-succ collapse) and per-non-entry block
       reachability ``BLK_v ⇔ ⋁ in-edges``. Adds AMO/ALO outgoing
-      clauses as redundant BCP fuel.
+      clauses + AMO incoming clauses at merges as redundant BCP fuel.
+    ``fwd-edg2`` — ``fwd-edg`` plus pairwise AMO over incoming
+      edges at merge blocks. Single-succ sources contribute their
+      block guard to the AMO (no edge var was declared); multi-succ
+      sources contribute their edge var. Sound by the single-succ
+      collapse ``e_{i→j} ≡ BLK_i``.
     ``bwd-edge`` — predecessor analog of ``fwd-edg``."""
     narrow_range: bool = False
     """If True, every static or dynamic ``AssignExpCmd`` whose RHS is a

@@ -932,6 +932,38 @@ def test_cfg_encoding_fwd_edg1_in_edge_iff_at_merge_block() -> None:
     assert "(or (not e_1_3) (not e_2_3))" in rendered
 
 
+def test_cfg_encoding_fwd_edg2_amo_incoming_mixes_edge_and_block_atoms() -> None:
+    """fwd-edg2 = fwd-edg + (C6) AMO over incoming edges at merges.
+
+    In TAC_BWD_EDGE_MERGE the predecessors of `join` are `a` and `b`,
+    each with a single successor — so fwd-edg collapses their edge
+    vars into BLK_a / BLK_b. The (C6) AMO at `join` therefore ranges
+    over block atoms, not edge atoms. Sound by the single-succ
+    collapse establishing e_{i→j} ≡ BLK_i."""
+    tac = parse_string(TAC_BWD_EDGE_MERGE, path="<string>")
+    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edg2"))
+    # Forward pass: entry has 2 successors, so e_0_1 / e_0_2 are
+    # declared. a / b each have a single successor (join), so e_1_3
+    # and e_2_3 are NOT declared — collapsed to BLK_a / BLK_b.
+    assert "(declare-const e_0_1 Bool)" in rendered
+    assert "(declare-const e_0_2 Bool)" in rendered
+    assert "(declare-const e_1_3 Bool)" not in rendered
+    assert "(declare-const e_2_3 Bool)" not in rendered
+    # (C6) at join: AMO over the mixed-atom set {BLK_a, BLK_b},
+    # guarded by BLK_join.
+    assert "(=> BLK_join (or (not BLK_a) (not BLK_b)))" in rendered
+
+
+def test_cfg_encoding_fwd_edg2_no_merge_no_amo_incoming() -> None:
+    """On a CFG with no merges (TAC_DIAMOND_CFG: each non-entry block
+    has exactly one predecessor), (C6) emits nothing. The encoder's
+    output stays byte-identical to fwd-edg on such CFGs."""
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    a = render_smt_script(build_vc(tac, cfg_encoding="fwd-edg"))
+    b = render_smt_script(build_vc(tac, cfg_encoding="fwd-edg2"))
+    assert a == b
+
+
 def test_cfg_encoding_all_strategies_close_unsat_on_simple_program() -> None:
     # Soundness sanity: every strategy should accept a clearly
     # unsatisfiable VC (assertion never fails) on a simple CFG.
@@ -962,7 +994,10 @@ Metas {
 }
 """
     tac = parse_string(src, path="<string>")
-    for enc in ("bwd0", "bwd1", "fwd", "fwd-bwd", "fwd-edg", "fwd-edg1", "bwd-edge"):
+    for enc in (
+        "bwd0", "bwd1", "fwd", "fwd-bwd",
+        "fwd-edg", "fwd-edg1", "fwd-edg2", "bwd-edge",
+    ):
         rendered = render_smt_script(build_vc(tac, cfg_encoding=enc))
         # Every strategy must produce a well-formed script that
         # mentions BLK_EXIT and the assert predicate.

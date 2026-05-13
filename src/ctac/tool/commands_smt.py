@@ -200,10 +200,13 @@ def smt_cmd(
                 "edge vars). fwd-edg1: edge vars for every edge with "
                 "the biconditional written forward over (BLK_u ∧ g) "
                 "and merge existence delivered by in-edge iff on the "
-                "destination."
+                "destination. fwd-edg2: fwd-edg plus pairwise AMO "
+                "over incoming edges at merge blocks (mixed edge/"
+                "block atoms; sound by single-succ collapse)."
             ),
             autocompletion=complete_choices(
-                ["bwd0", "bwd1", "fwd", "fwd-bwd", "fwd-edg", "fwd-edg1", "bwd-edge"]
+                ["bwd0", "bwd1", "fwd", "fwd-bwd",
+                 "fwd-edg", "fwd-edg1", "fwd-edg2", "bwd-edge"]
             ),
         ),
     ] = "bwd0",

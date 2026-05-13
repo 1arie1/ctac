@@ -325,8 +325,8 @@ Prompt template:
     and cheap, always sound to assert. Entry-block-only triggers
     stay bare (entry guard is `true`). Off by default.
   - CFG-constraint encoding: `--cfg-encoding
-    {bwd0,bwd1,fwd,fwd-bwd,fwd-edg,fwd-edg1,bwd-edge}` selects
-    the constraint shape over block-reachability variables.
+    {bwd0,bwd1,fwd,fwd-bwd,fwd-edg,fwd-edg1,fwd-edg2,bwd-edge}`
+    selects the constraint shape over block-reachability variables.
     `bwd0` (default) — predecessor-oriented edge-feasibility
     OR-of-ANDs. `bwd1` — predecessor per-edge clausal
     implications (sound under AMO). `fwd` — successor
@@ -342,7 +342,9 @@ Prompt template:
     edge (no collapse); biconditional written forward as
     `e_uv ⇔ (BLK_u ∧ g)`, per-non-entry block reachability
     as `BLK_v ⇔ ⋁ in-edges`, plus redundant AMO/ALO over
-    outgoing edges as BCP fuel.
+    outgoing edges as BCP fuel. `fwd-edg2` — `fwd-edg` plus
+    pairwise AMO over incoming edges at merge blocks
+    (mixed edge/block atoms; sound by the single-succ collapse).
   - bv256 Add/Sub axiomatization:
     `--bv-add-sub-no-mod-axiom` (default) emits a single-wrap ITE
     for TAC `Add` and `Sub`:
