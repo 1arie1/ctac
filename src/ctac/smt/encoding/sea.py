@@ -7,7 +7,6 @@ from ctac.analysis import analyze_dsa, analyze_use_before_def, extract_def_use
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
     AnnotationCmd,
-    ApplyExpr,
     AssertCmd,
     AssignExpCmd,
     AssignHavocCmd,
@@ -36,7 +35,7 @@ from ctac.smt.vc.config import (
     VCConfig,
 )
 from ctac.smt.vc.script import VCScript
-from ctac.smt.vc.tac import TacExprLowerer, _range_refinement_for_symbol
+from ctac.smt.vc.tac import TacExprLowerer, _lower_map_body, _range_refinement_for_symbol
 from ctac.smt.vc.terms import Bool, Int, Sort, Term, term, true
 
 
@@ -209,7 +208,7 @@ class SeaEncoder(SmtEncoder):
         if isinstance(cmd, AssignExpCmd):
             lhs_name = _canon(cmd.lhs)
             if _is_map(expr.symbol_sorts, lhs_name):
-                _emit_map_store(vc, expr, cmd)
+                _emit_map_def(vc, expr, cmd)
                 return
             lhs = vc.const(lhs_name, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs_name))
             rhs = expr.lower_scalar(cmd.rhs)
@@ -388,13 +387,9 @@ def _block_guard_term(vc: VCBuilder, block_id: str, entry: str) -> Term:
     return vc.const(blk_var_name(block_id), Bool)
 
 
-def _emit_map_store(vc: VCBuilder, expr: TacExprLowerer, cmd: AssignExpCmd) -> None:
-    if not isinstance(cmd.rhs, ApplyExpr) or cmd.rhs.op != "Store" or len(cmd.rhs.args) != 3:
-        raise SmtEncodingError(f"bytemap assignment {cmd.lhs!r} requires Store RHS")
-    base = expr.lower_map(cmd.rhs.args[0])
-    index = expr.lower_int(cmd.rhs.args[1])
-    value = expr.lower_int(cmd.rhs.args[2])
-    vc.bytemap.store(_canon(cmd.lhs), base, index, value)
+def _emit_map_def(vc: VCBuilder, expr: TacExprLowerer, cmd: AssignExpCmd) -> None:
+    lhs = _canon(cmd.lhs)
+    vc.bytemap.define(lhs, lambda idx: _lower_map_body(expr, cmd.rhs, idx, lhs))
 
 
 def _havoc_range_event(block: TacBlock, index: int) -> tuple[AssignHavocCmd, int, int] | None:

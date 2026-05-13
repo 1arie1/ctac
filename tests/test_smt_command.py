@@ -427,6 +427,82 @@ Metas {
     assert "(assert (<= X BV64_MAX))" not in res.stdout
 
 
+def test_smt_cli_sea_supports_twos_complement_builtins(tmp_path: Path) -> None:
+    tac = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR:bv256
+\tI:int
+\tR2:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd R
+\t\tAssignExpCmd I Apply(unwrap_twos_complement_256:bif R)
+\t\tAssignExpCmd R2 Apply(wrap_twos_complement_256:bif I)
+\t\tAssertCmd Eq(R2 R) "roundtrip"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    p = _write_tac(tmp_path, tac, "twos-sea.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    assert res.exit_code == 0, res.output
+    assert "(define-fun to_s256 ((s Int)) Int" in res.stdout
+    assert "(define-fun from_s256 ((b Int)) Int" in res.stdout
+    assert "(from_s256 R)" in res.stdout
+    assert "(to_s256 I)" in res.stdout
+
+
+def test_smt_cli_sea_supports_bytemap_ite_definitions(tmp_path: Path) -> None:
+    tac = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tM0:bytemap
+\tM1:bytemap
+\tM2:bytemap
+\tC:bool
+\tI:bv256
+\tR:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd M0
+\t\tAssignHavocCmd M1
+\t\tAssignHavocCmd C
+\t\tAssignHavocCmd I
+\t\tAssignExpCmd M2 Ite(C M0 M1)
+\t\tAssignExpCmd R Select(M2 I)
+\t\tAssertCmd Ge(R 0) "ok"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    p = _write_tac(tmp_path, tac, "map-ite-sea.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    assert res.exit_code == 0, res.output
+    assert "(define-fun M2 ((idx Int)) Int\n  (ite C (M0 idx) (M1 idx))\n)" in res.stdout
+    assert "(assert (= R (M2 I)))" in res.stdout
+
+
 def test_smt_cli_sea_marks_dynamic_assignment_section(tmp_path: Path) -> None:
     tac = """TACSymbolTable {
 \tUserDefined {

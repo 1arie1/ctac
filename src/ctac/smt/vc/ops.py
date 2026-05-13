@@ -54,6 +54,8 @@ class _SmtName:
     BV256_AND = "int.bv256_and"
     BV256_XOR = "int.bv256_xor"
     BV256_OR = "int.bv256_or"
+    TO_S256 = "to_s256"
+    FROM_S256 = "from_s256"
     ITE = "ite"
 
     @staticmethod
@@ -418,6 +420,38 @@ class Bv256Ops:
 
     def range(self, x: Term) -> Term:
         return self.vc.bv_range(256, x)
+
+    def wrap_twos_complement(self, x: Term) -> Term:
+        s = term("s", Int)
+        self.vc.define_fun(
+            _SmtName.TO_S256,
+            (("s", Int),),
+            Int,
+            app(
+                _SmtName.ITE,
+                [
+                    ge(s, self.vc.int_lit(0)),
+                    s,
+                    add(s, self.vc.bv256_mod()),
+                ],
+                Int,
+            ),
+        )
+        return app(_SmtName.TO_S256, [x], Int)
+
+    def unwrap_twos_complement(self, x: Term) -> Term:
+        b = term("b", Int)
+        half = self.vc.define_int_const(
+            "BV256_HALF",
+            div(self.vc.bv256_mod(), self.vc.int_lit(2)),
+        )
+        self.vc.define_fun(
+            _SmtName.FROM_S256,
+            (("b", Int),),
+            Int,
+            app(_SmtName.ITE, [lt(b, half), b, sub(b, self.vc.bv256_mod())], Int),
+        )
+        return app(_SmtName.FROM_S256, [x], Int)
 
     def add(self, a: Term, b: Term) -> Term:
         self._require_add_define_fun()

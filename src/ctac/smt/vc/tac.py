@@ -290,6 +290,14 @@ class TacExprLowerer:
             if len(args) != 2:
                 raise VCLoweringError("safe_math_narrow_bv256:bif expects one arg")
             return self.vc.ops.narrow.bv256(self.lower_int(args[1]))
+        if callee.name == "wrap_twos_complement_256:bif":
+            if len(args) != 2:
+                raise VCLoweringError("wrap_twos_complement_256:bif expects one arg")
+            return self.vc.ops.bv256.wrap_twos_complement(self.lower_int(args[1]))
+        if callee.name == "unwrap_twos_complement_256:bif":
+            if len(args) != 2:
+                raise VCLoweringError("unwrap_twos_complement_256:bif expects one arg")
+            return self.vc.ops.bv256.unwrap_twos_complement(self.lower_int(args[1]))
         raise VCLoweringError(f"unsupported Apply callee {callee.name!r}")
 
     def lower_map(self, expr: TacExpr) -> MapTerm:
@@ -374,13 +382,8 @@ class TacBlockExecutor:
         builder.def_(lhs_term, rhs, inline=self.options.inline_defs)
 
     def assign_map(self, cmd: AssignExpCmd) -> None:
-        if not isinstance(cmd.rhs, ApplyExpr) or cmd.rhs.op != "Store" or len(cmd.rhs.args) != 3:
-            raise VCLoweringError(f"bytemap assignment {cmd.lhs!r} requires Store RHS")
         lhs = _canon(cmd.lhs)
-        base = self.expr.lower_map(cmd.rhs.args[0])
-        index = self.expr.lower_int(cmd.rhs.args[1])
-        value = self.expr.lower_int(cmd.rhs.args[2])
-        self.vc.bytemap.store(lhs, base, index, value)
+        self.vc.bytemap.define(lhs, lambda idx: _lower_map_body(self.expr, cmd.rhs, idx, lhs))
 
     def havoc(self, cmd: AssignHavocCmd, builder: BlockBuilder) -> None:
         lhs = _canon(cmd.lhs)
@@ -462,6 +465,80 @@ def _canon(symbol: str) -> str:
 
 def _canonical_symbol_sorts(symbol_sorts: dict[str, str]) -> dict[str, str]:
     return {_canon(name): sort for name, sort in symbol_sorts.items()}
+
+
+def _unsupported_bytemap_assignment_message(lhs: str, rhs: TacExpr) -> str:
+    shape = _bytemap_rhs_shape(rhs)
+    rhs_text = _brief_expr(rhs)
+    message = (
+        f"unsupported bytemap assignment {_canon(lhs)!r}: expected RHS "
+        f"Store(base_map, index, value) or Ite(cond, then_map, else_map), "
+        f"but got {shape} RHS {rhs_text}. "
+        "The sea encoder currently supports bytemap havoc, Store updates, "
+        "and map-valued Ite/phi merges."
+    )
+    return message
+
+
+def _bytemap_rhs_shape(rhs: TacExpr) -> str:
+    if isinstance(rhs, ApplyExpr):
+        if rhs.op == "Ite":
+            return "map-valued Ite/phi merge"
+        if rhs.op == "Store":
+            return f"Store with {len(rhs.args)} argument(s)"
+        return f"{rhs.op} application"
+    if isinstance(rhs, SymbolRef):
+        return "bytemap alias"
+    if isinstance(rhs, ConstExpr):
+        return "constant"
+    return type(rhs).__name__
+
+
+def _brief_expr(expr: TacExpr, *, max_len: int = 220) -> str:
+    text = _format_expr(expr)
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
+
+
+def _format_expr(expr: TacExpr) -> str:
+    if isinstance(expr, SymbolRef):
+        return _canon(expr.name)
+    if isinstance(expr, ConstExpr):
+        return expr.value
+    if isinstance(expr, ApplyExpr):
+        args = ", ".join(_format_expr(arg) for arg in expr.args)
+        return f"{expr.op}({args})"
+    return repr(expr)
+
+
+def _lower_map_body(expr: TacExprLowerer, source: TacExpr, idx: Term, lhs: str) -> Term:
+    if isinstance(source, SymbolRef):
+        map_term = expr.lower_map(source)
+        return app(map_term.name, [idx], Int)
+    if isinstance(source, ApplyExpr) and source.op == "Store" and len(source.args) == 3:
+        base, key, value = source.args
+        return app(
+            "ite",
+            [
+                eq(idx, expr.lower_int(key)),
+                expr.lower_int(value),
+                _lower_map_body(expr, base, idx, lhs),
+            ],
+            Int,
+        )
+    if isinstance(source, ApplyExpr) and source.op == "Ite" and len(source.args) == 3:
+        cond, then_map, else_map = source.args
+        return app(
+            "ite",
+            [
+                expr.lower_bool(cond),
+                _lower_map_body(expr, then_map, idx, lhs),
+                _lower_map_body(expr, else_map, idx, lhs),
+            ],
+            Int,
+        )
+    raise VCLoweringError(_unsupported_bytemap_assignment_message(lhs, source))
 
 
 def _ordered_blocks(program: TacProgram, order: str) -> list[TacBlock]:

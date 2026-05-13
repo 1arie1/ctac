@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from ctac.smt.vc.config import BytemapConfig, FactKind
 from ctac.smt.vc.terms import Int, Term, app, eq, term
@@ -42,19 +42,24 @@ class UfDefineFunBytemap:
         self.vc.declare_fun(name, (Int,), Int)
         return MapTerm(name)
 
-    def store(self, name: str, base: MapTerm, index: Term, value: Term) -> MapTerm:
+    def define(self, name: str, body: Callable[[Term], Term]) -> MapTerm:
         param = term(_MAP_PARAM, Int)
-        body = app(
-            "ite",
-            [
-                eq(param, index),
-                value,
-                app(base.name, [param], Int),
-            ],
-            Int,
-        )
-        self.vc.define_fun(name, ((_MAP_PARAM, Int),), Int, body)
+        self.vc.define_fun(name, ((_MAP_PARAM, Int),), Int, body(param))
         return MapTerm(name)
+
+    def store(self, name: str, base: MapTerm, index: Term, value: Term) -> MapTerm:
+        return self.define(
+            name,
+            lambda param: app(
+                "ite",
+                [
+                    eq(param, index),
+                    value,
+                    app(base.name, [param], Int),
+                ],
+                Int,
+            ),
+        )
 
     def select(self, map_term: MapTerm, index: Term) -> Term:
         raw = app(map_term.name, [index], Int)
