@@ -4,7 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from ctac.analysis import analyze_dsa, analyze_use_before_def, extract_def_use
-from ctac.analysis.model import DefinitionSite
+from ctac.analysis.model import DefUseResult, DefinitionSite, DsaDynamicAssignment, DsaResult
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
     AnnotationCmd,
@@ -65,80 +65,15 @@ class SeaEncoder(SmtEncoder):
 
     def encode(self, ctx: EncoderContext) -> VCScript:
         self._reject_unsupported_options(ctx)
-        program = ctx.tac_file.program
-        if not program.blocks:
-            raise SmtEncodingError("program has no blocks")
-        self._check_supported_commands(program)
-
-        du = extract_def_use(program)
-        dsa = analyze_dsa(program, def_use=du)
-        if not dsa.is_valid:
-            first = dsa.issues[0]
-            raise SmtEncodingError(
-                f"DSA precondition failed: {first.kind} at {first.block_id}:{first.cmd_index}"
-            )
-        ubd = analyze_use_before_def(program, def_use=du)
-        if ubd.issues:
-            first = ubd.issues[0]
-            raise SmtEncodingError(
-                f"use-before-def: {first.symbol!r} at "
-                f"{first.block_id}:{first.cmd_index} ({first.cmd_kind})"
-        )
-
-        entry = program.blocks[0].id
-        dynamic_points = {(row.block_id, row.cmd_index) for row in dsa.dynamic_assignments}
-        symbol_sorts = _canonical_symbol_sorts(ctx.tac_file.symbol_sorts)
-        inline_symbols_by_point = (
-            _inline_static_symbols_by_point(program, du.definitions, dynamic_points, symbol_sorts)
-            if ctx.inline_scalars
-            else {}
-        )
-        vc = VCBuilder(
-            VCConfig(
-                produce_unsat_cores=ctx.unsat_core,
-                globalize_eligible_facts=not ctx.guard_statics,
-                annotate_with_cmds=ctx.annotate_with_cmds,
-                guard_axioms=ctx.guard_axioms,
-                assertion_policy=AssertionPolicy(
-                    grouped_kinds=(
-                        frozenset({FactKind.DEF, FactKind.ASSUME, FactKind.RANGE})
-                        if ctx.guard_statics
-                        else frozenset()
-                    )
-                ),
-            )
-        )
-        aliases = _define_reachability_aliases(vc, program, symbol_sorts, entry)
-        aliases.update(
-            {
-                name: term(name, _sort_for(symbol_sorts=symbol_sorts, name=name))
-                for name in inline_symbols_by_point.values()
-            }
-        )
-        expr = TacExprLowerer(vc, symbol_sorts, symbol_aliases=aliases)
-
-        self._emit_static_blocks(
-            vc,
-            expr,
-            program,
-            entry,
-            dynamic_points,
-            frozenset(inline_symbols_by_point),
-        )
-        if dsa.dynamic_assignments:
-            vc.section("dynamic assignments")
-        self._emit_dynamic_defs(
-            vc,
-            expr,
-            program,
-            dsa.dynamic_assignments,
-            symbol_sorts,
-            entry,
-            guard_dynamics=ctx.guard_dynamics,
-        )
-        self._emit_cfg(vc, program, aliases, entry, ctx.cfg_encoding)
-        self._emit_assert_objective(vc, expr, ctx, entry)
-        return vc.script()
+        state = prepare_sea_state(ctx)
+        emit_static_blocks(state)
+        dynamic_defs = collect_dynamic_defs(state)
+        if dynamic_defs:
+            state.vc.section("dynamic assignments")
+        emit_dynamic_defs(state, dynamic_defs, guarded=ctx.guard_dynamics)
+        emit_cfg(state, ctx.cfg_encoding)
+        emit_assert_objective(state, ctx)
+        return state.vc.script()
 
     def _reject_unsupported_options(self, ctx: EncoderContext) -> None:
         unsupported: list[str] = []
@@ -151,236 +86,325 @@ class SeaEncoder(SmtEncoder):
         if ctx.store_reduce:
             unsupported.append("--store-reduce")
         if unsupported:
+            raise SmtEncodingError(f"encoding 'sea' does not support {', '.join(unsupported)} yet")
+
+
+@dataclass(frozen=True)
+class SeaEncodingState:
+    ctx: EncoderContext
+    program: TacProgram
+    du: DefUseResult
+    dsa: DsaResult
+    vc: VCBuilder
+    expr: TacExprLowerer
+    entry: str
+    symbol_sorts: dict[str, str]
+    aliases: dict[str, Term]
+    dynamic_points: frozenset[tuple[str, int]]
+    inline_points: frozenset[tuple[str, int]]
+
+
+@dataclass(frozen=True)
+class DynamicDefCase:
+    symbol: str
+    block_id: str
+    cmd_index: int
+    guard: Term
+    rhs: Term
+
+
+def prepare_sea_state(ctx: EncoderContext) -> SeaEncodingState:
+    program = ctx.tac_file.program
+    if not program.blocks:
+        raise SmtEncodingError("program has no blocks")
+    check_supported_commands(program)
+
+    du = extract_def_use(program)
+    dsa = analyze_dsa(program, def_use=du)
+    if not dsa.is_valid:
+        first = dsa.issues[0]
+        raise SmtEncodingError(
+            f"DSA precondition failed: {first.kind} at {first.block_id}:{first.cmd_index}"
+        )
+    ubd = analyze_use_before_def(program, def_use=du)
+    if ubd.issues:
+        first = ubd.issues[0]
+        raise SmtEncodingError(
+            f"use-before-def: {first.symbol!r} at "
+            f"{first.block_id}:{first.cmd_index} ({first.cmd_kind})"
+        )
+
+    entry = program.blocks[0].id
+    dynamic_points = frozenset((row.block_id, row.cmd_index) for row in dsa.dynamic_assignments)
+    symbol_sorts = _canonical_symbol_sorts(ctx.tac_file.symbol_sorts)
+    inline_symbols_by_point = (
+        _inline_static_symbols_by_point(program, du.definitions, set(dynamic_points), symbol_sorts)
+        if ctx.inline_scalars
+        else {}
+    )
+    vc = VCBuilder(_vc_config_for_sea(ctx))
+    aliases = _define_reachability_aliases(vc, program, symbol_sorts, entry)
+    aliases.update(
+        {
+            name: term(name, _sort_for(symbol_sorts=symbol_sorts, name=name))
+            for name in inline_symbols_by_point.values()
+        }
+    )
+    expr = TacExprLowerer(vc, symbol_sorts, symbol_aliases=aliases)
+    return SeaEncodingState(
+        ctx=ctx,
+        program=program,
+        du=du,
+        dsa=dsa,
+        vc=vc,
+        expr=expr,
+        entry=entry,
+        symbol_sorts=symbol_sorts,
+        aliases=aliases,
+        dynamic_points=dynamic_points,
+        inline_points=frozenset(inline_symbols_by_point),
+    )
+
+
+def _vc_config_for_sea(ctx: EncoderContext) -> VCConfig:
+    return VCConfig(
+        produce_unsat_cores=ctx.unsat_core,
+        globalize_eligible_facts=not ctx.guard_statics,
+        annotate_with_cmds=ctx.annotate_with_cmds,
+        guard_axioms=ctx.guard_axioms,
+        assertion_policy=AssertionPolicy(
+            grouped_kinds=(
+                frozenset({FactKind.DEF, FactKind.ASSUME, FactKind.RANGE})
+                if ctx.guard_statics
+                else frozenset()
+            )
+        ),
+    )
+
+
+def check_supported_commands(program: TacProgram) -> None:
+    for block in program.blocks:
+        for idx, cmd in enumerate(block.commands):
+            if isinstance(cmd, _SUPPORTED_CMD_TYPES):
+                continue
+            kind = type(cmd).__name__
+            head = getattr(cmd, "head", None)
+            head_part = f", head={head!r}" if head else ""
             raise SmtEncodingError(
-                f"encoding 'sea' does not support {', '.join(unsupported)} yet"
+                f"unsupported command at {block.id}:{idx} ({kind}{head_part}): {cmd.raw!r}"
             )
 
-    def _check_supported_commands(self, program: TacProgram) -> None:
-        for block in program.blocks:
-            for idx, cmd in enumerate(block.commands):
-                if isinstance(cmd, _SUPPORTED_CMD_TYPES):
-                    continue
-                kind = type(cmd).__name__
-                head = getattr(cmd, "head", None)
-                head_part = f", head={head!r}" if head else ""
-                raise SmtEncodingError(
-                    f"unsupported command at {block.id}:{idx} ({kind}{head_part}): "
-                    f"{cmd.raw!r}"
-                )
 
-    def _emit_static_blocks(
-        self,
-        vc: VCBuilder,
-        expr: TacExprLowerer,
-        program: TacProgram,
-        entry: str,
-        dynamic_points: set[tuple[str, int]],
-        inline_points: frozenset[tuple[str, int]],
-    ) -> None:
-        for block in Cfg(program).ordered_blocks():
-            guard = _block_guard_term(vc, block.id, entry)
-            with vc.block(block.id, guard=guard) as builder:
-                i = 0
-                while i < len(block.commands):
-                    if (block.id, i) in dynamic_points:
-                        i += 1
-                        continue
-                    havoc_range = _havoc_range_event(block, i)
-                    if havoc_range is not None:
-                        cmd, lo, hi = havoc_range
-                        lhs = _canon(cmd.lhs)
-                        if lhs in expr.symbol_aliases:
-                            i += 2
-                            continue
-                        x = vc.const(lhs, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs))
-                        expr.require_sort(x, Int, lhs)
-                        vc.range(
-                            x,
-                            lo=lo,
-                            hi=hi,
-                            scope="current",
-                            name=vc.auto_name("havoc_range", x.text),
-                            placement=FactPlacement.ELIGIBLE_GLOBAL,
-                        )
+def emit_static_blocks(state: SeaEncodingState) -> None:
+    for block in Cfg(state.program).ordered_blocks():
+        guard = _block_guard_term(state.vc, block.id, state.entry)
+        with state.vc.block(block.id, guard=guard) as builder:
+            i = 0
+            while i < len(block.commands):
+                if (block.id, i) in state.dynamic_points:
+                    i += 1
+                    continue
+                havoc_range = _havoc_range_event(block, i)
+                if havoc_range is not None:
+                    cmd, lo, hi = havoc_range
+                    lhs = _canon(cmd.lhs)
+                    if lhs in state.expr.symbol_aliases:
                         i += 2
                         continue
-                    cmd = block.commands[i]
-                    with vc.stmt(_stmt_id(cmd, i), cmd.raw):
-                        self._emit_static_command(
-                            vc,
-                            builder,
-                            expr,
-                            cmd,
-                            block.id,
-                            inline=(block.id, i) in inline_points,
-                        )
-                    i += 1
-
-    def _emit_static_command(
-        self,
-        vc: VCBuilder,
-        builder: BlockBuilder,
-        expr: TacExprLowerer,
-        cmd: TacCmd,
-        block_id: str,
-        *,
-        inline: bool = False,
-    ) -> None:
-        if isinstance(cmd, AssignExpCmd):
-            lhs_name = _canon(cmd.lhs)
-            if _is_map(expr.symbol_sorts, lhs_name):
-                _emit_map_def(vc, expr, cmd)
-                return
-            lhs = vc.const(lhs_name, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs_name))
-            rhs = expr.lower_scalar(_peel_narrow(cmd.rhs) if inline else cmd.rhs)
-            expr.require_assignment_sort(lhs, rhs, cmd.rhs)
-            builder.def_(
-                lhs,
-                rhs,
-                name=vc.auto_name("def", lhs.text),
-                inline=inline,
-                placement=FactPlacement.ELIGIBLE_GLOBAL,
-            )
-        elif isinstance(cmd, AssignHavocCmd):
-            lhs = _canon(cmd.lhs)
-            if lhs in expr.symbol_aliases:
-                return
-            if _is_map(expr.symbol_sorts, lhs):
-                vc.bytemap.havoc(lhs)
-            else:
-                lhs_term = vc.const(lhs, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs))
-                if lhs_term.sort is Int:
-                    vc.range(
-                        lhs_term,
-                        lo=0,
-                        hi=_BV256_MAX,
+                    x = state.vc.const(lhs, _sort_for(symbol_sorts=state.symbol_sorts, name=lhs))
+                    state.expr.require_sort(x, Int, lhs)
+                    state.vc.range(
+                        x,
+                        lo=lo,
+                        hi=hi,
                         scope="current",
-                        name=vc.auto_name("havoc_range", lhs),
+                        name=state.vc.auto_name("havoc_range", x.text),
                         placement=FactPlacement.ELIGIBLE_GLOBAL,
                     )
-        elif isinstance(cmd, AssumeExpCmd):
-            vc.fact(
-                FactKind.ASSUME,
-                expr.lower_bool(cmd.condition),
-                scope="current",
-                name=vc.auto_name("assume"),
-                origin="assume",
-            )
-        elif isinstance(cmd, AssertCmd):
-            return
-        elif isinstance(cmd, (JumpCmd, JumpiCmd, AnnotationCmd, LabelCmd)):
-            return
-        elif isinstance(cmd, RawCmd):
-            raise SmtEncodingError(f"unsupported raw command in block {block_id}: {cmd.raw!r}")
+                    i += 2
+                    continue
+                cmd = block.commands[i]
+                with state.vc.stmt(_stmt_id(cmd, i), cmd.raw):
+                    emit_static_command(
+                        state,
+                        builder,
+                        cmd,
+                        block.id,
+                        inline=(block.id, i) in state.inline_points,
+                    )
+                i += 1
 
-    def _emit_dynamic_defs(
-        self,
-        vc: VCBuilder,
-        expr: TacExprLowerer,
-        program: TacProgram,
-        rows: tuple,
-        symbol_sorts: dict[str, str],
-        entry: str,
-        *,
-        guard_dynamics: bool,
-    ) -> None:
-        by_id = program.block_by_id()
-        rows_by_symbol: dict[str, list] = defaultdict(list)
-        for row in rows:
-            sym = _canon(row.symbol)
-            if _is_map(symbol_sorts, sym):
-                raise SmtEncodingError("encoding 'sea' does not support dynamic bytemaps yet")
-            rows_by_symbol[sym].append(row)
-        block_pos = {b.id: i for i, b in enumerate(Cfg(program).ordered_blocks())}
-        for sym, sym_rows in sorted(rows_by_symbol.items()):
-            cases: list[tuple[Term, Term]] = []
-            for row in sorted(sym_rows, key=lambda r: block_pos.get(r.block_id, 10**9)):
-                block = by_id[row.block_id]
-                cmd = block.commands[row.cmd_index]
-                guard = _block_guard_term(vc, row.block_id, entry)
-                with vc.block(row.block_id, guard=guard), vc.stmt(
+
+def emit_static_command(
+    state: SeaEncodingState,
+    builder: BlockBuilder,
+    cmd: TacCmd,
+    block_id: str,
+    *,
+    inline: bool = False,
+) -> None:
+    vc = state.vc
+    expr = state.expr
+    if isinstance(cmd, AssignExpCmd):
+        lhs_name = _canon(cmd.lhs)
+        if _is_map(expr.symbol_sorts, lhs_name):
+            _emit_map_def(vc, expr, cmd)
+            return
+        lhs = vc.const(lhs_name, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs_name))
+        rhs = expr.lower_scalar(_peel_narrow(cmd.rhs) if inline else cmd.rhs)
+        expr.require_assignment_sort(lhs, rhs, cmd.rhs)
+        builder.def_(
+            lhs,
+            rhs,
+            name=vc.auto_name("def", lhs.text),
+            inline=inline,
+            placement=FactPlacement.ELIGIBLE_GLOBAL,
+        )
+    elif isinstance(cmd, AssignHavocCmd):
+        lhs = _canon(cmd.lhs)
+        if lhs in expr.symbol_aliases:
+            return
+        if _is_map(expr.symbol_sorts, lhs):
+            vc.bytemap.havoc(lhs)
+        else:
+            lhs_term = vc.const(lhs, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs))
+            if lhs_term.sort is Int:
+                vc.range(
+                    lhs_term,
+                    lo=0,
+                    hi=_BV256_MAX,
+                    scope="current",
+                    name=vc.auto_name("havoc_range", lhs),
+                    placement=FactPlacement.ELIGIBLE_GLOBAL,
+                )
+    elif isinstance(cmd, AssumeExpCmd):
+        vc.fact(
+            FactKind.ASSUME,
+            expr.lower_bool(cmd.condition),
+            scope="current",
+            name=vc.auto_name("assume"),
+            origin="assume",
+        )
+    elif isinstance(cmd, AssertCmd):
+        return
+    elif isinstance(cmd, (JumpCmd, JumpiCmd, AnnotationCmd, LabelCmd)):
+        return
+    elif isinstance(cmd, RawCmd):
+        raise SmtEncodingError(f"unsupported raw command in block {block_id}: {cmd.raw!r}")
+
+
+def collect_dynamic_defs(
+    state: SeaEncodingState,
+) -> dict[str, tuple[DynamicDefCase, ...]]:
+    vc = state.vc
+    expr = state.expr
+    by_id = state.program.block_by_id()
+    rows_by_symbol: dict[str, list[DsaDynamicAssignment]] = defaultdict(list)
+    for row in state.dsa.dynamic_assignments:
+        sym = _canon(row.symbol)
+        if _is_map(state.symbol_sorts, sym):
+            raise SmtEncodingError("encoding 'sea' does not support dynamic bytemaps yet")
+        rows_by_symbol[sym].append(row)
+
+    block_pos = {b.id: i for i, b in enumerate(Cfg(state.program).ordered_blocks())}
+    dynamic_defs: dict[str, tuple[DynamicDefCase, ...]] = {}
+    for sym, sym_rows in sorted(rows_by_symbol.items()):
+        cases: list[DynamicDefCase] = []
+        for row in sorted(sym_rows, key=lambda r: block_pos.get(r.block_id, 10**9)):
+            block = by_id[row.block_id]
+            cmd = block.commands[row.cmd_index]
+            guard = _block_guard_term(vc, row.block_id, state.entry)
+            with (
+                vc.block(row.block_id, guard=guard),
+                vc.stmt(
                     _stmt_id(cmd, row.cmd_index),
                     row.raw,
-                ):
-                    if isinstance(cmd, AssignExpCmd):
-                        rhs = expr.lower_scalar(cmd.rhs)
-                    elif isinstance(cmd, AssignHavocCmd):
-                        rhs = _fresh_havoc(
-                            vc,
-                            sym,
-                            row.block_id,
-                            row.cmd_index,
-                            _sort_for(symbol_sorts=symbol_sorts, name=sym),
-                        )
-                        if rhs.sort is Int:
-                            vc.range(
-                                rhs,
-                                lo=0,
-                                hi=_BV256_MAX,
-                                scope=None,
-                                name=vc.auto_name("havoc_range", rhs.text),
-                                placement=FactPlacement.GLOBAL,
-                            )
-                    else:
-                        raise SmtEncodingError(
-                            f"dynamic assignment for {sym} must be AssignExpCmd/AssignHavocCmd"
-                        )
-                    expr.require_assignment_sort(
-                        vc.const(sym, _sort_for(symbol_sorts=symbol_sorts, name=sym)),
-                        rhs,
-                        cmd.rhs if isinstance(cmd, AssignExpCmd) else sym,
+                ),
+            ):
+                if isinstance(cmd, AssignExpCmd):
+                    rhs = expr.lower_scalar(cmd.rhs)
+                elif isinstance(cmd, AssignHavocCmd):
+                    rhs = _fresh_havoc(
+                        vc,
+                        sym,
+                        row.block_id,
+                        row.cmd_index,
+                        _sort_for(symbol_sorts=state.symbol_sorts, name=sym),
                     )
-                cases.append((guard, rhs))
-            vc.dynamic_def(
-                vc.const(sym, _sort_for(symbol_sorts=symbol_sorts, name=sym)),
-                tuple(cases),
-                guarded=guard_dynamics,
+                    if rhs.sort is Int:
+                        vc.range(
+                            rhs,
+                            lo=0,
+                            hi=_BV256_MAX,
+                            scope=None,
+                            name=vc.auto_name("havoc_range", rhs.text),
+                            placement=FactPlacement.GLOBAL,
+                        )
+                else:
+                    raise SmtEncodingError(
+                        f"dynamic assignment for {sym} must be AssignExpCmd/AssignHavocCmd"
+                    )
+                expr.require_assignment_sort(
+                    vc.const(sym, _sort_for(symbol_sorts=state.symbol_sorts, name=sym)),
+                    rhs,
+                    cmd.rhs if isinstance(cmd, AssignExpCmd) else sym,
+                )
+            cases.append(
+                DynamicDefCase(
+                    symbol=sym,
+                    block_id=row.block_id,
+                    cmd_index=row.cmd_index,
+                    guard=guard,
+                    rhs=rhs,
+                )
             )
+        dynamic_defs[sym] = tuple(cases)
+    return dynamic_defs
 
-    def _emit_cfg(
-        self,
-        vc: VCBuilder,
-        program: TacProgram,
-        aliases: dict[str, Term],
-        entry: str,
-        cfg_encoding: str,
-    ) -> None:
-        symbol_terms = {
-            name: alias.smt()
-            for name, alias in aliases.items()
-        }
-        cfg_input = build_cfg_input(
-            program,
-            entry_block_id=entry,
-            symbol_term=symbol_terms,
-        )
-        cfg_encoder = CFG_ENCODERS.get(cfg_encoding)
-        if cfg_encoder is None:
-            raise SmtEncodingError(
-                f"unknown cfg_encoding {cfg_encoding!r}; available: {', '.join(sorted(CFG_ENCODERS))}"
-            )
-        cfg_constraints: list[str] = []
-        cfg_emit = CfgEmit(
-            add_constraint=cfg_constraints.append,
-            add_decl=lambda name, sort: vc.const(name, Bool if sort == "Bool" else Int),
-        )
-        cfg_encoder(cfg_input, cfg_emit)
-        if cfg_constraints:
-            vc.section("cfg constraints")
-            for raw in cfg_constraints:
-                vc.raw_fact(raw, origin="cfg")
 
-    def _emit_assert_objective(
-        self,
-        vc: VCBuilder,
-        expr: TacExprLowerer,
-        ctx: EncoderContext,
-        entry: str,
-    ) -> None:
-        assert_block_guard = _block_guard_term(vc, ctx.assert_site.block_id, entry)
-        with vc.block(ctx.assert_site.block_id, guard=assert_block_guard):
-            pred = expr.lower_bool(ctx.assert_site.command.predicate)
-        vc.assert_failure_objective(vc.const("BLK_EXIT", Bool), assert_block_guard, pred)
+def emit_dynamic_defs(
+    state: SeaEncodingState,
+    dynamic_defs: dict[str, tuple[DynamicDefCase, ...]],
+    *,
+    guarded: bool,
+) -> None:
+    for sym, cases in dynamic_defs.items():
+        state.vc.dynamic_def(
+            state.vc.const(sym, _sort_for(symbol_sorts=state.symbol_sorts, name=sym)),
+            tuple((case.guard, case.rhs) for case in cases),
+            guarded=guarded,
+        )
+
+
+def emit_cfg(state: SeaEncodingState, cfg_encoding: str) -> None:
+    symbol_terms = {name: alias.smt() for name, alias in state.aliases.items()}
+    cfg_input = build_cfg_input(
+        state.program,
+        entry_block_id=state.entry,
+        symbol_term=symbol_terms,
+    )
+    cfg_encoder = CFG_ENCODERS.get(cfg_encoding)
+    if cfg_encoder is None:
+        raise SmtEncodingError(
+            f"unknown cfg_encoding {cfg_encoding!r}; available: {', '.join(sorted(CFG_ENCODERS))}"
+        )
+    cfg_constraints: list[str] = []
+    cfg_emit = CfgEmit(
+        add_constraint=cfg_constraints.append,
+        add_decl=lambda name, sort: state.vc.const(name, Bool if sort == "Bool" else Int),
+    )
+    cfg_encoder(cfg_input, cfg_emit)
+    if cfg_constraints:
+        state.vc.section("cfg constraints")
+        for raw in cfg_constraints:
+            state.vc.raw_fact(raw, origin="cfg")
+
+
+def emit_assert_objective(state: SeaEncodingState, ctx: EncoderContext) -> None:
+    assert_block_guard = _block_guard_term(state.vc, ctx.assert_site.block_id, state.entry)
+    with state.vc.block(ctx.assert_site.block_id, guard=assert_block_guard):
+        pred = state.expr.lower_bool(ctx.assert_site.command.predicate)
+    state.vc.assert_failure_objective(state.vc.const("BLK_EXIT", Bool), assert_block_guard, pred)
 
 
 def _define_reachability_aliases(
