@@ -37,8 +37,8 @@ def test_vc_builder_emits_scoped_defs_ranges_and_unnamed_assertions_by_default()
 
     assert "(declare-const BLK_BB7 Bool)" in text
     assert "(assert (=> BLK_BB7 (= Y (+ X 1))))" in text
-    assert "(define-fun int.in_bv64 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV64_MAX))\n)" in text
-    assert "(define-fun BV64_MAX () Int\n  (- BV64_MOD 1)\n)" in text
+    assert "(define-fun int.in_bv64 ((x Int)) Bool (and (<= 0 x) (<= x BV64_MAX)))" in text
+    assert "(define-fun BV64_MAX () Int (- BV64_MOD 1))" in text
     assert "; block BB7" in text
     assert "; command 17" not in text
     assert "(assert (=> BLK_BB7 (int.in_bv64 Y)))" in text
@@ -101,7 +101,7 @@ def test_def_can_emit_inline_define_fun_instead_of_assertion() -> None:
 
     assert "(declare-const X Int)" in text
     assert "(declare-const Y Int)" not in text
-    assert "(define-fun Y () Int\n  (+ X 1)\n)" in text
+    assert "(define-fun Y () Int (+ X 1))" in text
     assert "(assert (=> BLK_BB7 (= Y (+ X 1))))" not in text
     assert "(assert (=> BLK_BB7 (>= Y 0)))" in text
 
@@ -149,8 +149,8 @@ def test_common_bv_max_literals_use_mnemonic_names() -> None:
 
     text = render_vc_script(vc.script())
 
-    assert "(define-fun BV64_MOD () Int\n  18446744073709551616\n)" in text
-    assert "(define-fun BV64_MAX () Int\n  (- BV64_MOD 1)\n)" in text
+    assert "(define-fun BV64_MOD () Int 18446744073709551616)" in text
+    assert "(define-fun BV64_MAX () Int (- BV64_MOD 1))" in text
     assert "(define-fun C_18446744073709551615" not in text
     assert "(assert (= X BV64_MAX))" in text
 
@@ -165,8 +165,8 @@ def test_near_pow2_literals_use_mnemonic_names() -> None:
 
     text = render_vc_script(vc.script())
 
-    assert "(define-fun POW2_47_MINUS_POW2_15 () Int\n  (- POW2_47 POW2_15)\n)" in text
-    assert "(define-fun POW2_33_MINUS_3 () Int\n  (- POW2_33 3)\n)" in text
+    assert "(define-fun POW2_47_MINUS_POW2_15 () Int (- POW2_47 POW2_15))" in text
+    assert "(define-fun POW2_33_MINUS_3 () Int (- POW2_33 3))" in text
     assert "(define-fun C_140737488322560" not in text
     assert "(define-fun C_8589934589" not in text
     assert "(assert (= X POW2_47_MINUS_POW2_15))" in text
@@ -182,7 +182,7 @@ def test_near_pow2_small_delta_stays_inline() -> None:
     text = render_vc_script(vc.script())
 
     assert "(define-fun POW2_0" not in text
-    assert "(define-fun POW2_33_MINUS_1 () Int\n  (- POW2_33 1)\n)" in text
+    assert "(define-fun POW2_33_MINUS_1 () Int (- POW2_33 1))" in text
     assert "(assert (= X POW2_33_MINUS_1))" in text
 
 
@@ -418,12 +418,12 @@ def test_common_bv_ranges_use_readable_predicate_define_funs() -> None:
 
     text = render_vc_script(vc.script())
 
-    assert "(define-fun int.in_bv32 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV32_MAX))\n)" in text
-    assert "(define-fun int.in_bv64 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV64_MAX))\n)" in text
-    assert "(define-fun int.in_bv128 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV128_MAX))\n)" in text
-    assert "(define-fun int.in_bv256 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV256_MAX))\n)" in text
-    assert "(define-fun BV64_MAX () Int\n  (- BV64_MOD 1)\n)" in text
-    assert "(define-fun BV256_MAX () Int\n  (- BV256_MOD 1)\n)" in text
+    assert "(define-fun int.in_bv32 ((x Int)) Bool (and (<= 0 x) (<= x BV32_MAX)))" in text
+    assert "(define-fun int.in_bv64 ((x Int)) Bool (and (<= 0 x) (<= x BV64_MAX)))" in text
+    assert "(define-fun int.in_bv128 ((x Int)) Bool (and (<= 0 x) (<= x BV128_MAX)))" in text
+    assert "(define-fun int.in_bv256 ((x Int)) Bool (and (<= 0 x) (<= x BV256_MAX)))" in text
+    assert "(define-fun BV64_MAX () Int (- BV64_MOD 1))" in text
+    assert "(define-fun BV256_MAX () Int (- BV256_MOD 1))" in text
     assert "(assert (=> BLK_entry (int.in_bv32 A)))" in text
     assert "(assert (=> BLK_entry (int.in_bv64 B)))" in text
     assert "(assert (=> BLK_entry (int.in_bv128 C)))" in text
@@ -450,7 +450,7 @@ def test_narrow_ops_are_identity_define_funs_with_range_lemmas() -> None:
     text = render_vc_script(vc.script())
 
     for width in (32, 64, 128, 256):
-        assert f"(define-fun narrow.bv{width} ((x Int)) Int\n  x\n)" in text
+        assert f"(define-fun narrow.bv{width} ((x Int)) Int x)" in text
         assert f"(define-fun lemma_narrow_bv{width}_range ((r Int)) Bool" in text
         assert f"(define-fun int.in_bv{width} ((x Int)) Bool" in text
     assert "(assert (=> BLK_entry (= R32 (narrow.bv32 X32))))" in text
@@ -499,9 +499,9 @@ def test_bv256_arithmetic_uses_named_define_funs() -> None:
 
     assert "(define-fun int.bv256_sub ((x Int) (y Int)) Int" in text
     assert "(ite (>= (- x y) 0) (- x y) (+ (- x y) BV256_MOD))" in text
-    assert "(define-fun int.bv256_mul ((x Int) (y Int)) Int\n  (mod (* x y) BV256_MOD)\n)" in text
-    assert "(define-fun int.bv256_div ((x Int) (y Int)) Int\n  (div x y)\n)" in text
-    assert "(define-fun int.bv256_mod ((x Int) (y Int)) Int\n  (mod x y)\n)" in text
+    assert "(define-fun int.bv256_mul ((x Int) (y Int)) Int (mod (* x y) BV256_MOD))" in text
+    assert "(define-fun int.bv256_div ((x Int) (y Int)) Int (div x y))" in text
+    assert "(define-fun int.bv256_mod ((x Int) (y Int)) Int (mod x y))" in text
     assert "(assert (=> BLK_entry (= S (int.bv256_sub X Y))))" in text
     assert "(assert (=> BLK_entry (= M (int.bv256_mul X Y))))" in text
     assert "(assert (=> BLK_entry (= D (int.bv256_div X Y))))" in text
@@ -522,7 +522,7 @@ def test_bytemap_havoc_store_select_uses_binder_range_axiom() -> None:
     text = render_vc_script(vc.script())
 
     assert "(declare-fun M0 (Int) Int)" in text
-    assert "(define-fun M1 ((idx Int)) Int\n  (ite (= idx I) V (M0 idx))\n)" in text
+    assert "(define-fun M1 ((idx Int)) Int (ite (= idx I) V (M0 idx)))" in text
     assert "(assert (=> BLK_entry (= R (M1 I))))" in text
     assert "(assert (int.in_bv256 R))" in text
     assert "(int.in_bv256 (M1 I))" not in text
@@ -600,12 +600,12 @@ def test_bv256_constant_shift_and_mask_ops_use_readable_define_funs() -> None:
 
     text = render_vc_script(vc.script())
 
-    assert "(define-fun POW2_8 () Int\n  256\n)" in text
-    assert "(define-fun bv256.shl_8 ((x Int)) Int\n  (* x POW2_8)\n)" in text
-    assert "(define-fun bv256.lshr_8 ((x Int)) Int\n  (div x POW2_8)\n)" in text
-    assert "(define-fun bv256.and_FF ((x Int)) Int\n  (mod x POW2_8)\n)" in text
-    assert "(define-fun bv256.and_clear_low_8 ((x Int)) Int\n  (* (div x POW2_8) POW2_8)\n)" in text
-    assert "(define-fun bv256.and_slice_8_8 ((x Int)) Int\n  (* (mod (div x POW2_8) POW2_8) POW2_8)\n)" in text
+    assert "(define-fun POW2_8 () Int 256)" in text
+    assert "(define-fun bv256.shl_8 ((x Int)) Int (* x POW2_8))" in text
+    assert "(define-fun bv256.lshr_8 ((x Int)) Int (div x POW2_8))" in text
+    assert "(define-fun bv256.and_FF ((x Int)) Int (mod x POW2_8))" in text
+    assert "(define-fun bv256.and_clear_low_8 ((x Int)) Int (* (div x POW2_8) POW2_8))" in text
+    assert "(define-fun bv256.and_slice_8_8 ((x Int)) Int (* (mod (div x POW2_8) POW2_8) POW2_8))" in text
     assert "(assert (=> BLK_entry (= SHL (bv256.shl_8 X))))" in text
     assert "(assert (=> BLK_entry (= LSHR (bv256.lshr_8 X))))" in text
     assert "(assert (=> BLK_entry (= LOW (bv256.and_FF X))))" in text

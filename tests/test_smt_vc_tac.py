@@ -266,9 +266,9 @@ def test_tac_lowering_supports_twos_complement_builtins() -> None:
     vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
     text = render_vc_script(vc.script())
 
-    assert "(define-fun to_s256 ((s Int)) Int\n  (ite (>= s 0) s (+ s BV256_MOD))\n)" in text
-    assert "(define-fun BV256_HALF () Int\n  (div BV256_MOD 2)\n)" in text
-    assert "(define-fun from_s256 ((b Int)) Int\n  (ite (< b BV256_HALF) b (- b BV256_MOD))\n)" in text
+    assert "(define-fun to_s256 ((s Int)) Int (ite (>= s 0) s (+ s BV256_MOD)))" in text
+    assert "(define-fun BV256_HALF () Int (div BV256_MOD 2))" in text
+    assert "(define-fun from_s256 ((b Int)) Int (ite (< b BV256_HALF) b (- b BV256_MOD)))" in text
     assert "(assert (=> BLK_entry (= I (from_s256 R))))" in text
     assert "(assert (=> BLK_entry (= R2 (to_s256 I))))" in text
 
@@ -316,7 +316,7 @@ def test_tac_lowering_executes_bytemap_store_and_select() -> None:
     text = render_vc_script(vc.script())
 
     assert "(declare-fun M0 (Int) Int)" in text
-    assert "(define-fun M1 ((idx Int)) Int\n  (ite (= idx I) V (M0 idx))\n)" in text
+    assert "(define-fun M1 ((idx Int)) Int (ite (= idx I) V (M0 idx)))" in text
     assert "(assert (=> BLK_entry (= R (M1 I))))" in text
     assert "(assert (int.in_bv256 R))" in text
 
@@ -340,7 +340,7 @@ def test_tac_lowering_executes_bytemap_ite_definition() -> None:
     vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
     text = render_vc_script(vc.script())
 
-    assert "(define-fun M2 ((idx Int)) Int\n  (ite C (M0 idx) (M1 idx))\n)" in text
+    assert "(define-fun M2 ((idx Int)) Int (ite C (M0 idx) (M1 idx)))" in text
     assert "(assert (=> BLK_entry (= R (M2 I))))" in text
 
 

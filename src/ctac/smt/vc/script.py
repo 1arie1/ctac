@@ -82,11 +82,7 @@ class SmtWriter:
 
 def _emit_define_fun(w: SmtWriter, df: DefineFun) -> None:
     params = " ".join(f"({name} {sort.smt()})" for name, sort in df.params)
-    w.line(f"(define-fun {df.name} ({params}) {df.ret.smt()}")
-    w.indent += 1
-    w.line(df.body.smt())
-    w.indent -= 1
-    w.line(")")
+    w.line(f"(define-fun {df.name} ({params}) {df.ret.smt()} {df.body.smt()})")
 
 
 def _emit_assertion(w: SmtWriter, assertion: Assertion, *, name_assertions: bool) -> None:

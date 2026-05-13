@@ -499,7 +499,7 @@ Metas {
     runner = CliRunner()
     res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
     assert res.exit_code == 0, res.output
-    assert "(define-fun M2 ((idx Int)) Int\n  (ite C (M0 idx) (M1 idx))\n)" in res.stdout
+    assert "(define-fun M2 ((idx Int)) Int (ite C (M0 idx) (M1 idx)))" in res.stdout
     assert "(assert (= R (M2 I)))" in res.stdout
 
 
@@ -646,7 +646,7 @@ Metas {
     runner = CliRunner()
     res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
     assert res.exit_code == 0, res.output
-    assert "(define-fun ReachabilityCertoraok () Bool\n  BLK_ok\n)" in res.stdout
+    assert "(define-fun ReachabilityCertoraok () Bool BLK_ok)" in res.stdout
     assert "(declare-const ReachabilityCertoraok Bool)" not in res.stdout
     assert "(assert (= b ReachabilityCertoraok))" in res.stdout
 
