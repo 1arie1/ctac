@@ -258,6 +258,11 @@ def smt_cmd(
             "duplicate subexpressions."
         ),
     ),
+    annotate_with_cmds: bool = typer.Option(
+        False,
+        "--annotate-with-cmds/--no-annotate-with-cmds",
+        help="Add raw TAC command comments before SMT assertions. Off by default.",
+    ),
     debug: bool = typer.Option(
         False,
         "--debug/--no-debug",
@@ -293,6 +298,7 @@ def smt_cmd(
             bv_add_sub_axiom="mod" if bv_add_sub_mod_axiom else "no-mod",
             store_reduce=store_reduce,
             inline_scalars=inline_scalars,
+            annotate_with_cmds=annotate_with_cmds,
         )
         smt_text = render_smt_script(script)
     except ParseError as e:

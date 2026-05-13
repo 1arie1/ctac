@@ -375,8 +375,85 @@ def test_smt_cli_sea_encoding_smoke(tmp_path: Path) -> None:
     assert "# encoding: sea" in res.stdout
     assert "(set-logic QF_UFNIA)" in res.stdout
     assert "(assert (= b true))" in res.stdout
+    assert "; AssignExpCmd b true" not in res.stdout
     assert "(assert (=> BLK_EXIT (and BLK_ok (not b))))" in res.stdout
     assert "(assert BLK_EXIT)" in res.stdout
+
+
+def test_smt_cli_sea_can_annotate_with_commands(tmp_path: Path) -> None:
+    p = _write_tac(tmp_path, TAC_OK, "ok-sea-annotated.tac")
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["smt", str(p), "--plain", "--encoding", "sea", "--annotate-with-cmds"],
+    )
+    assert res.exit_code == 0, res.output
+    assert "; AssignExpCmd b true" in res.stdout
+
+
+def test_smt_cli_sea_havoc_range_refines_one_sided_assume(tmp_path: Path) -> None:
+    tac = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tX:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd X
+\t\tAssumeExpCmd Le(X 0xffffffffffffffff)
+\t\tAssertCmd true "done"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    p = _write_tac(tmp_path, tac, "havoc-refine-sea.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    assert res.exit_code == 0, res.output
+    assert "(assert (int.in_bv64 X))" in res.stdout
+    assert "(assert (<= X BV64_MAX))" not in res.stdout
+
+
+def test_smt_cli_sea_skips_annotation_commands(tmp_path: Path) -> None:
+    tac = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tb:bool
+}
+Program {
+\tBlock entry Succ [ok] {
+\t\tAssignExpCmd b true
+\t\tAnnotationCmd:4 JSON{"key":{"name":"sbf.rule.location"},"value":{"lineNumber":563}}
+\t\tJumpCmd ok
+\t}
+\tBlock ok Succ [] {
+\t\tAssertCmd b "must hold"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    p = _write_tac(tmp_path, tac, "annotation-sea.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    assert res.exit_code == 0, res.output
+    assert "(assert (= b true))" in res.stdout
+    assert "(check-sat)" in res.stdout
 
 
 def test_smt_cli_sea_guard_statics_keeps_static_defs_scoped(tmp_path: Path) -> None:

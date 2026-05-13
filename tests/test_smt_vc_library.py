@@ -40,7 +40,22 @@ def test_vc_builder_emits_scoped_defs_ranges_and_unnamed_assertions_by_default()
     assert "(define-fun int.in_bv64 ((x Int)) Bool\n  (and (<= 0 x) (<= x BV64_MAX))\n)" in text
     assert "(define-fun BV64_MAX () Int\n  (- BV64_MOD 1)\n)" in text
     assert "(assert (=> BLK_BB7 (int.in_bv64 Y)))" in text
+    assert "; Y = X + 1" not in text
     assert ":named" not in text
+
+
+def test_vc_builder_can_annotate_assertions_with_raw_commands() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False, annotate_with_cmds=True))
+    x = vc.const("X", Int)
+
+    with vc.block("BB7") as b:
+        with vc.stmt(17, "AssumeExpCmd Le(X 10)"):
+            b.assume(ge(x, vc.int_lit(0)))
+
+    text = render_vc_script(vc.script())
+
+    assert "; AssumeExpCmd Le(X 10)" in text
+    assert "(assert (=> BLK_BB7 (>= X 0)))" in text
 
 
 def test_assertion_policy_groups_selected_facts_by_block_scope() -> None:
@@ -122,6 +137,63 @@ def test_eligible_global_fact_placement_is_configured_at_lowering_time() -> None
     global_text = render_vc_script(globalized.script())
     assert "(assert (= X 1))" in global_text
     assert "(assert (=> BLK_BB7 (= X 1)))" not in global_text
+
+
+def test_common_bv_max_literals_use_mnemonic_names() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+
+    vc.fact(FactKind.ASSUME, eq(x, vc.int_lit((1 << 64) - 1)))
+
+    text = render_vc_script(vc.script())
+
+    assert "(define-fun BV64_MOD () Int\n  18446744073709551616\n)" in text
+    assert "(define-fun BV64_MAX () Int\n  (- BV64_MOD 1)\n)" in text
+    assert "(define-fun C_18446744073709551615" not in text
+    assert "(assert (= X BV64_MAX))" in text
+
+
+def test_near_pow2_literals_use_mnemonic_names() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+    y = vc.const("Y", Int)
+
+    vc.fact(FactKind.ASSUME, eq(x, vc.int_lit((1 << 47) - (1 << 15))))
+    vc.fact(FactKind.ASSUME, eq(y, vc.int_lit((1 << 33) - 3)))
+
+    text = render_vc_script(vc.script())
+
+    assert "(define-fun POW2_47_MINUS_POW2_15 () Int\n  (- POW2_47 POW2_15)\n)" in text
+    assert "(define-fun POW2_33_MINUS_3 () Int\n  (- POW2_33 3)\n)" in text
+    assert "(define-fun C_140737488322560" not in text
+    assert "(define-fun C_8589934589" not in text
+    assert "(assert (= X POW2_47_MINUS_POW2_15))" in text
+    assert "(assert (= Y POW2_33_MINUS_3))" in text
+
+
+def test_near_pow2_small_delta_stays_inline() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+
+    vc.fact(FactKind.ASSUME, eq(x, vc.int_lit((1 << 33) - 1)))
+
+    text = render_vc_script(vc.script())
+
+    assert "(define-fun POW2_0" not in text
+    assert "(define-fun POW2_33_MINUS_1 () Int\n  (- POW2_33 1)\n)" in text
+    assert "(assert (= X POW2_33_MINUS_1))" in text
+
+
+def test_unrecognized_large_literals_are_emitted_inline() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False))
+    x = vc.const("X", Int)
+
+    vc.fact(FactKind.ASSUME, eq(x, vc.int_lit(12345678901234567890)))
+
+    text = render_vc_script(vc.script())
+
+    assert "(define-fun C_12345678901234567890" not in text
+    assert "(assert (= X 12345678901234567890))" in text
 
 
 def test_raw_cfg_fact_is_emitted_globally() -> None:

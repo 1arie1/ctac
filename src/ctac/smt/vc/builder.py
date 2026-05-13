@@ -15,6 +15,8 @@ from ctac.smt.vc.terms import Bool, Int, Sort, Term, and_, app, eq, le, not_, te
 _BV256_MOD = 1 << 256
 _BV256_MAX = _BV256_MOD - 1
 _COMMON_BV_WIDTHS = (32, 64, 128, 256)
+_SMALL_INT_INLINE_LIMIT = 1 << 14
+_NEAR_POW2_DELTA_LIMIT = 1 << 16
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,34 @@ def _is_pow2(n: int) -> int | None:
     if n <= 0 or n & (n - 1):
         return None
     return n.bit_length() - 1
+
+
+def _common_bv_max_width(value: int) -> int | None:
+    if value < 0:
+        return None
+    for width in _COMMON_BV_WIDTHS:
+        if value == (1 << width) - 1:
+            return width
+    return None
+
+
+def _near_pow2(value: int) -> tuple[int, int] | None:
+    if value <= 0:
+        return None
+    width = value.bit_length()
+    candidates = (width - 1, width)
+    best: tuple[int, int] | None = None
+    for pow_k in candidates:
+        if pow_k <= 0:
+            continue
+        delta = value - (1 << pow_k)
+        if abs(delta) >= _NEAR_POW2_DELTA_LIMIT:
+            continue
+        if delta == 0:
+            continue
+        if best is None or abs(delta) < abs(best[1]):
+            best = (pow_k, delta)
+    return best
 
 
 class BlockBuilder:
@@ -189,11 +219,39 @@ class VCBuilder:
             return self.bv256_mod()
         if value == _BV256_MAX:
             return self.bv256_max()
+        max_width = _common_bv_max_width(value)
+        if max_width is not None:
+            return self.bv_max(max_width)
         pow_k = _is_pow2(value)
         if pow_k is not None:
-            return self.define_int_const(f"POW2_{pow_k}", value)
-        prefix = "NEG_" if value < 0 else ""
-        return self.define_int_const(f"{prefix}C_{abs(value)}", value)
+            return self.pow2_const(pow_k)
+        near = _near_pow2(value)
+        if near is not None:
+            pow_k, delta = near
+            return self._near_pow2_const(pow_k, delta)
+        return term(str(value), Int)
+
+    def pow2_const(self, width: int) -> Term:
+        return self.define_int_const(f"POW2_{width}", 1 << width)
+
+    def _near_pow2_const(self, pow_k: int, delta: int) -> Term:
+        op = "+" if delta > 0 else "-"
+        sign_name = "PLUS" if delta > 0 else "MINUS"
+        delta_abs = abs(delta)
+        delta_pow_k = _is_pow2(delta_abs)
+        if delta_abs <= _SMALL_INT_INLINE_LIMIT:
+            delta_term = term(str(delta_abs), Int)
+            delta_name = str(delta_abs)
+        elif delta_pow_k is not None:
+            delta_term = self.pow2_const(delta_pow_k)
+            delta_name = f"POW2_{delta_pow_k}"
+        else:
+            delta_term = self.int_lit(delta_abs)
+            delta_name = str(delta_abs)
+        return self.define_int_const(
+            f"POW2_{pow_k}_{sign_name}_{delta_name}",
+            app(op, [self.pow2_const(pow_k), delta_term], Int),
+        )
 
     def bv256_mod(self) -> Term:
         return self.define_int_const("BV256_MOD", _BV256_MOD)
@@ -300,7 +358,7 @@ class VCBuilder:
                 phi,
                 scope=resolved,
                 name=name,
-                comment=comment if comment is not None else (stmt.comment if stmt else None),
+                comment=self._fact_comment(comment, stmt),
                 origin=origin,
                 placement=placement,
             )
@@ -395,6 +453,13 @@ class VCBuilder:
         if isinstance(value, Term):
             return value
         return self.int_lit(value)
+
+    def _fact_comment(self, comment: str | None, stmt: StmtContext | None) -> str | None:
+        if comment is not None:
+            return comment
+        if self.config.annotate_with_cmds and stmt is not None:
+            return stmt.comment
+        return None
 
     def op_config(self, name: str, default: OpConfig) -> OpConfig:
         return self.config.op_models.get(name, default)

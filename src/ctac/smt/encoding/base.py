@@ -125,6 +125,10 @@ class EncoderContext:
     Under ``--narrow-range``, the bv256-domain bound is preserved
     by re-instantiating it on the inlined RHS rather than the now-
     eliminated symbol."""
+    annotate_with_cmds: bool = False
+    """If True, VC assertions include comments with the raw TAC command
+    text that produced each fact. Default False keeps SMT-LIB output
+    compact and stable."""
 
 
 class SmtEncoder(Protocol):

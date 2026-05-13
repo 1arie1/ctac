@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from ctac.analysis import analyze_dsa, analyze_use_before_def, extract_def_use
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
+    AnnotationCmd,
     ApplyExpr,
     AssertCmd,
     AssignExpCmd,
@@ -35,7 +36,7 @@ from ctac.smt.vc.config import (
     VCConfig,
 )
 from ctac.smt.vc.script import VCScript
-from ctac.smt.vc.tac import TacExprLowerer, _range_bounds_for_symbol
+from ctac.smt.vc.tac import TacExprLowerer, _range_refinement_for_symbol
 from ctac.smt.vc.terms import Bool, Int, Sort, Term, term, true
 
 
@@ -46,6 +47,7 @@ _SUPPORTED_CMD_TYPES = (
     AssertCmd,
     JumpCmd,
     JumpiCmd,
+    AnnotationCmd,
     LabelCmd,
 )
 
@@ -83,6 +85,7 @@ class SeaEncoder(SmtEncoder):
             VCConfig(
                 produce_unsat_cores=ctx.unsat_core,
                 globalize_eligible_facts=not ctx.guard_statics,
+                annotate_with_cmds=ctx.annotate_with_cmds,
                 assertion_policy=AssertionPolicy(
                     grouped_kinds=(
                         frozenset({FactKind.DEF, FactKind.ASSUME, FactKind.RANGE})
@@ -222,7 +225,16 @@ class SeaEncoder(SmtEncoder):
             if _is_map(expr.symbol_sorts, lhs):
                 vc.bytemap.havoc(lhs)
             else:
-                vc.const(lhs, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs))
+                lhs_term = vc.const(lhs, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs))
+                if lhs_term.sort is Int:
+                    vc.range(
+                        lhs_term,
+                        lo=0,
+                        hi=_BV256_MAX,
+                        scope="current",
+                        name=vc.auto_name("havoc_range", lhs),
+                        placement=FactPlacement.ELIGIBLE_GLOBAL,
+                    )
         elif isinstance(cmd, AssumeExpCmd):
             vc.fact(
                 FactKind.ASSUME,
@@ -233,7 +245,7 @@ class SeaEncoder(SmtEncoder):
             )
         elif isinstance(cmd, AssertCmd):
             return
-        elif isinstance(cmd, (JumpCmd, JumpiCmd, LabelCmd)):
+        elif isinstance(cmd, (JumpCmd, JumpiCmd, AnnotationCmd, LabelCmd)):
             return
         elif isinstance(cmd, RawCmd):
             raise SmtEncodingError(f"unsupported raw command in block {block_id}: {cmd.raw!r}")
@@ -274,6 +286,15 @@ class SeaEncoder(SmtEncoder):
                             row.cmd_index,
                             _sort_for(symbol_sorts=symbol_sorts, name=sym),
                         )
+                        if rhs.sort is Int:
+                            vc.range(
+                                rhs,
+                                lo=0,
+                                hi=_BV256_MAX,
+                                scope=None,
+                                name=vc.auto_name("havoc_range", rhs.text),
+                                placement=FactPlacement.GLOBAL,
+                            )
                     else:
                         raise SmtEncodingError(
                             f"dynamic assignment for {sym} must be AssignExpCmd/AssignHavocCmd"
@@ -373,10 +394,11 @@ def _havoc_range_event(block: TacBlock, index: int) -> tuple[AssignHavocCmd, int
     assume = block.commands[index + 1]
     if not isinstance(cmd, AssignHavocCmd) or not isinstance(assume, AssumeExpCmd):
         return None
-    bounds = _range_bounds_for_symbol(assume.condition, _canon(cmd.lhs))
-    if bounds is None:
+    lo, hi = _range_refinement_for_symbol(assume.condition, _canon(cmd.lhs))
+    if lo is None and hi is None:
         return None
-    lo, hi = bounds
+    lo = max(0, lo) if lo is not None else 0
+    hi = min(_BV256_MAX, hi) if hi is not None else _BV256_MAX
     if lo > hi:
         raise SmtEncodingError(f"invalid havoc range for {cmd.lhs}: {lo} > {hi}")
     return cmd, lo, hi
@@ -407,3 +429,6 @@ def _canon(symbol: str) -> str:
 
 def _canonical_symbol_sorts(symbol_sorts: dict[str, str]) -> dict[str, str]:
     return {_canon(name): sort for name, sort in symbol_sorts.items()}
+
+
+_BV256_MAX = (1 << 256) - 1

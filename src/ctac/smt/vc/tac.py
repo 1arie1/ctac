@@ -22,7 +22,7 @@ from ctac.ast.nodes import (
 )
 from ctac.graph import Cfg
 from ctac.ir.models import TacBlock, TacFile, TacProgram
-from ctac.smt.vc.builder import BlockBuilder, VCBuilder, sanitize_name
+from ctac.smt.vc.builder import BlockBuilder, IntRange, VCBuilder, sanitize_name
 from ctac.smt.vc.bytemap import MapTerm
 from ctac.smt.vc.terms import (
     Bool,
@@ -351,7 +351,7 @@ class TacBlockExecutor:
         if isinstance(cmd, AssignExpCmd):
             self.assign(cmd, builder)
         elif isinstance(cmd, AssignHavocCmd):
-            self.havoc(cmd)
+            self.havoc(cmd, builder)
         elif isinstance(cmd, AssumeExpCmd):
             builder.assume(self.expr.lower_bool(cmd.condition))
         elif isinstance(cmd, AssertCmd):
@@ -382,12 +382,14 @@ class TacBlockExecutor:
         value = self.expr.lower_int(cmd.rhs.args[2])
         self.vc.bytemap.store(lhs, base, index, value)
 
-    def havoc(self, cmd: AssignHavocCmd) -> None:
+    def havoc(self, cmd: AssignHavocCmd, builder: BlockBuilder) -> None:
         lhs = _canon(cmd.lhs)
         if self._is_map(lhs):
             self.vc.bytemap.havoc(lhs)
         else:
-            self.vc.const(lhs, self._sort(lhs))
+            lhs_term = self.vc.const(lhs, self._sort(lhs))
+            if lhs_term.sort is Int:
+                builder.range(lhs_term, IntRange.bv256(), name=self.vc.auto_name("havoc_range", lhs))
 
     def _classify_window(
         self, block_id: str, commands: list[TacCmd], index: int
@@ -403,10 +405,11 @@ class TacBlockExecutor:
         lhs = _canon(first.lhs)
         if self._is_map(lhs):
             return None
-        bounds = _range_bounds_for_symbol(second.condition, lhs)
-        if bounds is None:
+        lo, hi = _range_refinement_for_symbol(second.condition, lhs)
+        if lo is None and hi is None:
             return None
-        lo, hi = bounds
+        lo = max(0, lo) if lo is not None else 0
+        hi = min(_BV256_MAX, hi) if hi is not None else _BV256_MAX
         if lo > hi:
             raise VCLoweringError(f"invalid havoc range for {first.lhs}: {lo} > {hi}")
         return HavocRangeEvent(lhs, lo, hi, (first, second))
@@ -436,6 +439,7 @@ class TacBlockExecutor:
 
 
 _TYPED_CONST = re.compile(r"^(?P<num>(?:-?[0-9]+|0[xX]-?[0-9a-fA-F_]+))\([A-Za-z0-9_]+\)$")
+_BV256_MAX = (1 << 256) - 1
 
 
 def _parse_int(raw: str) -> int:
@@ -467,6 +471,13 @@ def _ordered_blocks(program: TacProgram, order: str) -> list[TacBlock]:
 
 
 def _range_bounds_for_symbol(expr: TacExpr, symbol: str) -> tuple[int, int] | None:
+    lo, hi = _range_refinement_for_symbol(expr, symbol)
+    if lo is None or hi is None:
+        return None
+    return lo, hi
+
+
+def _range_refinement_for_symbol(expr: TacExpr, symbol: str) -> tuple[int | None, int | None]:
     symbol = _canon(symbol)
     constraints = _flatten_lands(expr)
     lo: int | None = None
@@ -475,15 +486,15 @@ def _range_bounds_for_symbol(expr: TacExpr, symbol: str) -> tuple[int, int] | No
     for constraint in constraints:
         bound = _one_sided_bound(constraint, symbol)
         if bound is None:
-            return None
+            return None, None
         kind, value = bound
         matched = True
         if kind == "lo":
             lo = value if lo is None else max(lo, value)
         else:
             hi = value if hi is None else min(hi, value)
-    if not matched or lo is None or hi is None:
-        return None
+    if not matched:
+        return None, None
     return lo, hi
 
 

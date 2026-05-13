@@ -70,6 +70,44 @@ def test_tac_lowering_collapses_havoc_followed_by_range_assume() -> None:
     assert "(assert (=> BLK_entry (and (<= 0 X) (<= X 255))))" not in text
 
 
+def test_tac_lowering_havoc_emits_bv256_range() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd X
+\t}
+""",
+            "\tX:bv256",
+        )
+    )
+
+    vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+    text = render_vc_script(vc.script())
+
+    assert "(assert (=> BLK_entry (int.in_bv256 X)))" in text
+
+
+def test_tac_lowering_havoc_range_refines_one_sided_assume() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd X
+\t\tAssumeExpCmd Le(X 0xffffffffffffffff)
+\t}
+""",
+            "\tX:bv256",
+        )
+    )
+
+    vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+    text = render_vc_script(vc.script())
+
+    assert "(assert (=> BLK_entry (int.in_bv64 X)))" in text
+    assert "(assert (=> BLK_entry (<= X BV64_MAX)))" not in text
+
+
 def test_tac_lowering_rejects_int_where_bool_is_required() -> None:
     tac = parse_string(
         _wrap(
