@@ -503,6 +503,76 @@ Metas {
     assert "(assert (= R (M2 I)))" in res.stdout
 
 
+def test_smt_cli_sea_inline_scalars_inlines_linear_static_defs(tmp_path: Path) -> None:
+    tac = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tM:bytemap
+\tR0:bv256
+\tR1:bv256
+\tR2:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd M
+\t\tAssignHavocCmd R0
+\t\tAssignExpCmd R1 Apply(safe_math_narrow_bv256:bif IntAdd(0x18 R0))
+\t\tAssignExpCmd R2 Select(M R1)
+\t\tAssertCmd Ge(R2 0) "ok"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    p = _write_tac(tmp_path, tac, "inline-sea.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--inline-scalars"])
+    assert res.exit_code == 0, res.output
+    assert "(define-fun R1 () Int (+ 24 R0))" in res.stdout
+    assert "(declare-const R1 Int)" not in res.stdout
+    assert "(assert (= R1 " not in res.stdout
+    assert "(M R1)" in res.stdout
+    assert "narrow.bv256" not in res.stdout
+
+
+def test_smt_cli_sea_inline_scalars_does_not_inline_bool_defs(tmp_path: Path) -> None:
+    tac = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tb:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignExpCmd b true
+\t\tAssertCmd b "ok"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    p = _write_tac(tmp_path, tac, "inline-bool-sea.tac")
+    runner = CliRunner()
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--inline-scalars"])
+    assert res.exit_code == 0, res.output
+    assert "(declare-const b Bool)" in res.stdout
+    assert "(assert (= b true))" in res.stdout
+    assert "(define-fun b () Bool true)" not in res.stdout
+
+
 def test_smt_cli_sea_marks_dynamic_assignment_section(tmp_path: Path) -> None:
     tac = """TACSymbolTable {
 \tUserDefined {

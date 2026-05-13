@@ -4,18 +4,23 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from ctac.analysis import analyze_dsa, analyze_use_before_def, extract_def_use
+from ctac.analysis.model import DefinitionSite
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
     AnnotationCmd,
+    ApplyExpr,
     AssertCmd,
     AssignExpCmd,
     AssignHavocCmd,
     AssumeExpCmd,
+    ConstExpr,
     JumpCmd,
     JumpiCmd,
     LabelCmd,
     RawCmd,
+    SymbolRef,
     TacCmd,
+    TacExpr,
 )
 from ctac.graph import Cfg
 from ctac.ir.models import TacBlock, TacProgram
@@ -50,6 +55,9 @@ _SUPPORTED_CMD_TYPES = (
     LabelCmd,
 )
 
+_INLINE_LINEAR_OPS = frozenset({"Add", "Sub", "IntAdd", "IntSub"})
+_INLINE_LINEAR_SCALE_OPS = frozenset({"Mul", "IntMul"})
+
 
 @dataclass
 class SeaEncoder(SmtEncoder):
@@ -80,6 +88,11 @@ class SeaEncoder(SmtEncoder):
         entry = program.blocks[0].id
         dynamic_points = {(row.block_id, row.cmd_index) for row in dsa.dynamic_assignments}
         symbol_sorts = _canonical_symbol_sorts(ctx.tac_file.symbol_sorts)
+        inline_symbols_by_point = (
+            _inline_static_symbols_by_point(program, du.definitions, dynamic_points, symbol_sorts)
+            if ctx.inline_scalars
+            else {}
+        )
         vc = VCBuilder(
             VCConfig(
                 produce_unsat_cores=ctx.unsat_core,
@@ -96,6 +109,12 @@ class SeaEncoder(SmtEncoder):
             )
         )
         aliases = _define_reachability_aliases(vc, program, symbol_sorts, entry)
+        aliases.update(
+            {
+                name: term(name, _sort_for(symbol_sorts=symbol_sorts, name=name))
+                for name in inline_symbols_by_point.values()
+            }
+        )
         expr = TacExprLowerer(vc, symbol_sorts, symbol_aliases=aliases)
 
         self._emit_static_blocks(
@@ -104,6 +123,7 @@ class SeaEncoder(SmtEncoder):
             program,
             entry,
             dynamic_points,
+            frozenset(inline_symbols_by_point),
         )
         if dsa.dynamic_assignments:
             vc.section("dynamic assignments")
@@ -130,8 +150,6 @@ class SeaEncoder(SmtEncoder):
             unsupported.append("--bv-add-sub-mod-axiom")
         if ctx.store_reduce:
             unsupported.append("--store-reduce")
-        if ctx.inline_scalars:
-            unsupported.append("--inline-scalars")
         if unsupported:
             raise SmtEncodingError(
                 f"encoding 'sea' does not support {', '.join(unsupported)} yet"
@@ -157,6 +175,7 @@ class SeaEncoder(SmtEncoder):
         program: TacProgram,
         entry: str,
         dynamic_points: set[tuple[str, int]],
+        inline_points: frozenset[tuple[str, int]],
     ) -> None:
         for block in Cfg(program).ordered_blocks():
             guard = _block_guard_term(vc, block.id, entry)
@@ -193,6 +212,7 @@ class SeaEncoder(SmtEncoder):
                             expr,
                             cmd,
                             block.id,
+                            inline=(block.id, i) in inline_points,
                         )
                     i += 1
 
@@ -203,6 +223,8 @@ class SeaEncoder(SmtEncoder):
         expr: TacExprLowerer,
         cmd: TacCmd,
         block_id: str,
+        *,
+        inline: bool = False,
     ) -> None:
         if isinstance(cmd, AssignExpCmd):
             lhs_name = _canon(cmd.lhs)
@@ -210,12 +232,13 @@ class SeaEncoder(SmtEncoder):
                 _emit_map_def(vc, expr, cmd)
                 return
             lhs = vc.const(lhs_name, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs_name))
-            rhs = expr.lower_scalar(cmd.rhs)
+            rhs = expr.lower_scalar(_peel_narrow(cmd.rhs) if inline else cmd.rhs)
             expr.require_assignment_sort(lhs, rhs, cmd.rhs)
             builder.def_(
                 lhs,
                 rhs,
                 name=vc.auto_name("def", lhs.text),
+                inline=inline,
                 placement=FactPlacement.ELIGIBLE_GLOBAL,
             )
         elif isinstance(cmd, AssignHavocCmd):
@@ -389,6 +412,65 @@ def _block_guard_term(vc: VCBuilder, block_id: str, entry: str) -> Term:
 def _emit_map_def(vc: VCBuilder, expr: TacExprLowerer, cmd: AssignExpCmd) -> None:
     lhs = _canon(cmd.lhs)
     vc.bytemap.define(lhs, lambda idx: _lower_map_body(expr, cmd.rhs, idx, lhs))
+
+
+def _inline_static_symbols_by_point(
+    program: TacProgram,
+    definitions: tuple[DefinitionSite, ...],
+    dynamic_points: set[tuple[str, int]],
+    symbol_sorts: dict[str, str],
+) -> dict[tuple[str, int], str]:
+    jumpi_conditions = {
+        _canon(cmd.condition)
+        for block in program.blocks
+        for cmd in block.commands
+        if isinstance(cmd, JumpiCmd)
+    }
+    by_id = program.block_by_id()
+    out: dict[tuple[str, int], str] = {}
+    for site in definitions:
+        point = (site.block_id, site.cmd_index)
+        if point in dynamic_points:
+            continue
+        if site.symbol in jumpi_conditions:
+            continue
+        if _is_map(symbol_sorts, site.symbol):
+            continue
+        if _sort_for(symbol_sorts=symbol_sorts, name=site.symbol) is not Int:
+            continue
+        cmd = by_id[site.block_id].commands[site.cmd_index]
+        if not isinstance(cmd, AssignExpCmd):
+            continue
+        if _is_inlinable_rhs(cmd.rhs):
+            out[point] = site.symbol
+    return out
+
+
+def _peel_narrow(expr: TacExpr) -> TacExpr:
+    while (
+        isinstance(expr, ApplyExpr)
+        and expr.op == "Apply"
+        and len(expr.args) == 2
+        and isinstance(expr.args[0], SymbolRef)
+        and expr.args[0].name.startswith("safe_math_narrow_bv")
+        and expr.args[0].name.endswith(":bif")
+    ):
+        expr = expr.args[1]
+    return expr
+
+
+def _is_inlinable_rhs(expr: TacExpr) -> bool:
+    expr = _peel_narrow(expr)
+    if isinstance(expr, SymbolRef):
+        return True
+    if isinstance(expr, ConstExpr):
+        return expr.value.strip() not in {"true", "false"}
+    if isinstance(expr, ApplyExpr) and len(expr.args) == 2:
+        if expr.op in _INLINE_LINEAR_OPS or expr.op in _INLINE_LINEAR_SCALE_OPS:
+            return any(isinstance(arg, ConstExpr) for arg in expr.args) and all(
+                isinstance(arg, (ConstExpr, SymbolRef)) for arg in expr.args
+            )
+    return False
 
 
 def _havoc_range_event(block: TacBlock, index: int) -> tuple[AssignHavocCmd, int, int] | None:
