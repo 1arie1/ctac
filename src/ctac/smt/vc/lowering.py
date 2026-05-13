@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from ctac.smt.vc.config import FactKind
@@ -14,6 +15,7 @@ class LeinoEdge:
     source: str
     target: str
     condition: Term
+    premises: tuple[Term, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -21,7 +23,7 @@ class LeinoLowerer:
     entry_block: str
     edges: tuple[LeinoEdge, ...] = ()
     premise_kinds: frozenset[FactKind] = frozenset(
-        {FactKind.DEF, FactKind.ASSUME, FactKind.RANGE}
+        {FactKind.DEF, FactKind.ASSUME, FactKind.RANGE, FactKind.LEMMA}
     )
     consequent_kinds: frozenset[FactKind] = frozenset({FactKind.ASSERT})
     ok_prefix: str = "OK_"
@@ -29,7 +31,7 @@ class LeinoLowerer:
     def lower(self, builder: Any) -> tuple[Assertion, ...]:
         block_order = self._block_order(builder)
         ok_by_block = {
-            block: builder.const(f"{self.ok_prefix}{block}", Bool) for block in block_order
+            block: builder.const(self._ok_name(block), Bool) for block in block_order
         }
         facts_by_block: dict[str, list[Any]] = defaultdict(list)
         passthrough: list[Assertion] = []
@@ -49,7 +51,12 @@ class LeinoLowerer:
             premises = [f.term for f in facts if f.kind in self.premise_kinds]
             consequents = [f.term for f in facts if f.kind in self.consequent_kinds]
             for edge in edges_by_source.get(block, ()):
-                consequents.append(implies(edge.condition, ok_by_block[edge.target]))
+                consequents.append(
+                    implies(
+                        self._edge_premise(edge),
+                        ok_by_block[edge.target],
+                    )
+                )
             body = self._block_body(premises, consequents)
             assertions.append(
                 Assertion(
@@ -84,6 +91,14 @@ class LeinoLowerer:
             return consequent
         return implies(and_(*premises), consequent)
 
+    def _edge_premise(self, edge: LeinoEdge) -> Term:
+        if edge.premises:
+            return and_(edge.condition, *edge.premises)
+        return edge.condition
+
+    def _ok_name(self, block: str) -> str:
+        return f"{self.ok_prefix}{_sanitize_name(block)}"
+
     def _assertion_from_fact(self, fact: Any) -> Assertion:
         return Assertion(
             fact.term,
@@ -92,3 +107,12 @@ class LeinoLowerer:
             comment=fact.comment,
             origin=fact.origin,
         )
+
+
+def _sanitize_name(raw: str) -> str:
+    out = re.sub(r"[^A-Za-z0-9_]", "_", raw)
+    if not out:
+        return "_"
+    if out[0].isdigit():
+        return "_" + out
+    return out
