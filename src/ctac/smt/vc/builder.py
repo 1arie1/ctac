@@ -520,7 +520,11 @@ class VCBuilder:
                 self.require_lemma_def(lemma)
                 args = lemma.instance_args(call)
                 phi = app(lemma.name, args, Bool)
-                if cfg.lemma_scope in {"callsite", "none"}:
+                placement = FactPlacement.GLOBAL
+                if self.config.guard_axioms and lemma.guardable:
+                    scope = call.scope
+                    placement = FactPlacement.SCOPED
+                elif cfg.lemma_scope in {"callsite", "none"}:
                     scope = None
                 else:
                     raise ValueError(f"unknown lemma_scope {cfg.lemma_scope!r}")
@@ -531,7 +535,7 @@ class VCBuilder:
                         scope=scope,
                         name=self.lemma_instance_name(lemma.name, call),
                         origin="lemma-instance",
-                        placement=FactPlacement.GLOBAL,
+                        placement=placement,
                         block=call.block,
                         stmt_id=call.stmt_id,
                     )

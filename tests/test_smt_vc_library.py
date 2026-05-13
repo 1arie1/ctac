@@ -588,6 +588,30 @@ def test_bv256_opaque_ops_use_uf_declarations() -> None:
     assert "(assert (lemma_bv256_or_bool X Y))" in text
 
 
+def test_guard_axioms_scopes_non_range_lemmas_only() -> None:
+    vc = VCBuilder(VCConfig(check_sat=False, guard_axioms=True))
+    x = vc.const("X", Int)
+    y = vc.const("Y", Int)
+    a = vc.const("A", Int)
+    n = vc.const("N", Int)
+    r = vc.const("R", Int)
+    m0 = vc.bytemap.havoc("M0")
+
+    with vc.block("mid") as b:
+        b.def_(a, vc.ops.bv256.and_(x, y))
+        b.def_(n, vc.ops.narrow.bv256(x))
+        b.def_(r, vc.bytemap.select(m0, x))
+
+    text = render_vc_script(vc.script())
+
+    assert "(assert (=> BLK_mid (lemma_bv256_and_bool X Y)))" in text
+    assert "(assert (lemma_bv256_and_bool X Y))" not in text
+    assert "(assert (lemma_narrow_bv256_range N))" in text
+    assert "(assert (=> BLK_mid (lemma_narrow_bv256_range N)))" not in text
+    assert "(assert (int.in_bv256 R))" in text
+    assert "(assert (=> BLK_mid (int.in_bv256 R)))" not in text
+
+
 def test_bv256_constant_shift_and_mask_ops_use_readable_define_funs() -> None:
     vc = VCBuilder(VCConfig(check_sat=False))
     x = vc.const("X", Int)

@@ -158,6 +158,7 @@ class CallSite:
 class LemmaSchema:
     name: str
     params: tuple[tuple[str, object], ...]
+    guardable: bool = True
 
     def body(self, vc: _Builder, params: tuple[Term, ...]) -> Term:
         raise NotImplementedError
@@ -316,6 +317,7 @@ class IntCeilDivOp(OpModel):
 # N-bit range: 0 <= r <= 2^N - 1.
 class NarrowRangeLemma(LemmaSchema):
     params = ((_R, Int),)
+    guardable = False
 
     def __init__(self, width: int) -> None:
         self.width = width

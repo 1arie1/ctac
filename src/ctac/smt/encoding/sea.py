@@ -85,6 +85,7 @@ class SeaEncoder(SmtEncoder):
                 produce_unsat_cores=ctx.unsat_core,
                 globalize_eligible_facts=not ctx.guard_statics,
                 annotate_with_cmds=ctx.annotate_with_cmds,
+                guard_axioms=ctx.guard_axioms,
                 assertion_policy=AssertionPolicy(
                     grouped_kinds=(
                         frozenset({FactKind.DEF, FactKind.ASSUME, FactKind.RANGE})
@@ -123,8 +124,6 @@ class SeaEncoder(SmtEncoder):
         unsupported: list[str] = []
         if ctx.tight_logic:
             unsupported.append("--tight-logic")
-        if ctx.guard_axioms:
-            unsupported.append("--guard-axioms")
         if ctx.narrow_range:
             unsupported.append("--narrow-range")
         if ctx.bv_add_sub_axiom != "no-mod":
