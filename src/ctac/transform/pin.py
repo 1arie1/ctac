@@ -88,16 +88,19 @@ def _build_definition_map(program: TacProgram) -> dict[str, TacExpr]:
     Only ``AssignExpCmd`` defs are recorded — havocs are unconstrained
     and the static evaluator treats them as unknown via absence.
 
-    If the same canonical variable is defined more than once (which
-    violates DSA but can happen in malformed inputs), the *last*
-    definition wins.
+    Multiple ``AssignExpCmd`` defs sharing one canonical name are a
+    DSA-merge encoding (mutually-exclusive predecessors each write the
+    join value via parallel assignment). Folding to any one def would
+    be path-insensitive — the static evaluator would pick a value
+    that doesn't reflect the predecessor actually taken. Such names
+    are omitted; the evaluator treats them as unknown.
     """
-    out: dict[str, TacExpr] = {}
+    by_canon: dict[str, list[TacExpr]] = {}
     for b in program.blocks:
         for cmd in b.commands:
             if isinstance(cmd, AssignExpCmd):
-                out[_canon(cmd.lhs)] = cmd.rhs
-    return out
+                by_canon.setdefault(_canon(cmd.lhs), []).append(cmd.rhs)
+    return {k: rhss[0] for k, rhss in by_canon.items() if len(rhss) == 1}
 
 
 def _build_def_block_map(program: TacProgram) -> dict[str, frozenset[BlockId]]:

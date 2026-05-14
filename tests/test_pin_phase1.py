@@ -9,6 +9,7 @@ from __future__ import annotations
 from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef
 from ctac.parse import parse_string
 from ctac.transform.pin import (
+    _build_definition_map,
     compute_dead_blocks,
     static_eval_bool,
     validate_plan_against,
@@ -239,6 +240,79 @@ def test_compute_dead_blocks_rc_cascade():
     res = compute_dead_blocks(tac.program, ["a"], {})
     assert "a" in res.dead
     assert "aside" in res.dead
+
+
+def test_build_definition_map_drops_dsa_merge_writes():
+    """Multiple AssignExpCmds sharing one canonical name (DSA-merge /
+    parallel-assignment encoding) are omitted from the def map —
+    folding any one of them would be path-insensitive."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [m] {\n"
+            "\t\tAssignExpCmd B1 true\n"
+            "\t\tJumpCmd m\n"
+            "\t}\n"
+            "\tBlock b Succ [m] {\n"
+            "\t\tAssignExpCmd B1 false\n"
+            "\t\tJumpCmd m\n"
+            "\t}\n"
+            "\tBlock m Succ [exit] {\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="B0:bool\n\tB1:bool",
+        ),
+        path="<s>",
+    )
+    defs = _build_definition_map(tac.program)
+    assert "B1" not in defs
+
+
+def test_compute_dead_blocks_does_not_fold_jumpi_on_merge_def():
+    """Regression: cascade must not fold a JumpiCmd through a variable
+    whose canonical name has multiple AssignExpCmd defs (DSA-merge).
+    Picking any one def would unsoundly kill an edge that's feasible
+    under the other defs."""
+    tac = parse_string(
+        _wrap(
+            # e -> if B0 then a else b ; a/b -> m ; m -> if B1 then x else y
+            # B1 is set differently in a and b (DSA-merge into m).
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [m] {\n"
+            "\t\tAssignExpCmd B1 true\n"
+            "\t\tJumpCmd m\n"
+            "\t}\n"
+            "\tBlock b Succ [m] {\n"
+            "\t\tAssignExpCmd B1 false\n"
+            "\t\tJumpCmd m\n"
+            "\t}\n"
+            "\tBlock m Succ [x, y] {\n"
+            "\t\tJumpiCmd x y B1\n"
+            "\t}\n"
+            "\tBlock x Succ [exit] {\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock y Succ [exit] {\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n",
+            syms="B0:bool\n\tB1:bool",
+        ),
+        path="<s>",
+    )
+    # No drops, no binds: every block is on some entry-to-exit path.
+    # The bug would resolve B1 to one def and kill either m->x or m->y.
+    res = compute_dead_blocks(tac.program, [], {})
+    assert res.dead == frozenset()
 
 
 def test_compute_dead_blocks_iteration_count():
