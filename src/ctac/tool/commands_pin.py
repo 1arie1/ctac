@@ -35,6 +35,7 @@ from ctac.transform.pin import (
     parse_assume_range,
 )
 from ctac.transform.pin import enumerate as pin_enumerate
+from ctac.transform.pin_path import choose_random_path, drop_set_for_path
 from ctac.transform.pin_manifest import (
     MANIFEST_FILENAME,
     read_manifest,
@@ -46,9 +47,10 @@ from ctac.transform.pin_manifest import (
 _PIN_EPILOG = (
     "[bold green]What it does[/bold green]  Specialize a TAC by [cyan]"
     "--drop[/cyan] (remove blocks from the CFG with cleanup), "
-    "[cyan]--bind[/cyan] (substitute a variable to a constant), and "
+    "[cyan]--bind[/cyan] (substitute a variable to a constant), "
     "[cyan]--split[/cyan] (enumerate cases where each split block "
-    "keeps exactly one predecessor).\n\n"
+    "keeps exactly one predecessor), or [cyan]--path[/cyan] (sample "
+    "one random linear path through the given anchor blocks).\n\n"
     "[bold green]Output[/bold green]  Without [cyan]--split[/cyan], "
     "writes a single [cyan].tac[/cyan]. With [cyan]--split[/cyan], "
     "writes one [cyan].tac[/cyan] per case plus a [cyan]manifest.json"
@@ -61,13 +63,16 @@ _PIN_EPILOG = (
     "[cyan]ctac pin f.tac --drop BLK_a -o out.tac --plain[/cyan]\n\n"
     "[cyan]ctac pin f.tac --bind B987=false -o out.tac --plain[/cyan]\n\n"
     "[cyan]ctac pin f.tac --split BLK_J -o out/ --plain[/cyan]\n\n"
+    "[cyan]ctac pin f.tac --path BLK_A,BLK_B --seed 0 -o p.tac --plain[/cyan]\n\n"
     "[cyan]ctac pin out/ --plain[/cyan]"
     "  [dim]# show manifest summary[/dim]\n\n"
     "[bold green]Notes[/bold green]\n\n"
     "[cyan]--drop[/cyan] / [cyan]--bind[/cyan] / [cyan]--split[/cyan] "
-    "are repeatable; [cyan]--drop[/cyan] and [cyan]--split[/cyan] each "
-    "accept a comma-separated list. [cyan]--bind RC_*[/cyan] is rejected "
-    "(use [cyan]--drop[/cyan] on the corresponding block instead).\n\n"
+    "/ [cyan]--path[/cyan] are repeatable; the comma-separated forms "
+    "compose with the repeatable form. [cyan]--bind RC_*[/cyan] is "
+    "rejected (use [cyan]--drop[/cyan] on the corresponding block "
+    "instead). [cyan]--path[/cyan] and [cyan]--split[/cyan] are "
+    "mutually exclusive.\n\n"
     "[cyan]--trace[/cyan] writes per-decision JSONL events for "
     "debugging."
 )
@@ -161,6 +166,31 @@ def pin_cmd(
             ),
         ),
     ] = None,
+    path_anchors: Annotated[
+        list[str],
+        typer.Option(
+            "--path",
+            help=(
+                "Anchor block(s) that the pinned path must visit. "
+                "Comma-separated; repeatable. Auto-topologically sorted "
+                "against the CFG. Pin samples one linear path through "
+                "all anchors (uniform over feasible successors at each "
+                "branch) and drops the off-path blocks. Mutually "
+                "exclusive with --split. Combine with --seed N for "
+                "reproducible sampling."
+            ),
+        ),
+    ] = None,
+    seed: Annotated[
+        Optional[int],
+        typer.Option(
+            "--seed",
+            help=(
+                "RNG seed for --path random-path sampling. Default: "
+                "non-deterministic."
+            ),
+        ),
+    ] = None,
     assume_range: Annotated[
         list[str],
         typer.Option(
@@ -235,10 +265,22 @@ def pin_cmd(
     drop = drop or []
     bind = bind or []
     split = split or []
+    path_anchors = path_anchors or []
     assume_range = assume_range or []
 
     drops = _split_csv(drop)
     splits = _split_csv(split)
+    path_anchor_ids = _split_csv(path_anchors)
+
+    if path_anchor_ids and splits:
+        c.print(
+            "error: --path and --split are mutually exclusive"
+            if plain
+            else "[red]error:[/red] [cyan]--path[/cyan] and "
+            "[cyan]--split[/cyan] are mutually exclusive",
+            markup=not plain,
+        )
+        raise typer.Exit(2)
     try:
         binds = tuple(_parse_bind(s) for s in bind)
     except typer.BadParameter as e:
@@ -295,6 +337,32 @@ def pin_cmd(
 
     for w in resolved.warnings:
         c.print(f"# input warning: {w}", markup=False)
+
+    chosen_path: tuple[str, ...] = ()
+    if path_anchor_ids:
+        try:
+            chosen_path = choose_random_path(
+                tac.program, path_anchor_ids, seed=seed,
+            )
+        except ValueError as e:
+            c.print(
+                f"error: {e}" if plain else f"[red]error:[/red] {e}",
+                markup=not plain,
+            )
+            raise typer.Exit(2) from e
+        off_path = drop_set_for_path(tac.program, chosen_path)
+        seen = set(drops)
+        merged = list(drops)
+        for b in off_path:
+            if b not in seen:
+                seen.add(b)
+                merged.append(b)
+        drops = tuple(merged)
+        c.print(
+            f"# random path ({len(chosen_path)} blocks): "
+            + " -> ".join(chosen_path),
+            markup=False,
+        )
 
     plan = PinPlan(
         drops=drops,

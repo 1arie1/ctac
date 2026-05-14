@@ -133,6 +133,88 @@ def test_pin_rejects_unknown_drop(tmp_path):
     assert result.exit_code != 0
 
 
+def test_pin_path_anchor_writes_single_path_tac(tmp_path):
+    """--path on the rich fixture forces a known unique path
+    (anchor `b` => entry/e -> b -> exit; a/c/d dropped)."""
+    src = tmp_path / "rich.tac"
+    src.write_text(
+        """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tB0:bool
+\tB1:bool
+}
+Program {
+\tBlock e Succ [a, b] {
+\t\tJumpiCmd a b B0
+\t}
+\tBlock a Succ [c, d] {
+\t\tJumpiCmd c d B1
+\t}
+\tBlock b Succ [exit] {
+\t\tJumpCmd exit
+\t}
+\tBlock c Succ [exit] {
+\t\tJumpCmd exit
+\t}
+\tBlock d Succ [exit] {
+\t\tJumpCmd exit
+\t}
+\tBlock exit Succ [] {
+\t\tNoSuchCmd
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    )
+    out = tmp_path / "path.tac"
+    result = runner.invoke(
+        app,
+        ["pin", str(src), "--path", "b", "--seed", "0",
+         "-o", str(out), "--plain"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert out.is_file()
+    body = out.read_text()
+    # b is on-path; a/c/d are off-path and must be dropped.
+    assert "Block b " in body
+    assert "Block a " not in body
+    assert "Block c " not in body
+    assert "Block d " not in body
+
+
+def test_pin_path_and_split_mutually_exclusive(tmp_path):
+    src = _write_tac(tmp_path)
+    result = runner.invoke(
+        app,
+        ["pin", str(src), "--path", "a", "--split", "b",
+         "-o", str(tmp_path / "out"), "--plain"],
+    )
+    assert result.exit_code != 0
+    out = (result.stdout or "") + (result.stderr or "")
+    assert "mutually exclusive" in out
+
+
+def test_pin_path_unknown_anchor_rejected(tmp_path):
+    src = _write_tac(tmp_path)
+    result = runner.invoke(
+        app,
+        ["pin", str(src), "--path", "nope",
+         "-o", str(tmp_path / "out.tac"), "--plain"],
+    )
+    assert result.exit_code != 0
+    out = (result.stdout or "") + (result.stderr or "")
+    assert "not in program" in out
+
+
 def test_pin_split_writes_directory_with_manifest(tmp_path):
     """Split case: writes a directory with one .tac per case + manifest.json."""
     src = tmp_path / "test.tac"
