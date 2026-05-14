@@ -794,7 +794,10 @@ def _drop_cfg_surgery(
             new_blocks.append(b)
             continue
 
-        new_jump = JumpCmd(raw="", target=keep_target)
+        # canonicalize_cmd unparses the AST into a non-empty raw line;
+        # render_program writes this verbatim, so leaving raw="" would
+        # serialize as a blank line and re-parse as an empty RawCmd.
+        new_jump = canonicalize_cmd(JumpCmd(raw="", target=keep_target))
         new_cmds = list(b.commands[:-1]) + [new_jump]
         new_blocks.append(
             TacBlock(

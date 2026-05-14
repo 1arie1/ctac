@@ -133,6 +133,54 @@ def test_drop_surgery_jumpi_with_dead_then_target():
     assert e.successors == ["b"]
     assert isinstance(e.commands[-1], JumpCmd)
     assert e.commands[-1].target == "b"
+    # Folded JumpCmd must carry a non-empty raw so render_program
+    # emits a real "JumpCmd b" line; an empty raw would serialize as
+    # a blank line and re-parse as an empty RawCmd, which the sea
+    # encoder rejects.
+    assert e.commands[-1].raw.strip() != ""
+
+
+def test_drop_surgery_folded_jumpi_survives_round_trip():
+    """Regression: ``ctac smt --encoding sea`` rejected pin output
+    because the folded JumpCmd had ``raw=""``. ``render_program``
+    serialized it as a blank line and ``parse_string`` re-parsed
+    that blank line as an empty ``RawCmd``."""
+    from ctac.ast.nodes import RawCmd
+    from ctac.parse.tac_file import render_program
+
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [exit] {\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock b Succ [exit] {\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n"
+        ),
+        path="<s>",
+    )
+    out = _drop_cfg_surgery(tac.program, frozenset({"a"}), {}, {})
+    rendered = render_program(out)
+    # The folded JumpCmd line must be present (not just whitespace).
+    assert "JumpCmd b" in rendered
+    # Round-trip: re-parse the rendered program and confirm no
+    # empty RawCmds slipped in.
+    full = _wrap("")  # symbol table + empty program + axioms + metas
+    # Replace the empty Program block with the rendered one.
+    full = full.replace("Program {\n\n}", rendered)
+    tac2 = parse_string(full, path="<s>")
+    for block in tac2.program.blocks:
+        for cmd in block.commands:
+            if isinstance(cmd, RawCmd) and cmd.raw.strip() == "":
+                raise AssertionError(
+                    f"empty RawCmd in block {block.id!r}: {cmd!r}"
+                )
 
 
 def test_drop_surgery_jumpi_with_constant_condition():
