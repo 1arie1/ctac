@@ -177,7 +177,7 @@ def smt_cmd(
             "the block-reachability variables of the trigger sites: "
             "`(=> (or BLK_b1 BLK_b2 ...) <axiom>)`. Covers the "
             "expensive UF axioms (bv256_xor, int_ceil_div, "
-            "int_mul_div). Memory bv256-range axioms on leaf "
+            "int.muldiv). Memory bv256-range axioms on leaf "
             "bytemap UFs stay unguarded (generic and cheap). "
             "Entry-block-only triggers stay bare (guard is `true`). "
             "Default emits each UF axiom unconditionally."

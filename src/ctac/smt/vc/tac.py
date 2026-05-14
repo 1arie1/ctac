@@ -221,6 +221,13 @@ class TacExprLowerer:
             if len(args) != 1:
                 self.unsupported(expr, "LNot expects one arg")
             return not_(self.lower_bool(args[0]))
+        if op == "IntMulDiv":
+            if len(args) != 3:
+                self.unsupported(expr, "IntMulDiv expects three args")
+            a = self.lower_int(args[0])
+            b = self.lower_int(args[1])
+            c = self.lower_int(args[2])
+            return self.vc.ops.int_mul_div(a, b, c)
         if len(args) != 2:
             self.unsupported(expr, f"{op} expects two args")
         a = self.lower_int(args[0])

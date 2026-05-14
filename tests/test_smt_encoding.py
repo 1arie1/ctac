@@ -1208,6 +1208,36 @@ Metas {
 }
 """
 
+TAC_INT_MUL_DIV = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\ta:int
+\tb:int
+\tc:int
+\tq:int
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignExpCmd a 0x20(int)
+\t\tAssignExpCmd b 0x4(int)
+\t\tAssignExpCmd c 0x3(int)
+\t\tAssignExpCmd q IntMulDiv(a b c)
+\t\tAssignExpCmd ok true
+\t\tAssertCmd ok "muldiv"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
 
 def test_bv_add_sub_axiom_default_is_no_mod() -> None:
     # Default emits single-wrap ITE for Add and Sub.
@@ -1224,6 +1254,15 @@ def test_bv_add_sub_axiom_default_is_no_mod() -> None:
     # Legacy mod-form for Add/Sub must NOT appear.
     assert "(mod (+ " not in rendered
     assert "(mod (- " not in rendered
+
+
+def test_sea_int_mul_div_lowers_three_arg_tac_operator() -> None:
+    tac = parse_string(TAC_INT_MUL_DIV, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea"))
+
+    assert "(declare-fun int.muldiv (Int Int Int) Int)" in rendered
+    assert "(assert (= q (int.muldiv a b c)))" in rendered
+    assert "(assert (lemma_int_mul_div_bounds a b c q))" in rendered
 
 
 def test_bv_add_sub_axiom_mod_emits_legacy_form() -> None:

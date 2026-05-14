@@ -396,15 +396,15 @@ def test_uf_operation_records_callsite_binds_direct_result_and_instantiates_lemm
     r = vc.const("R", Int)
 
     with vc.block("math") as block:
-        with vc.stmt("3", "R = int.mul_div(A, B, C)"):
+        with vc.stmt("3", "R = int.muldiv(A, B, C)"):
             rhs = vc.ops.int_mul_div(a, b_term, c)
             block.def_(r, rhs)
 
     text = render_vc_script(vc.script())
 
-    assert "(declare-fun int_mul_div (Int Int Int) Int)" in text
+    assert "(declare-fun int.muldiv (Int Int Int) Int)" in text
     assert "(define-fun lemma_int_mul_div_bounds ((a Int) (b Int) (c Int) (r Int)) Bool" in text
-    assert "(assert (=> BLK_math (= R (int_mul_div A B C))))" in text
+    assert "(assert (=> BLK_math (= R (int.muldiv A B C))))" in text
     assert "(assert (lemma_int_mul_div_bounds A B C R))" in text
     assert len(vc.call_sites) == 1
     assert vc.call_sites[0].bound_result == r
@@ -429,7 +429,7 @@ def test_nested_uf_calls_are_tracked_without_incorrect_result_binding() -> None:
     assert len(vc.call_sites) == 2
     assert vc.call_sites[0].bound_result is None
     assert vc.call_sites[1].bound_result is None
-    assert "(assert (lemma_int_mul_div_bounds A B C (int_mul_div A B C)))" in text
+    assert "(assert (lemma_int_mul_div_bounds A B C (int.muldiv A B C)))" in text
     assert "(assert (lemma_int_ceil_div_bounds D E (int_ceil_div D E)))" in text
 
 
@@ -438,7 +438,7 @@ def test_operation_models_can_be_swapped_to_inline_or_define_fun() -> None:
         VCConfig(
             check_sat=False,
             op_models={
-                "int.mul_div": OpConfig(
+                "int.muldiv": OpConfig(
                     mode=OpMode.INLINE,
                     instantiate_lemmas=False,
                 )
@@ -453,13 +453,13 @@ def test_operation_models_can_be_swapped_to_inline_or_define_fun() -> None:
         block.def_(r, inline_vc.ops.int_mul_div(a, b, c))
     inline_text = render_vc_script(inline_vc.script())
     assert "(= R (div (* A B) C))" in inline_text
-    assert "int_mul_div" not in inline_text
+    assert "int.muldiv" not in inline_text
 
     define_vc = VCBuilder(
         VCConfig(
             check_sat=False,
             op_models={
-                "int.mul_div": OpConfig(
+                "int.muldiv": OpConfig(
                     mode=OpMode.DEFINE_FUN,
                     instantiate_lemmas=False,
                 )
@@ -473,8 +473,8 @@ def test_operation_models_can_be_swapped_to_inline_or_define_fun() -> None:
     with define_vc.block("math") as block:
         block.def_(r, define_vc.ops.int_mul_div(a, b, c))
     define_text = render_vc_script(define_vc.script())
-    assert "(define-fun int_mul_div ((a Int) (b Int) (c Int)) Int" in define_text
-    assert "(assert (=> BLK_math (= R (int_mul_div A B C))))" in define_text
+    assert "(define-fun int.muldiv ((a Int) (b Int) (c Int)) Int" in define_text
+    assert "(assert (=> BLK_math (= R (int.muldiv A B C))))" in define_text
 
 
 def test_common_bv_ranges_use_readable_predicate_define_funs() -> None:

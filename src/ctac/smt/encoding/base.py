@@ -44,7 +44,7 @@ class EncoderContext:
     axiom whose triggers all live in the entry block stays bare (the
     entry guard is ``true``). Covers the expensive per-application
     UF axioms (``bv256_xor_axiom``, ``int_ceil_div_axiom``,
-    ``int_mul_div_axiom``). The bv256-range axioms on leaf bytemap
+    ``int.muldiv`` bounds). The bv256-range axioms on leaf bytemap
     UFs are deliberately *not* guarded — they are generic, cheap,
     and always sound to assert. Default False emits each UF axiom
     unconditionally. The guarded form is sound (the unguarded
@@ -128,7 +128,7 @@ class EncoderContext:
 
     Specifically excluded: dynamic (DSA-merged) defs, havoc defs,
     map-store defs, ``Mul`` / ``Div`` / ``Mod`` between two non-const
-    operands, ``Ite``, deferred-axiom UFs (``int_mul_div``,
+    operands, ``Ite``, deferred-axiom UFs (``int.muldiv``,
     ``int_ceil_div``, ``bv256_xor``), arbitrary nested ``Apply`` calls
     other than ``safe_math_narrow``, and any expression whose
     operands aren't bare ``ConstExpr`` or ``SymbolRef`` — to keep

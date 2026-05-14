@@ -32,7 +32,7 @@ _LEMMA_BV256_RANGE = "bv256_range"
 
 
 class _OpName:
-    INT_MUL_DIV = "int.mul_div"
+    INT_MUL_DIV = "int.muldiv"
     INT_CEIL_DIV = "int.ceil_div"
     BV256_AND = "int.bv256_and"
     BV256_XOR = "int.bv256_xor"
@@ -44,7 +44,7 @@ class _OpName:
 
 
 class _SmtName:
-    INT_MUL_DIV = "int_mul_div"
+    INT_MUL_DIV = "int.muldiv"
     INT_CEIL_DIV = "int_ceil_div"
     BV256_ADD = "int.bv256_add"
     BV256_SUB = "int.bv256_sub"
@@ -188,7 +188,7 @@ class OpModel:
         raise NotImplementedError
 
 
-# Lemma: if c > 0 and r = int.mul_div(a, b, c), then r is the floor
+# Lemma: if c > 0 and r = int.muldiv(a, b, c), then r is the floor
 # quotient of a*b by c: c*r <= a*b < c*(r + 1).
 class IntMulDivBoundsLemma(LemmaSchema):
     name = _LemmaName.INT_MUL_DIV_BOUNDS
