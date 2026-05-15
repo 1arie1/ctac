@@ -150,6 +150,54 @@ def test_run_without_trail_falls_back_to_sentinel(tmp_path: Path) -> None:
     assert "sentinel_fallback=1" in res.output
 
 
+def test_file_inside_project_auto_discovers_trail(tmp_path: Path) -> None:
+    """Pass the friendly-name symlink for the original .tac (not the
+    project directory). Auto-discovery should walk up to ``.ctac/`` and
+    use the file's object-store SHA as the lineage anchor — the trail
+    parented to the rw'd object applies because base is its ancestor."""
+    src = tmp_path / "in.tac"
+    src.write_text(TRAIL_FIXTURE_TAC)
+    prj = tmp_path / "mytac"
+
+    runner = CliRunner()
+    res = runner.invoke(app, ["prj", "init", str(src), "-o", str(prj), "--plain"])
+    assert res.exit_code == 0, res.output
+    res = runner.invoke(app, ["rw", str(prj), "--plain"])
+    assert res.exit_code == 0, res.output
+
+    # The original .tac as a friendly-name symlink inside the project.
+    in_tac = prj / "in.tac"
+    assert in_tac.is_symlink()
+
+    model_path = tmp_path / "m.txt"
+    model_path.write_text("sat\n(\n  (define-fun X () Int 5)\n)\n")
+
+    res = runner.invoke(
+        app,
+        ["run", str(in_tac), "--model", str(model_path), "--plain"],
+    )
+    assert res.exit_code in (0, 2, 3), res.output
+    assert "trail:" in res.output
+    assert "trail_hits=1" in res.output
+
+
+def test_loose_file_outside_project_has_no_trail(tmp_path: Path) -> None:
+    """Sanity: a plain .tac file that's not a friendly-name symlink
+    inside a project doesn't trigger auto-discovery — only --trail
+    PATH or project-dir input do."""
+    src = tmp_path / "in.tac"
+    src.write_text(TRAIL_FIXTURE_TAC)
+    model_path = tmp_path / "m.txt"
+    model_path.write_text("sat\n(\n  (define-fun X () Int 5)\n)\n")
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        ["run", str(src), "--model", str(model_path), "--plain"],
+    )
+    assert "trail:" not in res.output
+
+
 def test_project_mode_auto_emits_and_consumes_trail(tmp_path: Path) -> None:
     """Project workflow: prj init + rw auto-emits the trail; run on
     the same project picks it up automatically without --trail."""

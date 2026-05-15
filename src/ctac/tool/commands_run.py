@@ -49,23 +49,26 @@ from ctac.project import Project
 from ctac.rewrite.trail import Trail
 
 
-def _discover_project_trail(project: Project) -> tuple[Trail | None, str | None]:
+def _discover_project_trail(
+    project: Project, anchor_sha: str | None = None
+) -> tuple[Trail | None, str | None]:
     """Compose every trail-kind object whose ancestor chain reaches
-    HEAD. Returns ``(None, None)`` when no such trail exists.
+    ``anchor_sha`` (defaults to HEAD). Returns ``(None, None)`` when
+    no such trail exists.
 
     A trail emitted after ``rw`` has parent = the rw'd object. So:
-    - HEAD = the rw'd object → the trail's direct parent matches HEAD;
+    - anchor = the rw'd object → the trail's direct parent matches;
       apply it.
-    - HEAD = the original .tac → walk parents of each trail; if HEAD
-      is among them (the rw'd object's ancestor chain), the trail
-      applies to the upstream replay.
+    - anchor = the original .tac → walk parents of each trail; if the
+      anchor is among them (the rw'd object's ancestor chain), the
+      trail applies to the upstream replay.
 
     Multiple rw steps each emit a trail; concatenation + Trail's
     transitive lookup compose them.
     """
     manifest = project.manifest
-    head_sha = manifest.head
-    if head_sha is None:
+    anchor = anchor_sha if anchor_sha is not None else manifest.head
+    if anchor is None:
         return None, None
 
     def _ancestors(start: str) -> set[str]:
@@ -87,11 +90,11 @@ def _discover_project_trail(project: Project) -> tuple[Trail | None, str | None]
     for sha, info in manifest.objects.items():
         if info.kind != "trail":
             continue
-        # The trail "applies" if HEAD is anywhere on its parents'
+        # The trail "applies" if the anchor is anywhere on its parents'
         # ancestor closure (or is itself one of the parents).
         applies = False
         for p in info.parents:
-            if p == head_sha or head_sha in _ancestors(p):
+            if p == anchor or anchor in _ancestors(p):
                 applies = True
                 break
         if not applies:
@@ -110,6 +113,41 @@ def _discover_project_trail(project: Project) -> tuple[Trail | None, str | None]
     if not composed.substitutions:
         return None, None
     return composed, ", ".join(matching_paths) if matching_paths else None
+
+
+def _find_owning_project(path: Path) -> tuple[Project, str | None] | None:
+    """When ``path`` is a file inside a project root, open the project
+    and return ``(project, sha)`` — sha being the file's object-store
+    SHA when the path is a friendly-name symlink, else ``None``.
+
+    Returns ``None`` if ``path``'s parent isn't a project root. We don't
+    walk further up — friendly-name symlinks live in the project root
+    by convention; a deeper file isn't a project member.
+    """
+    parent = path.parent
+    if not Project.is_project(parent):
+        return None
+    try:
+        prj = Project.open(parent)
+    except Exception:
+        return None
+    sha: str | None = None
+    try:
+        target = path.resolve()
+        # Friendly-name symlinks resolve to ``.ctac/objects/<aa>/<rest>``.
+        if target.parent.parent.name == "objects":
+            sha = target.parent.name + target.name
+            if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+                sha = None
+    except OSError:
+        sha = None
+    # Fall back to matching the basename against manifest.names.
+    if sha is None:
+        for s, info in prj.manifest.objects.items():
+            if path.name in info.names:
+                sha = s
+                break
+    return prj, sha
 
 
 _RUN_EPILOG = (
@@ -245,14 +283,21 @@ def run(
     c = console(plain)
     try:
         user_path, user_warnings = resolve_user_path(path)
+        run_project: Optional[Project] = None
+        # SHA to anchor trail lineage against. ``None`` => use HEAD.
+        run_project_anchor_sha: str | None = None
         if user_path.is_dir() and Project.is_project(user_path):
             resolved = resolve_project_or_tac(user_path)
             tac_path = resolved.tac_path
             input_warnings = resolved.warnings
-            run_project: Optional[Project] = resolved.project
+            run_project = resolved.project
+        elif user_path.is_file():
+            owning = _find_owning_project(user_path)
+            if owning is not None:
+                run_project, run_project_anchor_sha = owning
+            tac_path, input_warnings = resolve_tac_input_path(user_path)
         else:
             tac_path, input_warnings = resolve_tac_input_path(user_path)
-            run_project = None
         tac = parse_path(tac_path, weak_is_strong=weak_is_strong)
     except ParseError as e:
         if plain:
@@ -364,7 +409,9 @@ def run(
             c.print(f"[red]trail error:[/red] {e}" if not plain else f"trail error: {e}")
             raise typer.Exit(1) from e
     elif run_project is not None:
-        run_trail, trail_source = _discover_project_trail(run_project)
+        run_trail, trail_source = _discover_project_trail(
+            run_project, anchor_sha=run_project_anchor_sha
+        )
 
     def _ask(symbol: str, kind: str) -> Value:
         while True:
