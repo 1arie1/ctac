@@ -255,6 +255,7 @@ _KIND_SUFFIX = {
     "tac": ".tac",
     "htac": ".htac",
     "smt": ".smt2",
+    "trail": ".trail.json",
     "tac-set": ".tac",
     "htac-set": ".htac",
     "smt-set": ".smt2",

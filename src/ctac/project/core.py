@@ -576,6 +576,8 @@ def _ext_for_kind(kind: ObjectKind) -> str:
         return "htac"
     if kind == "smt" or kind == "smt-set":
         return "smt2"
+    if kind == "trail":
+        return "trail.json"
     return "bin"
 
 

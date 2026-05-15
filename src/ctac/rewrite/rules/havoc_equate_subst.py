@@ -184,6 +184,9 @@ def _rewrite_havoc_equate(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     # partner (e.g., the substituted form survives a re-walk).
     if canonical_symbol(expr.name) == x_canon and expr.name == x_canon:
         return None
+    # Record the substitution once per R (record_substitution is
+    # idempotent on the canonical var name).
+    ctx.record_substitution(canon_R, SymbolRef(x_canon), "HavocEquateSubst")
     return SymbolRef(x_canon)
 
 

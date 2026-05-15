@@ -28,6 +28,7 @@ from ctac.ast.nodes import (
 )
 from ctac.ast.pretty import RawPrettyPrinter
 from ctac.ir.models import TacBlock, TacProgram
+from ctac.rewrite.trail import Substitution
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.unparse import canonicalize_cmd
 
@@ -89,6 +90,9 @@ class RewriteResult:
     iterations: int = 0
     extra_symbols: tuple[tuple[str, str], ...] = field(default=())
     warnings: tuple[str, ...] = field(default=())
+    # Substitutions recorded by destructive rules (one entry per
+    # eliminated variable). Empty when no destructive rule fires.
+    substitutions: tuple["Substitution", ...] = field(default=())
 
     @property
     def total_hits(self) -> int:
@@ -276,6 +280,7 @@ def rewrite_program(
     current = program
     iteration = 0
     extra_symbols: list[tuple[str, str]] = []
+    all_substitutions: list[Substitution] = []
     fresh_counter = 0
     # One printer instance shared across all trace emissions; keeps
     # var-suffixes intact (`R832:61`) so the trace correlates byte-exact
@@ -378,9 +383,14 @@ def rewrite_program(
             new_blocks.append(replace(block, commands=new_cmds))
         current = TacProgram(blocks=new_blocks)
 
-        entry_pending, pos_pending, pending_syms, pending_skips, fresh_counter = (
-            ctx.drain_pending()
-        )
+        (
+            entry_pending,
+            pos_pending,
+            pending_syms,
+            pending_skips,
+            pending_subs,
+            fresh_counter,
+        ) = ctx.drain_pending()
         if entry_pending:
             current = _splice_into_entry_block(current, entry_pending)
             changed_this_iter = True
@@ -389,6 +399,10 @@ def rewrite_program(
             changed_this_iter = True
         if pending_syms:
             extra_symbols.extend(pending_syms)
+        for var, replacement, rule_name in pending_subs:
+            all_substitutions.append(
+                Substitution(var=var, replacement=replacement, rule=rule_name)
+            )
 
         if not changed_this_iter:
             break
@@ -400,4 +414,5 @@ def rewrite_program(
         iterations=iteration,
         extra_symbols=tuple(extra_symbols),
         warnings=tuple(ctx.warnings),
+        substitutions=tuple(all_substitutions),
     )

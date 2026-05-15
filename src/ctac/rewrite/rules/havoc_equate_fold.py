@@ -159,6 +159,11 @@ def _try_fold(
     for pos in constraint_positions:
         ctx.skip_cmd_at(*pos)
 
+    # Record the substitution for the rewrite trail. Model-replay on
+    # the original .tac uses this to recover R's value via mdl(X) at
+    # R's (now-gone-in-the-rewrite) havoc cmd.
+    ctx.record_substitution(canon_R, SymbolRef(canon_X), "HavocEquateFold")
+
     return new_cond
 
 

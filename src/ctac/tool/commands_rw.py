@@ -26,6 +26,7 @@ from dataclasses import replace
 
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.framework import RewriteResult, RuleHit, TraceEntry, TraceSink
+from ctac.rewrite.trail import Substitution, Trail, resolve_substitutions
 from ctac.rewrite.lift_dynamic_ite import lift_dynamic_ite_rhs
 from ctac.rewrite.materialize_assumes import materialize_assumes
 from ctac.rewrite.rules import (
@@ -50,7 +51,11 @@ from ctac.tool.cli_runtime import (
     console,
     plain_requested,
 )
-from ctac.tool.project_io import ingest_or_write_program, resolve_project_or_tac
+from ctac.tool.project_io import (
+    ingest_or_write_program,
+    ingest_or_write_text,
+    resolve_project_or_tac,
+)
 
 
 def _print_report(
@@ -79,6 +84,8 @@ def _print_report(
         line(f"  dce_removed: {dce_removed}")
         line(f"  commands_before: {total_cmds_before}")
         line(f"  commands_after: {total_cmds_after}")
+        if rewrite.substitutions:
+            line(f"  substitutions_recorded: {len(rewrite.substitutions)}")
         if lift_dynamic_ite_hits:
             line(f"  lifted_dynamic_ite: {lift_dynamic_ite_hits}")
         if materialize_hits:
@@ -149,6 +156,7 @@ def _merge_phases(*phases: RewriteResult) -> RewriteResult:
     all_counts: Counter[str] = Counter()
     all_extras: list[tuple[str, str]] = []
     all_warnings: list[str] = []
+    all_substitutions: list[Substitution] = []
     iterations = 0
     for p in phases:
         all_hits.extend(p.hits)
@@ -156,6 +164,7 @@ def _merge_phases(*phases: RewriteResult) -> RewriteResult:
             all_counts[name] += n
         all_extras.extend(p.extra_symbols)
         all_warnings.extend(p.warnings)
+        all_substitutions.extend(p.substitutions)
         iterations += p.iterations
     return RewriteResult(
         program=phases[-1].program,
@@ -164,6 +173,7 @@ def _merge_phases(*phases: RewriteResult) -> RewriteResult:
         iterations=iterations,
         extra_symbols=tuple(all_extras),
         warnings=tuple(all_warnings),
+        substitutions=tuple(all_substitutions),
     )
 
 
@@ -327,6 +337,21 @@ def rewrite_cmd(
                 "host_kind, host_lhs, path, rule, before, after}. Covers "
                 "rule-driven phases only — DCE, ITE-purification's "
                 "restructuring, and materialize-assumes don't appear."
+            ),
+        ),
+    ] = None,
+    trail: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--trail",
+            help=(
+                "Write a JSON rewrite-trail sidecar to PATH. Records each "
+                "havoc'd variable eliminated by HavocEquate{Fold,Subst} "
+                "with the surviving expression to use in its place. "
+                "Consumed by ``ctac run --trail`` so a SAT model from "
+                "``ctac smt`` on the rewritten TAC can be replayed against "
+                "the original .tac (otherwise eliminated havocs default "
+                "to the unconstrained-sentinel and trip range assumes)."
             ),
         ),
     ] = None,
@@ -592,6 +617,35 @@ def rewrite_cmd(
         kind="tac",
         advance_head=True,
     )
+
+    # Build the trail (substitutions over surviving vars).
+    resolved_subs = resolve_substitutions(
+        rw.substitutions,
+        original_program=tac.program,
+        rewritten_program=final_program,
+    )
+    trail_obj = Trail.from_substitutions(resolved_subs)
+    if trail is not None:
+        trail.parent.mkdir(parents=True, exist_ok=True)
+        trail.write_text(trail_obj.to_json())
+        if not report:
+            c.print(f"# wrote trail {trail}", markup=False)
+    elif resolved.project is not None and _info is not None:
+        # Project mode: auto-ingest the trail as a sibling object
+        # whose parent is the rw'd TAC. Emitting an empty trail keeps
+        # downstream tooling's "find the trail for this rw'd object"
+        # logic uniform (every rw step has exactly one trail).
+        _trail_written, _trail_info = ingest_or_write_text(
+            explicit_output=None,
+            project=resolved.project,
+            text=trail_obj.to_json(),
+            command="rw",
+            kind="trail",
+            advance_head=False,
+            parents=[_info.sha],
+        )
+        if _trail_written is not None and not report:
+            c.print(f"# wrote trail {_trail_written}", markup=False)
     if written_path is not None:
         if not report:
             c.print(f"# wrote {written_path}", markup=False)

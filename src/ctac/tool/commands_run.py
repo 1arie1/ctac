@@ -8,7 +8,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ctac.ast.highlight import highlight_tac_line
-from ctac.ast.nodes import AssignExpCmd, AssignHavocCmd
+from ctac.ast.nodes import ApplyExpr, AssignExpCmd, AssignHavocCmd, TacExpr
 from ctac.ast.run_format import (
     MODEL_HAVOC_FALLBACK_NUM,
     bytecode_addr_for_cmd,
@@ -20,7 +20,17 @@ from ctac.ast.run_format import (
     strip_meta_suffix,
     values_equal,
 )
-from ctac.eval import MemoryModel, RunConfig, Value, parse_model_path, run_program, value_to_text
+from ctac.eval import (
+    Evaluator,
+    MemoryModel,
+    RunConfig,
+    UnknownValueError,
+    Value,
+    canonical_symbol,
+    parse_model_path,
+    run_program,
+    value_to_text,
+)
 from ctac.parse import ParseError, parse_path
 from ctac.tool.cli_runtime import (
     PLAIN_HELP,
@@ -33,7 +43,73 @@ from ctac.tool.cli_runtime import (
 )
 from ctac.tool.commands_cfg_pp_search import normalize_printer_name, parse_user_value
 from ctac.tool.input_resolution import resolve_model_input_path, resolve_tac_input_path, resolve_user_path
+from ctac.tool.project_io import resolve_project_or_tac
 from ctac.ast.pretty import configured_printer
+from ctac.project import Project
+from ctac.rewrite.trail import Trail
+
+
+def _discover_project_trail(project: Project) -> tuple[Trail | None, str | None]:
+    """Compose every trail-kind object whose ancestor chain reaches
+    HEAD. Returns ``(None, None)`` when no such trail exists.
+
+    A trail emitted after ``rw`` has parent = the rw'd object. So:
+    - HEAD = the rw'd object → the trail's direct parent matches HEAD;
+      apply it.
+    - HEAD = the original .tac → walk parents of each trail; if HEAD
+      is among them (the rw'd object's ancestor chain), the trail
+      applies to the upstream replay.
+
+    Multiple rw steps each emit a trail; concatenation + Trail's
+    transitive lookup compose them.
+    """
+    manifest = project.manifest
+    head_sha = manifest.head
+    if head_sha is None:
+        return None, None
+
+    def _ancestors(start: str) -> set[str]:
+        seen: set[str] = set()
+        stack = [start]
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            info = manifest.objects.get(cur)
+            if info is None:
+                continue
+            stack.extend(info.parents)
+        return seen
+
+    matching_paths: list[str] = []
+    composed: Trail = Trail()
+    for sha, info in manifest.objects.items():
+        if info.kind != "trail":
+            continue
+        # The trail "applies" if HEAD is anywhere on its parents'
+        # ancestor closure (or is itself one of the parents).
+        applies = False
+        for p in info.parents:
+            if p == head_sha or head_sha in _ancestors(p):
+                applies = True
+                break
+        if not applies:
+            continue
+        try:
+            text = project.object_path(sha).read_text()
+        except OSError:
+            continue
+        try:
+            part = Trail.from_json(text)
+        except ValueError:
+            continue
+        composed = composed.merge(part)
+        if info.names:
+            matching_paths.append(info.names[-1])
+    if not composed.substitutions:
+        return None, None
+    return composed, ", ".join(matching_paths) if matching_paths else None
 
 
 _RUN_EPILOG = (
@@ -142,6 +218,21 @@ def run(
             help="Fallback model path: used for havoc values only when --model has no value.",
         ),
     ] = None,
+    trail: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--trail",
+            help=(
+                "Path to a rewrite-trail JSON sidecar (emitted by "
+                "``ctac rw --trail``). When ``--model`` lacks a value "
+                "for a havoc'd variable that was eliminated by the "
+                "rewrite, the trail maps it to an expression over "
+                "surviving model variables — avoiding the "
+                "unconstrained-sentinel fallback. In project mode the "
+                "trail is auto-discovered from HEAD's lineage."
+            ),
+        ),
+    ] = None,
     validate: bool = typer.Option(
         False,
         "--validate/--no-validate",
@@ -154,7 +245,14 @@ def run(
     c = console(plain)
     try:
         user_path, user_warnings = resolve_user_path(path)
-        tac_path, input_warnings = resolve_tac_input_path(user_path)
+        if user_path.is_dir() and Project.is_project(user_path):
+            resolved = resolve_project_or_tac(user_path)
+            tac_path = resolved.tac_path
+            input_warnings = resolved.warnings
+            run_project: Optional[Project] = resolved.project
+        else:
+            tac_path, input_warnings = resolve_tac_input_path(user_path)
+            run_project = None
         tac = parse_path(tac_path, weak_is_strong=weak_is_strong)
     except ParseError as e:
         if plain:
@@ -254,6 +352,20 @@ def run(
         fallback_model_values = fb_res.values
         fallback_model_warnings = fb_res.warnings
 
+    # Trail loading: explicit --trail wins; otherwise in project mode
+    # auto-discover trail objects whose parent is on HEAD's lineage.
+    run_trail: Trail | None = None
+    trail_source: str | None = None
+    if trail is not None:
+        try:
+            run_trail = Trail.from_json(trail.read_text())
+            trail_source = str(trail)
+        except (OSError, ValueError) as e:
+            c.print(f"[red]trail error:[/red] {e}" if not plain else f"trail error: {e}")
+            raise typer.Exit(1) from e
+    elif run_project is not None:
+        run_trail, trail_source = _discover_project_trail(run_project)
+
     def _ask(symbol: str, kind: str) -> Value:
         while True:
             prompt = f"havoc {symbol} ({kind})"
@@ -272,6 +384,7 @@ def run(
         return None
 
     model_havoc_hits = 0
+    model_havoc_trail_hits = 0
     model_havoc_fallback_hits = 0
     model_havoc_sentinel_fallback = 0
     # Source of each `_ask_or_model` call in invocation order.
@@ -280,13 +393,75 @@ def run(
     # whose `value` is set.
     havoc_sources_in_order: list[str] = []
 
+    def _normalize(s: str) -> str:
+        return canonical_symbol(s, strip_var_suffixes=strip_var_suffixes)
+
+    # Stateless evaluator with read-only access to model_values; used
+    # to evaluate trail replacement expressions when the model misses.
+    trail_evaluator: Evaluator | None = None
+    if run_trail is not None:
+        trail_evaluator = Evaluator(
+            store={},
+            normalize_symbol=_normalize,
+            symbol_sorts=dict(tac.symbol_sorts),
+            model_values=dict(model_values),
+        )
+
+    def _eval_trail(expr: TacExpr) -> Value:
+        # Wrapper over Evaluator.eval_expr that skips evaluating the
+        # callee SymbolRef inside ``Apply(<builtin>:bif, x)``. The base
+        # evaluator's eval_expr forces every arg, which fails on builtin
+        # names like ``safe_math_narrow_bv256:bif`` (not a model value).
+        assert trail_evaluator is not None
+        if isinstance(expr, ApplyExpr) and expr.op == "Apply":
+            return trail_evaluator._eval_apply(
+                expr.op,
+                [
+                    # Args[0] is the callee SymbolRef — pass any value;
+                    # _eval_apply consults the original AST at whole.args[0].
+                    Value(kind="bv", data=0),
+                    *[_eval_trail(a) for a in expr.args[1:]],
+                ],
+                expr,
+            )
+        if isinstance(expr, ApplyExpr):
+            if expr.op == "Select":
+                return trail_evaluator._eval_select(expr)
+            if expr.op == "Ite" and len(expr.args) == 3:
+                cond = _eval_trail(expr.args[0])
+                return _eval_trail(
+                    expr.args[1] if cond.data else expr.args[2]
+                )
+            return trail_evaluator._eval_apply(
+                expr.op, [_eval_trail(a) for a in expr.args], expr
+            )
+        return trail_evaluator.eval_expr(expr)
+
+    def _lookup_trail(symbol: str, kind: str) -> Value | None:
+        if run_trail is None or trail_evaluator is None:
+            return None
+        replacement = run_trail.lookup(symbol)
+        if replacement is None:
+            return None
+        try:
+            v = _eval_trail(replacement)
+        except (UnknownValueError, ValueError, KeyError, TypeError):
+            return None
+        return coerce_value_kind(v, kind)
+
     def _ask_or_model(symbol: str, kind: str) -> Value:
-        nonlocal model_havoc_hits, model_havoc_fallback_hits, model_havoc_sentinel_fallback
+        nonlocal model_havoc_hits, model_havoc_trail_hits
+        nonlocal model_havoc_fallback_hits, model_havoc_sentinel_fallback
         mv = _model_lookup(model_values, symbol)
         if mv is not None:
             model_havoc_hits += 1
             havoc_sources_in_order.append("model")
             return coerce_value_kind(mv, kind)
+        tv = _lookup_trail(symbol, kind)
+        if tv is not None:
+            model_havoc_trail_hits += 1
+            havoc_sources_in_order.append("trail")
+            return tv
         fb = _model_lookup(fallback_model_values, symbol)
         if fb is not None:
             model_havoc_fallback_hits += 1
@@ -385,10 +560,21 @@ def run(
             c.print(f"# fallback model values: {len(fallback_model_values)}")
             for w in fallback_model_warnings:
                 c.print(f"# fallback model warning: {w}")
+        if run_trail is not None:
+            src = trail_source if trail_source else "trail"
+            c.print(
+                f"# trail: {src} ({len(run_trail.substitutions)} substitution(s))"
+            )
         c.print(
-            f"# model havoc: hits={model_havoc_hits}, fallback_hits={model_havoc_fallback_hits}, "
-            f"sentinel_fallback={model_havoc_sentinel_fallback}"
-            f" (value={MODEL_HAVOC_FALLBACK_NUM})"
+            f"# model havoc: hits={model_havoc_hits}"
+            + (
+                f", trail_hits={model_havoc_trail_hits}"
+                if run_trail is not None
+                else ""
+            )
+            + f", fallback_hits={model_havoc_fallback_hits}"
+            + f", sentinel_fallback={model_havoc_sentinel_fallback}"
+            + f" (value={MODEL_HAVOC_FALLBACK_NUM})"
         )
     if validate:
         c.print(f"# validate: mismatches={mismatch_count}, missing_expected={missing_expected}")

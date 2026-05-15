@@ -2,10 +2,12 @@
 
 from ctac.eval.types import HavocMode, Value
 from ctac.eval.interpreter import (
+    Evaluator,
     RunConfig,
     RunEvent,
     RunResult,
     UnknownValueError,
+    canonical_symbol,
     run_program,
     value_to_text,
 )
@@ -20,6 +22,7 @@ from ctac.eval.model import (
 )
 
 __all__ = [
+    "Evaluator",
     "HavocMode",
     "MemoryModel",
     "RunConfig",
@@ -27,6 +30,7 @@ __all__ = [
     "RunResult",
     "UnknownValueError",
     "Value",
+    "canonical_symbol",
     "run_program",
     "value_to_text",
     "ModelParseResult",

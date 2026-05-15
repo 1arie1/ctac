@@ -158,6 +158,13 @@ class RewriteCtx:
     )
     _pending_symbols: list[tuple[str, str]] = field(default_factory=list, init=False)
     _pending_skips: set[tuple[str, int]] = field(default_factory=set, init=False)
+    # Rule-recorded substitutions for the rewrite trail. Idempotent on
+    # ``var`` (first record wins, mirroring how the destructive rules
+    # themselves only fire once per eliminated name).
+    _pending_substitutions: list[tuple[str, TacExpr, str]] = field(
+        default_factory=list, init=False
+    )
+    _substitution_vars: set[str] = field(default_factory=set, init=False)
     _fresh_counter: int = field(default=0, init=False)
     # Rules push human-readable diagnostics here when they decline to
     # rewrite for non-obvious reasons (e.g., insertion would break a
@@ -264,6 +271,23 @@ class RewriteCtx:
         if self._cur_block is None or self._cur_cmd is None:
             return
         self._pending_skips.add((self._cur_block, self._cur_cmd))
+
+    def record_substitution(
+        self, var: str, replacement: TacExpr, rule: str
+    ) -> None:
+        """Record a ``var -> replacement`` substitution for the trail.
+
+        Called by destructive rules that eliminate havoc'd variables
+        (``HAVOC_EQUATE_SUBST`` / ``HAVOC_EQUATE_FOLD``). Idempotent on
+        ``var`` (canonical-name-keyed); first record wins. The framework
+        drains these between iterations into the final
+        :class:`RewriteResult.substitutions`.
+        """
+        key = canonical_symbol(var)
+        if key in self._substitution_vars:
+            return
+        self._substitution_vars.add(key)
+        self._pending_substitutions.append((key, replacement, rule))
 
     def skip_cmd_at(self, block_id: str, cmd_index: int) -> None:
         """Mark an arbitrary ``(block_id, cmd_index)`` as to-be-deleted.
@@ -621,9 +645,11 @@ class RewriteCtx:
         dict[tuple[str, int], list[TacCmd]],
         list[tuple[str, str]],
         set[tuple[str, int]],
+        list[tuple[str, TacExpr, str]],
         int,
     ]:
-        """Return queued commands, symbol entries, skip-set, and next fresh counter.
+        """Return queued commands, symbol entries, skip-set, recorded
+        substitutions, and next fresh counter.
 
         Called by the driver between outer iterations; returns everything it
         needs to splice the pending cmds into the program and suppress any
@@ -635,9 +661,14 @@ class RewriteCtx:
         pos_cmds = self._pending_by_position
         syms = self._pending_symbols
         skips = self._pending_skips
+        subs = self._pending_substitutions
         counter = self._fresh_counter
         self._pending_entry_cmds = []
         self._pending_by_position = {}
         self._pending_symbols = []
         self._pending_skips = set()
-        return entry_cmds, pos_cmds, syms, skips, counter
+        self._pending_substitutions = []
+        # _substitution_vars is per-RewriteCtx; the ctx is rebuilt each
+        # iteration. Cross-iter dedup happens later in
+        # ``Trail.from_substitutions``.
+        return entry_cmds, pos_cmds, syms, skips, subs, counter
