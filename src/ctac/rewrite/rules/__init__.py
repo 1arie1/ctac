@@ -43,6 +43,7 @@ from ctac.rewrite.rules.purify_assert import PURIFY_ASSERT
 from ctac.rewrite.rules.purify_assume import PURIFY_ASSUME
 from ctac.rewrite.rules.range_fold import RANGE_FOLD
 from ctac.rewrite.rules.select_over_store import SELECT_OVER_STORE
+from ctac.rewrite.rules.sign_extend import SIGN_EXTEND_UNWRAP
 from ctac.rewrite.rules.store_eq import STORE_EQ_NORM, normalize_store_eq
 from ctac.rewrite.rules.ite import (
     ADD_ITE_DIST,
@@ -171,6 +172,12 @@ simplify_pipeline: tuple[Rule, ...] = (
     MUL_BV_TO_INT,
     ADD_BV_TO_INT,
     SUB_BV_TO_INT,
+    # Recognize the ``unwrap_twos_complement_256(SignExtend(b, x))``
+    # idiom and lift it to an Int-domain Ite over linear arms. Runs
+    # after MUL/ADD/SUB_BV_TO_INT so operand ``x`` is in canonical
+    # narrowed form; before RANGE_FOLD so the emitted Ite can collapse
+    # when range pins the sign-bit condition.
+    SIGN_EXTEND_UNWRAP,
     # Collapse expressions whose range is a singleton to the
     # corresponding ConstExpr. Runs after the narrowing rules so that
     # IntAdd / IntSub / ... produced above get folded to constants
@@ -271,6 +278,7 @@ all_rule_names: tuple[str, ...] = (
     RANGE_FOLD.name,
     ADD_BV_MAX_TO_ITE.name,
     SELECT_OVER_STORE.name,
+    SIGN_EXTEND_UNWRAP.name,
     CSE.name,
     CP_ALIAS.name,
     ITE_PURIFY.name,
@@ -316,6 +324,7 @@ __all__ = [
     "R6_CEILDIV",
     "RANGE_FOLD",
     "SELECT_OVER_STORE",
+    "SIGN_EXTEND_UNWRAP",
     "STORE_EQ_NORM",
     "SUB_BV_TO_INT",
     "SUB_ITE_DIST_LEFT",
