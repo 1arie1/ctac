@@ -212,7 +212,7 @@ class TacExprLowerer:
             else_term = self.lower_scalar(args[2])
             self.require_same_sort(then_term, else_term, expr)
             return app("ite", [cond, then_term, else_term], then_term.sort)
-        if op in {"Eq", "Ne", "Lt", "Le", "Gt", "Ge"}:
+        if op in {"Eq", "Ne", "Lt", "Le", "Gt", "Ge", "Slt", "Sle", "Sgt", "Sge"}:
             return self.compare(op, args)
         if op in {"LAnd", "LOr"}:
             items = [self.lower_bool(arg) for arg in args]
@@ -285,6 +285,18 @@ class TacExprLowerer:
             return gt(a, b)
         if op == "Ge":
             return ge(a, b)
+        # Signed comparisons interpret both operands as bv256 two's-
+        # complement values. ``Sgt(a, b) == Slt(b, a)`` and
+        # ``Sge(a, b) == Sle(b, a)`` — implement via arg-swap to share
+        # the slt/sle define-fun bodies.
+        if op == "Slt":
+            return self.vc.ops.bv256.slt(a, b)
+        if op == "Sle":
+            return self.vc.ops.bv256.sle(a, b)
+        if op == "Sgt":
+            return self.vc.ops.bv256.slt(b, a)
+        if op == "Sge":
+            return self.vc.ops.bv256.sle(b, a)
         self.unsupported(ApplyExpr(op, args), f"comparison {op!r}")
 
     def apply_builtin(self, args: tuple[TacExpr, ...]) -> Term:

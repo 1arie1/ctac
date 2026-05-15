@@ -273,6 +273,76 @@ def test_tac_lowering_supports_twos_complement_builtins() -> None:
     assert "(assert (=> BLK_entry (= R2 (to_s256 I))))" in text
 
 
+def test_tac_lowering_supports_signed_comparisons() -> None:
+    """``Slt`` / ``Sle`` / ``Sgt`` route through bv256.slt / bv256.sle
+    in the encoded VC. ``Sgt(a, b)`` reuses ``bv256.slt`` with swapped
+    args. ``Sge`` does the same for ``sle``. The three define-funs
+    (``bv256.is_neg``, ``bv256.slt``, ``bv256.sle``) emit only when
+    actually used."""
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd A
+\t\tAssignHavocCmd B
+\t\tAssignExpCmd B1 Slt(A B)
+\t\tAssignExpCmd B2 Sle(A B)
+\t\tAssignExpCmd B3 Sgt(A B)
+\t\tAssertCmd LAnd(LAnd(B1 B2) B3)
+\t}
+""",
+            "\tA:bv256\n\tB:bv256\n\tB1:bool\n\tB2:bool\n\tB3:bool",
+        )
+    )
+
+    vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+    text = render_vc_script(vc.script())
+
+    # Define-funs are emitted exactly once each, with the user-spec'd
+    # shape (case-split via is_neg; same-sign falls back to raw <).
+    assert (
+        "(define-fun bv256.is_neg ((x Int)) Bool (>= x BV256_HALF))"
+        in text
+    )
+    assert (
+        "(define-fun bv256.slt ((x Int) (y Int)) Bool "
+        "(or (and (bv256.is_neg x) (not (bv256.is_neg y))) "
+        "(and (= (bv256.is_neg x) (bv256.is_neg y)) (< x y))))"
+    ) in text
+    assert (
+        "(define-fun bv256.sle ((x Int) (y Int)) Bool "
+        "(or (and (bv256.is_neg x) (not (bv256.is_neg y))) "
+        "(and (= (bv256.is_neg x) (bv256.is_neg y)) (<= x y))))"
+    ) in text
+    # Slt(A, B) call site.
+    assert "(bv256.slt A B)" in text
+    # Sgt(A, B) routes through bv256.slt with swapped args.
+    assert "(bv256.slt B A)" in text
+    # Sle(A, B) call site.
+    assert "(bv256.sle A B)" in text
+
+
+def test_tac_lowering_omits_signed_define_funs_when_unused() -> None:
+    """A program with no signed comparisons doesn't emit the three
+    bv256.slt/sle/is_neg define-funs."""
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignHavocCmd X
+\t\tAssertCmd Le(X 0x10)
+\t}
+""",
+            "\tX:bv256",
+        )
+    )
+    vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+    text = render_vc_script(vc.script())
+    assert "bv256.is_neg" not in text
+    assert "bv256.slt" not in text
+    assert "bv256.sle" not in text
+
+
 def test_tac_lowering_strips_bytemap_symbol_annotations() -> None:
     tac = parse_string(
         _wrap(

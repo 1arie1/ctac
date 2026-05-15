@@ -22,6 +22,8 @@ from ctac.smt.vc.terms import (
     lt,
     mod,
     mul,
+    not_,
+    or_,
     sub,
     term,
 )
@@ -58,6 +60,9 @@ class _SmtName:
     BV256_OR = "int.bv256_or"
     TO_S256 = "to_s256"
     FROM_S256 = "from_s256"
+    BV256_IS_NEG = "bv256.is_neg"
+    BV256_SLT = "bv256.slt"
+    BV256_SLE = "bv256.sle"
     ITE = "ite"
 
     @staticmethod
@@ -527,6 +532,57 @@ class Bv256Ops:
             app(_SmtName.ITE, [lt(b, half), b, sub(b, self.vc.bv256_mod())], Int),
         )
         return app(_SmtName.FROM_S256, [x], Int)
+
+    # ----- Signed comparisons -----
+    #
+    # The Int-domain encoding stores a bv256 value as a non-negative
+    # integer in ``[0, 2^256)``. Reading a value as signed: anything
+    # ``>= 2^255`` is "negative" (top bit set). The three define-funs
+    # below give the solver direct case-split shape — empirically
+    # cheaper than ``from_s256(x) <op> from_s256(y)``, which inlines
+    # to a 4-way Ite combination.
+
+    def _require_is_neg_define_fun(self) -> None:
+        x = term(_X, Int)
+        half = self.vc.define_int_const(
+            "BV256_HALF",
+            div(self.vc.bv256_mod(), self.vc.int_lit(2)),
+        )
+        self.vc.define_fun(
+            _SmtName.BV256_IS_NEG,
+            ((_X, Int),),
+            Bool,
+            ge(x, half),
+        )
+
+    def is_neg(self, x: Term) -> Term:
+        """``bv256.is_neg(x)``: true iff ``x >= 2^255`` — the bv256
+        top bit interpretation of "negative two's-complement value."""
+        self._require_is_neg_define_fun()
+        return app(_SmtName.BV256_IS_NEG, [x], Bool)
+
+    def _require_signed_compare_define_fun(self, name: str, strict: bool) -> None:
+        self._require_is_neg_define_fun()
+        x, y = self._binary_args()
+        nx = app(_SmtName.BV256_IS_NEG, [x], Bool)
+        ny = app(_SmtName.BV256_IS_NEG, [y], Bool)
+        # x is "negative", y is "positive" -> x < y.
+        cross = and_(nx, not_(ny))
+        # same sign -> compare raw int values.
+        same_sign = eq(nx, ny)
+        magnitude = lt(x, y) if strict else le(x, y)
+        body = or_(cross, and_(same_sign, magnitude))
+        self.vc.define_fun(name, ((_X, Int), (_Y, Int)), Bool, body)
+
+    def slt(self, a: Term, b: Term) -> Term:
+        """``bv256.slt(a, b)``: signed less-than over bv256-as-Int."""
+        self._require_signed_compare_define_fun(_SmtName.BV256_SLT, strict=True)
+        return app(_SmtName.BV256_SLT, [a, b], Bool)
+
+    def sle(self, a: Term, b: Term) -> Term:
+        """``bv256.sle(a, b)``: signed less-or-equal over bv256-as-Int."""
+        self._require_signed_compare_define_fun(_SmtName.BV256_SLE, strict=False)
+        return app(_SmtName.BV256_SLE, [a, b], Bool)
 
     def add(self, a: Term, b: Term) -> Term:
         self._require_add_define_fun()
