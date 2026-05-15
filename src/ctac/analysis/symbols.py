@@ -12,8 +12,13 @@ _META_SUFFIX_RE = re.compile(r":\d+$")
 #     ``name:sort:revision``  (DSA revision suffix)
 # Anchored to both ends so JSON-tagged builtin-function lines and nested
 # section markers (``UserDefined {`` etc.) don't accidentally parse.
+# Identifier bodies admit ``!`` and ``.`` because pipeline-generated
+# names (e.g. ``tacTmp!div54922!54923``, ``rent.burn_percent8``,
+# ``Const_bv256_0x410400000!229``) use them as separators. Silently
+# dropping such lines yields wrong default sorts downstream, which
+# surfaces as misleading sort-mismatch errors in the SMT encoder.
 _SYMBOL_LINE_RE = re.compile(
-    r"^([A-Za-z_][A-Za-z0-9_]*):([a-zA-Z][a-zA-Z0-9]*)(?::\d+)?$"
+    r"^([A-Za-z_][A-Za-z0-9_!.]*):([a-zA-Z][a-zA-Z0-9]*)(?::\d+)?$"
 )
 
 # Sort tokens in the pipeline that denote memory (array) symbols.

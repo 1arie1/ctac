@@ -51,7 +51,7 @@ from ctac.ast.bit_mask import (
 from ctac.ast.range_constraints import match_inclusive_range_constraint
 
 _SYMBOL_LINE = re.compile(
-    r"^\s*([A-Za-z_][A-Za-z0-9_]*):([A-Za-z0-9_]+)(?::\d+)?\s*$"
+    r"^\s*([A-Za-z_][A-Za-z0-9_!.]*):([A-Za-z0-9_]+)(?::\d+)?\s*$"
 )
 _BASE_SYMBOL = re.compile(r"^(.*):\d+$")
 _TYPED_CONST = re.compile(

@@ -33,6 +33,24 @@ SYM_TABLE = """TACSymbolTable {
 """
 
 
+def test_parse_symbol_sorts_admits_bang_and_dot_in_names():
+    """Certora pipeline emits names with ``!`` and ``.`` separators
+    (e.g. ``tacTmp!div...``, ``rent.burn_percent8``); the parser must
+    pick them up so downstream sort lookups don't default to Int."""
+    table = """TACSymbolTable {
+\ttacTmp!div54922!54923:bool:0
+\ttacTmp!div54920!54921:int:0
+\trent.burn_percent8:int
+\tConst_bv256_0x410400000!229:bool
+}
+"""
+    sorts = parse_symbol_sorts(table)
+    assert sorts["tacTmp!div54922!54923"] == "bool"
+    assert sorts["tacTmp!div54920!54921"] == "int"
+    assert sorts["rent.burn_percent8"] == "int"
+    assert sorts["Const_bv256_0x410400000!229"] == "bool"
+
+
 def test_parse_symbol_sorts_skips_nested_blocks_and_json():
     sorts = parse_symbol_sorts(SYM_TABLE)
     # Regular symbols + DSA-revisioned symbols get through.
