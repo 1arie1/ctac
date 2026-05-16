@@ -42,6 +42,7 @@ from ctac.rewrite.rules.ite_purify import ITE_PURIFY
 from ctac.rewrite.rules.purify_assert import PURIFY_ASSERT
 from ctac.rewrite.rules.purify_assume import PURIFY_ASSUME
 from ctac.rewrite.rules.range_fold import RANGE_FOLD
+from ctac.rewrite.rules.sar_to_shr import SAR_TO_SHR_NONNEG
 from ctac.rewrite.rules.select_over_store import SELECT_OVER_STORE
 from ctac.rewrite.rules.sign_extend import SIGN_EXTEND_UNWRAP
 from ctac.rewrite.rules.store_eq import STORE_EQ_NORM, normalize_store_eq
@@ -178,6 +179,10 @@ simplify_pipeline: tuple[Rule, ...] = (
     # narrowed form; before RANGE_FOLD so the emitted Ite can collapse
     # when range pins the sign-bit condition.
     SIGN_EXTEND_UNWRAP,
+    # ShiftRightArithmetical(x, k) -> ShiftRightLogical(x, k) when
+    # range proves x's top bit is zero (the typical shape after
+    # ``Mod(_, 2^64)``). The sea encoder lowers LSHR natively.
+    SAR_TO_SHR_NONNEG,
     # Collapse expressions whose range is a singleton to the
     # corresponding ConstExpr. Runs after the narrowing rules so that
     # IntAdd / IntSub / ... produced above get folded to constants
@@ -277,6 +282,7 @@ all_rule_names: tuple[str, ...] = (
     SUB_BV_TO_INT.name,
     RANGE_FOLD.name,
     ADD_BV_MAX_TO_ITE.name,
+    SAR_TO_SHR_NONNEG.name,
     SELECT_OVER_STORE.name,
     SIGN_EXTEND_UNWRAP.name,
     CSE.name,
@@ -323,6 +329,7 @@ __all__ = [
     "R4A_DIV_PURIFY",
     "R6_CEILDIV",
     "RANGE_FOLD",
+    "SAR_TO_SHR_NONNEG",
     "SELECT_OVER_STORE",
     "SIGN_EXTEND_UNWRAP",
     "STORE_EQ_NORM",
