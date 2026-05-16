@@ -63,6 +63,16 @@ _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _BV256_MOD = 1 << 256
 _BV256_MAX = _BV256_MOD - 1
 
+# CFG encodings that already assert AMO over predecessors at merge
+# blocks (block-level or via incoming-edge variables). The sea_vc
+# encoder lowers DSA-merged variables as direct ``ite``-over-block-
+# reachability chains and does NOT emit its own AMO; soundness
+# therefore depends on the CFG encoding providing one. The ``sea``
+# encoder adds AMO at the DSA-merge level and is unconstrained.
+_SEA_VC_REQUIRES_PRED_AMO = frozenset(
+    {"bwd0", "bwd1", "fwd-edg1", "fwd-edg2", "bwd-edge"}
+)
+
 # Commands the sea_vc encoder is willing to consume. Everything else
 # (notably RawCmd — the parser's fallback for unrecognized heads, and
 # the bareword AssumeCmd form) is rejected up front so we never emit
@@ -379,6 +389,31 @@ class SeaVcEncoder(SmtEncoder):
         if not program.blocks:
             raise SmtEncodingError("program has no blocks")
         entry_block_id = program.blocks[0].id
+
+        # sea_vc emits DSA-merged variables as ``ite`` chains over
+        # block-reachability variables, with no AMO of its own. The
+        # CFG encoding must therefore assert AMO over predecessors at
+        # merge blocks; otherwise z3 can mark multiple sibling
+        # predecessors reachable simultaneously and pick any ``ite``
+        # arm, producing a model that no concrete execution can
+        # reproduce. Fail fast with a clear redirect to a compatible
+        # encoding (or the ``sea`` encoder, which carries its own
+        # AMO at the DSA-merge level). Skip the check when the named
+        # encoding isn't known at all; the generic "unknown encoding"
+        # error fires later from ``CFG_ENCODERS.get`` with a clearer
+        # message for that case.
+        if (
+            ctx.cfg_encoding in CFG_ENCODERS
+            and ctx.cfg_encoding not in _SEA_VC_REQUIRES_PRED_AMO
+        ):
+            raise SmtEncodingError(
+                f"encoding sea_vc requires a CFG encoding that asserts "
+                f"AMO over predecessors at merge blocks; got "
+                f"{ctx.cfg_encoding!r}. Accepted: "
+                f"{sorted(_SEA_VC_REQUIRES_PRED_AMO)}. Alternatively use "
+                f"--encoding sea, which emits the AMO at the DSA-merge "
+                f"level and is independent of the CFG encoding."
+            )
 
         du = extract_def_use(program)
         dsa = analyze_dsa(program, def_use=du)

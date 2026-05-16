@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator, Literal, Sequence
 
+from ctac.smt.util import at_most_one_terms
 from ctac.smt.vc.bytemap import UfDefineFunBytemap
 from ctac.smt.vc.config import FactKind, FactPlacement, OpConfig, VCConfig
 from ctac.smt.vc.ops import CallSite, LemmaSchema, Ops
@@ -592,6 +593,23 @@ class VCBuilder:
             origin="dynamic-def",
             placement=FactPlacement.GLOBAL,
         )
+        # AMO over the case guards: at most one defining block fires
+        # per execution. Without this, z3 can mark multiple
+        # DSA-defining blocks reachable simultaneously and pick any
+        # ite arm, producing a model that no concrete execution can
+        # reproduce. The ``guarded=True`` branch above doesn't need
+        # this because two firing guards with different RHSes would
+        # directly contradict ``(= lhs rhs_i) ∧ (= lhs rhs_j)``;
+        # the ite-chain form has no such direct contradiction.
+        # Redundancy with CFG-encoder AMO (when the encoding already
+        # asserts predecessor mutual exclusion) is harmless.
+        guard_texts = [g.text for g, _ in cases]
+        for clause in at_most_one_terms(guard_texts):
+            self.raw_fact(
+                clause,
+                kind=FactKind.ASSUME,
+                origin="dsa-amo",
+            )
 
     def assert_failure_objective(
         self,

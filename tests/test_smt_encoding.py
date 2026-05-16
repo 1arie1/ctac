@@ -698,9 +698,85 @@ def test_cfg_encoding_unknown_value_rejected() -> None:
         build_vc(tac, cfg_encoding="bogus")
 
 
-def test_cfg_encoding_fwd_emits_one_way_block_existence() -> None:
+def test_sea_vc_rejects_cfg_encodings_without_predecessor_amo() -> None:
+    """``sea_vc`` encodes DSA-merged variables as ``ite`` chains over
+    block-reachability vars and relies on the CFG encoder to assert
+    AMO over predecessors at merge blocks. ``fwd``/``fwd-bwd``/``fwd-edg``
+    don't provide that, so the encoder rejects them up-front."""
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
-    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd"))
+    for bad in ("fwd", "fwd-bwd", "fwd-edg"):
+        with pytest.raises(
+            SmtEncodingError, match="requires a CFG encoding that asserts"
+        ):
+            build_vc(tac, encoding="sea_vc", cfg_encoding=bad)
+
+
+def test_sea_vc_accepts_cfg_encodings_with_predecessor_amo() -> None:
+    """The flip side of the rejection: ``bwd0``/``bwd1``/``fwd-edg1``/
+    ``fwd-edg2``/``bwd-edge`` all carry predecessor AMO, so ``sea_vc``
+    accepts every one of them."""
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    for good in ("bwd0", "bwd1", "fwd-edg1", "fwd-edg2", "bwd-edge"):
+        # Just confirm no exception; output text already covered elsewhere.
+        build_vc(tac, encoding="sea_vc", cfg_encoding=good)
+
+
+def test_sea_dsa_merge_emits_pairwise_amo_over_defining_blocks() -> None:
+    """When ``sea`` emits a DSA-merged variable (two sibling-block
+    AssignExpCmds writing the same canonical name), it adds pairwise
+    AMO ``(or (not BLK_def_i) (not BLK_def_j))`` over the defining
+    blocks so z3 can't pick a model where two predecessors fire
+    simultaneously."""
+    src = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tc:bool
+\tb:bool
+}
+Program {
+\tBlock entry Succ [thn, els] {
+\t\tAssignHavocCmd c
+\t\tJumpiCmd thn els c
+\t}
+\tBlock thn Succ [join] {
+\t\tAssignExpCmd b true
+\t\tJumpCmd join
+\t}
+\tBlock els Succ [join] {
+\t\tAssignExpCmd b false
+\t\tJumpCmd join
+\t}
+\tBlock join Succ [] {
+\t\tAssertCmd b "ok"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+    tac = parse_string(src, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd"))
+    # The pairwise AMO clause is emitted with origin "dsa-amo" — the
+    # canonical form is ``(or (not BLK_thn) (not BLK_els))`` for the
+    # two defining blocks.
+    assert "(or (not BLK_thn) (not BLK_els))" in rendered or \
+           "(or (not BLK_els) (not BLK_thn))" in rendered
+
+
+def test_cfg_encoding_fwd_emits_one_way_block_existence() -> None:
+    # The ``fwd`` CFG encoding lacks predecessor AMO and so is rejected
+    # by ``sea_vc`` at the encoder level. The CFG-encoder output it
+    # produces is the same regardless of which encoder wraps it, so
+    # use ``sea`` (which carries its own DSA AMO and accepts any CFG
+    # encoding) to exercise the shape.
+    tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd"))
     # `mid` has two successors `thn` and `els`; fwd emits one-way
     # block-existence: BLK_mid => (or BLK_thn BLK_els). One-way
     # is required for soundness on diamond CFGs.
@@ -718,8 +794,10 @@ def test_cfg_encoding_fwd_bwd_includes_fwd_clauses_and_idom_implications() -> No
     non-entry block. The diamond CFG has entry -> mid -> {thn, els};
     every non-entry block's idom is whichever block dominates it on
     every path."""
+    # ``fwd-bwd`` extends ``fwd`` which lacks predecessor AMO and is
+    # rejected by ``sea_vc``; use the unrestricted ``sea`` encoder.
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
-    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-bwd"))
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-bwd"))
     # All the existing fwd clauses must still be present.
     assert "(=> BLK_mid (or BLK_thn BLK_els))" in rendered
     assert "(=> (and BLK_mid BLK_thn) c)" in rendered
@@ -736,14 +814,18 @@ def test_cfg_encoding_fwd_bwd_skips_idom_clause_when_idom_is_entry() -> None:
     convention), so `BLK_i => true` collapses to `true` in the implies
     helper and is filtered out — no spurious unconditional clauses."""
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
-    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-bwd"))
+    # ``fwd-bwd`` is rejected by ``sea_vc`` (no predecessor AMO);
+    # exercise via ``sea`` which carries its own DSA AMO.
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-bwd"))
     # idom(mid) = entry. The clause "(=> BLK_mid true)" must NOT appear.
     assert "(=> BLK_mid true)" not in rendered
 
 
 def test_cfg_encoding_fwd_edg_declares_edge_vars_and_uses_iff() -> None:
+    # ``fwd-edg`` lacks predecessor AMO and is rejected by ``sea_vc``;
+    # exercise via ``sea``.
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
-    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edg"))
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg"))
     # Edge vars get declared only at branching blocks. Block indices
     # in TAC_DIAMOND_CFG order: entry=0, mid=1, thn=2, els=3. entry
     # has a single successor (mid) so e_0_1 is elided — BLK_entry is
@@ -797,7 +879,8 @@ Metas {
 }
 """
     tac = parse_string(src, path="<string>")
-    rendered = render_smt_script(build_vc(tac, cfg_encoding="fwd-edg"))
+    # ``fwd-edg`` is rejected by ``sea_vc``; exercise via ``sea``.
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg"))
     # No edge variables declared: every non-terminal has one successor.
     assert "declare-const e_" not in rendered
     # BLK_a (the only single-successor non-entry, non-terminal block)
@@ -957,10 +1040,11 @@ def test_cfg_encoding_fwd_edg2_amo_incoming_mixes_edge_and_block_atoms() -> None
 def test_cfg_encoding_fwd_edg2_no_merge_no_amo_incoming() -> None:
     """On a CFG with no merges (TAC_DIAMOND_CFG: each non-entry block
     has exactly one predecessor), (C6) emits nothing. The encoder's
-    output stays byte-identical to fwd-edg on such CFGs."""
+    output stays byte-identical to fwd-edg on such CFGs. Uses the
+    ``sea`` encoder because ``sea_vc`` rejects ``fwd-edg``."""
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
-    a = render_smt_script(build_vc(tac, cfg_encoding="fwd-edg"))
-    b = render_smt_script(build_vc(tac, cfg_encoding="fwd-edg2"))
+    a = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg"))
+    b = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg2"))
     assert a == b
 
 
@@ -994,11 +1078,17 @@ Metas {
 }
 """
     tac = parse_string(src, path="<string>")
+    # ``sea`` accepts every CFG encoding (it carries its own DSA AMO);
+    # ``sea_vc`` rejects encodings without predecessor AMO. Exercise
+    # via ``sea`` so the soundness sanity is end-to-end across every
+    # CFG encoder.
     for enc in (
         "bwd0", "bwd1", "fwd", "fwd-bwd",
         "fwd-edg", "fwd-edg1", "fwd-edg2", "bwd-edge",
     ):
-        rendered = render_smt_script(build_vc(tac, cfg_encoding=enc))
+        rendered = render_smt_script(
+            build_vc(tac, encoding="sea", cfg_encoding=enc)
+        )
         # Every strategy must produce a well-formed script that
         # mentions BLK_EXIT and the assert predicate.
         assert "BLK_EXIT" in rendered, f"{enc}: missing BLK_EXIT"
