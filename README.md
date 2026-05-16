@@ -89,11 +89,20 @@ ctac search f.tac 'BWAnd' --plain --count  # count op usage (tab-completes)
 ctac search f.tac 'BWAnd' --plain -C 2  # grep-style context (-B / -A / -C)
 ctac search f.tac '0x[0-9a-f]+' --plain --count-by-match  # frequency table
 ctac search f.tac 'BWAnd' --plain -q --count  # pipeable; awk on `matches:`
+
+ctac smtlib stats f.smt2 --plain  # for .smt2 inputs: kinds, sorts,
+                                  # bytemap chain depth, UF-arg vars
+ctac smtlib pp f.smt2 --width 100  # pretty-print via Doc algebra
+ctac smtlib roundtrip f.smt2  # parse + emit; check byte-identical
 ```
 
 `cfg`, `pp`, `search`, and `df` all share the same filter grammar —
 `--from`, `--to`, `--only`, `--id-contains`, `--id-regex`,
 `--cmd-contains`, `--exclude` — combining with AND.
+
+`ctac smtlib` operates on SMT-LIB v2 files (the output of
+`ctac smt` or any external `.smt2`). It's distinct from
+`ctac smt`, which is the TAC→SMT encoder.
 
 ### Compare two builds
 
@@ -157,7 +166,23 @@ ctac smt f.tac --plain -o out.smt2  # write .smt2
 ctac smt f.tac --plain --run  # invoke z3
 ctac smt f.tac --plain --run --model out.model.txt  # TAC-format SAT model
 ctac smt f.tac --plain --run --unsat-core  # name asserts, print core on unsat
+
+ctac z3 f.smt2  # single-run live progress + bottleneck signature
+ctac z3 f.smt2 --seeds 0-7 -j 4  # seed sweep race; first verdict wins
+ctac z3 f.smt2 --configs default,alt-then,bp-off --seeds 0-3 -j auto
+ctac z3 f.smt2 --show-output --save-rerun winner.sh  # capture winner artifacts
+ctac z3 --list-configs  # see available configs (defaults + discovered file)
 ```
+
+`ctac z3` runs z3 on an existing `.smt2` with classification +
+parallel orchestration. It spawns z3 with `-v:2 -st`, parses
+stderr into a progress timeline, and infers a bottleneck
+signature (fast-close / lp-bp-blowup / nlsat-stuck /
+nlsat-dominant / etc.). Configs come from a default set
+(default, alt-then, qfnra-nlsat, bp-off, no-propagate-eqs,
+legacy-arith); drop a `.ctac-z3-configs.json` next to the input
+to add custom named configs. Binary resolution: `--z3 PATH` /
+`CTAC_Z3` env / `$PATH`.
 
 `ctac smt` requires loop-free, single-assert TAC (run `ua` first),
 and bytemap-free / bytemap-ro memory capability (check with

@@ -385,6 +385,44 @@ Prompt template:
   - Z3 knobs: `--timeout` (seconds), `--seed`, `--tactic`, and passthrough `--z3-args`.
   - Debug mode: `--debug` prints z3 stdin/stdout/stderr and a replay command.
 
+- `ctac smtlib <subcommand> <file> --plain`
+  - Inspect and pretty-print existing SMT-LIB v2 files (the OUTPUT
+    format `ctac smt` produces, or any external .smt2). Distinct
+    from `ctac smt`, which is the TAC→SMT encoder.
+  - Subcommands:
+    - `ctac smtlib stats <file>` — command-kind counts, declare-const
+      sort distribution, bytemap chain link count + depth distribution
+      (min/median/max), unique UF-arg variables (the alias-cover T set).
+      Use as the first step on an unknown .smt2.
+    - `ctac smtlib pp <file> --width N` — pretty-print via a Wadler-style
+      Doc algebra. Short forms stay flat; `and`/`or`/`=>`/`ite` break
+      one-per-line when too wide. `-o PATH` writes to a file;
+      `--no-comments` drops `;`-blocks.
+    - `ctac smtlib roundtrip <file>` — parse then emit; reports
+      byte-identical or the first diff position. Sanity check for
+      the parser; useful when bisecting suspected emit bugs.
+  - The library at `ctac.solver.smt2` powers more transformations
+    (memory_abstract, scan_uf_arguments, name_asserts, append_assert)
+    that aren't yet CLI-surfaced — used internally by alias-cover work.
+
+- `ctac z3 <file.smt2> --plain`
+  - Run z3 on an SMT-LIB file with classification + parallel
+    seed / config racing. Default is a single run with a live
+    progress panel + bottleneck signature (fast-close /
+    lp-bp-blowup / nlsat-stuck / nlsat-dominant / etc.).
+  - Useful modes:
+    - `ctac z3 f.smt2 --seeds 0-7 -j 4` — seed sweep; first verdict
+      wins, others SIGKILL'd. Cheap nudge when one seed is unlucky.
+    - `ctac z3 f.smt2 --configs default,alt-then,bp-off --seeds 0-3
+      -j auto` — configs × seeds parallel race.
+    - `ctac z3 --list-configs` — see what's available (defaults +
+      any `.ctac-z3-configs.json` discovered upward).
+    - `ctac z3 ... --show-output` — print winner's z3 stdout (model,
+      get-info, unsat-core, stats — whatever the .smt2 asked for).
+    - `ctac z3 ... --save-rerun PATH` — executable bash script that
+      reproduces the winning invocation.
+    - `--z3 PATH` / `CTAC_Z3` env / `$PATH` — binary resolution.
+
 ## Project (HEAD-tracked workspace)
 
 A *project* is a working directory with a `.ctac/` sidecar that

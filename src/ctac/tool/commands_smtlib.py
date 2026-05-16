@@ -267,16 +267,12 @@ def cmd_pp(
                                 help='Soft target line width.'),
     no_comments: bool = typer.Option(False, '--no-comments',
                                        help='Drop comments from output.'),
-    elide: Optional[int] = typer.Option(None, '--elide',
-                                          help='Truncate bodies > N chars '
-                                          '(placeholder; not yet enforced).'),
     output: Optional[Path] = typer.Option(None, '-o', '--output',
                                             help='Write to PATH instead of stdout.'),
     plain: bool = typer.Option(False, '--plain', help=PLAIN_HELP),
     agent: bool = agent_option(),
 ) -> None:
     _ = agent
-    _ = elide   # plumbed for future use; printer ignores for now
     cons = console(plain_requested(plain))
     f = parse(smt2)
     policy = PpPolicy(width=width, show_comments=not no_comments)

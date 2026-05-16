@@ -6,9 +6,7 @@ Layout policy is captured in `PpPolicy`:
 - `splitting_heads`     — heads (like `and`, `or`, `=>`, `ite`) whose
                            args go one-per-line when broken.
 - `indent`              — extra indent applied to broken-form args.
-- `inline_named`        — `(! e :named N)` kept flat if e is small.
 - `show_comments`       — emit `;` comment blocks (default True).
-- `elide_long_bodies`   — truncate bodies > N chars when set.
 
 Public entry points:
 - `pp_sexpr(node, policy)` — single S-expr to a Doc.
@@ -71,9 +69,7 @@ class PpPolicy:
     width: int = 100
     splitting_heads: frozenset[str] = _DEFAULT_SPLITTING_HEADS
     indent: int = 2                # extra nesting for broken-form args
-    inline_named: bool = True
     show_comments: bool = True
-    elide_long_bodies: int | None = None
 
 
 # ---- Sexpr → Doc -----------------------------------------------------------
