@@ -140,3 +140,30 @@ def not_(a: Term) -> Term:
     if a.text == "false":
         return true()
     return app("not", [a], Bool)
+
+
+def ite(cond: Term, then_: Term, else_: Term, sort: Sort) -> Term:
+    """Build ``(ite cond then_ else_)`` with on-the-fly simplification.
+
+    Folds:
+    - identical arms: ``(ite _ x x) -> x``
+    - constant condition: ``(ite true t _) -> t``, ``(ite false _ e) -> e``
+    - boolean-literal arms:
+      ``(ite c true false) -> c``
+      ``(ite c false true) -> (not c)``
+
+    Mirrors the string-level ``_simplify_ite`` in ``sea_vc.py``;
+    callers building ite chains via ``Term`` (e.g. ``VCBuilder.dynamic_def``)
+    use this so DSA-merged Bool vars don't bake noise like
+    ``(ite BLK__X false true)`` into the encoded VC."""
+    if then_.text == else_.text:
+        return then_
+    if cond.text == "true":
+        return then_
+    if cond.text == "false":
+        return else_
+    if then_.text == "true" and else_.text == "false":
+        return cond
+    if then_.text == "false" and else_.text == "true":
+        return not_(cond)
+    return app("ite", [cond, then_, else_], sort)

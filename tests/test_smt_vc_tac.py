@@ -156,8 +156,48 @@ def test_tac_lowering_accepts_bool_ite_in_bool_assignment() -> None:
     vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
     text = render_vc_script(vc.script())
 
-    assert "(assert (=> BLK_entry (= b (ite C true false))))" in text
+    # ``ite(C, true, false)`` folds to ``C`` via the on-the-fly
+    # simplifier; the assignment lowers to ``(= b C)`` instead of
+    # baking the no-op ite into the emitted VC.
+    assert "(assert (=> BLK_entry (= b C)))" in text
     assert "(assert (=> BLK_entry b))" in text
+
+
+def test_tac_lowering_folds_inverted_bool_ite_to_not() -> None:
+    """The dual case: ``Ite(C, false, true)`` folds to ``(not C)``."""
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignExpCmd b Ite(C false true)
+\t\tAssertCmd b
+\t}
+""",
+            "\tC:bool\n\tb:bool",
+        )
+    )
+
+    vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+    text = render_vc_script(vc.script())
+    assert "(assert (=> BLK_entry (= b (not C))))" in text
+
+
+def test_tac_lowering_folds_equal_arms_ite() -> None:
+    """``Ite(_, x, x) -> x``: the condition becomes irrelevant."""
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignExpCmd b Ite(C true true)
+\t\tAssertCmd b
+\t}
+""",
+            "\tC:bool\n\tb:bool",
+        )
+    )
+    vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+    text = render_vc_script(vc.script())
+    assert "(assert (=> BLK_entry (= b true)))" in text
 
 
 def test_tac_lowering_rejects_bool_ite_in_int_assignment() -> None:

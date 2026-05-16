@@ -37,6 +37,7 @@ from ctac.smt.vc.terms import (
     false,
     ge,
     gt,
+    ite,
     le,
     lt,
     mod,
@@ -211,7 +212,7 @@ class TacExprLowerer:
             then_term = self.lower_scalar(args[1])
             else_term = self.lower_scalar(args[2])
             self.require_same_sort(then_term, else_term, expr)
-            return app("ite", [cond, then_term, else_term], then_term.sort)
+            return ite(cond, then_term, else_term, then_term.sort)
         if op in {"Eq", "Ne", "Lt", "Le", "Gt", "Ge", "Slt", "Sle", "Sgt", "Sge"}:
             return self.compare(op, args)
         if op in {"LAnd", "LOr"}:

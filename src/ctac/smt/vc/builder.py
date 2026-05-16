@@ -11,7 +11,7 @@ from ctac.smt.vc.bytemap import UfDefineFunBytemap
 from ctac.smt.vc.config import FactKind, FactPlacement, OpConfig, VCConfig
 from ctac.smt.vc.ops import CallSite, LemmaSchema, Ops
 from ctac.smt.vc.script import Assertion, ConstDecl, DefineFun, FunDecl, Scope, VCScript
-from ctac.smt.vc.terms import Bool, Int, Sort, Term, and_, app, eq, le, not_, term
+from ctac.smt.vc.terms import Bool, Int, Sort, Term, and_, app, eq, ite, le, not_, term
 
 _BV256_MOD = 1 << 256
 _BV256_MAX = _BV256_MOD - 1
@@ -584,7 +584,7 @@ class VCBuilder:
             return
         value = cases[-1][1]
         for guard, rhs in reversed(cases[:-1]):
-            value = app("ite", [guard, rhs, value], lhs.sort)
+            value = ite(guard, rhs, value, lhs.sort)
         self.fact(
             FactKind.DEF,
             eq(lhs, value),
