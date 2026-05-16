@@ -24,6 +24,7 @@ import_module("ctac.tool.commands_splitcrit")
 import_module("ctac.tool.commands_stats")
 import_module("ctac.tool.commands_types")
 import_module("ctac.tool.commands_ua")
+import_module("ctac.tool.commands_z3")
 
 __all__ = [
     "main",
