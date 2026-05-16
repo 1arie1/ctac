@@ -202,6 +202,42 @@ def test_no_match_when_b_differs():
     assert res.hits == 0
 
 
+def test_emits_trail_substitution_for_each_pattern():
+    """Each recognized pattern records a ``Q -> narrow(IntDiv(A, B))``
+    trail entry. ``ctac run --model`` on the original .tac uses this
+    to recover Q's value when the rewriter DCE'd Q from the SMT."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd Q\n"
+            "\t\tAssignExpCmd tacTmp!div0!1 IntMul(Q B)\n"
+            "\t\tAssignExpCmd tacTmp!div2!3 Le(tacTmp!div0!1 A)\n"
+            "\t\tAssumeCmd tacTmp!div2!3 \"Division purification\"\n"
+            "\t\tAssignExpCmd tacTmp!div4!5 IntAdd(Q 0x1)\n"
+            "\t\tAssignExpCmd tacTmp!div6!7 IntMul(tacTmp!div4!5 B)\n"
+            "\t\tAssignExpCmd tacTmp!div8!9 Gt(tacTmp!div6!7 A)\n"
+            "\t\tAssumeCmd tacTmp!div8!9 \"Division purification\"\n"
+            "\t\tAssertCmd Le(Q 0x100)\n"
+            "\t}\n",
+            syms="Q:bv256\n\tA:bv256\n\tB:bv256",
+        ),
+        path="<s>",
+    )
+    res = unpurify_div(tac.program)
+    assert res.hits == 1
+    assert len(res.substitutions) == 1
+    sub = res.substitutions[0]
+    assert sub.var == "Q"
+    assert sub.rule == "UnpurifyDiv"
+    # Replacement is narrow(IntDiv(A, B)).
+    rhs = sub.replacement
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Apply"
+    callee, inner = rhs.args
+    assert callee == SymbolRef("safe_math_narrow_bv256:bif")
+    assert isinstance(inner, ApplyExpr) and inner.op == "IntDiv"
+    assert inner.args == (SymbolRef("A"), SymbolRef("B"))
+
+
 def test_idempotent():
     """A second run on the unpurified program finds nothing."""
     tac = parse_string(

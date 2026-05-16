@@ -635,8 +635,15 @@ def rewrite_cmd(
     )
 
     # Build the trail (substitutions over surviving vars).
+    # ``unpurify_res.substitutions`` come first so they appear at the
+    # head of the resolved trail — ``ctac run`` on the original .tac
+    # will see ``Q = havoc`` for variables the upstream purified, and
+    # the trail entry maps Q to ``narrow(IntDiv(A, B))`` over the
+    # rewritten program's surviving vars. The rewriter's own
+    # ``rw.substitutions`` (HavocEquate{Fold,Subst}) layer on top.
+    all_subs = tuple(unpurify_res.substitutions) + tuple(rw.substitutions)
     resolved_subs = resolve_substitutions(
-        rw.substitutions,
+        all_subs,
         original_program=tac.program,
         rewritten_program=final_program,
     )

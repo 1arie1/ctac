@@ -61,6 +61,7 @@ from ctac.ast.nodes import (
     TacExpr,
 )
 from ctac.ir.models import TacBlock, TacProgram
+from ctac.rewrite.trail import Substitution
 from ctac.rewrite.unparse import canonicalize_cmd
 
 
@@ -74,10 +75,15 @@ class UnpurifyResult:
 
     ``program`` is the rewritten program. ``hits`` is the count of
     purification patterns recognized (one per division).
+    ``substitutions`` records each recovered Q-as-IntDiv so
+    ``ctac run --model`` can replay the original program — at the
+    original's still-present ``Q = havoc``, the trail evaluates the
+    IntDiv expression against the model's surviving values.
     """
 
     program: TacProgram
     hits: int
+    substitutions: tuple[Substitution, ...]
 
 
 def unpurify_div(program: TacProgram) -> UnpurifyResult:
@@ -89,19 +95,28 @@ def unpurify_div(program: TacProgram) -> UnpurifyResult:
     """
     new_blocks: list[TacBlock] = []
     hits = 0
+    subs: list[Substitution] = []
     for block in program.blocks:
-        new_cmds, block_hits = _process_block(block.commands)
+        new_cmds, block_hits, block_subs = _process_block(block.commands)
         new_blocks.append(replace(block, commands=new_cmds))
         hits += block_hits
-    return UnpurifyResult(program=TacProgram(blocks=new_blocks), hits=hits)
+        subs.extend(block_subs)
+    return UnpurifyResult(
+        program=TacProgram(blocks=new_blocks),
+        hits=hits,
+        substitutions=tuple(subs),
+    )
 
 
-def _process_block(cmds: tuple[TacCmd, ...]) -> tuple[list[TacCmd], int]:
+def _process_block(
+    cmds: tuple[TacCmd, ...],
+) -> tuple[list[TacCmd], int, list[Substitution]]:
     """Recognize patterns in ``cmds`` and emit the rewritten list."""
     n = len(cmds)
     hits = 0
     drops: set[int] = set()
     replacements: dict[int, TacCmd] = {}
+    subs: list[Substitution] = []
 
     i = 0
     while i < n:
@@ -131,22 +146,36 @@ def _process_block(cmds: tuple[TacCmd, ...]) -> tuple[list[TacCmd], int]:
         # so the assignment's RHS sort matches Q's declared sort —
         # same shape ``R6_CEILDIV`` uses for ``IntCeilDiv``. The wrapper
         # is a no-op type assertion the encoder treats as identity.
+        narrow_intdiv = ApplyExpr(
+            "Apply",
+            (
+                SymbolRef("safe_math_narrow_bv256:bif"),
+                ApplyExpr("IntDiv", (a_expr, b_expr)),
+            ),
+        )
         div_cmd = canonicalize_cmd(
             AssignExpCmd(
                 raw="",
                 lhs=q_lhs,
-                rhs=ApplyExpr(
-                    "Apply",
-                    (
-                        SymbolRef("safe_math_narrow_bv256:bif"),
-                        ApplyExpr("IntDiv", (a_expr, b_expr)),
-                    ),
-                ),
+                rhs=narrow_intdiv,
             )
         )
         replacements[replace_at_havoc] = assume_b_pos
         replacements[replace_at_le] = div_cmd
         drops.update(indices_to_drop)
+        # Trail substitution: at the original's ``Q = havoc``,
+        # ``ctac run --model`` evaluates this expression instead of
+        # falling back to the unconstrained sentinel. The rewriter
+        # may further DCE ``Q`` from the rewritten program (if its
+        # only uses go away), which is exactly the case where the
+        # SMT model has no value for ``Q`` and the trail is needed.
+        subs.append(
+            Substitution(
+                var=q_lhs,
+                replacement=narrow_intdiv,
+                rule="UnpurifyDiv",
+            )
+        )
         hits += 1
         i = max(indices_to_drop) + 1
 
@@ -158,7 +187,7 @@ def _process_block(cmds: tuple[TacCmd, ...]) -> tuple[list[TacCmd], int]:
             out.append(replacements[idx])
             continue
         out.append(cmd)
-    return out, hits
+    return out, hits, subs
 
 
 # ----- pattern matcher -----
