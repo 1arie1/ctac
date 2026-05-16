@@ -29,6 +29,7 @@ from ctac.rewrite.framework import RewriteResult, RuleHit, TraceEntry, TraceSink
 from ctac.rewrite.trail import Substitution, Trail, resolve_substitutions
 from ctac.rewrite.lift_dynamic_ite import lift_dynamic_ite_rhs
 from ctac.rewrite.materialize_assumes import materialize_assumes
+from ctac.rewrite.unpurify_div import unpurify_div
 from ctac.rewrite.rules import (
     CP_ALIAS,
     ITE_PURIFY,
@@ -68,6 +69,7 @@ def _print_report(
     total_cmds_after: int,
     materialize_hits: dict[str, int] | None = None,
     lift_dynamic_ite_hits: int = 0,
+    unpurified_div_count: int = 0,
 ) -> None:
     def line(s: str) -> None:
         c.print(s, markup=not plain)
@@ -84,6 +86,8 @@ def _print_report(
         line(f"  dce_removed: {dce_removed}")
         line(f"  commands_before: {total_cmds_before}")
         line(f"  commands_after: {total_cmds_after}")
+        if unpurified_div_count:
+            line(f"  unpurified_div: {unpurified_div_count}")
         if rewrite.substitutions:
             line(f"  substitutions_recorded: {len(rewrite.substitutions)}")
         if lift_dynamic_ite_hits:
@@ -101,6 +105,8 @@ def _print_report(
     line(f"  dce_removed: [bold]{dce_removed}[/bold]")
     line(f"  commands_before: {total_cmds_before}")
     line(f"  commands_after:  {total_cmds_after}")
+    if unpurified_div_count:
+        line(f"  unpurified_div: [bold]{unpurified_div_count}[/bold]")
     if lift_dynamic_ite_hits:
         line(f"  lifted_dynamic_ite: [bold]{lift_dynamic_ite_hits}[/bold]")
     if materialize_hits:
@@ -374,6 +380,15 @@ def rewrite_cmd(
         c.print(f"# input warning: {w}", markup=False)
 
     before_count = _command_count(tac.program)
+    # Phase -1: reverse the upstream pipeline's "Division purification"
+    # pattern (havoc Q + Euclidean assumes) into `Q = Div(A, B)`.
+    # Runs ONCE here, before any rewrite phase, so simplification and
+    # our own R4A_DIV_PURIFY see the natural Div shape instead of
+    # upstream's ``tacTmp!div...`` tmps. Pure pattern-recognition;
+    # no fixed point needed.
+    unpurify_res = unpurify_div(tac.program)
+    starting_program = unpurify_res.program
+    unpurified_count = unpurify_res.hits
     with _open_trace_file(trace) as trace_fh:
         trace_sink = _make_trace_sink(trace_fh)
         # Phase 0: chain recognition (R6's ceildiv idiom + bit-op
@@ -383,7 +398,7 @@ def rewrite_cmd(
         # chain's `Sub(R_high, Ite(...))` before R6 can match the outer
         # IntAdd, silently disabling R6.
         phase0 = rewrite_program(
-            tac.program,
+            starting_program,
             chain_recognition_pipeline,
             max_iterations=max_iterations,
             ite_max_depth=ite_max_depth,
@@ -599,6 +614,7 @@ def rewrite_cmd(
             total_cmds_after=after_count,
             materialize_hits=materialize_hits,
             lift_dynamic_ite_hits=lift_hits,
+            unpurified_div_count=unpurified_count,
         )
 
     # Prune symbol-table declarations whose AssignExpCmd was DCE'd so
