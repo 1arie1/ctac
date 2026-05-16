@@ -246,8 +246,20 @@ def _parse_model_root(model_text: str) -> list[object]:
     if not tokens:
         return []
     node, i = _parse_sexpr(tokens, 0)
-    if i != len(tokens):
-        raise ValueError("trailing tokens after model")
+    # ``z3 -st`` appends a stats block after the model, shaped as a
+    # single S-expression whose first element is a ``:keyword``:
+    # ``(:added-eqs 64756 :time 0.70 :total-time 0.69)``. There may
+    # be more than one such block (e.g. across multiple check-sat
+    # calls). Skip them so the parser tolerates statistics-enabled
+    # solver output without ceremony. Anything else after the model
+    # remains a hard error.
+    while i < len(tokens):
+        if tokens[i] != "(":
+            raise ValueError("trailing tokens after model")
+        peek = tokens[i + 1] if i + 1 < len(tokens) else None
+        if peek is None or not isinstance(peek, str) or not peek.startswith(":"):
+            raise ValueError("trailing tokens after model")
+        _stats, i = _parse_sexpr(tokens, i)
     if not isinstance(node, list):
         raise ValueError("model root must be a list")
     return node
