@@ -324,7 +324,7 @@ def run_cover_cfg(*,
                     ctac_bin: str = 'ctac',
                     cluster_z3_args: Sequence[str] = (),
                     abort_on_timeout: bool = False,
-                    disable_forbids: bool = False,
+                    disable_forbids: bool = True,
                     log: Sequence[Path] | None = None,
                     on_event: Callable[[str], None] | None = None,
                     ) -> CoverResult:
