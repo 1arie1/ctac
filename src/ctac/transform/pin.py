@@ -797,11 +797,33 @@ def _drop_cfg_surgery(
             new_blocks.append(b)
             continue
 
+        # Soundness: the JumpiCmd encoded "if cond goto then else goto
+        # else". Replacing it with `JumpCmd keep_target` discards the
+        # control-flow choice but leaves the condition variable
+        # unconstrained. The pinned program then admits executions
+        # where cond's value disagrees with the path actually taken
+        # — impossible in the original. Inject an AssumeExpCmd before
+        # the new JumpCmd that constrains cond to the branch we kept:
+        #   keep_target == then_target  →  assume cond
+        #   keep_target == else_target  →  assume (not cond)
+        # The assume is `true` (vacuous) in the static-eval-constant
+        # case (cond bound to the matching literal in subs); rw will
+        # eliminate it. The TEST scope is broader: any time we
+        # collapse a JumpiCmd, we must record the dropped branch's
+        # negative.
+        cond_expr: TacExpr = SymbolRef(last.condition)
+        if keep_target == last.then_target:
+            assume_expr: TacExpr = cond_expr
+        else:
+            assume_expr = ApplyExpr("LNot", (cond_expr,))
+        new_assume = canonicalize_cmd(
+            AssumeExpCmd(raw="", condition=assume_expr)
+        )
         # canonicalize_cmd unparses the AST into a non-empty raw line;
         # render_program writes this verbatim, so leaving raw="" would
         # serialize as a blank line and re-parse as an empty RawCmd.
         new_jump = canonicalize_cmd(JumpCmd(raw="", target=keep_target))
-        new_cmds = list(b.commands[:-1]) + [new_jump]
+        new_cmds = list(b.commands[:-1]) + [new_assume, new_jump]
         new_blocks.append(
             TacBlock(
                 id=b.id,

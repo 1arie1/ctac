@@ -206,6 +206,75 @@ def test_drop_surgery_jumpi_with_constant_condition():
     assert e.commands[-1].target == "a"
 
 
+def test_drop_surgery_then_dropped_injects_assume_not_cond():
+    """When then_target is dead and we fold to else, inject
+    `AssumeExpCmd (not cond)` before the new JumpCmd so the condition
+    is constrained to match the branch we kept. Without this, pin's
+    slice is an over-approximation: downstream uses of the condition
+    (e.g. `R = Ite(cond, ...)`) might be folded inconsistently with
+    the chosen branch, leading to spurious SAT models."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [exit] {\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock b Succ [exit] {\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n"
+        ),
+        path="<s>",
+    )
+    out = _drop_cfg_surgery(tac.program, frozenset({"a"}), {}, {})
+    e = out.blocks[0]
+    # The folded block has [..., AssumeExpCmd (not B0), JumpCmd b].
+    assert len(e.commands) >= 2
+    assert isinstance(e.commands[-1], JumpCmd)
+    assert e.commands[-1].target == "b"
+    assert isinstance(e.commands[-2], AssumeExpCmd)
+    cond = e.commands[-2].condition
+    assert isinstance(cond, ApplyExpr) and cond.op == "LNot"
+    assert isinstance(cond.args[0], SymbolRef)
+    assert cond.args[0].name == "B0"
+    # The injected assume must have a non-empty raw so render_program
+    # emits a real line.
+    assert e.commands[-2].raw.strip() != ""
+
+
+def test_drop_surgery_else_dropped_injects_assume_cond():
+    """Mirror of the above: else dropped → keep then → assume cond."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [a, b] {\n"
+            "\t\tJumpiCmd a b B0\n"
+            "\t}\n"
+            "\tBlock a Succ [exit] {\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock b Succ [exit] {\n"
+            "\t\tJumpCmd exit\n"
+            "\t}\n"
+            "\tBlock exit Succ [] {\n"
+            "\t\tNoSuchCmd\n"
+            "\t}\n"
+        ),
+        path="<s>",
+    )
+    out = _drop_cfg_surgery(tac.program, frozenset({"b"}), {}, {})
+    e = out.blocks[0]
+    assert isinstance(e.commands[-1], JumpCmd)
+    assert e.commands[-1].target == "a"
+    assert isinstance(e.commands[-2], AssumeExpCmd)
+    cond = e.commands[-2].condition
+    # Direct SymbolRef, no LNot.
+    assert isinstance(cond, SymbolRef) and cond.name == "B0"
+
+
 def test_drop_surgery_unconditional_jump_to_dead_raises():
     """Phase 1 contract: unconditional jump to dead means caller is dead too."""
     tac = parse_string(
