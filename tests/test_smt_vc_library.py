@@ -679,6 +679,7 @@ def test_partial_axioms_default_scoped_total_axioms_default_global() -> None:
     n = vc.const("N", Int)
     n_compound = vc.const("NC", Int)
     r = vc.const("R", Int)
+    r_compound = vc.const("RC", Int)
     m0 = vc.bytemap.havoc("M0")
 
     with vc.block("mid") as b:
@@ -692,14 +693,14 @@ def test_partial_axioms_default_scoped_total_axioms_default_global() -> None:
         # partial axiom on the inner narrow's anonymous result must
         # be scoped.
         b.def_(n_compound, vc.ops.bv256.add(a, vc.ops.narrow.bv256(y)))
-        # Bytemap select: rule 8 says it's partial. Under default
-        # placement (no --guard-axioms) the select_range fact stays
-        # global (it's the only partial axiom not yet routed through
-        # rule-7-aware emission). The cover's pipeline uses
-        # --guard-statics, which scopes the *defs* — the unguarded
-        # select_range then attaches to a scoped-def LHS and is
-        # vacuous when the block is bypassed.
+        # Rule 7 case for bytemap: R := Select(M0, X) — R is the
+        # bound LHS of a scoped def, so the partial select_range
+        # axiom stays global.
         b.def_(r, vc.bytemap.select(m0, x))
+        # Non-rule-7 case for bytemap: RC := A + Select(M0, Y) —
+        # the Select's bound result is NOT RC (RC is the add's
+        # result), so the select_range axiom must be scoped.
+        b.def_(r_compound, vc.ops.bv256.add(a, vc.bytemap.select(m0, y)))
 
     text = render_vc_script(vc.script())
 
@@ -714,6 +715,13 @@ def test_partial_axioms_default_scoped_total_axioms_default_global() -> None:
     assert (
         "(=> BLK_mid (lemma_narrow_bv256_range (narrow.bv256 Y)))" in text
     )
+    # Rule 7 for bytemap: R bound to scoped def → select_range global.
+    assert "(assert (int.in_bv256 R))" in text
+    assert "(=> BLK_mid (int.in_bv256 R))" not in text
+    # Non-rule-7 for bytemap: Select inside compound RHS → scoped.
+    # The Select's raw_result is `(M0 Y)` (not bound to RC), so the
+    # range axiom carries the raw form under a BLK_mid guard.
+    assert "(=> BLK_mid (int.in_bv256 (M0 Y)))" in text
 
 
 def test_guard_axioms_scopes_total_axioms_uniformly() -> None:

@@ -25,10 +25,20 @@ class SelectSite:
     raw_result: Term
     bound_result: Term | None = None
     scope: Any = None
-    """Scope at the call site — used so the per-application range
-    axiom can be guarded under --guard-axioms. See journal/2026-05/
-    2026-05-17-sea-partial-defs-unsoundness.md (rule 8: Select is a
-    partial operator)."""
+    """Scope at the call site — recorded so the per-application
+    range axiom can be guarded per rule 4 (default scoped) and
+    rule 7 (relaxed to global when the result is bound to a
+    scoped-def LHS). Bytemap Select intentionally lives outside
+    the `Ops` / `LemmaSchema` machinery — we want freedom to
+    explore minimizing memory axiom instantiations — so its rule
+    4/5/7 routing is handled directly in `finalize`."""
+    bound_def_scoped: bool = False
+    """Rule 7 flag. `BlockBuilder._bind_direct_result` sets this
+    when this Select's bound_result is the LHS of a scoped (block-
+    guarded) static def. Then the range axiom can stay global:
+    when the block is bypassed the LHS is free, the range is
+    trivially satisfied, and no constraint propagates onto shared
+    bytemap values."""
 
     def result_for_range(self) -> Term:
         return self.bound_result or self.raw_result
@@ -90,14 +100,21 @@ class UfDefineFunBytemap:
             raise ValueError(f"unknown bytemap select_range {self.config.select_range!r}")
         for site in self.select_sites:
             result = site.result_for_range()
-            # Under --guard-axioms, scope to the originating block so
-            # the partial range axiom is vacuous when the block is
-            # bypassed (Select is a partial operator per rule 8).
-            # Without --guard-axioms the fact uses scope=None and lands
-            # at top level — sound only when the def that introduced
-            # the Select is itself scoped (the cover requires
-            # --guard-statics in DEFAULT_SMT_FLAGS).
-            scope = site.scope if self.vc.config.guard_axioms else None
+            # Rule 4: Select is partial (rule 8), so its range axiom
+            # is scoped to the call's block by default. Rule 7: if
+            # the Select's result is bound to the LHS of a scoped
+            # def, the axiom can stay global — when the block is
+            # bypassed the LHS is free and the range constraint is
+            # trivially satisfied. This is the common pattern
+            # `R := Select(M, idx)` and keeps loose bv256 bounds in
+            # scope for NLA without unsoundness.
+            #
+            # --guard-axioms (the uniform-scoping mode) does NOT
+            # override rule 7 here — same policy as the lemma path
+            # in `generate_lemma_instances`. Partial axioms are
+            # always conservative (scoped) except for the explicit
+            # rule-7 relaxation.
+            scope = None if site.bound_def_scoped else site.scope
             self.vc.fact(
                 FactKind.RANGE,
                 self.vc.bv_range(256, result),
