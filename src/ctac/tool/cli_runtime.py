@@ -751,6 +751,53 @@ NOT YET PROJECT-AWARE: `stats`, `cfg`, `search`, `slice`, `df`,
 either the friendly symlink (`mytac/in.rw.tac`) or
 `$(ctac prj export-path mytac)`.
 """,
+    "cover-cfg": """ctac cover-cfg --agent
+
+WHAT: Sound CFG cover for single-assert TAC VCs. Decomposes the
+program into clusters by sampling random entry→assert paths and
+clustering them; solves each cluster's wider sub-problem; on
+first SAT cluster, returns SAT (first-SAT-wins). Otherwise runs a
+completeness CEGAR loop with a PB linear-path probe; UNSAT means
+every CFG path is covered. Residuals (clusters that didn't close
+in budget) are emitted as `Subgoal`s with hardness diagnosis.
+
+WHY BEAT MANUAL: random splits + heuristic budgets can close a
+big VC by ~10x wall time, BUT the result is a *sound certificate*
+— `ctac verify-cover` re-runs every sub-solve and the completeness
+probe; passing ⇒ verdict holds regardless of search bugs. Hand-
+written splits skip this audit trail.
+
+PRECONDITIONS: single AssertCmd (`ctac ua` first if many); loop-
+free TAC (DAG CFG). Both checked at load time.
+
+CANONICAL INVOCATIONS:
+- default:     ctac cover-cfg f.tac -o cover/ --plain
+- tight budget: ctac cover-cfg f.tac -o cover/ --samples 16 --budget 15
+- many seeds:   ctac cover-cfg f.tac -o cover/ --workers 8 --seed 42
+
+OUTPUT (under -o):
+- manifest.json   — Certificate (SAT/UNSAT/unknown) for verify-cover
+- rerun.sh        — bash audit script (re-runs without ctac)
+- report.md       — human summary
+- cluster_<i>/    — per-cluster {pinned.tac, pinned.rw.tac, v.smt2,
+                    pin.cmd, rw.cmd, smt.cmd}
+- completeness/   — probe smt2 per loop iteration
+- subgoals/<id>.json — residuals (only when verdict=unknown)
+
+KEY FLAGS:
+- --samples N         random-path sample count (default 32)
+- --k N               cluster count (default: max(3, samples/4))
+- --budget SECS       per-cluster z3 timeout (default 30)
+- --absorb-budget SECS  short-budget probe for cluster widening (8)
+- --absorb-threshold N  max |π \\ K_j| for absorption (5)
+- --completeness-iter N  max CEGAR loop iters (30)
+- --workers N         parallel cluster solver count (4)
+
+EXIT: 0 for sat/unsat verdict, 2 for unknown (residual subgoals).
+
+VERIFY: ALWAYS run `ctac verify-cover cover/manifest.json` after
+the cover. The cover is only sound iff verify-cover exits 0.
+""",
     "smtlib": """ctac smtlib --agent
 
 WHAT: Inspect / pretty-print / sanity-check SMT-LIB v2 files (typically

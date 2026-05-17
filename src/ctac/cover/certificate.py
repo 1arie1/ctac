@@ -352,7 +352,7 @@ _RERUN_HEADER = """#!/usr/bin/env bash
 # Soundness: matching verdicts here ⇒ the cover verdict is sound,
 # regardless of how the cover was produced.
 
-set -euo pipefail
+set -eu
 Z3="${Z3:-z3}"
 FAIL=0
 
@@ -361,8 +361,12 @@ run_check() {
     local label="$1"; shift
     local expected="$1"; shift
     echo "[check] $label ..."
+    # Capture all output to a variable then extract first line.
+    # Avoids `awk ... exit` + SIGPIPE interaction with `set -e`.
+    local out
+    out=$("$@" 2>&1 || true)
     local got
-    got=$("$@" 2>/dev/null | awk 'NR==1{print; exit}')
+    got=$(printf '%s\\n' "$out" | head -n 1 | tr -d '[:space:]')
     if [[ "$got" == "$expected" ]]; then
         echo "[ ok ] $label = $got"
     else
