@@ -4,6 +4,7 @@ Subcommands:
   ctac smtlib stats     <FILE>           # statement-kind counts, sizes, chains
   ctac smtlib pp        <FILE>           # pretty-print via the Doc algebra
   ctac smtlib roundtrip <FILE>           # parse + emit; check byte-identical
+  ctac smtlib slice     <FILE>           # filter by --kinds / --range
 """
 from __future__ import annotations
 
@@ -21,11 +22,14 @@ from ctac.solver.smt2 import (
     PpPolicy,
     SetLogic,
     SetOption,
+    Smt2Statement,
     emit,
     parse,
     pp,
+    pp_statement,
     scan_uf_arguments,
 )
+from ctac.solver.smt2.doc import render as doc_render
 from ctac.solver.smt2.sexpr import Atom, List_
 from ctac.tool.cli_runtime import (
     INSPECT_PANEL,
@@ -37,14 +41,39 @@ from ctac.tool.cli_runtime import (
 )
 
 
+_SMTLIB_EPILOG = (
+    "[bold green]First look[/bold green]  "
+    "[cyan]ctac smtlib stats f.smt2 --plain[/cyan]  "
+    "command-kind counts + bytemap chains.\n\n"
+    "[bold green]Pretty-print[/bold green]  "
+    "[cyan]ctac smtlib pp f.smt2 -w 100 -o out.smt2[/cyan]  "
+    "policy-driven re-emit.\n\n"
+    "[bold green]Sanity check[/bold green]  "
+    "[cyan]ctac smtlib roundtrip f.smt2[/cyan]  "
+    "parse + emit; verify byte-identical."
+)
+
+
 # A sub-app so subcommands look like `ctac smtlib stats <file>`
 smtlib_app = typer.Typer(
     no_args_is_help=True,
     help='Inspect / pretty-print / transform SMT-LIB v2 files.',
     rich_markup_mode='rich',
+    epilog=_SMTLIB_EPILOG,
 )
 app.add_typer(smtlib_app, name='smtlib', rich_help_panel=INSPECT_PANEL,
                 help='Inspect SMT-LIB v2 files (stats / pp / roundtrip).')
+
+
+@smtlib_app.callback(invoke_without_command=True)
+def _smtlib_callback(
+    ctx: typer.Context,
+    agent: bool = agent_option(),
+) -> None:
+    # Mirrors the top-level `ctac --agent` callback so users can run
+    # `ctac smtlib --agent` and get the group-level agent guide instead
+    # of typer's "missing subcommand" error.
+    _ = (ctx, agent)
 
 
 # ---- stats -----------------------------------------------------------------
@@ -284,6 +313,106 @@ def cmd_pp(
         # Print raw; avoid rich's word-wrapping
         import sys
         sys.stdout.write(text_out)
+
+
+# ---- slice -----------------------------------------------------------------
+
+
+# All concrete Smt2Statement names. Keep in sync with parser.py — used
+# to validate `--kinds` input.
+_KNOWN_KINDS = frozenset({
+    'SetOption', 'SetLogic',
+    'DeclareConst', 'DeclareFun', 'DefineFun',
+    'Assert',
+    'CheckSat', 'CheckSatUsing', 'Apply',
+    'GetModel', 'GetInfo', 'GetValue', 'GetUnsatCore',
+    'Push', 'Pop', 'Exit',
+    'Comment', 'Raw',
+})
+
+
+def _parse_range(spec: str, n: int) -> tuple[int, int]:
+    """`--range I-J` (0-based, inclusive) → clamped (lo, hi). `J` may
+    exceed `n-1`; we clamp."""
+    if '-' not in spec:
+        raise typer.BadParameter(f'range must be `I-J`, got {spec!r}')
+    lo_s, hi_s = spec.split('-', 1)
+    lo = int(lo_s)
+    hi = int(hi_s)
+    if lo < 0 or hi < lo:
+        raise typer.BadParameter(f'range {spec!r}: need 0 <= I <= J')
+    return lo, min(hi, n - 1)
+
+
+@smtlib_app.command('slice',
+                     help='Filter statements by --kinds / --range and pretty-print.')
+def cmd_slice(
+    smt2: Path = typer.Argument(..., exists=True, dir_okay=False,
+                                  help='SMT2 input file.'),
+    kinds_spec: Optional[str] = typer.Option(
+        None, '--kinds',
+        help='Comma-separated statement kinds to keep '
+              '(Assert, DeclareConst, DefineFun, SetOption, Comment, ...). '
+              'Unknown names are rejected. Defaults to all.'),
+    range_spec: Optional[str] = typer.Option(
+        None, '--range',
+        help='Statement index range I-J (0-based, inclusive on both ends).'),
+    width: int = typer.Option(100, '--width', '-w',
+                                help='Soft target line width.'),
+    no_comments: bool = typer.Option(False, '--no-comments',
+                                       help='Drop `;` comment blocks from output.'),
+    output: Optional[Path] = typer.Option(
+        None, '-o', '--output',
+        help='Write to PATH instead of stdout.'),
+    plain: bool = typer.Option(False, '--plain', help=PLAIN_HELP),
+    agent: bool = agent_option(),
+) -> None:
+    _ = agent
+    cons = console(plain_requested(plain))
+    f = parse(smt2)
+    n = len(f.statements)
+
+    # Validate --kinds
+    keep_kinds: Optional[frozenset[str]] = None
+    if kinds_spec is not None:
+        names = [s.strip() for s in kinds_spec.split(',') if s.strip()]
+        unknown = [s for s in names if s not in _KNOWN_KINDS]
+        if unknown:
+            raise typer.BadParameter(
+                f'unknown --kinds: {", ".join(unknown)}. '
+                f'Known: {", ".join(sorted(_KNOWN_KINDS))}')
+        keep_kinds = frozenset(names)
+
+    # Validate --range
+    lo, hi = (0, n - 1) if range_spec is None else _parse_range(range_spec, n)
+
+    policy = PpPolicy(width=width, show_comments=not no_comments)
+
+    # Filter: index in [lo, hi] AND kind in keep_kinds (if set)
+    selected: list[tuple[int, Smt2Statement]] = []
+    for i, stmt in enumerate(f.statements):
+        if i < lo or i > hi:
+            continue
+        if keep_kinds is not None and type(stmt).__name__ not in keep_kinds:
+            continue
+        selected.append((i, stmt))
+
+    # Render. One blank line between statements (mirrors emit / pp).
+    parts: list[str] = []
+    for _, stmt in selected:
+        parts.append(doc_render(pp_statement(stmt, policy), width=width))
+    text_out = '\n'.join(parts)
+    if text_out and not text_out.endswith('\n'):
+        text_out += '\n'
+
+    if output:
+        output.write_text(text_out)
+        cons.print(f'wrote {output} ({len(selected)} / {n} statements, '
+                    f'{len(text_out)} bytes)')
+        return
+
+    import sys
+    sys.stdout.write(text_out)
 
 
 # ---- roundtrip -------------------------------------------------------------

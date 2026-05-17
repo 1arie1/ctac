@@ -751,13 +751,80 @@ NOT YET PROJECT-AWARE: `stats`, `cfg`, `search`, `slice`, `df`,
 either the friendly symlink (`mytac/in.rw.tac`) or
 `$(ctac prj export-path mytac)`.
 """,
+    "smtlib": """ctac smtlib --agent
+
+WHAT: Inspect / pretty-print / sanity-check SMT-LIB v2 files (typically
+the output of `ctac smt`). Three subcommands:
+  stats     statement-kind counts, declare-const sort distribution,
+            bytemap-chain depths, UF argument scan
+  pp        pretty-print via the Doc algebra (Wadler-style),
+            configurable target width; `-o` writes to a file
+  roundtrip parse then emit; verify result is byte-identical to source
+            (sanity check for the round-trip emitter)
+
+WHY BEAT MANUAL: `wc -l f.smt2` doesn't surface statement structure
+and `less` loses the forest for the trees. The parser is typed
+(DeclareConst, DefineFun, Assert, ...), strips the `(! ... :named X)`
+wrapper for named asserts, recognizes bytemap chain `define-fun`s,
+and scans UF argument shapes — those are the entry-points for
+alias-cover analysis. Pretty-printer is policy-driven so a re-emit
+matches your reading style without touching semantics.
+
+TYPICAL:
+  ctac smtlib stats f.smt2 --plain         # first look at any .smt2
+  ctac smtlib pp f.smt2 -w 100 -o out.smt2 # clean re-emit, narrower lines
+  ctac smtlib pp f.smt2 --no-comments      # drop `;` comment blocks
+  ctac smtlib roundtrip f.smt2 --plain     # parse/emit fidelity check
+
+INTERPRETING `stats`:
+- `command_kinds`: counts per top-level command kind (Assert,
+  DeclareConst, DefineFun, SetOption, ...).
+- `asserts.named: K / N`: K of N asserts wear `(! ... :named X)` —
+  named asserts are what `(get-unsat-core)` reports back.
+- `declare_const.sorts`: distribution over Int / Bool / `(Array Int Int)`
+  / ... — useful to spot mixed sort universes.
+- `bytemap_chains`: number and depth statistics for chain `define-fun`s
+  `(define-fun M_n ((idx Int)) Int (ite (= idx K) V (M_{n-1} idx)))` —
+  deep chains are where the store-over-store reductions earn their keep.
+- `uf_args.unique_t_vars`: |T| — the set of declared symbolic indices
+  used at any chain-leaf UF read site. T is the universe the
+  alias-cover analysis quantifies over.
+
+PRECONDITIONS: SMT-LIB v2 input; no `let`-bindings or quantifiers
+required to be inside command bodies (the corpus we target has
+neither). Bodies parse to S-expr trees; only command heads are typed.
+
+PLAIN MODE: deterministic line-per-key output (under `--plain`),
+suitable for piping into other tools.
+
+PARSER NOTES: `Smt2LexError` / `Smt2ParseError` carry
+`(pos, line, col)`. The parser keeps source spans on every node so
+unchanged statements emit byte-identical via slicing; mutated
+statements re-render through the Doc-algebra pretty-printer.
+
+OUTPUT WRITE: only `pp -o PATH` writes a file; `stats` and `roundtrip`
+print to stdout (use `> file` to redirect).
+""",
 }
+
+
+# Sub-app namespaces with their own guide. When the path is inside one
+# (e.g. `ctac smtlib stats`), the namespace's guide wins so leaf tokens
+# that collide with top-level commands (here `stats`) don't return the
+# wrong page.
+_AGENT_SUBAPP_NAMESPACES = ('smtlib',)
 
 
 def _agent_guide_text(ctx: typer.Context | None) -> str:
     if ctx is None:
         return _AGENT_GUIDE_MAIN
     path = (ctx.command_path or "").strip().split()
+    # Sub-app namespace short-circuit: if the path is inside a known
+    # sub-app with its own guide, return that guide regardless of leaf
+    # tokens.
+    for ns in _AGENT_SUBAPP_NAMESPACES:
+        if ns in path and ns in _AGENT_GUIDE_BY_CMD:
+            return _AGENT_GUIDE_BY_CMD[ns]
     # Walk from most-specific to least: ``ctac prj init --agent``
     # tries ``init`` then ``prj`` then falls through to the main
     # guide. Sub-app commands without their own entry inherit the

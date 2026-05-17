@@ -5,7 +5,6 @@ import re
 
 from ctac.solver.smt2 import (
     Assert,
-    CheckSat,
     DeclareFun,
     DefineFun,
     append_assert,
@@ -16,7 +15,6 @@ from ctac.solver.smt2 import (
     scan_uf_arguments,
     strip_check_sat,
 )
-from ctac.solver.smt2.sexpr import Atom
 
 
 # ---- memory_abstract -------------------------------------------------------

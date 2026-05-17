@@ -401,6 +401,10 @@ Prompt template:
     - `ctac smtlib roundtrip <file>` — parse then emit; reports
       byte-identical or the first diff position. Sanity check for
       the parser; useful when bisecting suspected emit bugs.
+    - `ctac smtlib slice <file> --kinds K1,K2 --range I-J` — view a
+      subset of statements; combine `--kinds` (Assert, DeclareConst,
+      DefineFun, ...) with a `--range I-J` (0-based, inclusive)
+      index window. `-o PATH` writes the slice to a file.
   - The library at `ctac.solver.smt2` powers more transformations
     (memory_abstract, scan_uf_arguments, name_asserts, append_assert)
     that aren't yet CLI-surfaced — used internally by alias-cover work.

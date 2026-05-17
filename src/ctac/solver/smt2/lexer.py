@@ -58,7 +58,7 @@ _SYMBOL_CHARS = set('abcdefghijklmnopqrstuvwxyz'
                      '~!@$%^&*_-+=<>.?/')
 
 
-def _line_col(src: str, pos: int) -> tuple[int, int]:
+def line_col(src: str, pos: int) -> tuple[int, int]:
     """1-based line and column for a byte offset (linear scan; only used
     on errors so cost doesn't matter)."""
     line = src.count('\n', 0, pos) + 1
@@ -104,7 +104,7 @@ def tokenize(src: str) -> Iterator[Token]:
             start = i
             j = src.find('|', i + 1)
             if j < 0:
-                line, col = _line_col(src, i)
+                line, col = line_col(src, i)
                 raise Smt2LexError('unterminated |...| quoted symbol', i, line, col)
             yield Token(TokenKind.QUOTED_SYMBOL, src[start:j + 1], start, j + 1)
             i = j + 1
@@ -122,7 +122,7 @@ def tokenize(src: str) -> Iterator[Token]:
                     break
                 j += 1
             if j >= n:
-                line, col = _line_col(src, i)
+                line, col = line_col(src, i)
                 raise Smt2LexError('unterminated string literal', i, line, col)
             yield Token(TokenKind.STRING, src[start:j + 1], start, j + 1)
             i = j + 1
@@ -134,7 +134,7 @@ def tokenize(src: str) -> Iterator[Token]:
             while j < n and src[j] in '0123456789abcdefABCDEF':
                 j += 1
             if j == start + 2:
-                line, col = _line_col(src, i)
+                line, col = line_col(src, i)
                 raise Smt2LexError('empty hex literal', i, line, col)
             yield Token(TokenKind.HEX, src[start:j], start, j)
             i = j
@@ -145,7 +145,7 @@ def tokenize(src: str) -> Iterator[Token]:
             while j < n and src[j] in '01':
                 j += 1
             if j == start + 2:
-                line, col = _line_col(src, i)
+                line, col = line_col(src, i)
                 raise Smt2LexError('empty binary literal', i, line, col)
             yield Token(TokenKind.BINARY, src[start:j], start, j)
             i = j
@@ -157,7 +157,7 @@ def tokenize(src: str) -> Iterator[Token]:
             while j < n and src[j] in _SYMBOL_CHARS:
                 j += 1
             if j == start + 1:
-                line, col = _line_col(src, i)
+                line, col = line_col(src, i)
                 raise Smt2LexError('empty keyword', i, line, col)
             yield Token(TokenKind.KEYWORD, src[start:j], start, j)
             i = j
@@ -187,7 +187,7 @@ def tokenize(src: str) -> Iterator[Token]:
             i = j
             continue
         # Unknown character
-        line, col = _line_col(src, i)
+        line, col = line_col(src, i)
         raise Smt2LexError(f'unexpected character {c!r}', i, line, col)
 
     yield Token(TokenKind.EOF, '', n, n)

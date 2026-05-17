@@ -229,12 +229,15 @@ def parse(src_or_path: str | Path) -> Smt2File:
     nodes = parse_sexprs(src)
     statements: list[Smt2Statement] = []
     for node in nodes:
-        statements.append(_dispatch(node))
+        statements.append(_dispatch(node, src))
     return Smt2File(statements=statements, source=src, path=path)
 
 
-def _dispatch(node: SexprNode) -> Smt2Statement:
-    """Convert one top-level SexprNode into a typed Smt2Statement."""
+def _dispatch(node: SexprNode, src: str) -> Smt2Statement:
+    """Convert one top-level SexprNode into a typed Smt2Statement.
+
+    Re-raises any `Smt2ParseError` from a handler with `src` attached so
+    the message carries 1-based line/col (handlers don't see `src`)."""
     if isinstance(node, CommentBlock):
         return Comment(lines=list(node.lines), span=node.span)
     if not isinstance(node, List_):
@@ -246,7 +249,12 @@ def _dispatch(node: SexprNode) -> Smt2Statement:
     handler = _HEAD_DISPATCH.get(head)
     if handler is None:
         return Raw(node=node, span=node.span)
-    return handler(node)
+    try:
+        return handler(node)
+    except Smt2ParseError as e:
+        if e.line is None:
+            raise Smt2ParseError(e.msg, e.pos, src=src) from None
+        raise
 
 
 # ---- Per-command handlers ---------------------------------------------------

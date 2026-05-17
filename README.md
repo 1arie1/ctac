@@ -93,6 +93,7 @@ ctac search f.tac 'BWAnd' --plain -q --count  # pipeable; awk on `matches:`
 ctac smtlib stats f.smt2 --plain  # for .smt2 inputs: kinds, sorts,
                                   # bytemap chain depth, UF-arg vars
 ctac smtlib pp f.smt2 --width 100  # pretty-print via Doc algebra
+ctac smtlib slice f.smt2 --kinds Assert --range 0-200  # filter view
 ctac smtlib roundtrip f.smt2  # parse + emit; check byte-identical
 ```
 

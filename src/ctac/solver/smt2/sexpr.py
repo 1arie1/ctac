@@ -14,7 +14,7 @@ from __future__ import annotations
 from abc import ABC
 from dataclasses import dataclass, field
 
-from ctac.solver.smt2.lexer import Token, TokenKind, tokenize
+from ctac.solver.smt2.lexer import Token, TokenKind, line_col, tokenize
 
 
 class SexprNode(ABC):
@@ -61,9 +61,27 @@ class CommentBlock(SexprNode):
 
 
 class Smt2ParseError(Exception):
-    def __init__(self, msg: str, pos: int) -> None:
-        super().__init__(f'{msg} at offset {pos}')
+    """Raised by sexpr / parser when input is malformed.
+
+    `src` is optional: when supplied, we compute 1-based line/col for
+    the error position and include them in the message (mirroring
+    `Smt2LexError`). When omitted, only `pos` is shown and `line`/`col`
+    are `None`.
+    """
+
+    def __init__(self, msg: str, pos: int, src: str | None = None) -> None:
+        self.msg = msg
         self.pos = pos
+        if src is not None:
+            line, col = line_col(src, pos)
+            self.line: int | None = line
+            self.col: int | None = col
+            super().__init__(
+                f'{msg} at line {line}, column {col} (offset {pos})')
+        else:
+            self.line = None
+            self.col = None
+            super().__init__(f'{msg} at offset {pos}')
 
 
 def parse_sexprs(src: str) -> list[SexprNode]:
@@ -133,9 +151,9 @@ class _Parser:
         if t.kind is TokenKind.LPAREN:
             return self._parse_list()
         if t.kind is TokenKind.RPAREN:
-            raise Smt2ParseError('unexpected )', t.start)
+            raise Smt2ParseError('unexpected )', t.start, src=self.src)
         if t.kind is TokenKind.EOF:
-            raise Smt2ParseError('unexpected EOF', t.start)
+            raise Smt2ParseError('unexpected EOF', t.start, src=self.src)
         if t.kind is TokenKind.COMMENT:
             # Comment inside a form — keep as a single-line CommentBlock
             self._advance()
@@ -154,5 +172,6 @@ class _Parser:
                 rp = self._advance()
                 return List_(children=children, span=(lp.start, rp.end))
             if t.kind is TokenKind.EOF:
-                raise Smt2ParseError('unterminated list (missing `)`)', lp.start)
+                raise Smt2ParseError('unterminated list (missing `)`)',
+                                      lp.start, src=self.src)
             children.append(self._parse_one())
