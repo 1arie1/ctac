@@ -51,6 +51,7 @@ from typing import Literal
 from ctac.cover.certificate import (
     ClusterRecord,
     CompletenessProof,
+    CoverMetadata,
     Decomposition,
     ProgramReplayPlan,
     SatCertificate,
@@ -66,6 +67,8 @@ from ctac.cover.cfg.cluster import Cluster, auto_k, cluster_paths
 from ctac.cover.cfg.completeness import derive_path_from_model, emit_probe
 from ctac.cover.cfg.core_blocks import core_blocks_from_stdout
 from ctac.cover.cfg.materialize import (
+    DEFAULT_RW_FLAGS,
+    DEFAULT_SMT_FLAGS,
     ClusterArtifacts,
     MaterializeError,
     materialize_cluster,
@@ -76,7 +79,7 @@ from ctac.ir.models import NBId
 from ctac.solver.config import Z3Config
 from ctac.solver.race import RaceResult, RaceTask, race
 from ctac.solver.runner import Z3RunResult
-from ctac.solver.z3 import resolve_z3_bin
+from ctac.solver.z3 import resolve_z3_bin, solve as solver_solve
 
 
 # -------------------------------- Config -------------------------------------
@@ -179,17 +182,47 @@ def _solve_clusters_parallel(states: list[ClusterState], *,
 
 def _solve_one(smt2: Path, *, budget_s: int,
                 z3_bin: Path) -> tuple[str, float, list[str], str, str]:
-    """One-shot z3 invocation. Returns (verdict, wall_s, argv, stdout,
-    stderr). Used by absorption + singleton+core paths where the race
-    machinery is overkill."""
-    argv = [str(z3_bin), f'-T:{budget_s}', '-st', '-smt2', str(smt2)]
-    t0 = time.time()
-    proc = subprocess.run(argv, capture_output=True, text=True,
-                            timeout=budget_s + 10)
-    wall = time.time() - t0
-    first = proc.stdout.strip().split('\n', 1)[0] if proc.stdout else ''
-    verdict = first if first in ('sat', 'unsat', 'unknown') else 'unknown'
-    return verdict, wall, argv, proc.stdout, proc.stderr
+    """One-shot z3 invocation via `ctac.solver.z3.solve()`. Returns
+    (verdict, wall_s, argv, stdout, stderr). Used by absorption +
+    singleton+core paths where the race machinery is overkill."""
+    res = solver_solve(smt2, timeout_s=budget_s, z3_bin=z3_bin)
+    return res.verdict, res.wall_s, res.argv, res.stdout, res.stderr
+
+
+def _persistent_args(argv: list[str] | tuple[str, ...],
+                       smt2_path: str | Path) -> tuple[str, ...]:
+    """Strip the binary, `-T:N`, `-smt2 <file>`, and observation flags
+    (`-v:N`) from a recorded argv. Returns the persistent args — those
+    the audit verifier needs to reproduce the verdict (seeds, tactics,
+    `-st`, anything else) while supplying its own timeout."""
+    smt2_s = str(smt2_path)
+    out: list[str] = []
+    skip_next = False
+    for a in argv[1:]:  # skip argv[0] (binary path)
+        if skip_next:
+            skip_next = False
+            continue
+        if a.startswith('-T:'):
+            continue
+        if a.startswith('-v:'):
+            continue
+        if a == '-smt2':
+            skip_next = True
+            continue
+        if a == smt2_s:
+            continue
+        out.append(a)
+    return tuple(out)
+
+
+def _z3_version(z3_bin: Path) -> str:
+    """Capture `z3 --version` for the certificate metadata."""
+    try:
+        proc = subprocess.run([str(z3_bin), '--version'],
+                                capture_output=True, text=True, timeout=10)
+        return proc.stdout.strip().split('\n', 1)[0]
+    except (subprocess.SubprocessError, OSError):
+        return ''
 
 
 # ----------------------------- Main entrypoint -------------------------------
@@ -218,6 +251,19 @@ def run_cover_cfg(*,
     output_dir.mkdir(parents=True, exist_ok=True)
     z3_path = resolve_z3_bin(z3_bin)
     notify = on_event or (lambda s: None)
+
+    # Resolve INPUT_TAC to an absolute path for the certificate (the
+    # audit script + verify-cover both need it independent of cwd).
+    input_tac_abs = Path(input_tac).resolve()
+
+    # Cover-wide metadata baked into the certificate.
+    metadata = CoverMetadata(
+        input_tac=str(input_tac_abs),
+        z3_bin=str(z3_path),
+        z3_version=_z3_version(z3_path),
+        rw_flags=tuple(DEFAULT_RW_FLAGS),
+        smt_flags=tuple(DEFAULT_SMT_FLAGS),
+    )
 
     # Step 1: load CFG.
     info = load_cfg(Path(input_tac))
@@ -267,9 +313,10 @@ def run_cover_cfg(*,
                               if st.cluster.id == winner_task.label)
         return _emit_sat_certificate(
             output_dir=output_dir,
+            metadata=metadata,
+            universe=universe,
             winner_state=winner_state,
             winner_result=winner_result,
-            input_tac=Path(input_tac),
             z3_path=z3_path,
             wall_s=time.time() - t0,
             n_completeness_iters=0,
@@ -281,6 +328,7 @@ def run_cover_cfg(*,
     completeness_dir = output_dir / 'completeness'
     completeness_dir.mkdir(parents=True, exist_ok=True)
     forbidden_paths: list[list[NBId]] = []
+    forbidden_labels: list[str] = []
     cluster_keeps: list[frozenset[NBId]] = [st.cluster.keep_union
                                               for st in states]
     last_probe: Path | None = None
@@ -290,9 +338,12 @@ def run_cover_cfg(*,
 
     for it in range(1, config.completeness_iter + 1):
         final_iter = it
+        cluster_id_seq = [st.cluster.id for st in states]
         probe = emit_probe(info,
                              cluster_keeps=cluster_keeps,
-                             forbidden_paths=forbidden_paths)
+                             forbidden_paths=forbidden_paths,
+                             cluster_ids=cluster_id_seq,
+                             forbidden_labels=forbidden_labels)
         probe_path = completeness_dir / f'probe_{it:03d}.smt2'
         probe_path.write_text(probe.smt2)
 
@@ -307,11 +358,12 @@ def run_cover_cfg(*,
             notify(f'completeness UNSAT at iter {it}; cover complete')
             return _emit_unsat_certificate(
                 output_dir=output_dir,
+                metadata=metadata,
+                universe=universe,
                 states=states,
                 probe_path=probe_path,
                 probe_argv=tuple(argv),
                 probe_wall=wall,
-                input_tac=Path(input_tac),
                 wall_s=time.time() - t0,
                 n_completeness_iters=it,
             )
@@ -341,9 +393,10 @@ def run_cover_cfg(*,
         if absorbed_state is not None and absorbed_state.verdict == 'sat':
             return _emit_sat_certificate(
                 output_dir=output_dir,
+                metadata=metadata,
+                universe=universe,
                 winner_state=absorbed_state,
                 winner_result=None,  # filled with recorded argv below
-                input_tac=Path(input_tac),
                 z3_path=z3_path,
                 wall_s=time.time() - t0,
                 n_completeness_iters=it,
@@ -353,6 +406,8 @@ def run_cover_cfg(*,
             # Update cluster_keeps so subsequent probes use widened set.
             cluster_keeps = [st.cluster.keep_union for st in states]
             forbidden_paths.append(escape)
+            forbidden_labels.append(
+                f'path_iter{it:03d}_absorbed_into_{absorbed_state.cluster.id}')
             continue
 
         # 6b. Singleton + core. Materialize π as its own cluster, solve
@@ -390,9 +445,10 @@ def run_cover_cfg(*,
         if verdict_s == 'sat':
             return _emit_sat_certificate(
                 output_dir=output_dir,
+                metadata=metadata,
+                universe=universe,
                 winner_state=sing_state,
                 winner_result=None,
-                input_tac=Path(input_tac),
                 z3_path=z3_path,
                 wall_s=time.time() - t0,
                 n_completeness_iters=it,
@@ -401,14 +457,20 @@ def run_cover_cfg(*,
             core_blocks = core_blocks_from_stdout(stdout_s)
             if core_blocks:
                 forbidden_paths.append(sorted(core_blocks))
+                forbidden_labels.append(
+                    f'core_iter{it:03d}_from_{singleton_id}')
                 notify(f'iter {it}: singleton {singleton_id} UNSAT; '
                         f'core blocks={len(core_blocks)}')
             else:
                 forbidden_paths.append(escape)
+                forbidden_labels.append(
+                    f'path_iter{it:03d}_no_core_{singleton_id}')
                 notify(f'iter {it}: singleton UNSAT; no parseable core; '
                         f'forbid path-superset')
         else:
             forbidden_paths.append(escape)
+            forbidden_labels.append(
+                f'path_iter{it:03d}_{verdict_s}_{singleton_id}')
             notify(f'iter {it}: singleton {verdict_s}; forbid path-superset')
 
     # Step 7: max-iter reached (or completeness gave up). Emit residuals
@@ -429,19 +491,23 @@ def run_cover_cfg(*,
 
 
 def _emit_sat_certificate(*, output_dir: Path,
+                            metadata: CoverMetadata,
+                            universe: set,
                             winner_state: ClusterState,
                             winner_result: Z3RunResult | None,
-                            input_tac: Path,
                             z3_path: Path,
                             wall_s: float,
                             n_completeness_iters: int) -> CoverResult:
-    """Write SAT cert + replay model + report + rerun.sh."""
+    """Write SAT cert + replay model + report + rerun.sh.
+
+    The cert's `program_replay.tac_path` is INPUT_TAC (absolute) so the
+    audit replays against the original program, not the slice."""
     # Re-solve with -model so we capture the model text the user can
     # validate via `ctac run --model`.
     smt2 = winner_state.artifacts.smt2
-    argv = [str(z3_path), '-T:60', '-st', '-smt2', str(smt2)]
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=70)
-    model_text = proc.stdout
+    res = solver_solve(smt2, timeout_s=60, z3_bin=z3_path,
+                         extra_args=('-model',))
+    model_text = res.stdout
 
     # Write the model text alongside the smt2 (cert paths are relative
     # to output_dir).
@@ -455,18 +521,26 @@ def _emit_sat_certificate(*, output_dir: Path,
     for m in pat.finditer(model_text):
         z3_model[m.group(1).strip()] = m.group(2).strip()
 
+    # Drops for the winning cluster (universe \ keep_union).
+    drops = tuple(sorted(set(universe) - set(winner_state.cluster.keep_union)))
+
+    # z3_args: persistent flags only, from the recorded argv.
+    recorded_argv = (winner_result.argv if winner_result is not None
+                       else (winner_state.z3_argv if winner_state.z3_argv
+                              else res.argv))
+    z3_args = _persistent_args(recorded_argv, smt2)
+
     manifest_path = output_dir / 'manifest.json'
     rerun_sh = output_dir / 'rerun.sh'
 
     cert = SatCertificate(
+        metadata=metadata,
         sat_smt2=str(smt2.relative_to(output_dir)),
+        winner_drops=drops,
         z3_model=z3_model,
-        z3_invocation=(tuple(winner_result.argv) if winner_result is not None
-                         else tuple(winner_state.z3_argv) if winner_state.z3_argv
-                         else tuple(argv)),
+        z3_args=z3_args,
         program_replay=ProgramReplayPlan(
-            tac_path=str(
-                winner_state.artifacts.pinned_tac.relative_to(output_dir)),
+            tac_path=metadata.input_tac,            # INPUT_TAC, not slice
             model_text_path=str(model_path.relative_to(output_dir)),
         ),
         rerun_sh='rerun.sh',
@@ -492,19 +566,27 @@ def _emit_sat_certificate(*, output_dir: Path,
 
 
 def _emit_unsat_certificate(*, output_dir: Path,
+                              metadata: CoverMetadata,
+                              universe: set,
                               states: list[ClusterState],
                               probe_path: Path,
                               probe_argv: tuple[str, ...],
                               probe_wall: float,
-                              input_tac: Path,
                               wall_s: float,
                               n_completeness_iters: int) -> CoverResult:
     """Write UNSAT cert + report + rerun.sh."""
+    # Copy the winning probe to probe_final.smt2 (stable name for
+    # rerun.sh and verify-cover).
+    final_probe = probe_path.parent / 'probe_final.smt2'
+    if not final_probe.exists():
+        shutil.copy2(probe_path, final_probe)
+
     sub_proofs = tuple(
         SubProof(
             sub_id=st.cluster.id,
             smt2=str(st.artifacts.smt2.relative_to(output_dir)),
-            z3_invocation=st.z3_argv,
+            drops=tuple(sorted(set(universe) - set(st.cluster.keep_union))),
+            z3_args=_persistent_args(st.z3_argv, st.artifacts.smt2),
             wall_s=st.wall_s,
         )
         for st in states if st.verdict == 'unsat'
@@ -521,30 +603,16 @@ def _emit_unsat_certificate(*, output_dir: Path,
         ),
     )
     cert = UnsatCertificate(
+        metadata=metadata,
         decomposition=decomposition,
         sub_proofs=sub_proofs,
         completeness_proof=CompletenessProof(
-            probe_smt2=str(probe_path.relative_to(output_dir)),
-            z3_invocation=probe_argv,
+            probe_smt2=str(final_probe.relative_to(output_dir)),
+            z3_args=_persistent_args(probe_argv, probe_path),
             wall_s=probe_wall,
         ),
         rerun_sh='rerun.sh',
     )
-    # Finalize: also copy/rename the winning probe to probe_final.smt2
-    # so the rerun.sh path matches the convention.
-    final_probe = probe_path.parent / 'probe_final.smt2'
-    if not final_probe.exists():
-        shutil.copy2(probe_path, final_probe)
-        cert = UnsatCertificate(
-            decomposition=cert.decomposition,
-            sub_proofs=cert.sub_proofs,
-            completeness_proof=CompletenessProof(
-                probe_smt2=str(final_probe.relative_to(output_dir)),
-                z3_invocation=probe_argv,
-                wall_s=probe_wall,
-            ),
-            rerun_sh='rerun.sh',
-        )
 
     manifest_path = output_dir / 'manifest.json'
     rerun_sh = output_dir / 'rerun.sh'

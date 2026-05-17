@@ -35,9 +35,51 @@ from pathlib import Path
 from typing import Literal
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DecompositionKind = Literal['cfg-cluster', 'alpha-commit']
+
+
+# =============================== CoverMetadata ===================================
+
+
+@dataclass(frozen=True)
+class CoverMetadata:
+    """Reproducibility metadata baked into every certificate.
+
+    The audit chain (`rerun.sh` + `ctac verify-cover`) re-derives each
+    cluster's smt2 from `input_tac` using `rw_flags` / `smt_flags`,
+    then re-solves with `z3_bin`. `z3_version` is informational: the
+    verifier warns on mismatch but doesn't fail (since z3 versions
+    can be compatible across the verdict)."""
+
+    input_tac: str                              # path to original TAC
+    z3_bin: str                                 # path to the z3 binary used
+    z3_version: str                             # output of `z3 --version`
+    rw_flags: tuple[str, ...] = ()
+    smt_flags: tuple[str, ...] = ()
+    ctac_version: str = ''                      # informational; verify-cover ignores
+
+    def to_json_dict(self) -> dict:
+        return {
+            'input_tac': self.input_tac,
+            'z3_bin': self.z3_bin,
+            'z3_version': self.z3_version,
+            'rw_flags': list(self.rw_flags),
+            'smt_flags': list(self.smt_flags),
+            'ctac_version': self.ctac_version,
+        }
+
+    @classmethod
+    def from_json_dict(cls, d: dict) -> CoverMetadata:
+        return cls(
+            input_tac=d['input_tac'],
+            z3_bin=d.get('z3_bin', 'z3'),
+            z3_version=d.get('z3_version', ''),
+            rw_flags=tuple(d.get('rw_flags', [])),
+            smt_flags=tuple(d.get('smt_flags', [])),
+            ctac_version=d.get('ctac_version', ''),
+        )
 
 
 # ============================ Shared: ProgramReplayPlan ===========================
@@ -98,10 +140,12 @@ class SatCertificate:
     yielded SAT); always None in v1.
     """
 
+    metadata: CoverMetadata             # NEW v2: input_tac, z3 ver, flags
     sat_smt2: str
+    winner_drops: tuple[str, ...]       # NEW v2: drops for the SAT cluster
     z3_model: dict[str, str]            # name -> value (raw text)
-    z3_invocation: tuple[str, ...]      # exact argv that produced SAT
-    program_replay: ProgramReplayPlan
+    z3_args: tuple[str, ...]            # NEW v2: persistent args (no -T, no -smt2)
+    program_replay: ProgramReplayPlan   # NB: tac_path → INPUT_TAC, not slice
     rerun_sh: str                       # path to bash audit script
     witness_cluster: str | None = None  # cfg cover slice id
     witness_alpha: dict[str, str] | None = None   # alias cover α (future)
@@ -113,12 +157,14 @@ class SatCertificate:
         return {
             'schema_version': self.schema_version,
             'kind': self.kind,
+            'metadata': self.metadata.to_json_dict(),
             'witness_cluster': self.witness_cluster,
             'witness_alpha': (dict(self.witness_alpha)
                                 if self.witness_alpha is not None else None),
             'sat_smt2': self.sat_smt2,
+            'winner_drops': list(self.winner_drops),
             'z3_model': dict(self.z3_model),
-            'z3_invocation': list(self.z3_invocation),
+            'z3_args': list(self.z3_args),
             'wall_s': self.wall_s,
             'program_replay': self.program_replay.to_json_dict(),
             'rerun_sh': self.rerun_sh,
@@ -130,12 +176,14 @@ class SatCertificate:
             raise ValueError(f"expected kind='sat', got {d.get('kind')!r}")
         return cls(
             schema_version=int(d.get('schema_version', SCHEMA_VERSION)),
+            metadata=CoverMetadata.from_json_dict(d['metadata']),
             witness_cluster=d.get('witness_cluster'),
             witness_alpha=(dict(d['witness_alpha'])
                              if d.get('witness_alpha') is not None else None),
             sat_smt2=d['sat_smt2'],
+            winner_drops=tuple(d.get('winner_drops', [])),
             z3_model={k: str(v) for k, v in d.get('z3_model', {}).items()},
-            z3_invocation=tuple(d.get('z3_invocation', [])),
+            z3_args=tuple(d.get('z3_args', [])),
             wall_s=float(d.get('wall_s', 0.0)),
             program_replay=ProgramReplayPlan.from_json_dict(d['program_replay']),
             rerun_sh=d['rerun_sh'],
@@ -204,13 +252,23 @@ class Decomposition:
 
 @dataclass(frozen=True)
 class SubProof:
-    """One cluster's UNSAT proof: SMT2 + the exact z3 invocation that
-    produced UNSAT. `wall_s` is recorded for sanity (verify can warn
-    when re-solve takes far longer than the original)."""
+    """One cluster's UNSAT proof.
+
+    Audit chain (see `CoverMetadata`):
+    1. `ctac pin INPUT_TAC --drop <drops> -o pinned.tac`
+    2. `ctac rw pinned.tac <rw_flags> -o pinned.rw.tac`
+    3. `ctac smt pinned.rw.tac <smt_flags> -o v.smt2`
+    4. `z3 -T:VERIFY_TIMEOUT -smt2 v.smt2 <z3_args>` → expect `unsat`
+
+    `drops` are the blocks dropped from INPUT_TAC to materialize this
+    cluster. `z3_args` is the persistent z3 invocation (no `-T`, no
+    `-smt2 <file>`); the verifier supplies its own timeout. `wall_s`
+    is informational (verify can warn on >>original)."""
 
     sub_id: str
     smt2: str
-    z3_invocation: tuple[str, ...]
+    drops: tuple[str, ...]                    # NEW v2: for re-derivation
+    z3_args: tuple[str, ...] = ()             # NEW v2: replaces z3_invocation
     wall_s: float = 0.0
     expected_verdict: Literal['unsat'] = 'unsat'
 
@@ -218,7 +276,8 @@ class SubProof:
         return {
             'sub_id': self.sub_id,
             'smt2': self.smt2,
-            'z3_invocation': list(self.z3_invocation),
+            'drops': list(self.drops),
+            'z3_args': list(self.z3_args),
             'wall_s': self.wall_s,
             'expected_verdict': self.expected_verdict,
         }
@@ -228,7 +287,8 @@ class SubProof:
         return cls(
             sub_id=d['sub_id'],
             smt2=d['smt2'],
-            z3_invocation=tuple(d.get('z3_invocation', [])),
+            drops=tuple(d.get('drops', [])),
+            z3_args=tuple(d.get('z3_args', [])),
             wall_s=float(d.get('wall_s', 0.0)),
             expected_verdict=d.get('expected_verdict', 'unsat'),
         )
@@ -249,7 +309,7 @@ class CompletenessProof:
     argument alongside the SMT verdict makes the proof auditable."""
 
     probe_smt2: str
-    z3_invocation: tuple[str, ...]
+    z3_args: tuple[str, ...] = ()             # NEW v2 (no -T, no -smt2 <file>)
     wall_s: float = 0.0
     expected_verdict: Literal['unsat'] = 'unsat'
     semantic_argument: str | None = None
@@ -257,7 +317,7 @@ class CompletenessProof:
     def to_json_dict(self) -> dict:
         return {
             'probe_smt2': self.probe_smt2,
-            'z3_invocation': list(self.z3_invocation),
+            'z3_args': list(self.z3_args),
             'wall_s': self.wall_s,
             'expected_verdict': self.expected_verdict,
             'semantic_argument': self.semantic_argument,
@@ -267,7 +327,7 @@ class CompletenessProof:
     def from_json_dict(cls, d: dict) -> CompletenessProof:
         return cls(
             probe_smt2=d['probe_smt2'],
-            z3_invocation=tuple(d.get('z3_invocation', [])),
+            z3_args=tuple(d.get('z3_args', [])),
             wall_s=float(d.get('wall_s', 0.0)),
             expected_verdict=d.get('expected_verdict', 'unsat'),
             semantic_argument=d.get('semantic_argument'),
@@ -284,6 +344,7 @@ class UnsatCertificate:
     cluster whose VC is UNSAT, so the original VC is UNSAT. The
     `rerun_sh` script encodes exactly this check."""
 
+    metadata: CoverMetadata             # NEW v2
     decomposition: Decomposition
     sub_proofs: tuple[SubProof, ...]
     completeness_proof: CompletenessProof
@@ -295,6 +356,7 @@ class UnsatCertificate:
         return {
             'schema_version': self.schema_version,
             'kind': self.kind,
+            'metadata': self.metadata.to_json_dict(),
             'decomposition': self.decomposition.to_json_dict(),
             'sub_proofs': [p.to_json_dict() for p in self.sub_proofs],
             'completeness_proof': self.completeness_proof.to_json_dict(),
@@ -307,6 +369,7 @@ class UnsatCertificate:
             raise ValueError(f"expected kind='unsat', got {d.get('kind')!r}")
         return cls(
             schema_version=int(d.get('schema_version', SCHEMA_VERSION)),
+            metadata=CoverMetadata.from_json_dict(d['metadata']),
             decomposition=Decomposition.from_json_dict(d['decomposition']),
             sub_proofs=tuple(SubProof.from_json_dict(p)
                               for p in d.get('sub_proofs', [])),
@@ -344,25 +407,80 @@ def save_certificate(cert: Certificate, path: Path | str) -> None:
 # ================================ rerun.sh emitter ===============================
 
 
-_RERUN_HEADER = """#!/usr/bin/env bash
+_RERUN_PROLOGUE_TEMPLATE = """#!/usr/bin/env bash
 # Auto-generated by `ctac cover-cfg` — independent verification script.
-# Re-runs every sub-solve + completeness probe to confirm the cover
-# verdict. Exits 0 on full match, non-zero on any deviation.
+# Re-derives every cluster's smt2 from INPUT_TAC (via ctac pin / rw /
+# smt) before re-solving with z3. Catches bugs anywhere in the pin /
+# rw / smt / z3 chain. Exit 0 on full match, non-zero on any deviation.
 #
 # Soundness: matching verdicts here ⇒ the cover verdict is sound,
 # regardless of how the cover was produced.
+#
+# Per-z3-step timeout is derived from the cover's recorded wall_s:
+#   budget = max(wall_s * VERIFY_TIMEOUT_MULTIPLIER + VERIFY_TIMEOUT_SLACK, 10)
+# If the audit needs much more than the recording, that's a signal —
+# either a bug, environmental drift, or a non-reproducible cover.
+#
+# Env overrides:
+#   CTAC=<path>                       ctac binary (default: ctac on PATH)
+#   Z3=<path>                         z3 binary (default: recorded path)
+#   VERIFY_TIMEOUT_MULTIPLIER=<n>     z3 budget multiplier (default 2)
+#   VERIFY_TIMEOUT_SLACK=<sec>        z3 budget slack (default 5)
 
 set -eu
-Z3="${Z3:-z3}"
+CTAC="${{CTAC:-ctac}}"
+Z3="${{Z3:-{recorded_z3_bin}}}"
+VERIFY_TIMEOUT_MULTIPLIER="${{VERIFY_TIMEOUT_MULTIPLIER:-2}}"
+VERIFY_TIMEOUT_SLACK="${{VERIFY_TIMEOUT_SLACK:-5}}"
 FAIL=0
+INPUT_TAC={input_tac_q}
+EXPECTED_Z3_VERSION={z3_version_q}
 
-run_check() {
+# Compute per-z3 budget from recorded wall_s.
+z3_budget() {{
+    # $1: recorded wall seconds (may have decimals)
+    local recorded="$1"
+    awk -v r="$recorded" \\
+        -v m="$VERIFY_TIMEOUT_MULTIPLIER" \\
+        -v s="$VERIFY_TIMEOUT_SLACK" \\
+        'BEGIN {{
+            t = r * m + s + 0.999
+            if (t < 10) t = 10
+            printf "%d", t
+        }}'
+}}
+
+# Resolve to absolute path; the script changes into the audit dir below
+# so the recorded relative paths resolve consistently.
+INPUT_TAC=$(cd "$(dirname "$INPUT_TAC")" 2>/dev/null && pwd)/$(basename "$INPUT_TAC") \\
+    || INPUT_TAC="$INPUT_TAC"
+
+# Audit dir = the directory this script lives in (so the script is
+# location-independent: copy the cover/ tree anywhere and run rerun.sh).
+AUDIT_DIR=$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)
+cd "$AUDIT_DIR"
+
+# Warn (don't fail) on z3 version mismatch.
+got_version=$("$Z3" --version 2>&1 | head -n 1 || echo '<no z3>')
+if [[ "$got_version" != "$EXPECTED_Z3_VERSION" ]]; then
+    echo "[warn] z3 version mismatch: expected '$EXPECTED_Z3_VERSION', got '$got_version'"
+fi
+
+run_step() {{
+    # $1: label, rest: argv. Fails loudly on non-zero rc.
+    local label="$1"; shift
+    if ! "$@" > "${{label}}.log" 2>&1; then
+        echo "[FAIL] step '$label' returned non-zero; see ${{label}}.log"
+        FAIL=1
+        return 1
+    fi
+}}
+
+check_verdict() {{
     # $1: label, $2: expected verdict, rest: z3 argv
     local label="$1"; shift
     local expected="$1"; shift
     echo "[check] $label ..."
-    # Capture all output to a variable then extract first line.
-    # Avoids `awk ... exit` + SIGPIPE interaction with `set -e`.
     local out
     out=$("$@" 2>&1 || true)
     local got
@@ -373,7 +491,30 @@ run_check() {
         echo "[FAIL] $label expected=$expected got=$got"
         FAIL=1
     fi
-}
+}}
+
+rederive_cluster() {{
+    # $1: cluster dir, $2: drops (comma-separated; may be empty)
+    #
+    # Pin / rw / smt are bounded TAC transforms; no z3 hanging risk.
+    # We don't wrap them in a portable shell `timeout` (not present
+    # on stock macOS). On unexpected hang, the user Ctrl-C's.
+    local dir="$1"; local drops="$2"
+    mkdir -p "$dir"
+    local drop_args=()
+    if [[ -n "$drops" ]]; then
+        drop_args=(--drop "$drops")
+    fi
+    "$CTAC" pin "$INPUT_TAC" -o "$dir/pinned.tac" --plain "${{drop_args[@]}}" \\
+        > "${{dir}}.pin.log" 2>&1 || \\
+        {{ echo "[FAIL] pin $dir; see ${{dir}}.pin.log"; FAIL=1; return 1; }}
+    "$CTAC" rw "$dir/pinned.tac" -o "$dir/pinned.rw.tac" --plain {rw_flags_q} \\
+        > "${{dir}}.rw.log" 2>&1 || \\
+        {{ echo "[FAIL] rw $dir; see ${{dir}}.rw.log"; FAIL=1; return 1; }}
+    "$CTAC" smt "$dir/pinned.rw.tac" -o "$dir/v.smt2" --plain {smt_flags_q} \\
+        > "${{dir}}.smt.log" 2>&1 || \\
+        {{ echo "[FAIL] smt $dir; see ${{dir}}.smt.log"; FAIL=1; return 1; }}
+}}
 
 """
 
@@ -392,56 +533,100 @@ def _quote_argv(argv: tuple[str, ...] | list[str]) -> str:
     return ' '.join(shlex.quote(a) for a in argv)
 
 
+def _prologue(meta: CoverMetadata) -> str:
+    """Render the shared bash prologue with metadata baked in."""
+    return _RERUN_PROLOGUE_TEMPLATE.format(
+        input_tac_q=shlex.quote(meta.input_tac),
+        recorded_z3_bin=shlex.quote(meta.z3_bin),
+        z3_version_q=shlex.quote(meta.z3_version),
+        rw_flags_q=_quote_argv(meta.rw_flags),
+        smt_flags_q=_quote_argv(meta.smt_flags),
+    )
+
+
 def emit_sat_rerun_sh(cert: SatCertificate) -> str:
     """Render the bash audit script for a SAT certificate.
 
-    Two checks:
-    1. `z3 sat_smt2` returns sat (re-confirms the SAT verdict).
-    2. `ctac run <tac> --model <model.txt> --validate` triggers
-       `assert_fail=1` (lifts the model to program semantics).
+    Steps:
+    1. Re-derive the winner cluster's smt2 from INPUT_TAC
+       (`pin --drop <winner_drops>` → `rw` → `smt`).
+    2. Solve the re-derived smt2; expect `sat`.
+    3. Capture z3's model.
+    4. Replay against **INPUT_TAC** (not the slice): `ctac run
+       INPUT_TAC --model <model> --validate` triggers `assert_fail`.
 
-    The model file is referenced by `program_replay.model_text_path`
-    — the caller is expected to have written it before running this
-    script."""
-    z3_args = _quote_argv(cert.z3_invocation) if cert.z3_invocation \
-        else f'"$Z3" -smt2 {shlex.quote(cert.sat_smt2)}'
+    Replay targets INPUT_TAC because the cover's soundness claim is
+    "the original program is SAT" — the slice's model must drive the
+    original assert."""
+    winner_id = cert.witness_cluster or 'winner'
+    drops_s = ','.join(cert.winner_drops)
+    z3_args = _quote_argv(cert.z3_args)
+    parts: list[str] = [_prologue(cert.metadata)]
+    parts.append(f'rederive_cluster {shlex.quote(winner_id)} '
+                  f'{shlex.quote(drops_s)}\n')
+    parts.append(f'T=$(z3_budget {cert.wall_s:.3f})\n')
+    parts.append(
+        f'echo "[budget] sat-confirm: recorded {cert.wall_s:.2f}s, '
+        f'budget ${{T}}s"\n')
+    parts.append(
+        f'check_verdict "z3 SAT confirm" sat '
+        f'"$Z3" -T:"$T" -smt2 '
+        f'{shlex.quote(winner_id + "/v.smt2")} {z3_args}\n')
+    # Capture the model.
+    parts.append(
+        f'echo "[step] capturing z3 model"\n'
+        f'"$Z3" -T:"$T" -smt2 {shlex.quote(winner_id + "/v.smt2")} '
+        f'{z3_args} -model > {shlex.quote(winner_id + "/model.smt")}\n')
+    # Replay against INPUT_TAC.
     replay = cert.program_replay
-    replay_argv = ['ctac', 'run', replay.tac_path,
-                    '--model', replay.model_text_path]
-    replay_argv += list(replay.ctac_run_args)
-    return (
-        _RERUN_HEADER
-        + f'run_check "z3 SAT confirm" sat {z3_args}\n'
-        + f'echo "[check] program replay: {replay.tac_path}"\n'
-        + f'if {_quote_argv(replay_argv)} 2>&1 | '
-            'grep -q "^assert_fail.*: 1"; then\n'
-        + '    echo "[ ok ] replay: assert_fail = 1"\n'
-        + 'else\n'
-        + '    echo "[FAIL] replay did not produce assert_fail=1"\n'
-        + '    FAIL=1\n'
-        + 'fi\n'
-        + _RERUN_FOOTER
-    )
+    extra = _quote_argv(replay.ctac_run_args)
+    parts.append(
+        f'echo "[check] program replay: INPUT_TAC"\n'
+        f'if "$CTAC" run "$INPUT_TAC" --model '
+        f'{shlex.quote(winner_id + "/model.smt")} {extra} --plain 2>&1 '
+        f'| grep -q "^assert_fail.*: [1-9]"; then\n'
+        f'    echo "[ ok ] replay: assert_fail >= 1"\n'
+        f'else\n'
+        f'    echo "[FAIL] replay did not produce assert_fail >= 1"\n'
+        f'    FAIL=1\n'
+        f'fi\n')
+    parts.append(_RERUN_FOOTER)
+    return ''.join(parts)
 
 
 def emit_unsat_rerun_sh(cert: UnsatCertificate) -> str:
     """Render the bash audit script for an UNSAT certificate.
 
-    For each `SubProof`: re-solve and assert verdict == 'unsat'.
-    Then: re-solve the completeness probe and assert UNSAT.
-
-    All sub-proofs and the probe must pass; any single deviation
-    exits non-zero. The cover verdict is sound iff this script
-    exits 0."""
-    parts = [_RERUN_HEADER]
+    For each `SubProof`: re-derive pin/rw/smt from INPUT_TAC + solve;
+    expect `unsat`. Then re-solve the completeness probe (stored
+    smt2; the probe emitter is pure Python so re-emit would not catch
+    its own bugs)."""
+    parts = [_prologue(cert.metadata)]
     for sp in cert.sub_proofs:
-        argv = (_quote_argv(sp.z3_invocation) if sp.z3_invocation
-                  else f'"$Z3" -smt2 {shlex.quote(sp.smt2)}')
-        parts.append(f'run_check "sub {sp.sub_id}" unsat {argv}\n')
+        sub_dir = Path(sp.smt2).parent.as_posix()  # e.g. "cluster_0"
+        drops_s = ','.join(sp.drops)
+        z3_args_s = _quote_argv(sp.z3_args)
+        parts.append(
+            f'rederive_cluster {shlex.quote(sub_dir)} '
+            f'{shlex.quote(drops_s)}\n')
+        parts.append(f'T=$(z3_budget {sp.wall_s:.3f})\n')
+        parts.append(
+            f'echo "[budget] {sp.sub_id}: recorded {sp.wall_s:.2f}s, '
+            f'budget ${{T}}s"\n')
+        parts.append(
+            f'check_verdict "sub {sp.sub_id}" unsat '
+            f'"$Z3" -T:"$T" -smt2 {shlex.quote(sp.smt2)} '
+            f'{z3_args_s}\n')
     probe = cert.completeness_proof
-    probe_argv = (_quote_argv(probe.z3_invocation) if probe.z3_invocation
-                    else f'"$Z3" -smt2 {shlex.quote(probe.probe_smt2)}')
-    parts.append(f'run_check "completeness probe" unsat {probe_argv}\n')
+    probe_args_s = _quote_argv(probe.z3_args)
+    parts.append(f'T=$(z3_budget {probe.wall_s:.3f})\n')
+    parts.append(
+        f'echo "[budget] completeness probe: recorded {probe.wall_s:.2f}s, '
+        f'budget ${{T}}s"\n')
+    parts.append(
+        f'check_verdict "completeness probe" unsat '
+        f'"$Z3" -T:"$T" -smt2 {shlex.quote(probe.probe_smt2)} '
+        f'{probe_args_s}\n')
     parts.append(_RERUN_FOOTER)
     return ''.join(parts)
 

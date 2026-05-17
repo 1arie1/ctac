@@ -103,7 +103,7 @@ def test_cover_cfg_unsat_diamond_end_to_end(tmp_path: Path) -> None:
     # Re-verify via ctac verify-cover.
     r2 = CliRunner().invoke(app, [
         'verify-cover', str(manifest),
-        '-T', '30',
+        
         '--plain',
     ])
     assert r2.exit_code == 0, f'verify-cover failed:\n{r2.stdout}'
@@ -115,6 +115,44 @@ def test_cover_cfg_unsat_diamond_end_to_end(tmp_path: Path) -> None:
     assert cert['kind'] == 'unsat'
     assert len(cert['sub_proofs']) >= 1
     assert cert['completeness_proof']['expected_verdict'] == 'unsat'
+
+
+@pytest.mark.skipif(not _z3_available(), reason='z3 not on PATH')
+def test_cover_cfg_audit_detects_tampered_input_tac(tmp_path: Path) -> None:
+    """If INPUT_TAC is tampered after the cover runs, verify-cover should
+    detect divergence (re-derived smt2 won't match the original cover's
+    intent). This is exactly the audit-chain soundness the v2
+    certificates exist for."""
+    tac = tmp_path / 'diamond.tac'
+    tac.write_text(_UNSAT_DIAMOND_TAC)
+    ctac_bin = shutil.which('ctac') or 'ctac'
+
+    out_dir = tmp_path / 'cover'
+    r = CliRunner().invoke(app, [
+        'cover-cfg', str(tac), '-o', str(out_dir),
+        '--samples', '4', '--workers', '1',
+        '--ctac', ctac_bin, '--plain',
+    ])
+    assert r.exit_code == 0, f'cover-cfg failed:\n{r.stdout}'
+
+    # Tamper INPUT_TAC by inverting the assert (true → false).
+    tampered = _UNSAT_DIAMOND_TAC.replace(
+        'AssignExpCmd ok Eq(x 0x5)',
+        'AssignExpCmd ok Eq(x 0x9)',  # x=5 ≠ 9, so assert fails for all paths
+    )
+    tac.write_text(tampered)
+
+    # verify-cover should now fail: re-deriving with the tampered
+    # INPUT_TAC produces an SMT2 that is SAT (not UNSAT).
+    r2 = CliRunner().invoke(app, [
+        'verify-cover', str(out_dir / 'manifest.json'),
+         '--ctac', ctac_bin, '--plain',
+    ])
+    assert r2.exit_code == 1, \
+        f'expected verify failure on tampered INPUT_TAC, got pass:\n{r2.stdout}'
+    assert 'FAILED' in r2.stdout
+    # Re-derivation steps still succeed; the verdict check fails (got=sat).
+    assert 'got=sat' in r2.stdout
 
 
 @pytest.mark.skipif(not _z3_available(), reason='z3 not on PATH')

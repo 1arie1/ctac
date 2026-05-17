@@ -45,36 +45,61 @@ def verify_cover_cmd(
     z3_bin: Optional[Path] = typer.Option(
         None, '--z3', help='Override the z3 binary (else uses recorded path '
                             'or $CTAC_Z3 / $PATH).'),
-    timeout: int = typer.Option(
-        300, '-T', '--timeout',
-        help='Per-check timeout in seconds. Each recorded sub-solve gets '
-              'this budget independently.'),
+    rederive_timeout: int = typer.Option(
+        60, '--rederive-timeout',
+        help='Timeout (s) for pin / rw / smt re-derivation steps. '
+              'These are bounded TAC processing — cover doesn\'t record '
+              'per-step wall times here.'),
+    timeout_multiplier: float = typer.Option(
+        2.0, '--timeout-multiplier',
+        help='Per-z3-step budget = recorded wall_s * MULTIPLIER + slack. '
+              'If the audit needs much more than this, something is '
+              'wrong with the recording.'),
+    timeout_slack: float = typer.Option(
+        5.0, '--timeout-slack',
+        help='Slack seconds added to every z3 budget (covers cold '
+              'startup + minor scheduling jitter).'),
     ctac_bin: str = typer.Option(
         'ctac', '--ctac',
-        help='ctac binary for the SAT program-replay step.'),
+        help='ctac binary for pin/rw/smt re-derivation + SAT replay.'),
+    strict_validation: bool = typer.Option(
+        False, '--strict-validation',
+        help='For SAT replay: additionally require zero havoc fallbacks '
+              '(the model must fully determine execution). Default lax: '
+              'any assert_fail >= 1 passes.'),
     plain: bool = typer.Option(False, '--plain', help=PLAIN_HELP),
     agent: bool = agent_option(),
 ) -> None:
     _ = agent
     cons = console(plain_requested(plain))
-    report = verify(manifest, z3_bin=z3_bin, timeout_s=timeout,
-                     ctac_bin=ctac_bin)
+    report = verify(manifest, z3_bin=z3_bin,
+                     rederive_timeout_s=rederive_timeout,
+                     timeout_multiplier=timeout_multiplier,
+                     timeout_slack_s=timeout_slack,
+                     ctac_bin=ctac_bin,
+                     strict_validation=strict_validation)
 
     if plain_requested(plain):
         cons.print(f'cert: {manifest}')
         cons.print(f'kind: {report.cert_kind}')
+        for w in report.warnings:
+            cons.print(f'warn: {w}')
         for c in report.checks:
             mark = 'ok' if c.passed else 'FAIL'
-            cons.print(f'[{mark}] {c.label}  expected={c.expected}  '
-                        f'got={c.got}  wall={c.wall_s:.2f}s')
+            cons.print(f'[{mark}] [{c.kind}] {c.label}  '
+                        f'expected={c.expected}  got={c.got}  '
+                        f'wall={c.wall_s:.2f}s')
             if not c.passed and c.detail:
                 cons.print(f'    {c.detail}')
         cons.print(f'summary: {report.summary()}')
         cons.print(f'result: {"OK" if report.passed else "FAILED"}')
     else:
         from rich.table import Table
+        for w in report.warnings:
+            cons.print(f'[yellow]warn[/yellow] {w}')
         tbl = Table(title=f'ctac verify-cover ({report.cert_kind})',
                      show_lines=False)
+        tbl.add_column('kind')
         tbl.add_column('check')
         tbl.add_column('expected')
         tbl.add_column('got')
@@ -85,7 +110,7 @@ def verify_cover_cmd(
                        else '[red]FAIL[/red]')
             got_cell = (c.got if c.passed
                          else f'[red]{c.got}[/red]')
-            tbl.add_row(c.label, c.expected, got_cell,
+            tbl.add_row(c.kind, c.label, c.expected, got_cell,
                          f'{c.wall_s:.2f}s', status)
         cons.print(tbl)
         if report.passed:

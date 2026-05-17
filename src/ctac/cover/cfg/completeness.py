@@ -73,6 +73,17 @@ _EDGE_VAR_RE = re.compile(
 )
 
 
+def _fmt_block_list(blocks: list[NBId], *, max_inline: int = 8) -> str:
+    """Pretty-print a list of block ids for audit comments. If the list
+    is short, comma-separated inline; otherwise truncated with '...'."""
+    if not blocks:
+        return '[]'
+    if len(blocks) <= max_inline:
+        return '[' + ', '.join(blocks) + ']'
+    head = ', '.join(blocks[:max_inline])
+    return f'[{head}, ... ({len(blocks) - max_inline} more)]'
+
+
 def parse_edge_var(name: str) -> tuple[NBId, NBId] | None:
     """Inverse of `edge_var`. Returns (u, v) or None if not an edge var."""
     m = _EDGE_VAR_RE.match(name)
@@ -96,6 +107,8 @@ class CompletenessProbe:
 def emit_probe(info: CfgInfo, *,
                  cluster_keeps: Sequence[Iterable[NBId]] = (),
                  forbidden_paths: Sequence[Iterable[NBId]] = (),
+                 cluster_ids: Sequence[str] = (),
+                 forbidden_labels: Sequence[str] = (),
                  ) -> CompletenessProbe:
     """Emit the completeness probe smt2 text.
 
@@ -106,6 +119,14 @@ def emit_probe(info: CfgInfo, *,
     `forbidden_paths` is a sequence of past escape-paths (block lists
     or sets); the probe asserts no future path is a superset of any
     forbidden one (at-most-(|fp|-1) of its blocks may be on the path).
+
+    `cluster_ids` and `forbidden_labels` are optional human-readable
+    labels written into the smt2 comments alongside each constraint.
+    When omitted, the probe falls back to numeric indices. The labels
+    are essential for manual audit: each escape / forbid block carries
+    `; cluster_<id>: drops = [b1, b2, ...]` and similar, so a reader
+    can confirm the probe encodes the right thing without re-running
+    the cover.
     """
     g = info.graph
     entry = info.entry
@@ -209,29 +230,48 @@ def emit_probe(info: CfgInfo, *,
 
     # Cluster escape disjunctions.
     if drop_sets:
-        out.append('; --- per-cluster escape: at-least-1 of D_i ---')
+        out.append('; ---------------------------------------------------------')
+        out.append('; Per-cluster escape: any path must visit at least one')
+        out.append('; block in each cluster\'s drop set D_i = universe \\ keep_i.')
+        out.append('; ---------------------------------------------------------')
         for i, d in enumerate(drop_sets):
+            label = cluster_ids[i] if i < len(cluster_ids) else f'cluster_{i}'
+            keep_i = sorted(set(cluster_keeps[i])) if i < len(cluster_keeps) else []
+            out.append('')
+            out.append(f'; --- {label} ---')
+            out.append(f';   keep ({len(keep_i)} blocks):  '
+                         f'{_fmt_block_list(keep_i)}')
+            out.append(f';   drop ({len(d)} blocks):  '
+                         f'{_fmt_block_list(d)}')
             if not d:
-                # Empty drop set ⇒ keep covers everything ⇒ no escape
-                # possible for this cluster ⇒ probe is unsat.
-                out.append(f'(assert false) ; cluster {i} keep is universal')
+                out.append(f'(assert false) ; {label}: keep is universal '
+                             f'(no escape possible)')
                 continue
             body = ' '.join(block_var(b) for b in d)
             out.append(
-                f'(assert ((_ at-least 1) {body})) ; cluster {i}')
+                f'(assert ((_ at-least 1) {body})) ; {label}: escape D')
 
     # Forbid past-path supersets.
     if forbidden_paths:
-        out.append('; --- forbid supersets of prior escape paths ---')
+        out.append('')
+        out.append('; ---------------------------------------------------------')
+        out.append('; Forbid supersets of prior escape paths / unsat-core block')
+        out.append('; sets. Each (_ at-most n-1 ...) clause says: not all n')
+        out.append('; blocks of the prior path can be on a future path together.')
+        out.append('; ---------------------------------------------------------')
         for j, fp in enumerate(forbidden_paths):
             blocks_fp = sorted(set(fp) & universe_set)
             if not blocks_fp:
                 continue
+            label = (forbidden_labels[j] if j < len(forbidden_labels)
+                       else f'path_{j}')
             n = len(blocks_fp)
             body = ' '.join(block_var(b) for b in blocks_fp)
+            out.append('')
+            out.append(f'; --- forbid {label} ---')
+            out.append(f';   blocks ({n}):  {_fmt_block_list(blocks_fp)}')
             out.append(
-                f'(assert ((_ at-most {n - 1}) {body})) '
-                f'; forbid superset of path {j}')
+                f'(assert ((_ at-most {n - 1}) {body})) ; forbid {label}')
 
     out.append('(check-sat)')
     out.append('(get-model)')
