@@ -141,23 +141,17 @@ def _accept_sat(r: Z3RunResult) -> bool:
 def _solve_clusters_parallel(states: list[ClusterState], *,
                                 budget_s: int,
                                 workers: int,
-                                z3_bin: Path) -> RaceResult:
+                                z3_bin: Path,
+                                cluster_z3_args: Sequence[str] = (),
+                                ) -> RaceResult:
     """Parallel race over cluster VCs. First SAT wins; remainder
-    SIGKILL'd. If no SAT verdict, all clusters run to completion."""
-    cfg = Z3Config(name='default', args=())
+    SIGKILL'd. If no SAT verdict, all clusters run to completion.
+
+    `cluster_z3_args` is the user-supplied z3 pass-through (seeds,
+    tactics, ...). Applied to every cluster solve uniformly."""
+    args = tuple(cluster_z3_args)
     tasks = [
-        RaceTask(config=cfg, seed=0,
-                  smt2=Path(st.artifacts.smt2), timeout_s=budget_s,
-                  z3_bin=z3_bin)
-        for st in states
-    ]
-    # Map task label -> state for result attribution.
-    label_to_state = {t.label: st for t, st in zip(tasks, states)}
-    # Override default label (config/seed) with the cluster id so race
-    # results match the cover's index. Easiest: build new tasks with
-    # cluster id baked into the config name.
-    tasks = [
-        RaceTask(config=Z3Config(name=st.cluster.id, args=()),
+        RaceTask(config=Z3Config(name=st.cluster.id, args=args),
                   seed=0, smt2=Path(st.artifacts.smt2),
                   timeout_s=budget_s, z3_bin=z3_bin)
         for st in states
@@ -181,11 +175,14 @@ def _solve_clusters_parallel(states: list[ClusterState], *,
 
 
 def _solve_one(smt2: Path, *, budget_s: int,
-                z3_bin: Path) -> tuple[str, float, list[str], str, str]:
+                z3_bin: Path,
+                extra_args: Sequence[str] = (),
+                ) -> tuple[str, float, list[str], str, str]:
     """One-shot z3 invocation via `ctac.solver.z3.solve()`. Returns
-    (verdict, wall_s, argv, stdout, stderr). Used by absorption +
-    singleton+core paths where the race machinery is overkill."""
-    res = solver_solve(smt2, timeout_s=budget_s, z3_bin=z3_bin)
+    (verdict, wall_s, argv, stdout, stderr). Used by completeness
+    probe, absorption, and singleton+core paths."""
+    res = solver_solve(smt2, timeout_s=budget_s, z3_bin=z3_bin,
+                        extra_args=extra_args)
     return res.verdict, res.wall_s, res.argv, res.stdout, res.stderr
 
 
@@ -234,6 +231,7 @@ def run_cover_cfg(*,
                     config: CoverConfig = CoverConfig(),
                     z3_bin: Path | str | None = None,
                     ctac_bin: str = 'ctac',
+                    cluster_z3_args: Sequence[str] = (),
                     log: Sequence[Path] | None = None,
                     on_event: Callable[[str], None] | None = None,
                     ) -> CoverResult:
@@ -303,7 +301,8 @@ def run_cover_cfg(*,
     # Step 5: parallel solve clusters; first SAT wins.
     race_result = _solve_clusters_parallel(
         states, budget_s=config.cluster_budget_s,
-        workers=config.workers, z3_bin=z3_path)
+        workers=config.workers, z3_bin=z3_path,
+        cluster_z3_args=cluster_z3_args)
 
     # First-SAT exit.
     if race_result.winner is not None and race_result.winner_result.verdict == 'sat':
@@ -389,6 +388,7 @@ def run_cover_cfg(*,
             output_dir=output_dir,
             ctac_bin=ctac_bin,
             z3_bin=z3_path,
+            cluster_z3_args=cluster_z3_args,
         )
         if absorbed_state is not None and absorbed_state.verdict == 'sat':
             return _emit_sat_certificate(
@@ -429,8 +429,11 @@ def run_cover_cfg(*,
             forbidden_paths.append(escape)
             continue
 
+        # Singleton-from-escape IS a cluster (a 1-path one); honor
+        # user z3 args. Completeness probe above is bare (custom theory).
         verdict_s, wall_s, argv_s, stdout_s, _ = _solve_one(
-            arts.smt2, budget_s=config.cluster_budget_s, z3_bin=z3_path)
+            arts.smt2, budget_s=config.cluster_budget_s,
+            z3_bin=z3_path, extra_args=cluster_z3_args)
 
         sing_state = ClusterState(
             cluster=Cluster(id=singleton_id, members=(),

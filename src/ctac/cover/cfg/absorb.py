@@ -41,20 +41,17 @@ if TYPE_CHECKING:
 
 
 def _short_solve(smt2: Path, *, budget_s: int,
-                   z3_bin: Path) -> tuple[str, float, list[str]]:
-    """Light z3 invocation used by absorption-probe; mirrors run.py's
-    `_solve_one` but local-only (avoids the import cycle)."""
-    import subprocess
-    import time
+                   z3_bin: Path,
+                   extra_args: Sequence[str] = (),
+                   ) -> tuple[str, float, list[str]]:
+    """Light z3 invocation used by absorption-probe; uses
+    `ctac.solver.z3.solve()` for argv-shape consistency with the
+    cluster race."""
+    from ctac.solver.z3 import solve as solver_solve
 
-    argv = [str(z3_bin), f'-T:{budget_s}', '-st', '-smt2', str(smt2)]
-    t0 = time.time()
-    proc = subprocess.run(argv, capture_output=True, text=True,
-                            timeout=budget_s + 10)
-    wall = time.time() - t0
-    first = proc.stdout.strip().split('\n', 1)[0] if proc.stdout else ''
-    verdict = first if first in ('sat', 'unsat', 'unknown') else 'unknown'
-    return verdict, wall, argv
+    res = solver_solve(smt2, timeout_s=budget_s, z3_bin=z3_bin,
+                        extra_args=extra_args)
+    return res.verdict, res.wall_s, res.argv
 
 
 def try_absorb(*,
@@ -67,6 +64,7 @@ def try_absorb(*,
                  output_dir: Path,
                  ctac_bin: str,
                  z3_bin: Path,
+                 cluster_z3_args: Sequence[str] = (),
                  ) -> 'ClusterState | None':
     """Try to absorb `escape` into the nearest cluster.
 
@@ -112,7 +110,8 @@ def try_absorb(*,
         return None  # caller falls through
 
     verdict, wall, argv = _short_solve(
-        widened_arts.smt2, budget_s=absorb_budget_s, z3_bin=z3_bin)
+        widened_arts.smt2, budget_s=absorb_budget_s, z3_bin=z3_bin,
+        extra_args=cluster_z3_args)
 
     if verdict == 'unknown':
         # Widening didn't close; fall through to singleton path.

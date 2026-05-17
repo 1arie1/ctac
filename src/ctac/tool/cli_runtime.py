@@ -773,7 +773,14 @@ free TAC (DAG CFG). Both checked at load time.
 CANONICAL INVOCATIONS:
 - default:     ctac cover-cfg f.tac -o cover/ --plain
 - tight budget: ctac cover-cfg f.tac -o cover/ --samples 16 --budget 15
-- many seeds:   ctac cover-cfg f.tac -o cover/ --workers 8 --seed 42
+- many workers: ctac cover-cfg f.tac -o cover/ --workers 8 --seed 42
+- pass z3 args: ctac cover-cfg f.tac -o cover/ --plain \\
+                  -- smt.random_seed=42 tactic.default_tactic=smt
+  (args after `--` go to z3 on cluster solves only; the
+   completeness probe is a different theory and stays bare.)
+
+Z3 BINARY: --z3 PATH on cover-cfg / verify-cover / z3 overrides the
+recorded path. Precedence: --z3 → $CTAC_Z3 → first `z3` on $PATH.
 
 OUTPUT (under -o):
 - manifest.json   — Certificate (SAT/UNSAT/unknown) for verify-cover

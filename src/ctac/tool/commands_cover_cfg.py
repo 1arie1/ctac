@@ -33,6 +33,10 @@ _COVER_CFG_EPILOG = (
     "samples=32, k=auto, 30s/cluster.\n\n"
     "[bold green]Tight budget[/bold green]  "
     "[cyan]ctac cover-cfg f.tac -o cover/ --samples 16 --budget 15[/cyan]\n\n"
+    "[bold green]Pass z3 args[/bold green]  "
+    "[cyan]ctac cover-cfg f.tac -o cover/ -- smt.random_seed=42 "
+    "tactic.default_tactic=smt[/cyan]  "
+    "(cluster solves only; completeness probe stays bare)\n\n"
     "[bold green]Re-verify after[/bold green]  "
     "[cyan]ctac verify-cover cover/manifest.json --plain[/cyan]  "
     "independent re-solve from the manifest.\n\n"
@@ -94,6 +98,14 @@ def cover_cfg_cmd(
         help='ctac binary for the pin/rw/smt sub-steps.'),
     plain: bool = typer.Option(False, '--plain', help=PLAIN_HELP),
     agent: bool = agent_option(),
+    z3_extra: Optional[list[str]] = typer.Argument(
+        None,
+        help='Args after `--` are passed to z3 for cluster solves '
+              '(parallel race + singleton-from-escape + absorption '
+              'probe). The completeness probe is a different theory '
+              'and is always solved with default z3. Example: '
+              '`ctac cover-cfg f.tac -o cover/ -- smt.random_seed=42 '
+              'tactic.default_tactic=smt`.'),
 ) -> None:
     _ = agent
     cons = console(plain_requested(plain))
@@ -117,12 +129,17 @@ def cover_cfg_cmd(
         else:
             cons.print(f'[dim]{line}[/dim]')
 
+    cluster_args = tuple(z3_extra or [])
+    if cluster_args and plain_requested(plain):
+        cons.print(f'# z3 cluster args: {" ".join(cluster_args)}')
+
     result = run_cover_cfg(
         input_tac=tac,
         output_dir=output,
         config=config,
         z3_bin=z3_bin,
         ctac_bin=ctac_bin,
+        cluster_z3_args=cluster_args,
         on_event=emit,
     )
 
