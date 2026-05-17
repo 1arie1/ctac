@@ -26,6 +26,7 @@ import_module("ctac.tool.commands_types")
 import_module("ctac.tool.commands_ua")
 import_module("ctac.tool.commands_z3")
 import_module("ctac.tool.commands_smtlib")
+import_module("ctac.tool.commands_verify_cover")
 
 __all__ = [
     "main",
