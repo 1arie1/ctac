@@ -320,9 +320,17 @@ class IntCeilDivOp(OpModel):
 
 # Lemma: if r is the result of narrow.bvN(x), then r is in the unsigned
 # N-bit range: 0 <= r <= 2^N - 1.
+#
+# This is a *partial* axiom — it asserts a range on the narrow result
+# without defining it (narrow.bvN is encoded as identity). Combined
+# with the def `R = narrow.bvN(B)`, inlining turns the range into a
+# constraint on B. When the surrounding block is bypassed on the
+# chosen path the originating TAC never executes that arithmetic, so
+# this axiom must be guardable — emitting it unconditionally produces
+# spurious UNSAT (cf. journal/2026-05/2026-05-17-sea-partial-defs-
+# unsoundness.md).
 class NarrowRangeLemma(LemmaSchema):
     params = ((_R, Int),)
-    guardable = False
 
     def __init__(self, width: int) -> None:
         self.width = width

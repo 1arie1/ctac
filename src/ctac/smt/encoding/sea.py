@@ -87,6 +87,23 @@ class SeaEncoder(SmtEncoder):
             unsupported.append("--store-reduce")
         if unsupported:
             raise SmtEncodingError(f"encoding 'sea' does not support {', '.join(unsupported)} yet")
+        # Soundness precondition. sea_vc encodes `narrow.bvN` as the
+        # identity function with a side range lemma — a partial axiom
+        # in disguise. Either the static defs that introduce narrow
+        # callsites must be guarded (so the def + lemma both vanish
+        # when the block is bypassed), or the lemma itself must be
+        # guarded (so it can't propagate range constraints onto
+        # shared upstream variables when the block is bypassed). With
+        # neither flag the encoder produces spurious UNSAT — cf.
+        # journal/2026-05/2026-05-17-sea-partial-defs-unsoundness.md.
+        if not (ctx.guard_statics or ctx.guard_axioms):
+            raise SmtEncodingError(
+                "encoding 'sea' requires --guard-statics or "
+                "--guard-axioms (or both); neither was set. With "
+                "neither flag the partial narrow-range axiom is "
+                "emitted unconditionally and over-constrains shared "
+                "upstream variables."
+            )
 
 
 @dataclass(frozen=True)

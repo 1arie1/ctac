@@ -661,7 +661,14 @@ def test_bv256_opaque_ops_use_uf_declarations() -> None:
     assert "(assert (lemma_bv256_or_bool X Y))" in text
 
 
-def test_guard_axioms_scopes_non_range_lemmas_only() -> None:
+def test_guard_axioms_scopes_all_partial_axioms() -> None:
+    """Under --guard-axioms every partial-operator axiom is scoped
+    to the originating block. Per the 2026-05-17 soundness fix:
+    narrow-range and bytemap select_range are partial axioms; both
+    must be guardable or they propagate constraints onto shared
+    upstream variables when the originating block is bypassed.
+    Total axioms (the boolean-domain lemmas) are also scoped under
+    --guard-axioms — that's the flag's contract."""
     vc = VCBuilder(VCConfig(check_sat=False, guard_axioms=True))
     x = vc.const("X", Int)
     y = vc.const("Y", Int)
@@ -677,12 +684,15 @@ def test_guard_axioms_scopes_non_range_lemmas_only() -> None:
 
     text = render_vc_script(vc.script())
 
+    # Total bool-domain lemma: scoped under --guard-axioms.
     assert "(assert (=> BLK_mid (lemma_bv256_and_bool X Y)))" in text
     assert "(assert (lemma_bv256_and_bool X Y))" not in text
-    assert "(assert (lemma_narrow_bv256_range N))" in text
-    assert "(assert (=> BLK_mid (lemma_narrow_bv256_range N)))" not in text
-    assert "(assert (int.in_bv256 R))" in text
-    assert "(assert (=> BLK_mid (int.in_bv256 R)))" not in text
+    # Partial narrow-range axiom: scoped under --guard-axioms.
+    assert "(assert (=> BLK_mid (lemma_narrow_bv256_range N)))" in text
+    assert "(assert (lemma_narrow_bv256_range N))" not in text
+    # Partial bytemap select_range axiom: scoped under --guard-axioms.
+    assert "(assert (=> BLK_mid (int.in_bv256 R)))" in text
+    assert "(assert (int.in_bv256 R))" not in text
 
 
 def test_bv256_constant_shift_and_mask_ops_use_readable_define_funs() -> None:

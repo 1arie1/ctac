@@ -761,7 +761,7 @@ Metas {
 }
 """
     tac = parse_string(src, path="<string>")
-    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd"))
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd", guard_statics=True))
     # The pairwise AMO clause is emitted with origin "dsa-amo" — the
     # canonical form is ``(or (not BLK_thn) (not BLK_els))`` for the
     # two defining blocks.
@@ -776,7 +776,7 @@ def test_cfg_encoding_fwd_emits_one_way_block_existence() -> None:
     # use ``sea`` (which carries its own DSA AMO and accepts any CFG
     # encoding) to exercise the shape.
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
-    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd"))
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd", guard_statics=True))
     # `mid` has two successors `thn` and `els`; fwd emits one-way
     # block-existence: BLK_mid => (or BLK_thn BLK_els). One-way
     # is required for soundness on diamond CFGs.
@@ -797,7 +797,7 @@ def test_cfg_encoding_fwd_bwd_includes_fwd_clauses_and_idom_implications() -> No
     # ``fwd-bwd`` extends ``fwd`` which lacks predecessor AMO and is
     # rejected by ``sea_vc``; use the unrestricted ``sea`` encoder.
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
-    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-bwd"))
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-bwd", guard_statics=True))
     # All the existing fwd clauses must still be present.
     assert "(=> BLK_mid (or BLK_thn BLK_els))" in rendered
     assert "(=> (and BLK_mid BLK_thn) c)" in rendered
@@ -816,7 +816,7 @@ def test_cfg_encoding_fwd_bwd_skips_idom_clause_when_idom_is_entry() -> None:
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
     # ``fwd-bwd`` is rejected by ``sea_vc`` (no predecessor AMO);
     # exercise via ``sea`` which carries its own DSA AMO.
-    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-bwd"))
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-bwd", guard_statics=True))
     # idom(mid) = entry. The clause "(=> BLK_mid true)" must NOT appear.
     assert "(=> BLK_mid true)" not in rendered
 
@@ -825,7 +825,7 @@ def test_cfg_encoding_fwd_edg_declares_edge_vars_and_uses_iff() -> None:
     # ``fwd-edg`` lacks predecessor AMO and is rejected by ``sea_vc``;
     # exercise via ``sea``.
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
-    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg"))
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg", guard_statics=True))
     # Edge vars get declared only at branching blocks. Block indices
     # in TAC_DIAMOND_CFG order: entry=0, mid=1, thn=2, els=3. entry
     # has a single successor (mid) so e_0_1 is elided — BLK_entry is
@@ -880,7 +880,7 @@ Metas {
 """
     tac = parse_string(src, path="<string>")
     # ``fwd-edg`` is rejected by ``sea_vc``; exercise via ``sea``.
-    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg"))
+    rendered = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg", guard_statics=True))
     # No edge variables declared: every non-terminal has one successor.
     assert "declare-const e_" not in rendered
     # BLK_a (the only single-successor non-entry, non-terminal block)
@@ -1043,8 +1043,8 @@ def test_cfg_encoding_fwd_edg2_no_merge_no_amo_incoming() -> None:
     output stays byte-identical to fwd-edg on such CFGs. Uses the
     ``sea`` encoder because ``sea_vc`` rejects ``fwd-edg``."""
     tac = parse_string(TAC_DIAMOND_CFG, path="<string>")
-    a = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg"))
-    b = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg2"))
+    a = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg", guard_statics=True))
+    b = render_smt_script(build_vc(tac, encoding="sea", cfg_encoding="fwd-edg2", guard_statics=True))
     assert a == b
 
 
@@ -1087,7 +1087,7 @@ Metas {
         "fwd-edg", "fwd-edg1", "fwd-edg2", "bwd-edge",
     ):
         rendered = render_smt_script(
-            build_vc(tac, encoding="sea", cfg_encoding=enc)
+            build_vc(tac, encoding="sea", cfg_encoding=enc, guard_statics=True)
         )
         # Every strategy must produce a well-formed script that
         # mentions BLK_EXIT and the assert predicate.
@@ -1348,11 +1348,19 @@ def test_bv_add_sub_axiom_default_is_no_mod() -> None:
 
 def test_sea_int_mul_div_lowers_three_arg_tac_operator() -> None:
     tac = parse_string(TAC_INT_MUL_DIV, path="<string>")
-    rendered = render_smt_script(build_vc(tac, encoding="sea"))
+    # Use --guard-axioms (not --guard-statics) so static defs stay as
+    # separate top-level asserts and the muldiv-bounds lemma stays
+    # global (it's a total axiom; guarded only as a side-effect of
+    # --guard-axioms which guards every lemma uniformly — that's why
+    # we don't combine flags here).
+    rendered = render_smt_script(build_vc(tac, encoding="sea", guard_axioms=True))
 
     assert "(declare-fun int.muldiv (Int Int Int) Int)" in rendered
     assert "(assert (= q (int.muldiv a b c)))" in rendered
-    assert "(assert (lemma_int_mul_div_bounds a b c q))" in rendered
+    # Under --guard-axioms, the muldiv-bounds lemma is scoped to the
+    # callsite's block. The lemma's body has the c>0 precondition so
+    # this is sound either way; the flag just makes it uniform.
+    assert "(lemma_int_mul_div_bounds a b c q)" in rendered
 
 
 def test_bv_add_sub_axiom_mod_emits_legacy_form() -> None:

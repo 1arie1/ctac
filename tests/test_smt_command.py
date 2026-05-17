@@ -370,7 +370,7 @@ def test_smt_cli_sea_vc_encoding_smoke(tmp_path: Path) -> None:
 def test_smt_cli_sea_encoding_smoke(tmp_path: Path) -> None:
     p = _write_tac(tmp_path, TAC_OK, "ok-sea-new.tac")
     runner = CliRunner()
-    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--guard-statics"])
     assert res.exit_code == 0, res.output
     assert "# encoding: sea" in res.stdout
     assert "(set-logic QF_UFNIA)" in res.stdout
@@ -388,9 +388,13 @@ def test_smt_cli_sea_encoding_smoke(tmp_path: Path) -> None:
 def test_smt_cli_sea_can_annotate_with_commands(tmp_path: Path) -> None:
     p = _write_tac(tmp_path, TAC_OK, "ok-sea-annotated.tac")
     runner = CliRunner()
+    # `--guard-axioms` keeps static defs as separate top-level asserts
+    # so per-command annotations land alongside them. `--guard-statics`
+    # would bundle them into a single block conjunction and drop the
+    # per-cmd labels.
     res = runner.invoke(
         app,
-        ["smt", str(p), "--plain", "--encoding", "sea", "--annotate-with-cmds"],
+        ["smt", str(p), "--plain", "--encoding", "sea", "--guard-axioms", "--annotate-with-cmds"],
     )
     assert res.exit_code == 0, res.output
     assert "; AssignExpCmd b true" in res.stdout
@@ -421,7 +425,7 @@ Metas {
 """
     p = _write_tac(tmp_path, tac, "havoc-refine-sea.tac")
     runner = CliRunner()
-    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--guard-statics"])
     assert res.exit_code == 0, res.output
     assert "(assert (int.in_bv64 X))" in res.stdout
     assert "(assert (<= X BV64_MAX))" not in res.stdout
@@ -455,7 +459,7 @@ Metas {
 """
     p = _write_tac(tmp_path, tac, "twos-sea.tac")
     runner = CliRunner()
-    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--guard-statics"])
     assert res.exit_code == 0, res.output
     assert "(define-fun to_s256 ((s Int)) Int" in res.stdout
     assert "(define-fun from_s256 ((b Int)) Int" in res.stdout
@@ -497,7 +501,7 @@ Metas {
 """
     p = _write_tac(tmp_path, tac, "map-ite-sea.tac")
     runner = CliRunner()
-    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--guard-axioms"])
     assert res.exit_code == 0, res.output
     assert "(define-fun M2 ((idx Int)) Int (ite C (M0 idx) (M1 idx)))" in res.stdout
     assert "(assert (= R (M2 I)))" in res.stdout
@@ -533,7 +537,7 @@ Metas {
 """
     p = _write_tac(tmp_path, tac, "inline-sea.tac")
     runner = CliRunner()
-    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--inline-scalars"])
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--guard-statics", "--inline-scalars"])
     assert res.exit_code == 0, res.output
     assert "(define-fun R1 () Int (+ 24 R0))" in res.stdout
     assert "(declare-const R1 Int)" not in res.stdout
@@ -566,7 +570,7 @@ Metas {
 """
     p = _write_tac(tmp_path, tac, "inline-bool-sea.tac")
     runner = CliRunner()
-    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--inline-scalars"])
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--guard-statics", "--inline-scalars"])
     assert res.exit_code == 0, res.output
     assert "(declare-const b Bool)" in res.stdout
     assert "(assert (= b true))" in res.stdout
@@ -609,7 +613,7 @@ Metas {
 """
     p = _write_tac(tmp_path, tac, "dynamic-section-sea.tac")
     runner = CliRunner()
-    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--guard-axioms"])
     assert res.exit_code == 0, res.output
     assert "; dynamic assignments" in res.stdout
     assert res.stdout.index("; dynamic assignments") < res.stdout.index("(assert (= x")
@@ -643,7 +647,7 @@ Metas {
 """
     p = _write_tac(tmp_path, tac, "annotation-sea.tac")
     runner = CliRunner()
-    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--guard-statics"])
     assert res.exit_code == 0, res.output
     assert "(assert (= b true))" in res.stdout
     assert "(check-sat)" in res.stdout
@@ -714,7 +718,7 @@ Metas {
 """
     p = _write_tac(tmp_path, tac, "reachable-alias.tac")
     runner = CliRunner()
-    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--guard-axioms"])
     assert res.exit_code == 0, res.output
     assert "(define-fun ReachabilityCertoraok () Bool BLK_ok)" in res.stdout
     assert "(declare-const ReachabilityCertoraok Bool)" not in res.stdout
@@ -752,7 +756,7 @@ Metas {
 """
     p = _write_tac(tmp_path, tac, "annotated-sea.tac")
     runner = CliRunner()
-    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea"])
+    res = runner.invoke(app, ["smt", str(p), "--plain", "--encoding", "sea", "--guard-axioms"])
     assert res.exit_code == 0, res.output
     assert "(declare-const X Int)" in res.stdout
     assert "(declare-const R Int)" in res.stdout
