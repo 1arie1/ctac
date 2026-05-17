@@ -137,6 +137,68 @@ class CoverResult:
 # ----------------------------- Solve helpers ---------------------------------
 
 
+def _materialize_one(args: tuple) -> tuple[str, ClusterArtifacts | str]:
+    """Worker for parallel materialize. Returns (cluster_id, artifacts)
+    on success or (cluster_id, error-string) on failure. Module-level
+    so ProcessPoolExecutor can pickle it."""
+    cluster_id, input_tac, cluster_dir, keep, universe, ctac_bin = args
+    try:
+        arts = materialize_cluster(
+            input_tac=Path(input_tac),
+            cluster_dir=Path(cluster_dir),
+            keep=keep,
+            universe=universe,
+            ctac_bin=ctac_bin,
+        )
+        return cluster_id, arts
+    except MaterializeError as e:
+        return cluster_id, f'{e.step}: {e.stderr[:200]}'
+
+
+def _materialize_clusters_parallel(*, clusters,
+                                       output_dir: Path,
+                                       input_tac: Path,
+                                       universe,
+                                       ctac_bin: str,
+                                       workers: int,
+                                       notify) -> list[ClusterState]:
+    """Run pin/rw/smt for every cluster in parallel.
+
+    Each cluster's materialization is independent (same INPUT_TAC,
+    different drop sets, different output dirs). Sequential cost was
+    O(N × 2s) for N clusters; parallel cost is O(N × 2s / workers).
+
+    Preserves the input order of `clusters` in the returned list."""
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    universe_set = set(universe)
+    work = [
+        (c.id, str(input_tac), str(output_dir / c.id),
+          frozenset(c.keep_union), frozenset(universe_set), ctac_bin)
+        for c in clusters
+    ]
+    results: dict[str, ClusterArtifacts] = {}
+    failures: dict[str, str] = {}
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(_materialize_one, w): w[0] for w in work}
+        for fut in as_completed(futures):
+            cluster_id, outcome = fut.result()
+            if isinstance(outcome, str):
+                failures[cluster_id] = outcome
+                notify(f'!! materialize {cluster_id} failed: {outcome}')
+            else:
+                results[cluster_id] = outcome
+    if failures:
+        raise MaterializeError(
+            step='parallel',
+            argv=[],
+            stderr=f'{len(failures)} cluster(s) failed: '
+                    f'{sorted(failures.keys())[:5]}...',
+        )
+    return [ClusterState(cluster=c, artifacts=results[c.id])
+            for c in clusters]
+
+
 def _accept_sat(r: Z3RunResult) -> bool:
     """Race accept: first SAT verdict wins (kills the rest)."""
     return r.verdict == 'sat'
@@ -310,22 +372,17 @@ def run_cover_cfg(*,
     clusters = cluster_paths(paths, k=k, seed=config.seed)
     notify(f'clusters: {len(clusters)} (k={k})')
 
-    # Step 4: materialize each cluster.
-    states: list[ClusterState] = []
-    for c in clusters:
-        cluster_dir = output_dir / c.id
-        try:
-            arts = materialize_cluster(
-                input_tac=input_tac,
-                cluster_dir=cluster_dir,
-                keep=c.keep_union,
-                universe=universe,
-                ctac_bin=ctac_bin,
-            )
-        except MaterializeError as e:
-            notify(f'!! materialize {c.id} failed: {e.step}')
-            raise
-        states.append(ClusterState(cluster=c, artifacts=arts))
+    # Step 4: materialize each cluster (parallel — each chain is
+    # independent pin → rw → smt over the same INPUT_TAC).
+    states = _materialize_clusters_parallel(
+        clusters=clusters,
+        output_dir=output_dir,
+        input_tac=Path(input_tac),
+        universe=universe,
+        ctac_bin=ctac_bin,
+        workers=config.workers,
+        notify=notify,
+    )
     notify(f'materialized: {len(states)} clusters')
 
     # Step 5: parallel solve clusters; first SAT wins.
