@@ -28,6 +28,7 @@ from typing import Literal
 
 from ctac.cover.certificate import (
     CoverMetadata,
+    PartialResult,
     SatCertificate,
     UnsatCertificate,
     load_certificate,
@@ -57,7 +58,7 @@ class VerifyCheck:
 
 @dataclass
 class VerifyReport:
-    cert_kind: Literal['sat', 'unsat']
+    cert_kind: Literal['sat', 'unsat', 'partial']
     checks: list[VerifyCheck] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -373,6 +374,100 @@ def verify_unsat(cert: UnsatCertificate, *,
     return report
 
 
+# --------------------------------- Verify Partial -----------------------------
+
+
+def verify_partial(cert: PartialResult, *,
+                    cert_dir: Path,
+                    z3_bin: Path | None = None,
+                    rederive_timeout_s: int = 60,
+                    timeout_multiplier: float = 2.0,
+                    timeout_slack_s: float = 5.0,
+                    ctac_bin: str = 'ctac') -> VerifyReport:
+    """Re-verify the CLOSED parts of a partial result.
+
+    Partial is by definition not sound — `report.passed` is always
+    False (we mark the top-level verdict as a failed check). But the
+    closed sub-proofs (UNSAT clusters) and the probe (if it ran) are
+    re-derived/re-solved like a normal cert, so the user can confirm
+    those parts haven't regressed."""
+    report = VerifyReport(cert_kind='partial')
+    z3 = z3_bin or resolve_z3_bin(cert.metadata.z3_bin or None)
+
+    if (w := _check_z3_version(cert.metadata, z3)):
+        report.warnings.append(w)
+
+    # Top-level partial marker — always counts as a failed verdict.
+    report.checks.append(VerifyCheck(
+        label=f'partial verdict: {cert.verdict}',
+        expected='sat|unsat',
+        got=cert.verdict,
+        wall_s=0.0,
+        passed=False,
+        kind='warn',
+        detail=(f'clusters_need_closure={cert.clusters_need_closure} '
+                  f'probe_needs_closure={cert.probe_needs_closure} '
+                  f'cover_is_incomplete={cert.cover_is_incomplete}'),
+    ))
+
+    # Re-verify closed sub-proofs the same way verify_unsat does.
+    for sp in cert.closed_sub_proofs:
+        sub_dir = Path(sp.smt2).parent.as_posix() or sp.sub_id
+        ok = _rederive_cluster(
+            cert_dir, sub_dir=sub_dir, drops=sp.drops, meta=cert.metadata,
+            ctac_bin=ctac_bin, timeout_s=rederive_timeout_s, report=report)
+        if not ok:
+            continue
+        re_smt2 = cert_dir / sub_dir / 'v.smt2'
+        budget = _z3_budget(sp.wall_s,
+                              multiplier=timeout_multiplier,
+                              slack_s=timeout_slack_s)
+        argv = [str(z3), f'-T:{budget}', '-smt2', str(re_smt2),
+                 *sp.z3_args]
+        res = _run(argv, cwd=cert_dir, timeout_s=budget)
+        report.checks.append(VerifyCheck(
+            label=f'closed sub {sp.sub_id}: {sp.smt2} '
+                    f'(recorded {sp.wall_s:.2f}s, budget {budget}s)',
+            expected='unsat', got=res.first_line, wall_s=res.wall_s,
+            passed=(res.first_line == 'unsat'), kind='verdict',
+            detail=_short(res.stdout, res.stderr)))
+
+    # Probe (if recorded): re-solve and confirm verdict matches.
+    if cert.probe_outcome is not None:
+        probe = cert.probe_outcome
+        budget = _z3_budget(probe.wall_s,
+                              multiplier=timeout_multiplier,
+                              slack_s=timeout_slack_s)
+        argv = [str(z3), f'-T:{budget}', '-smt2', probe.probe_smt2,
+                 *probe.z3_args]
+        res = _run(argv, cwd=cert_dir, timeout_s=budget)
+        # Probe match is informational for partial; pass iff recorded
+        # verdict reproduces (so deltas surface).
+        report.checks.append(VerifyCheck(
+            label=f'probe ({probe.probe_smt2}): '
+                    f'recorded={probe.verdict}, budget={budget}s',
+            expected=probe.verdict, got=res.first_line, wall_s=res.wall_s,
+            passed=(res.first_line == probe.verdict), kind='verdict',
+            detail=_short(res.stdout, res.stderr)))
+
+    # Open clusters: surface them without re-running (they were open
+    # by definition; re-running would just timeout again).
+    open_outcomes = [c for c in cert.cluster_outcomes
+                      if c.verdict not in ('sat', 'unsat')]
+    for c in open_outcomes:
+        report.checks.append(VerifyCheck(
+            label=f'open cluster {c.sub_id} (recorded {c.verdict}, '
+                    f'{c.wall_s:.2f}s)',
+            expected='unsat',
+            got=c.verdict,
+            wall_s=0.0,
+            passed=False,
+            kind='warn',
+            detail='unresolved; needs more compute or analysis',
+        ))
+    return report
+
+
 # --------------------------------- Top-level verify --------------------------
 
 
@@ -406,11 +501,17 @@ def verify(cert_path: Path | str, *,
                            timeout_slack_s=timeout_slack_s,
                            ctac_bin=ctac_bin,
                            strict_validation=strict_validation)
-    return verify_unsat(cert, cert_dir=cert_dir, z3_bin=z3,
-                         rederive_timeout_s=rederive_timeout_s,
-                         timeout_multiplier=timeout_multiplier,
-                         timeout_slack_s=timeout_slack_s,
-                         ctac_bin=ctac_bin)
+    if cert.kind == 'unsat':
+        return verify_unsat(cert, cert_dir=cert_dir, z3_bin=z3,
+                             rederive_timeout_s=rederive_timeout_s,
+                             timeout_multiplier=timeout_multiplier,
+                             timeout_slack_s=timeout_slack_s,
+                             ctac_bin=ctac_bin)
+    return verify_partial(cert, cert_dir=cert_dir, z3_bin=z3,
+                            rederive_timeout_s=rederive_timeout_s,
+                            timeout_multiplier=timeout_multiplier,
+                            timeout_slack_s=timeout_slack_s,
+                            ctac_bin=ctac_bin)
 
 
 def _short(stdout: str, stderr: str, *, maxlen: int = 200) -> str:
@@ -429,5 +530,5 @@ def fmt_argv(argv: tuple[str, ...] | list[str]) -> str:
 
 __all__ = [
     'VerifyCheck', 'VerifyReport',
-    'verify', 'verify_sat', 'verify_unsat', 'fmt_argv',
+    'verify', 'verify_sat', 'verify_unsat', 'verify_partial', 'fmt_argv',
 ]

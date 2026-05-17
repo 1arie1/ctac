@@ -335,6 +335,163 @@ class CompletenessProof:
 
 
 @dataclass(frozen=True)
+class ClusterOutcome:
+    """Per-cluster outcome for the partial manifest.
+
+    Carries the full picture (whether the cluster closed or not), so
+    the manifest can distinguish what needs more work. `verdict` is
+    one of `sat` / `unsat` / `timeout` / `unknown` / `error`."""
+
+    sub_id: str
+    smt2: str
+    drops: tuple[str, ...]
+    verdict: str
+    z3_args: tuple[str, ...] = ()
+    wall_s: float = 0.0
+
+    def to_json_dict(self) -> dict:
+        return {
+            'sub_id': self.sub_id,
+            'smt2': self.smt2,
+            'drops': list(self.drops),
+            'verdict': self.verdict,
+            'z3_args': list(self.z3_args),
+            'wall_s': self.wall_s,
+        }
+
+    @classmethod
+    def from_json_dict(cls, d: dict) -> ClusterOutcome:
+        return cls(
+            sub_id=d['sub_id'],
+            smt2=d['smt2'],
+            drops=tuple(d.get('drops', [])),
+            verdict=d['verdict'],
+            z3_args=tuple(d.get('z3_args', [])),
+            wall_s=float(d.get('wall_s', 0.0)),
+        )
+
+
+@dataclass(frozen=True)
+class ProbeOutcome:
+    """Completeness-probe verdict for the partial manifest. `verdict`
+    is one of `sat` / `unsat` / `timeout` / `unknown`."""
+
+    probe_smt2: str
+    verdict: str
+    z3_args: tuple[str, ...] = ()
+    wall_s: float = 0.0
+
+    def to_json_dict(self) -> dict:
+        return {
+            'probe_smt2': self.probe_smt2,
+            'verdict': self.verdict,
+            'z3_args': list(self.z3_args),
+            'wall_s': self.wall_s,
+        }
+
+    @classmethod
+    def from_json_dict(cls, d: dict) -> ProbeOutcome:
+        return cls(
+            probe_smt2=d['probe_smt2'],
+            verdict=d['verdict'],
+            z3_args=tuple(d.get('z3_args', [])),
+            wall_s=float(d.get('wall_s', 0.0)),
+        )
+
+
+@dataclass(frozen=True)
+class PartialResult:
+    """Cover ran but didn't reach a sound sat/unsat verdict.
+
+    This is NOT a certificate — it doesn't justify a verdict. It IS
+    a structured diagnostic: per-cluster outcomes + (optionally) the
+    completeness probe's verdict, so a user can see exactly what
+    needs more work.
+
+    The two key questions a user asks of a partial result:
+    - "Do my clusters need more compute?" → see `clusters_need_closure`.
+    - "Or is the cover itself incomplete (missing paths)?" →
+      see `cover_is_incomplete`.
+
+    If `clusters_need_closure and not cover_is_incomplete`:
+        Closing the open clusters is sufficient.
+    If `cover_is_incomplete`:
+        Closing open clusters alone is NOT sufficient — some CFG path
+        escapes every cluster's keep. Sample more paths.
+
+    `closed_sub_proofs` are valid UNSAT SubProofs from the closed
+    clusters — re-verifiable in the same way as UnsatCertificate's
+    sub-proofs. The partial verifier re-runs these alongside reporting
+    the open ones."""
+
+    metadata: CoverMetadata
+    verdict: Literal['timeout', 'unknown']
+    cluster_outcomes: tuple[ClusterOutcome, ...]
+    closed_sub_proofs: tuple[SubProof, ...]
+    probe_outcome: ProbeOutcome | None = None
+    rerun_sh: str = 'rerun.sh'
+    schema_version: int = SCHEMA_VERSION
+    kind: Literal['partial'] = 'partial'
+
+    @property
+    def clusters_need_closure(self) -> bool:
+        return any(c.verdict not in ('sat', 'unsat')
+                     for c in self.cluster_outcomes)
+
+    @property
+    def probe_needs_closure(self) -> bool:
+        return (self.probe_outcome is None
+                or self.probe_outcome.verdict != 'unsat')
+
+    @property
+    def cover_is_incomplete(self) -> bool:
+        """Probe explicitly SAT means some CFG path escapes every
+        cluster's keep — closing open clusters is NOT enough."""
+        return (self.probe_outcome is not None
+                and self.probe_outcome.verdict == 'sat')
+
+    def to_json_dict(self) -> dict:
+        return {
+            'schema_version': self.schema_version,
+            'kind': self.kind,
+            'verdict': self.verdict,
+            'metadata': self.metadata.to_json_dict(),
+            'cluster_outcomes': [c.to_json_dict()
+                                   for c in self.cluster_outcomes],
+            'closed_sub_proofs': [p.to_json_dict()
+                                    for p in self.closed_sub_proofs],
+            'probe_outcome': (self.probe_outcome.to_json_dict()
+                                if self.probe_outcome is not None else None),
+            'rerun_sh': self.rerun_sh,
+            # Computed booleans surfaced as data for cli/audit tooling:
+            'clusters_need_closure': self.clusters_need_closure,
+            'probe_needs_closure': self.probe_needs_closure,
+            'cover_is_incomplete': self.cover_is_incomplete,
+        }
+
+    @classmethod
+    def from_json_dict(cls, d: dict) -> PartialResult:
+        if d.get('kind') != 'partial':
+            raise ValueError(
+                f"expected kind='partial', got {d.get('kind')!r}")
+        probe = d.get('probe_outcome')
+        return cls(
+            schema_version=int(d.get('schema_version', SCHEMA_VERSION)),
+            verdict=d['verdict'],
+            metadata=CoverMetadata.from_json_dict(d['metadata']),
+            cluster_outcomes=tuple(
+                ClusterOutcome.from_json_dict(c)
+                for c in d.get('cluster_outcomes', [])),
+            closed_sub_proofs=tuple(
+                SubProof.from_json_dict(p)
+                for p in d.get('closed_sub_proofs', [])),
+            probe_outcome=(ProbeOutcome.from_json_dict(probe)
+                             if probe is not None else None),
+            rerun_sh=d.get('rerun_sh', 'rerun.sh'),
+        )
+
+
+@dataclass(frozen=True)
 class UnsatCertificate:
     """An UNSAT verdict + per-cluster proofs + completeness probe.
 
@@ -382,12 +539,14 @@ class UnsatCertificate:
 # ================================ Certificate union ==============================
 
 
-# Discriminated union — callers can dispatch on `cert.kind` ('sat' / 'unsat').
-Certificate = SatCertificate | UnsatCertificate
+# Discriminated union — callers can dispatch on `.kind`. Sat/Unsat
+# are *sound* certificates; Partial is a structured diagnostic for
+# incomplete cover runs (no soundness claim).
+Certificate = SatCertificate | UnsatCertificate | PartialResult
 
 
 def load_certificate(path: Path | str) -> Certificate:
-    """Read a certificate JSON file and dispatch on `kind`."""
+    """Read a manifest JSON file and dispatch on `kind`."""
     p = Path(path)
     d = json.loads(p.read_text())
     k = d.get('kind')
@@ -395,6 +554,8 @@ def load_certificate(path: Path | str) -> Certificate:
         return SatCertificate.from_json_dict(d)
     if k == 'unsat':
         return UnsatCertificate.from_json_dict(d)
+    if k == 'partial':
+        return PartialResult.from_json_dict(d)
     raise ValueError(f"unknown certificate kind {k!r} in {p}")
 
 
@@ -631,12 +792,71 @@ def emit_unsat_rerun_sh(cert: UnsatCertificate) -> str:
     return ''.join(parts)
 
 
+def emit_partial_rerun_sh(cert: PartialResult) -> str:
+    """Render the bash audit script for a partial result.
+
+    Re-derives and re-solves every CLOSED cluster (sub-proofs);
+    re-solves the probe if it ran. Exit code is always non-zero —
+    partial isn't a sound verdict — but the script reports exactly
+    what closed vs. what didn't."""
+    parts = [_prologue(cert.metadata)]
+    parts.append(f'# Partial result: overall verdict = '
+                  f'{cert.verdict}\n')
+    parts.append(f'# clusters_need_closure = {cert.clusters_need_closure}\n')
+    parts.append(f'# probe_needs_closure   = {cert.probe_needs_closure}\n')
+    parts.append(f'# cover_is_incomplete   = {cert.cover_is_incomplete}\n\n')
+    # Re-verify the closed sub-proofs.
+    for sp in cert.closed_sub_proofs:
+        sub_dir = Path(sp.smt2).parent.as_posix()
+        drops_s = ','.join(sp.drops)
+        z3_args_s = _quote_argv(sp.z3_args)
+        parts.append(
+            f'rederive_cluster {shlex.quote(sub_dir)} '
+            f'{shlex.quote(drops_s)}\n')
+        parts.append(f'T=$(z3_budget {sp.wall_s:.3f})\n')
+        parts.append(
+            f'echo "[budget] {sp.sub_id}: recorded {sp.wall_s:.2f}s, '
+            f'budget ${{T}}s"\n')
+        parts.append(
+            f'check_verdict "sub {sp.sub_id}" unsat '
+            f'"$Z3" -T:"$T" -smt2 {shlex.quote(sp.smt2)} '
+            f'{z3_args_s}\n')
+    # Probe (if it ran).
+    if cert.probe_outcome is not None:
+        probe = cert.probe_outcome
+        probe_args_s = _quote_argv(probe.z3_args)
+        parts.append(f'T=$(z3_budget {probe.wall_s:.3f})\n')
+        parts.append(
+            f'echo "[budget] probe: recorded {probe.wall_s:.2f}s, '
+            f'budget ${{T}}s; recorded verdict={probe.verdict}"\n')
+        parts.append(
+            f'check_verdict "completeness probe" '
+            f'{probe.verdict} '
+            f'"$Z3" -T:"$T" -smt2 {shlex.quote(probe.probe_smt2)} '
+            f'{probe_args_s}\n')
+    # Open clusters: report only.
+    open_outcomes = [c for c in cert.cluster_outcomes
+                       if c.verdict not in ('sat', 'unsat')]
+    for c in open_outcomes:
+        parts.append(
+            f'echo "[open] {c.sub_id} (verdict={c.verdict}, '
+            f'recorded {c.wall_s:.2f}s) — needs more compute or analysis"\n')
+    parts.append('\n# Partial results never pass `VERIFY OK` — overall '
+                  'verdict is\n# {cert.verdict}; mark the script as failed.\n'
+                  .format(cert=cert))
+    parts.append('FAIL=1\n')
+    parts.append(_RERUN_FOOTER)
+    return ''.join(parts)
+
+
 def write_rerun_sh(cert: Certificate, path: Path | str) -> None:
     """Write the rerun.sh for a certificate and mark it executable."""
     p = Path(path)
     if cert.kind == 'sat':
         text = emit_sat_rerun_sh(cert)
-    else:
+    elif cert.kind == 'unsat':
         text = emit_unsat_rerun_sh(cert)
+    else:
+        text = emit_partial_rerun_sh(cert)
     p.write_text(text)
     p.chmod(0o755)

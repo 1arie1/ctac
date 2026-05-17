@@ -91,6 +91,12 @@ def cover_cfg_cmd(
     seed: int = typer.Option(
         0, '--seed',
         help='RNG seed for path sampling + cluster init.'),
+    abort_on_timeout: bool = typer.Option(
+        False, '--abort-on-timeout',
+        help='If any cluster times out (or returns unknown), abort the '
+              'parallel race immediately instead of waiting for the other '
+              'clusters. Default off: continue past timeouts so a SAT '
+              'cluster in another worker can still win.'),
     z3_bin: Optional[Path] = typer.Option(
         None, '--z3', help='z3 binary (else CTAC_Z3 / $PATH).'),
     ctac_bin: str = typer.Option(
@@ -140,6 +146,7 @@ def cover_cfg_cmd(
         z3_bin=z3_bin,
         ctac_bin=ctac_bin,
         cluster_z3_args=cluster_args,
+        abort_on_timeout=abort_on_timeout,
         on_event=emit,
     )
 
@@ -154,16 +161,17 @@ def cover_cfg_cmd(
         cons.print(f'subgoals: {len(result.subgoals)}')
     else:
         color = {'sat': 'green', 'unsat': 'green',
+                  'timeout': 'yellow',
                   'unknown': 'yellow'}.get(result.verdict, 'red')
         cons.print(f'[bold {color}]{result.verdict.upper()}[/bold {color}]  '
                     f'in {result.wall_s:.2f}s')
         cons.print(f'manifest:  {result.manifest_path}')
         cons.print(f'report:    {result.report_path}')
-        if result.verdict != 'unknown':
-            cons.print(f'rerun:     {result.rerun_sh_path}')
+        cons.print(f'rerun:     {result.rerun_sh_path}')
         if result.subgoals:
             cons.print(f'subgoals:  {len(result.subgoals)} residual')
 
     # Exit code: 0 for SAT/UNSAT verdict, 2 for unknown.
-    if result.verdict == 'unknown':
+    # Exit codes: 0 for sat/unsat verdict, 2 for partial (timeout/unknown).
+    if result.verdict in ('timeout', 'unknown'):
         raise typer.Exit(2)

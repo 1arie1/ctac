@@ -49,10 +49,13 @@ from pathlib import Path
 from typing import Literal
 
 from ctac.cover.certificate import (
+    ClusterOutcome,
     ClusterRecord,
     CompletenessProof,
     CoverMetadata,
     Decomposition,
+    PartialResult,
+    ProbeOutcome,
     ProgramReplayPlan,
     SatCertificate,
     SubProof,
@@ -120,7 +123,7 @@ class ClusterState:
 
 @dataclass
 class CoverResult:
-    verdict: Literal['sat', 'unsat', 'unknown']
+    verdict: Literal['sat', 'unsat', 'timeout', 'unknown']
     manifest_path: Path
     report_path: Path
     rerun_sh_path: Path
@@ -138,17 +141,30 @@ def _accept_sat(r: Z3RunResult) -> bool:
     return r.verdict == 'sat'
 
 
+def _accept_sat_or_open(r: Z3RunResult) -> bool:
+    """Race accept under `--abort-on-timeout`: SAT wins, OR any
+    timeout / unknown / error aborts the race (those are signals
+    that the cover can't reach a sound UNSAT anyway, so don't burn
+    cycles on remaining clusters)."""
+    return r.verdict in ('sat', 'timeout', 'unknown', 'error')
+
+
 def _solve_clusters_parallel(states: list[ClusterState], *,
                                 budget_s: int,
                                 workers: int,
                                 z3_bin: Path,
                                 cluster_z3_args: Sequence[str] = (),
+                                abort_on_timeout: bool = False,
                                 ) -> RaceResult:
     """Parallel race over cluster VCs. First SAT wins; remainder
     SIGKILL'd. If no SAT verdict, all clusters run to completion.
 
     `cluster_z3_args` is the user-supplied z3 pass-through (seeds,
-    tactics, ...). Applied to every cluster solve uniformly."""
+    tactics, ...). Applied to every cluster solve uniformly.
+
+    `abort_on_timeout=True` makes any non-`unsat` non-`sat` verdict
+    abort the race — useful when you want to stop sampling at the
+    first sign of trouble."""
     args = tuple(cluster_z3_args)
     tasks = [
         RaceTask(config=Z3Config(name=st.cluster.id, args=args),
@@ -158,7 +174,8 @@ def _solve_clusters_parallel(states: list[ClusterState], *,
     ]
     label_to_state = {t.label: st for t, st in zip(tasks, states)}
 
-    result = race(tasks, max_concurrent=workers, accept=_accept_sat)
+    accept = _accept_sat_or_open if abort_on_timeout else _accept_sat
+    result = race(tasks, max_concurrent=workers, accept=accept)
     # Fold results back into states.
     for task, run_result in result.all_results:
         st = label_to_state.get(task.label)
@@ -232,6 +249,7 @@ def run_cover_cfg(*,
                     z3_bin: Path | str | None = None,
                     ctac_bin: str = 'ctac',
                     cluster_z3_args: Sequence[str] = (),
+                    abort_on_timeout: bool = False,
                     log: Sequence[Path] | None = None,
                     on_event: Callable[[str], None] | None = None,
                     ) -> CoverResult:
@@ -302,7 +320,8 @@ def run_cover_cfg(*,
     race_result = _solve_clusters_parallel(
         states, budget_s=config.cluster_budget_s,
         workers=config.workers, z3_bin=z3_path,
-        cluster_z3_args=cluster_z3_args)
+        cluster_z3_args=cluster_z3_args,
+        abort_on_timeout=abort_on_timeout)
 
     # First-SAT exit.
     if race_result.winner is not None and race_result.winner_result.verdict == 'sat':
@@ -323,6 +342,31 @@ def run_cover_cfg(*,
     for st in states:
         notify(f'cluster {st.cluster.id}: {st.verdict} ({st.wall_s:.2f}s)')
 
+    # Soundness gate: the completeness loop's UnsatCertificate requires
+    # every cluster covering a path to close UNSAT. If any cluster is
+    # open (timeout/unknown/error), we can't claim a sound UNSAT.
+    # Skip the loop, run the probe ONCE for diagnostic, and emit a
+    # PartialResult so the user can see exactly what's missing.
+    open_states = [s for s in states
+                    if s.verdict not in ('sat', 'unsat')]
+    if open_states:
+        notify(f'soundness: {len(open_states)} of {len(states)} clusters '
+                f'open ({", ".join(sorted({s.verdict or "?" for s in open_states}))}); '
+                f'skipping completeness loop')
+        return _emit_partial_result(
+            output_dir=output_dir,
+            metadata=metadata,
+            universe=universe,
+            info=info,
+            states=states,
+            z3_path=z3_path,
+            completeness_budget_s=config.completeness_budget_s,
+            wall_s=time.time() - t0,
+            ctac_bin=ctac_bin,
+            notify=notify,
+        )
+
+    # All clusters UNSAT → completeness loop is valid.
     # Step 6: completeness loop.
     completeness_dir = output_dir / 'completeness'
     completeness_dir.mkdir(parents=True, exist_ok=True)
@@ -333,10 +377,8 @@ def run_cover_cfg(*,
     last_probe: Path | None = None
     last_probe_argv: tuple[str, ...] = ()
     last_probe_wall: float = 0.0
-    final_iter = 0
 
     for it in range(1, config.completeness_iter + 1):
-        final_iter = it
         cluster_id_seq = [st.cluster.id for st in states]
         probe = emit_probe(info,
                              cluster_keeps=cluster_keeps,
@@ -476,17 +518,24 @@ def run_cover_cfg(*,
                 f'path_iter{it:03d}_{verdict_s}_{singleton_id}')
             notify(f'iter {it}: singleton {verdict_s}; forbid path-superset')
 
-    # Step 7: max-iter reached (or completeness gave up). Emit residuals
-    # + report verdict='unknown'.
-    return _emit_unknown_report(
+    # Step 7: max-iter reached (or completeness gave up). The loop
+    # added singletons; some may not be UNSAT. Emit a partial result.
+    return _emit_partial_result(
         output_dir=output_dir,
+        metadata=metadata,
+        universe=universe,
+        info=info,
         states=states,
-        last_probe=last_probe,
-        last_probe_argv=last_probe_argv,
-        last_probe_wall=last_probe_wall,
-        input_tac=Path(input_tac),
+        z3_path=z3_path,
+        completeness_budget_s=config.completeness_budget_s,
         wall_s=time.time() - t0,
-        n_completeness_iters=final_iter,
+        ctac_bin=ctac_bin,
+        notify=notify,
+        # The last probe ran inside the loop — reuse its verdict.
+        recorded_probe_path=last_probe,
+        recorded_probe_argv=last_probe_argv,
+        recorded_probe_verdict=verdict if last_probe is not None else None,
+        recorded_probe_wall=last_probe_wall,
     )
 
 
@@ -637,24 +686,99 @@ def _emit_unsat_certificate(*, output_dir: Path,
     )
 
 
-def _emit_unknown_report(*, output_dir: Path,
-                           states: list[ClusterState],
-                           last_probe: Path | None,
-                           last_probe_argv: tuple[str, ...],
-                           last_probe_wall: float,
-                           input_tac: Path,
-                           wall_s: float,
-                           n_completeness_iters: int) -> CoverResult:
-    """No verdict reached. Emit subgoals for unresolved clusters."""
+def _emit_partial_result(*, output_dir: Path,
+                            metadata: CoverMetadata,
+                            universe: set,
+                            info,
+                            states: list[ClusterState],
+                            z3_path: Path,
+                            completeness_budget_s: int,
+                            wall_s: float,
+                            ctac_bin: str,
+                            notify,
+                            recorded_probe_path: Path | None = None,
+                            recorded_probe_argv: tuple[str, ...] = (),
+                            recorded_probe_verdict: str | None = None,
+                            recorded_probe_wall: float = 0.0,
+                            ) -> CoverResult:
+    """Cover ran but didn't reach a sound sat/unsat verdict.
+
+    Runs the completeness probe ONCE for diagnostic if it didn't run
+    inside the (now-skipped or exhausted) completeness loop. Emits a
+    PartialResult manifest that records every cluster's outcome plus
+    the probe verdict, so the user can see exactly what needs more
+    work."""
+    import json as _json
+    from ctac.solver.signature import DiagnosticSignature
+    _ = ctac_bin  # reserved for future subgoal-emit refinements
+
+    # Step A: ensure we have a probe outcome. If the partial flow
+    # entered before the completeness loop ran, emit + solve a single
+    # probe over the current cluster keeps for diagnostic only.
+    completeness_dir = output_dir / 'completeness'
+    completeness_dir.mkdir(parents=True, exist_ok=True)
+    probe_outcome: ProbeOutcome | None = None
+    if recorded_probe_path is not None and recorded_probe_verdict is not None:
+        # Reuse the loop's last probe.
+        final_probe = completeness_dir / 'probe_final.smt2'
+        if not final_probe.exists():
+            shutil.copy2(recorded_probe_path, final_probe)
+        probe_outcome = ProbeOutcome(
+            probe_smt2=str(final_probe.relative_to(output_dir)),
+            verdict=recorded_probe_verdict,
+            z3_args=_persistent_args(recorded_probe_argv, recorded_probe_path),
+            wall_s=recorded_probe_wall,
+        )
+    else:
+        # Single diagnostic probe.
+        cluster_keeps = [st.cluster.keep_union for st in states]
+        cluster_ids = [st.cluster.id for st in states]
+        probe = emit_probe(info, cluster_keeps=cluster_keeps,
+                             cluster_ids=cluster_ids)
+        final_probe = completeness_dir / 'probe_final.smt2'
+        final_probe.write_text(probe.smt2)
+        notify('diagnostic probe: one-shot, no iteration')
+        verdict, p_wall, p_argv, stdout, _ = _solve_one(
+            final_probe, budget_s=completeness_budget_s, z3_bin=z3_path)
+        (completeness_dir / 'probe_final.stdout').write_text(stdout)
+        probe_outcome = ProbeOutcome(
+            probe_smt2=str(final_probe.relative_to(output_dir)),
+            verdict=verdict,
+            z3_args=_persistent_args(p_argv, final_probe),
+            wall_s=p_wall,
+        )
+        notify(f'diagnostic probe verdict: {verdict} ({p_wall:.2f}s)')
+
+    # Step B: collect cluster outcomes (closed + open).
+    cluster_outcomes = tuple(
+        ClusterOutcome(
+            sub_id=st.cluster.id,
+            smt2=str(st.artifacts.smt2.relative_to(output_dir)),
+            drops=tuple(sorted(set(universe) - set(st.cluster.keep_union))),
+            verdict=st.verdict or 'unknown',
+            z3_args=_persistent_args(st.z3_argv, st.artifacts.smt2),
+            wall_s=st.wall_s,
+        )
+        for st in states
+    )
+    closed_sub_proofs = tuple(
+        SubProof(
+            sub_id=st.cluster.id,
+            smt2=str(st.artifacts.smt2.relative_to(output_dir)),
+            drops=tuple(sorted(set(universe) - set(st.cluster.keep_union))),
+            z3_args=_persistent_args(st.z3_argv, st.artifacts.smt2),
+            wall_s=st.wall_s,
+        )
+        for st in states if st.verdict == 'unsat'
+    )
+
+    # Step C: subgoals for open clusters.
     subgoals_dir = output_dir / 'subgoals'
     subgoals_dir.mkdir(parents=True, exist_ok=True)
-
-    import json as _json
     subgoals: list[Subgoal] = []
     for st in states:
-        if st.verdict == 'unsat':
+        if st.verdict in ('sat', 'unsat'):
             continue
-        from ctac.solver.signature import DiagnosticSignature
         sig = (DiagnosticSignature(
             label=st.signature_label or 'unknown',
             confidence=1.0,
@@ -669,7 +793,7 @@ def _emit_unknown_report(*, output_dir: Path,
             smt2=smt2_rel,
             tac=str(st.artifacts.pinned_tac.relative_to(output_dir)),
             rw_tac=str(st.artifacts.rw_tac.relative_to(output_dir)),
-            parent_vc=str(input_tac),
+            parent_vc=metadata.input_tac,
             rerun_cmd=' '.join(st.z3_argv) if st.z3_argv
                                                 else f'ctac smt {smt2_rel} --run',
             hardness=diag,
@@ -679,29 +803,40 @@ def _emit_unknown_report(*, output_dir: Path,
         (subgoals_dir / f'{st.cluster.id}.json').write_text(
             _json.dumps(sg.to_json_dict(), indent=2, sort_keys=True) + '\n')
 
+    # Step D: decide top-level verdict (timeout vs unknown).
+    open_outcomes = [c for c in cluster_outcomes
+                      if c.verdict not in ('sat', 'unsat')]
+    has_unknown = any(c.verdict == 'unknown' for c in open_outcomes)
+    has_unknown = has_unknown or (
+        probe_outcome is not None and probe_outcome.verdict == 'unknown')
+    top_verdict: Literal['timeout', 'unknown'] = (
+        'unknown' if has_unknown else 'timeout')
+
+    partial = PartialResult(
+        metadata=metadata,
+        verdict=top_verdict,
+        cluster_outcomes=cluster_outcomes,
+        closed_sub_proofs=closed_sub_proofs,
+        probe_outcome=probe_outcome,
+        rerun_sh='rerun.sh',
+    )
+
     manifest_path = output_dir / 'manifest.json'
-    # No verdict cert; write a minimal status JSON the verifier can
-    # still load (just enough to indicate non-verdict).
-    manifest_path.write_text(_json.dumps({
-        'kind': 'unknown',
-        'schema_version': 1,
-        'wall_s': wall_s,
-        'n_completeness_iters': n_completeness_iters,
-        'subgoals': [sg.id for sg in subgoals],
-    }, indent=2, sort_keys=True) + '\n')
+    save_certificate(partial, manifest_path)
+    rerun_sh = output_dir / 'rerun.sh'
+    write_rerun_sh(partial, rerun_sh)
 
     report_path = output_dir / 'report.md'
-    report_path.write_text(_render_unknown_report(
-        states, subgoals, wall_s, n_completeness_iters, last_probe))
+    report_path.write_text(_render_partial_report(partial, subgoals, wall_s))
 
     return CoverResult(
-        verdict='unknown',
+        verdict=top_verdict,
         manifest_path=manifest_path,
         report_path=report_path,
-        rerun_sh_path=output_dir / 'rerun.sh',
+        rerun_sh_path=rerun_sh,
         wall_s=wall_s,
         n_clusters=len(states),
-        n_completeness_iters=n_completeness_iters,
+        n_completeness_iters=0,  # populated by caller via field after
         subgoals=subgoals,
     )
 
@@ -755,30 +890,76 @@ def _render_unsat_report(cert: UnsatCertificate,
     return '\n'.join(lines) + '\n'
 
 
-def _render_unknown_report(states: list[ClusterState],
+def _render_partial_report(partial: PartialResult,
                               subgoals: list[Subgoal],
-                              wall_s: float, n_iters: int,
-                              last_probe: Path | None) -> str:
+                              wall_s: float) -> str:
     lines = [
-        '# ctac cover-cfg: UNKNOWN (residual)\n',
-        f'- Clusters: {len(states)}',
-        f'- Completeness iters: {n_iters}',
-        f'- Wall time: {wall_s:.2f}s',
-        f'- Subgoals (unclosed): {len(subgoals)}\n',
-        '## Residual subgoals\n',
-        '| id | hardness | confidence |',
-        '|---|---|---|',
+        f'# ctac cover-cfg: {partial.verdict.upper()} (partial)\n',
+        f'- Top-level verdict: `{partial.verdict}`',
+        f'- Total clusters: {len(partial.cluster_outcomes)}',
+        f'- Closed UNSAT: {len(partial.closed_sub_proofs)}',
+        f'- Open: {sum(1 for c in partial.cluster_outcomes if c.verdict not in ("sat","unsat"))}',
+        f'- Wall time: {wall_s:.2f}s\n',
+        '## Diagnosis (what still needs to close?)\n',
+        f'- `clusters_need_closure` = **{partial.clusters_need_closure}**'
+        '  (any open cluster verdict)',
+        f'- `probe_needs_closure`   = **{partial.probe_needs_closure}**'
+        '  (probe did not return UNSAT)',
+        f'- `cover_is_incomplete`   = **{partial.cover_is_incomplete}**'
+        '  (probe returned SAT → some CFG path escapes every cluster)\n',
     ]
-    for sg in subgoals:
-        h = sg.hardness
-        if h is None:
-            lines.append(f'| `{sg.id}` | (no diagnosis) | - |')
-        else:
-            lines.append(f'| `{sg.id}` | `{h.label}` | {h.confidence:.2f} |')
-    lines.append('')
-    lines.append('Per-subgoal action suggestions are in `subgoals/<id>.json`.')
-    if last_probe is not None:
+    if partial.cover_is_incomplete:
+        lines.append('### Action: cover is INCOMPLETE\n')
+        lines.append('Sampling more paths or splitting tight clusters is '
+                       'needed. Closing the open clusters alone is NOT '
+                       'sufficient — the probe found an entry→assert path '
+                       'that lies outside every cluster\'s keep.\n')
+    elif partial.clusters_need_closure and not partial.probe_needs_closure:
+        lines.append('### Action: more compute on open clusters\n')
+        lines.append('The completeness probe closed UNSAT — the cover '
+                       'decomposition is structurally complete. The open '
+                       'clusters just need more solver budget (or a '
+                       'tactic swap / seed sweep) to flip to UNSAT.\n')
+    elif partial.clusters_need_closure and partial.probe_needs_closure:
+        lines.append('### Action: both clusters AND probe need closure\n')
+        lines.append('Some clusters are open and the diagnostic probe '
+                       'didn\'t close UNSAT. Try first to close the '
+                       'open clusters; the probe might close after those '
+                       'are resolved (the loop adds singletons that '
+                       'subsume escapes).\n')
+    else:
+        lines.append('### Action: probe didn\'t close (clusters are fine)\n')
+        lines.append('All cluster sub-problems closed UNSAT, but the '
+                       'completeness probe didn\'t close UNSAT. The cover '
+                       'either has uncovered CFG paths (probe SAT) or '
+                       'the probe budget was too tight (probe '
+                       'timeout/unknown).\n')
+    lines.append('## Cluster outcomes\n')
+    lines.append('| cluster | verdict | wall | drops |')
+    lines.append('|---|---|---|---|')
+    for c in partial.cluster_outcomes:
+        lines.append(f'| `{c.sub_id}` | `{c.verdict}` | {c.wall_s:.2f}s | '
+                      f'{len(c.drops)} blocks |')
+    if partial.probe_outcome is not None:
+        p = partial.probe_outcome
         lines.append('')
-        lines.append(f'Final completeness probe (not UNSAT): '
-                      f'`{last_probe.name}`.')
+        lines.append('## Probe outcome\n')
+        lines.append(f'- smt2: `{p.probe_smt2}`')
+        lines.append(f'- verdict: `{p.verdict}`')
+        lines.append(f'- wall: {p.wall_s:.2f}s')
+    if subgoals:
+        lines.append('')
+        lines.append('## Residual subgoals\n')
+        lines.append('| id | hardness | confidence |')
+        lines.append('|---|---|---|')
+        for sg in subgoals:
+            h = sg.hardness
+            if h is None:
+                lines.append(f'| `{sg.id}` | (no diagnosis) | - |')
+            else:
+                lines.append(
+                    f'| `{sg.id}` | `{h.label}` | {h.confidence:.2f} |')
+        lines.append('')
+        lines.append('Per-subgoal action suggestions are in '
+                       '`subgoals/<id>.json`.')
     return '\n'.join(lines) + '\n'
