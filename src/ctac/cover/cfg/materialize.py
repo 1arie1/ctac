@@ -42,10 +42,15 @@ from ctac.ir.models import NBId
 # π_2 containing π_1's core blocks). Path-stable encoding ⇒ sound forbids.
 # Cost: ~12% wall-time hit on the bad_ua_rw sample. Tradeoff accepted.
 DEFAULT_RW_FLAGS = ()
+# `--inline-scalars` is path-sensitive in the same way `--interval-select`
+# is: a static def in a path-specific block may be inlined into uses,
+# changing the named-assert content at the use site between paths.
+# Cores extracted from one path's smt2 then don't transfer cleanly.
+# Off by default; the cover's UNSAT verdict relies on the core
+# forbid mechanism being sound across paths.
 DEFAULT_SMT_FLAGS = (
     '--encoding', 'sea',
     '--cfg-encoding', 'fwd-edg',
-    '--inline-scalars',
 )
 
 

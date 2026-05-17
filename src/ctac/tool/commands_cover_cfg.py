@@ -97,6 +97,15 @@ def cover_cfg_cmd(
               'parallel race immediately instead of waiting for the other '
               'clusters. Default off: continue past timeouts so a SAT '
               'cluster in another worker can still win.'),
+    disable_forbids: bool = typer.Option(
+        False, '--no-core-forbids',
+        help='Disable the completeness loop\'s core-block forbid clauses. '
+              'The loop still adds singleton-from-escape clusters to the '
+              'keep set, but doesn\'t emit `((_ at-most n-1) ...)` forbid '
+              'clauses from unsat cores or path-supersets. The cover\'s '
+              'UNSAT verdict then relies solely on cluster-keep coverage '
+              '(structurally complete) rather than the core-block '
+              'soundness heuristic.'),
     z3_bin: Optional[Path] = typer.Option(
         None, '--z3', help='z3 binary (else CTAC_Z3 / $PATH).'),
     ctac_bin: str = typer.Option(
@@ -147,6 +156,7 @@ def cover_cfg_cmd(
         ctac_bin=ctac_bin,
         cluster_z3_args=cluster_args,
         abort_on_timeout=abort_on_timeout,
+        disable_forbids=disable_forbids,
         on_event=emit,
     )
 

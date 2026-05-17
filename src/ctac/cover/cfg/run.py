@@ -324,6 +324,7 @@ def run_cover_cfg(*,
                     ctac_bin: str = 'ctac',
                     cluster_z3_args: Sequence[str] = (),
                     abort_on_timeout: bool = False,
+                    disable_forbids: bool = False,
                     log: Sequence[Path] | None = None,
                     on_event: Callable[[str], None] | None = None,
                     ) -> CoverResult:
@@ -537,9 +538,10 @@ def run_cover_cfg(*,
             notify(f'iter {it}: absorbed into {absorbed_state.cluster.id}')
             # Update cluster_keeps so subsequent probes use widened set.
             cluster_keeps = [st.cluster.keep_union for st in states]
-            forbidden_paths.append(escape)
-            forbidden_labels.append(
-                f'path_iter{it:03d}_absorbed_into_{absorbed_state.cluster.id}')
+            if not disable_forbids:
+                forbidden_paths.append(escape)
+                forbidden_labels.append(
+                    f'path_iter{it:03d}_absorbed_into_{absorbed_state.cluster.id}')
             continue
 
         # 6b. Singleton + core. Materialize π as its own cluster, solve
@@ -591,7 +593,10 @@ def run_cover_cfg(*,
             )
         if verdict_s == 'unsat':
             core_blocks = core_blocks_from_stdout(stdout_s)
-            if core_blocks:
+            if disable_forbids:
+                notify(f'iter {it}: singleton {singleton_id} UNSAT; '
+                        f'core blocks={len(core_blocks)} (forbid skipped)')
+            elif core_blocks:
                 forbidden_paths.append(sorted(core_blocks))
                 forbidden_labels.append(
                     f'core_iter{it:03d}_from_{singleton_id}')
@@ -604,10 +609,12 @@ def run_cover_cfg(*,
                 notify(f'iter {it}: singleton UNSAT; no parseable core; '
                         f'forbid path-superset')
         else:
-            forbidden_paths.append(escape)
-            forbidden_labels.append(
-                f'path_iter{it:03d}_{verdict_s}_{singleton_id}')
-            notify(f'iter {it}: singleton {verdict_s}; forbid path-superset')
+            if not disable_forbids:
+                forbidden_paths.append(escape)
+                forbidden_labels.append(
+                    f'path_iter{it:03d}_{verdict_s}_{singleton_id}')
+            notify(f'iter {it}: singleton {verdict_s}; forbid path-superset'
+                    + ('  (skipped)' if disable_forbids else ''))
 
     # Step 7: max-iter reached (or completeness gave up). The loop
     # added singletons; some may not be UNSAT. Emit a partial result.
