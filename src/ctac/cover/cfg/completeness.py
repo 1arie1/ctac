@@ -12,10 +12,16 @@ the cover (absorb or singleton+core), and re-probe.
 Encoding (per ``durable/auto-cover-strategy.md``, the PB section):
 
 - Vars
-  - ``BLK_<bid>`` Bool — true iff block ``bid`` lies on the path.
+  - ``BLK_<sanitize_name(bid)>`` Bool — true iff block ``bid`` lies
+    on the path. The ``sanitize_name`` wrapper matches the sea_vc
+    encoder's BLK naming so the smt2's boolean fragment can be
+    grafted onto the probe (cf. ``emit_probe_from_smt2``) and the
+    two share a single namespace for block atoms.
   - ``e_<u>__TO__<v>`` Bool — true iff edge (u,v) lies on the path.
     Separator ``__TO__`` disambiguates block IDs that themselves
-    contain underscores (like ``"4_2_1_0_0_0"``).
+    contain underscores (like ``"4_2_1_0_0_0"``). The probe's edge
+    naming is intentionally distinct from sea_vc's index-based
+    ``e_<pred>_<succ>`` so the two sets of edge vars never alias.
 
 - Structural constraints
   - ``BLK_entry`` and ``BLK_assert`` pinned true.
@@ -53,19 +59,24 @@ import networkx as nx
 
 from ctac.cover.cfg.cfg_graph import CfgInfo
 from ctac.ir.models import NBId
+from ctac.smt.vc.builder import sanitize_name
 
 
 _EDGE_SEP = '__TO__'
 
 
 def edge_var(u: NBId, v: NBId) -> str:
-    """Edge-on-path Boolean variable name."""
+    """Edge-on-path Boolean variable name. Distinct from sea_vc's
+    ``e_<pred_idx>_<succ_idx>`` shape by the ``__TO__`` separator."""
     return f'e_{u}{_EDGE_SEP}{v}'
 
 
 def block_var(b: NBId) -> str:
-    """Block-on-path Boolean variable name."""
-    return f'BLK_{b}'
+    """Block-on-path Boolean variable name. Matches sea_vc's
+    ``BLK_<sanitize_name(name)>`` (see ``smt/vc/builder.py``) so the
+    probe's atoms can share namespace with a grafted boolean
+    fragment of the same VC."""
+    return f'BLK_{sanitize_name(b)}'
 
 
 _EDGE_VAR_RE = re.compile(
@@ -281,6 +292,148 @@ def emit_probe(info: CfgInfo, *,
         smt2=smt2,
         block_vars=tuple(block_var(b) for b in blocks),
         edge_vars=tuple(edge_var(u, v) for u, v in edges),
+    )
+
+
+# --------------------- Boolean-fragment graft from smt2 ----------------------
+
+
+# Built-in SMT-LIB operators that *return* a Bool when applied to Bool
+# arguments. Plus the PB / indexed-op prefix `_` and the explicit constants
+# `true`/`false`. Anything outside this set or the smt2's own Bool decls
+# is treated as non-boolean (and the surrounding assert is rejected).
+_BOOL_OPS = frozenset({
+    'and', 'or', 'not', '=>', '=', 'distinct', 'ite', 'xor',
+    'true', 'false',
+    '_', 'at-most', 'at-least', 'pbeq',
+})
+_INT_PAT = re.compile(r'^-?\d+$')
+
+
+def _collect_atoms(node, out: list[str]) -> None:
+    """Flatten an sexpr to its leaf atoms (for the boolean-purity test)."""
+    from ctac.solver.smt2.sexpr import Atom, List_
+    if isinstance(node, Atom):
+        out.append(node.text)
+    elif isinstance(node, List_):
+        for c in node.children:
+            _collect_atoms(c, out)
+
+
+def _is_pure_bool(body, bool_vars: set[str],
+                     nonbool_vars: set[str]) -> bool:
+    """An assertion is *pure boolean* iff every leaf atom is one of:
+    - a known Bool operator (`_BOOL_OPS`);
+    - a Bool-sorted variable from the smt2;
+    - a numeric literal (PB coefficient);
+    - an smt-lib attribute keyword (`:foo`).
+    Anything else (including any non-Bool-sorted var) disqualifies."""
+    atoms: list[str] = []
+    _collect_atoms(body, atoms)
+    for a in atoms:
+        if a in _BOOL_OPS or a in bool_vars:
+            continue
+        if _INT_PAT.match(a):
+            continue
+        if a in nonbool_vars:
+            return False
+        if a.startswith(':'):
+            continue
+        return False
+    return True
+
+
+def _bool_fragment(smt2_path):
+    """Parse `smt2_path` and return (bool_var_names, bool_assert_texts).
+
+    `bool_var_names` is the set of Bool-sorted ``declare-const`` /
+    ``declare-fun`` / ``define-fun`` (return-sort Bool) symbols.
+    `bool_assert_texts` is the list of source-text slices for asserts
+    whose body refers only to Bool atoms (per `_is_pure_bool`)."""
+    from pathlib import Path
+    from ctac.solver.smt2 import parse
+    from ctac.solver.smt2.parser import (
+        Assert, DeclareConst, DeclareFun, DefineFun,
+    )
+    from ctac.solver.smt2.sexpr import Atom
+
+    f = parse(Path(smt2_path))
+    bool_vars: set[str] = set()
+    nonbool_vars: set[str] = set()
+    for stmt in f.statements:
+        if isinstance(stmt, DeclareConst):
+            sort = stmt.sort_node
+            if isinstance(sort, Atom) and sort.text == 'Bool':
+                bool_vars.add(stmt.name)
+            else:
+                nonbool_vars.add(stmt.name)
+        elif isinstance(stmt, DeclareFun):
+            nonbool_vars.add(stmt.name)
+        elif isinstance(stmt, DefineFun):
+            ret = stmt.ret_sort_node
+            if isinstance(ret, Atom) and ret.text == 'Bool':
+                bool_vars.add(stmt.name)
+            else:
+                nonbool_vars.add(stmt.name)
+
+    assert_texts: list[str] = []
+    for stmt in f.statements:
+        if not isinstance(stmt, Assert):
+            continue
+        if _is_pure_bool(stmt.body, bool_vars, nonbool_vars):
+            assert_texts.append(f.source[stmt.span[0]:stmt.span[1]])
+    return bool_vars, assert_texts
+
+
+def emit_probe_from_smt2(info: CfgInfo, smt2_path, *,
+                            cluster_keeps: Sequence[Iterable[NBId]] = (),
+                            forbidden_paths: Sequence[Iterable[NBId]] = (),
+                            cluster_ids: Sequence[str] = (),
+                            forbidden_labels: Sequence[str] = (),
+                            ) -> CompletenessProbe:
+    """Build a completeness probe whose boolean fragment is *grafted*
+    from a full VC smt2.
+
+    Rationale (per the 2026-05-16 reframe): random-walk on the CFG
+    syntactically samples paths whose pin-injected assumes contradict
+    immediately, so the cover wastes cluster budget on trivially-UNSAT
+    slices. Pulling in the smt2's pure-boolean assertions (PB cluster /
+    block reachability, DSA-merged Bool defs like ``B1284 ↔ ¬BLK__103``)
+    keeps the probe boolean but rules out boolean-level infeasible
+    paths. The probe stays cheap — z3 reports verdicts in milliseconds.
+
+    The grafted block atoms share the PB probe's namespace because
+    `block_var` uses `sanitize_name` (matching sea_vc); the edge atoms
+    do not collide (probe uses `__TO__`, sea_vc uses index pairs).
+    """
+    base = emit_probe(info,
+                        cluster_keeps=cluster_keeps,
+                        forbidden_paths=forbidden_paths,
+                        cluster_ids=cluster_ids,
+                        forbidden_labels=forbidden_labels)
+    bool_vars, assert_texts = _bool_fragment(smt2_path)
+    # Block atoms already declared by the PB probe; declare any other
+    # Bool vars from the smt2 that the grafted asserts may reference.
+    already = set(base.block_vars) | set(base.edge_vars)
+    extra = sorted(bool_vars - already)
+
+    lines: list[str] = []
+    lines.append('; --- grafted boolean fragment from full smt2 ---')
+    lines.append(f';   source: {smt2_path}')
+    lines.append(f';   bool vars: {len(bool_vars)} ({len(extra)} new here)')
+    lines.append(f';   asserts grafted: {len(assert_texts)}')
+    for v in extra:
+        lines.append(f'(declare-const {v} Bool)')
+    lines.extend(assert_texts)
+    graft = '\n'.join(lines) + '\n'
+
+    # Splice graft just before (check-sat). emit_probe ends with
+    # (check-sat)\n(get-model)\n — graft goes immediately above.
+    smt2 = base.smt2.replace('(check-sat)', graft + '(check-sat)', 1)
+    return CompletenessProbe(
+        smt2=smt2,
+        block_vars=base.block_vars + tuple(extra),
+        edge_vars=base.edge_vars,
     )
 
 

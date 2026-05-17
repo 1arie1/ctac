@@ -67,7 +67,11 @@ from ctac.cover.cfg.absorb import try_absorb
 from ctac.cover.cfg.cfg_graph import blocks_on_entry_to_assert_paths, load_cfg
 from ctac.cover.cfg.classify import classify, suggest_actions
 from ctac.cover.cfg.cluster import Cluster, auto_k, cluster_paths
-from ctac.cover.cfg.completeness import derive_path_from_model, emit_probe
+from ctac.cover.cfg.completeness import (
+    derive_path_from_model,
+    emit_probe,
+    emit_probe_from_smt2,
+)
 from ctac.cover.cfg.core_blocks import core_blocks_from_stdout
 from ctac.cover.cfg.materialize import (
     DEFAULT_RW_FLAGS,
@@ -76,7 +80,6 @@ from ctac.cover.cfg.materialize import (
     MaterializeError,
     materialize_cluster,
 )
-from ctac.cover.cfg.sampling import sample_paths, saturate_paths
 from ctac.cover.subgoal import Subgoal
 from ctac.ir.models import NBId
 from ctac.solver.config import Z3Config
@@ -135,6 +138,78 @@ class CoverResult:
 
 
 # ----------------------------- Solve helpers ---------------------------------
+
+
+def _emit_baseline_smt2(*, input_tac: Path, work_dir: Path,
+                            universe, ctac_bin: str) -> Path:
+    """Emit the full VC smt2 for the unmodified INPUT_TAC.
+
+    Goes through the same pin → rw → smt chain as cluster
+    materialization (with an empty drop set) so the smt2's atom
+    namespace — block-reachability vars, DSA-merged Bools, named
+    asserts — matches what cluster slices will see. That namespace
+    alignment is what lets `emit_probe_from_smt2` graft the smt2's
+    pure-boolean fragment onto the structural completeness probe."""
+    arts = materialize_cluster(
+        input_tac=Path(input_tac),
+        cluster_dir=work_dir,
+        keep=frozenset(universe),   # keep everything ⇒ no drops
+        universe=frozenset(universe),
+        ctac_bin=ctac_bin,
+    )
+    return arts.smt2
+
+
+def _sample_paths_via_probe(*, info, baseline_smt2: Path,
+                                n: int, budget_s: int, z3_bin: Path,
+                                workdir: Path, notify) -> list[list[NBId]]:
+    """Sample up to `n` distinct entry→assert paths by iterating the
+    boolean-augmented probe.
+
+    Each iter:
+      - emit probe(no clusters, forbid prior paths, graft boolean
+        fragment from `baseline_smt2`);
+      - solve;
+      - on SAT: derive a CFG path from the model's true edge vars,
+        record it, forbid it via `((_ at-most n-1) BLK_b1 ...)`;
+      - on UNSAT: no more boolean-feasible escape paths exist, stop;
+      - on unknown/timeout: stop.
+
+    Each sampled path is guaranteed to satisfy the smt2's boolean
+    fragment — so simple infeasibilities visible at the Bool level
+    (mutually-exclusive DSA-merged Bools, blocked branches, ...) are
+    avoided up front, instead of being discovered after pin/rw/smt
+    by a 20ms cluster solve."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    paths: list[list[NBId]] = []
+    forbidden_paths: list[list[NBId]] = []
+    forbidden_labels: list[str] = []
+    for i in range(1, n + 1):
+        probe = emit_probe_from_smt2(
+            info, baseline_smt2,
+            forbidden_paths=forbidden_paths,
+            forbidden_labels=forbidden_labels)
+        probe_path = workdir / f'sample_{i:03d}.smt2'
+        probe_path.write_text(probe.smt2)
+        res = solver_solve(probe_path, timeout_s=budget_s, z3_bin=z3_bin)
+        (workdir / f'sample_{i:03d}.stdout').write_text(res.stdout)
+        if res.verdict == 'unsat':
+            notify(f'sample {i}: probe UNSAT — '
+                    f'no more boolean-feasible paths ({len(paths)} sampled)')
+            break
+        if res.verdict != 'sat':
+            notify(f'sample {i}: probe {res.verdict} '
+                    f'({res.wall_s:.2f}s) — stopping')
+            break
+        path = derive_path_from_model(info, res.stdout)
+        if path is None:
+            notify(f'sample {i}: model did not yield a unique path — stopping')
+            break
+        paths.append(path)
+        forbidden_paths.append(path)
+        forbidden_labels.append(f'sample_iter{i:03d}')
+        notify(f'sample {i}: path len={len(path)} ({res.wall_s:.2f}s)')
+    return paths
 
 
 def _materialize_one(args: tuple) -> tuple[str, ClusterArtifacts | str]:
@@ -363,10 +438,47 @@ def run_cover_cfg(*,
 
     universe = blocks_on_entry_to_assert_paths(info)
 
-    # Step 2: sample + saturate.
-    paths = sample_paths(info, n=config.samples, seed=config.seed)
-    paths = saturate_paths(info, paths, max_added=config.saturate_max_added)
-    notify(f'paths: {len(paths)} sampled+saturated')
+    # Step 2: probe-based sampling. Emit the full VC smt2 once, extract
+    # its pure-boolean fragment, and iteratively solve the augmented
+    # completeness probe to sample paths that are boolean-feasible by
+    # construction. Cf. `durable/auto-cover-strategy.md` (2026-05-16
+    # entry on probe-based sampling): replaces the prior random-walk +
+    # block-saturation flow, which spent most cluster budget on
+    # boolean-trivially-UNSAT slices.
+    sampling_dir = output_dir / 'sampling'
+    sampling_dir.mkdir(parents=True, exist_ok=True)
+    notify('baseline smt2: pin (no drops) + rw + smt')
+    baseline_smt2 = _emit_baseline_smt2(
+        input_tac=Path(input_tac),
+        work_dir=sampling_dir / 'baseline',
+        universe=universe,
+        ctac_bin=ctac_bin,
+    )
+    paths = _sample_paths_via_probe(
+        info=info,
+        baseline_smt2=baseline_smt2,
+        n=config.samples,
+        budget_s=config.completeness_budget_s,
+        z3_bin=z3_path,
+        workdir=sampling_dir,
+        notify=notify,
+    )
+    if not paths:
+        notify('paths: 0 — probe-based sampling produced no paths; '
+                'aborting cover')
+        return _emit_partial_result(
+            output_dir=output_dir,
+            metadata=metadata,
+            universe=universe,
+            info=info,
+            states=[],
+            z3_path=z3_path,
+            completeness_budget_s=config.completeness_budget_s,
+            wall_s=time.time() - t0,
+            ctac_bin=ctac_bin,
+            notify=notify,
+        )
+    notify(f'paths: {len(paths)} sampled via probe')
 
     # Step 3: cluster.
     k = config.k if config.k is not None else auto_k(len(paths))
@@ -453,11 +565,19 @@ def run_cover_cfg(*,
 
     for it in range(1, config.completeness_iter + 1):
         cluster_id_seq = [st.cluster.id for st in states]
-        probe = emit_probe(info,
-                             cluster_keeps=cluster_keeps,
-                             forbidden_paths=forbidden_paths,
-                             cluster_ids=cluster_id_seq,
-                             forbidden_labels=forbidden_labels)
+        # Use the same boolean-augmented probe as sampling: every
+        # escape path it emits is guaranteed boolean-feasible w.r.t.
+        # the full VC's pure-boolean fragment. Without this graft,
+        # the structural probe would happily return paths whose
+        # pin-injected assumes (or DSA-merged Bool defs) contradict
+        # at the boolean level, wasting singleton-from-escape budget
+        # on slices z3 closes in milliseconds.
+        probe = emit_probe_from_smt2(
+            info, baseline_smt2,
+            cluster_keeps=cluster_keeps,
+            forbidden_paths=forbidden_paths,
+            cluster_ids=cluster_id_seq,
+            forbidden_labels=forbidden_labels)
         probe_path = completeness_dir / f'probe_{it:03d}.smt2'
         probe_path.write_text(probe.smt2)
 
