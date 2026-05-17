@@ -260,17 +260,15 @@ def verify_sat(cert: SatCertificate, *,
     if res.first_line != 'sat':
         return report
 
-    # Capture model + replay against INPUT_TAC.
-    argv_model = [str(z3), f'-T:{z3_budget}', '-smt2', str(re_smt2),
-                    *cert.z3_args, '-model']
-    res_m = _run(argv_model, cwd=cert_dir, timeout_s=z3_budget)
-    model_path = cert_dir / winner_id / 'model.smt'
-    model_path.write_text(res_m.stdout)
-
+    # Replay the recorded model against INPUT_TAC. No re-solve — the
+    # cert already has the model file (captured at cover-time from the
+    # race winner's stdout under `-model`).
     replay = cert.program_replay
     replay_argv = [ctac_bin, 'run', replay.tac_path,
-                    '--model', str(model_path.relative_to(cert_dir)),
+                    '--model', replay.model_text_path,
                     *replay.ctac_run_args]
+    if replay.trail_path:
+        replay_argv += ['--trail', replay.trail_path]
     if '--plain' not in replay_argv:
         replay_argv.append('--plain')
     res_r = _run(replay_argv, cwd=cert_dir, timeout_s=rederive_timeout_s)
@@ -371,6 +369,25 @@ def verify_unsat(cert: UnsatCertificate, *,
         expected='unsat', got=res.first_line, wall_s=res.wall_s,
         passed=(res.first_line == 'unsat'), kind='verdict',
         detail=_short(res.stdout, res.stderr)))
+
+    # Alt-completeness (informational): re-check verdict matches.
+    alt = cert.completeness_alt_proof
+    if alt is not None:
+        alt_budget = _z3_budget(alt.wall_s,
+                                  multiplier=timeout_multiplier,
+                                  slack_s=timeout_slack_s)
+        argv = [str(z3), f'-T:{alt_budget}', '-smt2', alt.probe_smt2,
+                 *alt.z3_args]
+        res = _run(argv, cwd=cert_dir, timeout_s=alt_budget)
+        report.checks.append(VerifyCheck(
+            label=f'alt completeness (clusters only): {alt.probe_smt2} '
+                    f'(recorded {alt.expected_verdict}, '
+                    f'{alt.wall_s:.2f}s, budget {alt_budget}s)',
+            expected=alt.expected_verdict,
+            got=res.first_line, wall_s=res.wall_s,
+            passed=(res.first_line == alt.expected_verdict),
+            kind='verdict',
+            detail=_short(res.stdout, res.stderr)))
     return report
 
 

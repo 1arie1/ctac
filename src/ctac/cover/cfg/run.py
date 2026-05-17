@@ -117,6 +117,7 @@ class ClusterState:
     verdict: str | None = None
     wall_s: float = 0.0
     z3_argv: tuple[str, ...] = ()
+    z3_stdout: str = ''  # captured stdout (carries SAT model under -model)
     signature_label: str | None = None
     signature: dict | None = None
 
@@ -164,26 +165,37 @@ def _solve_clusters_parallel(states: list[ClusterState], *,
 
     `abort_on_timeout=True` makes any non-`unsat` non-`sat` verdict
     abort the race — useful when you want to stop sampling at the
-    first sign of trouble."""
-    args = tuple(cluster_z3_args)
+    first sign of trouble.
+
+    Every solve includes `-model` so the SAT winner's stdout carries
+    the z3 model directly — no re-solve needed."""
+    # Always include -model. z3 only emits a model on sat, so the
+    # cost on unsat solves is negligible.
+    args = ('-model',) + tuple(cluster_z3_args)
     tasks = [
         RaceTask(config=Z3Config(name=st.cluster.id, args=args),
                   seed=0, smt2=Path(st.artifacts.smt2),
                   timeout_s=budget_s, z3_bin=z3_bin)
         for st in states
     ]
+    # Map task.label ("<cluster_id>/seed=0") -> state.
     label_to_state = {t.label: st for t, st in zip(tasks, states)}
+    # Also map just the cluster id, since the race result's task may
+    # arrive without seed-suffix in some paths.
+    id_to_state = {st.cluster.id: st for st in states}
 
     accept = _accept_sat_or_open if abort_on_timeout else _accept_sat
     result = race(tasks, max_concurrent=workers, accept=accept)
     # Fold results back into states.
     for task, run_result in result.all_results:
-        st = label_to_state.get(task.label)
+        st = label_to_state.get(task.label) or id_to_state.get(
+            task.label.split('/seed=', 1)[0])
         if st is None:
             continue
         st.verdict = run_result.verdict
         st.wall_s = run_result.wall_s
         st.z3_argv = tuple(run_result.argv)
+        st.z3_stdout = run_result.stdout
         if run_result.signature is not None:
             st.signature_label = run_result.signature.label
             st.signature = {k: v for k, v in run_result.signature.signals.items()
@@ -327,8 +339,11 @@ def run_cover_cfg(*,
     if race_result.winner is not None and race_result.winner_result.verdict == 'sat':
         winner_task = race_result.winner_task
         winner_result = race_result.winner_result
+        # winner_task.label is "<config_name>/seed=N" where config_name
+        # was set to the cluster id; strip the seed suffix to match.
+        winner_cluster_id = winner_task.label.split('/seed=', 1)[0]
         winner_state = next(st for st in states
-                              if st.cluster.id == winner_task.label)
+                              if st.cluster.id == winner_cluster_id)
         return _emit_sat_certificate(
             output_dir=output_dir,
             metadata=metadata,
@@ -397,6 +412,20 @@ def run_cover_cfg(*,
 
         if verdict == 'unsat':
             notify(f'completeness UNSAT at iter {it}; cover complete')
+            # Diagnostic alt-completeness probe: same cluster keeps,
+            # NO forbids. Lets us distinguish "cover is sound by cluster
+            # keeps alone" (alt UNSAT) from "cover relies on core-forbid
+            # diversification" (alt SAT). The trusted-final-probe verdict
+            # is the with-forbids one; alt is informational.
+            alt_probe_path, alt_argv, alt_wall, alt_verdict = (
+                _emit_alt_completeness_probe(
+                    info=info,
+                    completeness_dir=completeness_dir,
+                    cluster_keeps=cluster_keeps,
+                    cluster_ids=cluster_id_seq,
+                    budget_s=config.completeness_budget_s,
+                    z3_bin=z3_path,
+                    notify=notify))
             return _emit_unsat_certificate(
                 output_dir=output_dir,
                 metadata=metadata,
@@ -405,6 +434,10 @@ def run_cover_cfg(*,
                 probe_path=probe_path,
                 probe_argv=tuple(argv),
                 probe_wall=wall,
+                alt_probe_path=alt_probe_path,
+                alt_probe_argv=alt_argv,
+                alt_probe_wall=alt_wall,
+                alt_probe_verdict=alt_verdict,
                 wall_s=time.time() - t0,
                 n_completeness_iters=it,
             )
@@ -483,6 +516,7 @@ def run_cover_cfg(*,
             artifacts=arts,
             verdict=verdict_s, wall_s=wall_s,
             z3_argv=tuple(argv_s),
+            z3_stdout=stdout_s,
         )
         states.append(sing_state)
         cluster_keeps.append(sing_state.cluster.keep_union)
@@ -553,13 +587,21 @@ def _emit_sat_certificate(*, output_dir: Path,
     """Write SAT cert + replay model + report + rerun.sh.
 
     The cert's `program_replay.tac_path` is INPUT_TAC (absolute) so the
-    audit replays against the original program, not the slice."""
-    # Re-solve with -model so we capture the model text the user can
-    # validate via `ctac run --model`.
+    audit replays against the original program, not the slice. The
+    SAT model was captured in the race's stdout because cluster solves
+    include `-model`; no re-solve needed."""
     smt2 = winner_state.artifacts.smt2
-    res = solver_solve(smt2, timeout_s=60, z3_bin=z3_path,
-                         extra_args=('-model',))
-    model_text = res.stdout
+    # The model is in the recorded race stdout (cluster solves include
+    # `-model`). Race stdout has stats + model; the model parser
+    # handles either order. Same for singleton-from-escape solves
+    # which stash stdout on `z3_stdout`.
+    model_text = (winner_result.stdout if winner_result is not None
+                    else winner_state.z3_stdout)
+    if not model_text:
+        # Final fallback: re-solve. Should be rare.
+        res = solver_solve(smt2, timeout_s=60, z3_bin=z3_path,
+                             extra_args=('-model',))
+        model_text = res.stdout
 
     # Write the model text alongside the smt2 (cert paths are relative
     # to output_dir).
@@ -594,6 +636,9 @@ def _emit_sat_certificate(*, output_dir: Path,
         program_replay=ProgramReplayPlan(
             tac_path=metadata.input_tac,            # INPUT_TAC, not slice
             model_text_path=str(model_path.relative_to(output_dir)),
+            trail_path=(str(winner_state.artifacts.trail.relative_to(output_dir))
+                          if winner_state.artifacts.trail is not None
+                          else None),
         ),
         rerun_sh='rerun.sh',
         witness_cluster=winner_state.cluster.id,
@@ -617,6 +662,35 @@ def _emit_sat_certificate(*, output_dir: Path,
     )
 
 
+def _emit_alt_completeness_probe(*, info,
+                                    completeness_dir: Path,
+                                    cluster_keeps: list,
+                                    cluster_ids: list[str],
+                                    budget_s: int,
+                                    z3_bin: Path,
+                                    notify,
+                                    ) -> tuple[Path, tuple[str, ...], float, str]:
+    """Emit + solve the 'cluster keeps alone, no forbids' probe.
+
+    Diagnostic only — informs the user whether the cover is sound by
+    cluster-keep coverage alone (alt UNSAT) or relies on core-forbid
+    diversification (alt SAT/other). Returns (probe_path, argv, wall,
+    verdict)."""
+    probe = emit_probe(info,
+                         cluster_keeps=cluster_keeps,
+                         forbidden_paths=(),
+                         cluster_ids=cluster_ids,
+                         forbidden_labels=())
+    probe_path = completeness_dir / 'probe_clusters_only.smt2'
+    probe_path.write_text(probe.smt2)
+    verdict, wall, argv, stdout, _ = _solve_one(
+        probe_path, budget_s=budget_s, z3_bin=z3_bin)
+    (completeness_dir / 'probe_clusters_only.stdout').write_text(stdout)
+    notify(f'alt-completeness probe (clusters only, no forbids): '
+            f'{verdict} ({wall:.2f}s)')
+    return probe_path, tuple(argv), wall, verdict
+
+
 def _emit_unsat_certificate(*, output_dir: Path,
                               metadata: CoverMetadata,
                               universe: set,
@@ -624,6 +698,10 @@ def _emit_unsat_certificate(*, output_dir: Path,
                               probe_path: Path,
                               probe_argv: tuple[str, ...],
                               probe_wall: float,
+                              alt_probe_path: Path | None = None,
+                              alt_probe_argv: tuple[str, ...] = (),
+                              alt_probe_wall: float = 0.0,
+                              alt_probe_verdict: str | None = None,
                               wall_s: float,
                               n_completeness_iters: int) -> CoverResult:
     """Write UNSAT cert + report + rerun.sh."""
@@ -654,6 +732,15 @@ def _emit_unsat_certificate(*, output_dir: Path,
             for st in states if st.verdict == 'unsat'
         ),
     )
+    alt_completeness: CompletenessProof | None = None
+    if alt_probe_path is not None and alt_probe_verdict is not None:
+        alt_completeness = CompletenessProof(
+            probe_smt2=str(alt_probe_path.relative_to(output_dir)),
+            z3_args=_persistent_args(alt_probe_argv, alt_probe_path),
+            wall_s=alt_probe_wall,
+            expected_verdict=alt_probe_verdict,  # not required to be UNSAT
+        )
+
     cert = UnsatCertificate(
         metadata=metadata,
         decomposition=decomposition,
@@ -663,6 +750,7 @@ def _emit_unsat_certificate(*, output_dir: Path,
             z3_args=_persistent_args(probe_argv, probe_path),
             wall_s=probe_wall,
         ),
+        completeness_alt_proof=alt_completeness,
         rerun_sh='rerun.sh',
     )
 
@@ -869,12 +957,25 @@ def _render_unsat_report(cert: UnsatCertificate,
         '# ctac cover-cfg: UNSAT\n',
         f'- Clusters: {len(cert.sub_proofs)} (all UNSAT)',
         f'- Completeness iters: {n_iters}',
-        f'- Wall time: {wall_s:.2f}s\n',
+        f'- Wall time: {wall_s:.2f}s',
+        f'- Main completeness probe: unsat ({cert.completeness_proof.wall_s:.2f}s)',
+    ]
+    if cert.completeness_alt_proof is not None:
+        alt = cert.completeness_alt_proof
+        lines.append(f'- Alt completeness probe (clusters-only): '
+                       f'`{alt.expected_verdict}` ({alt.wall_s:.2f}s)')
+        if alt.expected_verdict == 'unsat':
+            lines.append('  → strongest: cover sound by cluster keeps alone.')
+        else:
+            lines.append('  → cover relies on unsat-core forbids (still '
+                           'sound via trusted final probe).')
+    lines += [
+        '',
         '## Soundness\n',
         'Every CFG-feasible execution lies in some cluster whose VC is '
         'UNSAT; the completeness probe proves no path escapes the union '
-        'of cluster keeps. See `durable/auto-cover-strategy.md` for the '
-        'full argument.\n',
+        'of cluster keeps (plus the forbid clauses from unsat cores). '
+        'See `durable/auto-cover-strategy.md` for the full argument.\n',
         '## Cluster decomposition\n',
         '| cluster | blocks | paths | wall |',
         '|---|---|---|---|',

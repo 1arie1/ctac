@@ -102,6 +102,7 @@ class ProgramReplayPlan:
 
     tac_path: str
     model_text_path: str
+    trail_path: str | None = None    # rw-trail JSON, for --trail in ctac run
     ctac_run_args: tuple[str, ...] = ('--validate',)
     expected_outcome: Literal['assert_fail'] = 'assert_fail'
 
@@ -109,6 +110,7 @@ class ProgramReplayPlan:
         return {
             'tac_path': self.tac_path,
             'model_text_path': self.model_text_path,
+            'trail_path': self.trail_path,
             'ctac_run_args': list(self.ctac_run_args),
             'expected_outcome': self.expected_outcome,
         }
@@ -118,6 +120,7 @@ class ProgramReplayPlan:
         return cls(
             tac_path=d['tac_path'],
             model_text_path=d['model_text_path'],
+            trail_path=d.get('trail_path'),
             ctac_run_args=tuple(d.get('ctac_run_args', ['--validate'])),
             expected_outcome=d.get('expected_outcome', 'assert_fail'),
         )
@@ -311,7 +314,11 @@ class CompletenessProof:
     probe_smt2: str
     z3_args: tuple[str, ...] = ()             # NEW v2 (no -T, no -smt2 <file>)
     wall_s: float = 0.0
-    expected_verdict: Literal['unsat'] = 'unsat'
+    # Usually 'unsat' for the main completeness proof. For the
+    # `completeness_alt_proof` (clusters-only, no forbids), this can
+    # be 'sat' / 'timeout' / 'unknown' — that probe records what
+    # actually happened so the audit can re-confirm.
+    expected_verdict: str = 'unsat'
     semantic_argument: str | None = None
 
     def to_json_dict(self) -> dict:
@@ -506,6 +513,14 @@ class UnsatCertificate:
     sub_proofs: tuple[SubProof, ...]
     completeness_proof: CompletenessProof
     rerun_sh: str
+    # OPTIONAL: an alt completeness probe with `forbidden_paths=[]` —
+    # i.e., "cluster keeps alone, no core-block forbids". Records whether
+    # the cover is sound by cluster-keep coverage alone (best case) or
+    # whether it relies on unsat-core forbids (still trusted final-probe
+    # UNSAT, but a weaker structural property). If UNSAT here → strongest
+    # form. If not UNSAT → cover relies on forbids; review whether the
+    # core-extracted blocks are path-stable.
+    completeness_alt_proof: CompletenessProof | None = None
     schema_version: int = SCHEMA_VERSION
     kind: Literal['unsat'] = 'unsat'
 
@@ -517,6 +532,9 @@ class UnsatCertificate:
             'decomposition': self.decomposition.to_json_dict(),
             'sub_proofs': [p.to_json_dict() for p in self.sub_proofs],
             'completeness_proof': self.completeness_proof.to_json_dict(),
+            'completeness_alt_proof': (
+                self.completeness_alt_proof.to_json_dict()
+                if self.completeness_alt_proof is not None else None),
             'rerun_sh': self.rerun_sh,
         }
 
@@ -524,6 +542,7 @@ class UnsatCertificate:
     def from_json_dict(cls, d: dict) -> UnsatCertificate:
         if d.get('kind') != 'unsat':
             raise ValueError(f"expected kind='unsat', got {d.get('kind')!r}")
+        alt = d.get('completeness_alt_proof')
         return cls(
             schema_version=int(d.get('schema_version', SCHEMA_VERSION)),
             metadata=CoverMetadata.from_json_dict(d['metadata']),
@@ -532,6 +551,8 @@ class UnsatCertificate:
                               for p in d.get('sub_proofs', [])),
             completeness_proof=CompletenessProof.from_json_dict(
                 d['completeness_proof']),
+            completeness_alt_proof=(
+                CompletenessProof.from_json_dict(alt) if alt else None),
             rerun_sh=d['rerun_sh'],
         )
 
@@ -733,18 +754,17 @@ def emit_sat_rerun_sh(cert: SatCertificate) -> str:
         f'check_verdict "z3 SAT confirm" sat '
         f'"$Z3" -T:"$T" -smt2 '
         f'{shlex.quote(winner_id + "/v.smt2")} {z3_args}\n')
-    # Capture the model.
-    parts.append(
-        f'echo "[step] capturing z3 model"\n'
-        f'"$Z3" -T:"$T" -smt2 {shlex.quote(winner_id + "/v.smt2")} '
-        f'{z3_args} -model > {shlex.quote(winner_id + "/model.smt")}\n')
-    # Replay against INPUT_TAC.
+    # Replay against INPUT_TAC using the recorded model + rw-trail
+    # (re-derive emits the trail alongside pinned.rw.tac). No re-solve.
     replay = cert.program_replay
     extra = _quote_argv(replay.ctac_run_args)
+    trail_arg = (f' --trail {shlex.quote(replay.trail_path)}'
+                   if replay.trail_path else '')
     parts.append(
         f'echo "[check] program replay: INPUT_TAC"\n'
         f'if "$CTAC" run "$INPUT_TAC" --model '
-        f'{shlex.quote(winner_id + "/model.smt")} {extra} --plain 2>&1 '
+        f'{shlex.quote(replay.model_text_path)}{trail_arg} {extra} '
+        f'--plain 2>&1 '
         f'| grep -q "^assert_fail.*: [1-9]"; then\n'
         f'    echo "[ ok ] replay: assert_fail >= 1"\n'
         f'else\n'
@@ -788,6 +808,21 @@ def emit_unsat_rerun_sh(cert: UnsatCertificate) -> str:
         f'check_verdict "completeness probe" unsat '
         f'"$Z3" -T:"$T" -smt2 {shlex.quote(probe.probe_smt2)} '
         f'{probe_args_s}\n')
+    # Alt-completeness (clusters only, no forbids): diagnostic, not
+    # soundness-load-bearing. Records what *actually* happened.
+    alt = cert.completeness_alt_proof
+    if alt is not None:
+        alt_args_s = _quote_argv(alt.z3_args)
+        parts.append(f'T=$(z3_budget {alt.wall_s:.3f})\n')
+        parts.append(
+            f'echo "[budget] alt-completeness (clusters only): '
+            f'recorded {alt.wall_s:.2f}s, budget ${{T}}s; '
+            f'recorded verdict={alt.expected_verdict}"\n')
+        parts.append(
+            f'check_verdict "alt completeness (clusters only)" '
+            f'{alt.expected_verdict} '
+            f'"$Z3" -T:"$T" -smt2 {shlex.quote(alt.probe_smt2)} '
+            f'{alt_args_s}\n')
     parts.append(_RERUN_FOOTER)
     return ''.join(parts)
 

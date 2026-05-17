@@ -241,25 +241,43 @@ def _parse_sexpr(tokens: list[str], idx: int = 0) -> tuple[object, int]:
     return tok, idx + 1
 
 
+def _is_stats_sexpr(node: object) -> bool:
+    """A z3 `-st` statistics block: an S-expression whose first element
+    is a `:keyword`. e.g. `(:added-eqs 64756 :time 0.7 ...)`."""
+    if not isinstance(node, list) or not node:
+        return False
+    head = node[0]
+    return isinstance(head, str) and head.startswith(':')
+
+
 def _parse_model_root(model_text: str) -> list[object]:
+    """Parse z3 model output, tolerating `-st` stats blocks anywhere.
+
+    z3's `-st` flag emits a statistics S-expression whose position
+    relative to the model varies by version:
+    - Some builds emit `model + stats` (the model first, stats trailing).
+    - Some emit `stats + model` (stats first, then the model).
+    - Multiple stats blocks may appear (across multiple check-sat calls).
+
+    We scan all top-level S-expressions, drop the stats-shaped ones,
+    and require exactly one remaining list as the model."""
     tokens = _tokenize(model_text)
     if not tokens:
         return []
-    node, i = _parse_sexpr(tokens, 0)
-    # ``z3 -st`` appends a stats block after the model, shaped as a
-    # single S-expression whose first element is a ``:keyword``:
-    # ``(:added-eqs 64756 :time 0.70 :total-time 0.69)``. There may
-    # be more than one such block (e.g. across multiple check-sat
-    # calls). Skip them so the parser tolerates statistics-enabled
-    # solver output without ceremony. Anything else after the model
-    # remains a hard error.
+    sexprs: list[object] = []
+    i = 0
     while i < len(tokens):
         if tokens[i] != "(":
-            raise ValueError("trailing tokens after model")
-        peek = tokens[i + 1] if i + 1 < len(tokens) else None
-        if peek is None or not isinstance(peek, str) or not peek.startswith(":"):
-            raise ValueError("trailing tokens after model")
-        _stats, i = _parse_sexpr(tokens, i)
+            raise ValueError(f"unexpected top-level token {tokens[i]!r}")
+        node, i = _parse_sexpr(tokens, i)
+        sexprs.append(node)
+    non_stats = [s for s in sexprs if not _is_stats_sexpr(s)]
+    if len(non_stats) == 0:
+        raise ValueError("no model sexpr found (only stats blocks)")
+    if len(non_stats) > 1:
+        raise ValueError(f"multiple non-stats sexprs at top level "
+                          f"({len(non_stats)}); expected one model")
+    node = non_stats[0]
     if not isinstance(node, list):
         raise ValueError("model root must be a list")
     return node

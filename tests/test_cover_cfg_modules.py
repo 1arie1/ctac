@@ -202,9 +202,12 @@ def test_uncovered_blocks_and_saturate() -> None:
 
 
 def test_auto_k() -> None:
+    """auto_k is singleton-per-path by default — every sampled path is
+    its own cluster. The strategy doc's old heuristic (max(3, N/4)) is
+    deprecated in favor of bottom-up: solve paths, harvest cores."""
     assert auto_k(0) == 0
-    assert auto_k(4) == 3   # max(3, 1)
-    assert auto_k(40) == 10  # max(3, 10)
+    assert auto_k(4) == 4
+    assert auto_k(40) == 40
 
 
 def test_hamming_set_distance() -> None:

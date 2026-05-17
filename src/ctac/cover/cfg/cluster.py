@@ -145,9 +145,17 @@ def _cost(keeps: Sequence[KeepSet], center: int,
 
 
 def auto_k(num_paths: int) -> int:
-    """Default `k` heuristic from `durable/auto-cover-strategy.md`:
-    ``max(3, samples / 4)``, capped at the sample count."""
-    if num_paths <= 0:
-        return 0
-    k = max(3, num_paths // 4)
-    return min(k, num_paths)
+    """Default = singleton-per-path: each sampled path is its own cluster.
+
+    The strategy doc's original heuristic was ``max(3, samples/4)`` —
+    aggressive top-down clustering. That bet failed in practice on
+    bad_ua_rw (6/8 wider clusters timed out), and it inverts the actual
+    workflow: solve a single path, get an unsat-core, use the core to
+    diversify future probes. Clustering wider sub-problems is a
+    follow-on optimization, not the baseline.
+
+    With singleton-per-path: each cluster has a single linear path
+    (`pin --drop` of its block-complement folds JumpiCmds), so each
+    cluster's smt2 is a single-path slice — exactly the path-level
+    workflow."""
+    return max(0, num_paths)

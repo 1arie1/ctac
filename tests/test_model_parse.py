@@ -94,8 +94,9 @@ def test_parse_model_text_skips_multiple_stats_blocks() -> None:
 
 
 def test_parse_model_text_rejects_non_stats_trailing_sexpr() -> None:
-    """A trailing sexpr that doesn't start with ``:keyword`` is still
-    an error — silently dropping it would mask malformed models."""
+    """Multiple non-stats sexprs is an error (silently dropping would
+    mask malformed models). The trailing list `((this-is-not-stats
+    ...))` is a list-of-lists, not a stats block."""
     text = """sat
 (
   (define-fun R1 () Int 1)
@@ -105,6 +106,27 @@ def test_parse_model_text_rejects_non_stats_trailing_sexpr() -> None:
     try:
         parse_model_text(text)
     except ValueError as e:
-        assert "trailing tokens" in str(e)
+        # Either "multiple non-stats" (new error) or "trailing tokens"
+        # (legacy). Both indicate the same failure mode.
+        msg = str(e)
+        assert ('multiple non-stats' in msg
+                  or 'trailing tokens' in msg), msg
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_parse_model_text_tolerates_leading_stats_block() -> None:
+    """Some z3 builds emit `-st` stats BEFORE the model. The parser
+    handles either position (or both)."""
+    text = """sat
+(:added-eqs 12345 :time 0.5 :total-time 0.5)
+(
+  (define-fun R1 () Int 7)
+  (define-fun b1 () Bool true)
+)
+"""
+    m = parse_model_text(text)
+    assert m.values['R1'].kind == 'int'
+    assert int(m.values['R1'].data) == 7
+    assert m.values['b1'].kind == 'bool'
+    assert bool(m.values['b1'].data) is True

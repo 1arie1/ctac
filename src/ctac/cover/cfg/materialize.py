@@ -34,8 +34,14 @@ from typing import Iterable
 from ctac.ir.models import NBId
 
 
-# Default flags from `durable/auto-cover-strategy.md`.
-DEFAULT_RW_FLAGS = ('--interval-select',)
+# Default rw is intentionally bare. `--interval-select` is path-sensitive:
+# it specializes Selects using upstream range info, which makes a block's
+# encoded content depend on the path through it. The cover's unsat-core
+# block-projection forbid mechanism requires block content to be
+# path-stable (so a core extracted from path π_1 transfers to any path
+# π_2 containing π_1's core blocks). Path-stable encoding ⇒ sound forbids.
+# Cost: ~12% wall-time hit on the bad_ua_rw sample. Tradeoff accepted.
+DEFAULT_RW_FLAGS = ()
 DEFAULT_SMT_FLAGS = (
     '--encoding', 'sea',
     '--cfg-encoding', 'fwd-edg',
@@ -45,7 +51,11 @@ DEFAULT_SMT_FLAGS = (
 
 @dataclass(frozen=True)
 class ClusterArtifacts:
-    """Files produced by `materialize_cluster` for one cluster."""
+    """Files produced by `materialize_cluster` for one cluster.
+
+    `trail` is the rw-trail JSON sidecar — maps havoc'd variables back
+    to expressions over surviving ones, so `ctac run --model` can
+    resolve SAT-model values for rewritten variables when replaying."""
 
     cluster_dir: Path
     pinned_tac: Path
@@ -53,6 +63,7 @@ class ClusterArtifacts:
     smt2: Path
     drops: tuple[NBId, ...]
     keep: tuple[NBId, ...]
+    trail: Path | None = None
 
 
 class MaterializeError(RuntimeError):
@@ -99,6 +110,7 @@ def materialize_cluster(*,
 
     pinned_tac = cluster_dir / 'pinned.tac'
     rw_tac = cluster_dir / 'pinned.rw.tac'
+    rw_trail = cluster_dir / 'pinned.rw.trail.json'
     smt2 = cluster_dir / 'v.smt2'
 
     # 1. pin --drop
@@ -108,9 +120,12 @@ def materialize_cluster(*,
         pin_argv += ['--drop', ','.join(drops)]
     _run(pin_argv, step='pin', cmd_file=cluster_dir / 'pin.cmd')
 
-    # 2. rw
+    # 2. rw + trail (the trail maps havoc'd variables back to
+    # expressions over surviving ones; `ctac run --model` needs it
+    # to resolve SAT model values when replaying against INPUT_TAC).
     rw_argv = [ctac_bin, 'rw', str(pinned_tac),
-                '-o', str(rw_tac), '--plain']
+                '-o', str(rw_tac), '--plain',
+                '--trail', str(rw_trail)]
     rw_argv += list(rw_flags)
     _run(rw_argv, step='rw', cmd_file=cluster_dir / 'rw.cmd')
 
@@ -126,6 +141,7 @@ def materialize_cluster(*,
         cluster_dir=cluster_dir,
         pinned_tac=pinned_tac,
         rw_tac=rw_tac,
+        trail=rw_trail if rw_trail.exists() else None,
         smt2=smt2,
         drops=tuple(drops),
         keep=keep_t,
