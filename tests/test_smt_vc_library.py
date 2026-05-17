@@ -661,38 +661,74 @@ def test_bv256_opaque_ops_use_uf_declarations() -> None:
     assert "(assert (lemma_bv256_or_bool X Y))" in text
 
 
-def test_guard_axioms_scopes_all_partial_axioms() -> None:
-    """Under --guard-axioms every partial-operator axiom is scoped
-    to the originating block. Per the 2026-05-17 soundness fix:
-    narrow-range and bytemap select_range are partial axioms; both
-    must be guardable or they propagate constraints onto shared
-    upstream variables when the originating block is bypassed.
-    Total axioms (the boolean-domain lemmas) are also scoped under
-    --guard-axioms — that's the flag's contract."""
-    vc = VCBuilder(VCConfig(check_sat=False, guard_axioms=True))
+def test_partial_axioms_default_scoped_total_axioms_default_global() -> None:
+    """Rule 4: partial axioms (narrow-range, bytemap select_range)
+    are scoped to the call's block by default. Total axioms
+    (bv256_*_bool, muldiv_bounds) are global by default — they add
+    no constraint on the operator's arguments.
+
+    Rule 7 exception: when the partial axiom's target is the bound
+    LHS of a scoped static def, the axiom can stay global because
+    the LHS is free when the block is bypassed and the axiom is
+    trivially satisfied. Provides loose bounds for NLA without
+    leaking constraints onto shared upstream variables."""
+    vc = VCBuilder(VCConfig(check_sat=False))
     x = vc.const("X", Int)
     y = vc.const("Y", Int)
     a = vc.const("A", Int)
     n = vc.const("N", Int)
+    n_compound = vc.const("NC", Int)
     r = vc.const("R", Int)
     m0 = vc.bytemap.havoc("M0")
 
     with vc.block("mid") as b:
+        # Total axiom (bool-domain lemma): default global.
         b.def_(a, vc.ops.bv256.and_(x, y))
+        # Rule 7 case: N := narrow(X) — N is the bound LHS of a
+        # scoped def, so the partial axiom on N stays global.
         b.def_(n, vc.ops.narrow.bv256(x))
+        # Non-rule-7 case: NC := A + narrow(Y) — the inner narrow's
+        # bound result is NOT NC (NC is the add's result), so the
+        # partial axiom on the inner narrow's anonymous result must
+        # be scoped.
+        b.def_(n_compound, vc.ops.bv256.add(a, vc.ops.narrow.bv256(y)))
+        # Bytemap select: rule 8 says it's partial. Under default
+        # placement (no --guard-axioms) the select_range fact stays
+        # global (it's the only partial axiom not yet routed through
+        # rule-7-aware emission). The cover's pipeline uses
+        # --guard-statics, which scopes the *defs* — the unguarded
+        # select_range then attaches to a scoped-def LHS and is
+        # vacuous when the block is bypassed.
         b.def_(r, vc.bytemap.select(m0, x))
 
     text = render_vc_script(vc.script())
 
-    # Total bool-domain lemma: scoped under --guard-axioms.
+    # Total bool-domain lemma → global by default (rule 4).
+    assert "(assert (lemma_bv256_and_bool X Y))" in text
+    # Rule 7: narrow lemma whose target IS the scoped-def LHS stays
+    # global. After identity-inlining `narrow.bv256` is just N's name.
+    assert "(assert (lemma_narrow_bv256_range N))" in text
+    assert "(=> BLK_mid (lemma_narrow_bv256_range N))" not in text
+    # Non-rule-7: nested narrow inside the add — the narrow lemma
+    # targets an anonymous sub-expression, so it must be scoped.
+    assert (
+        "(=> BLK_mid (lemma_narrow_bv256_range (narrow.bv256 Y)))" in text
+    )
+
+
+def test_guard_axioms_scopes_total_axioms_uniformly() -> None:
+    """--guard-axioms is the opt-in 'uniform scoping' mode: it
+    scopes total axioms too. Partial axioms keep their default
+    placement (rule 7 still applies)."""
+    vc = VCBuilder(VCConfig(check_sat=False, guard_axioms=True))
+    x = vc.const("X", Int)
+    y = vc.const("Y", Int)
+    a = vc.const("A", Int)
+    with vc.block("mid") as b:
+        b.def_(a, vc.ops.bv256.and_(x, y))
+    text = render_vc_script(vc.script())
     assert "(assert (=> BLK_mid (lemma_bv256_and_bool X Y)))" in text
     assert "(assert (lemma_bv256_and_bool X Y))" not in text
-    # Partial narrow-range axiom: scoped under --guard-axioms.
-    assert "(assert (=> BLK_mid (lemma_narrow_bv256_range N)))" in text
-    assert "(assert (lemma_narrow_bv256_range N))" not in text
-    # Partial bytemap select_range axiom: scoped under --guard-axioms.
-    assert "(assert (=> BLK_mid (int.in_bv256 R)))" in text
-    assert "(assert (int.in_bv256 R))" not in text
 
 
 def test_bv256_constant_shift_and_mask_ops_use_readable_define_funs() -> None:

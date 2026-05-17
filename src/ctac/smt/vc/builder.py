@@ -125,7 +125,7 @@ class BlockBuilder:
     ) -> None:
         if inline:
             self.vc.inline_def(lhs, rhs)
-            self._bind_direct_result(rhs, lhs)
+            self._bind_direct_result(rhs, lhs, placement=placement)
             return
         self.vc.fact(
             FactKind.DEF,
@@ -135,12 +135,32 @@ class BlockBuilder:
             origin="def",
             placement=placement,
         )
-        self._bind_direct_result(rhs, lhs)
+        self._bind_direct_result(rhs, lhs, placement=placement)
 
-    def _bind_direct_result(self, rhs: Term, lhs: Term) -> None:
+    def _bind_direct_result(
+        self, rhs: Term, lhs: Term, *, placement: FactPlacement
+    ) -> None:
         site = rhs.direct_callsite
-        if site is not None and hasattr(site, "bound_result"):
-            site.bound_result = lhs
+        if site is None or not hasattr(site, "bound_result"):
+            return
+        site.bound_result = lhs
+        # Rule 7: record whether the def binding this call's result is
+        # scoped (block-guarded) or global. If the eligible-global
+        # placement gets globalized at lowering time, the def is
+        # effectively GLOBAL — so we resolve it here through the same
+        # config path the lowerer uses.
+        if hasattr(site, "bound_def_scoped"):
+            site.bound_def_scoped = self._is_effectively_scoped(placement)
+
+    def _is_effectively_scoped(self, placement: FactPlacement) -> bool:
+        if placement is FactPlacement.GLOBAL:
+            return False
+        if (
+            placement is FactPlacement.ELIGIBLE_GLOBAL
+            and self.vc.config.globalize_eligible_facts
+        ):
+            return False
+        return True
 
     def assume(self, phi: Term, *, name: str | None = None) -> None:
         self.vc.fact(
@@ -521,12 +541,31 @@ class VCBuilder:
                 self.require_lemma_def(lemma)
                 args = lemma.instance_args(call)
                 phi = app(lemma.name, args, Bool)
-                placement = FactPlacement.GLOBAL
-                if self.config.guard_axioms and lemma.guardable:
+                # Rule 4: partial axioms default to SCOPED (guarded by
+                # the callsite's block); total axioms default to GLOBAL
+                # (they add no constraint on arguments). The
+                # --guard-axioms flag is an opt-in uniform mode that
+                # scopes every axiom regardless of partiality.
+                #
+                # Rule 7: a partial axiom whose target is the LHS of a
+                # scoped def can stay GLOBAL. When the block is
+                # bypassed the LHS is free, the axiom is trivially
+                # satisfiable, and no constraint propagates onto
+                # arguments. This is the route to loose-bounds-for-NLA
+                # without compromising soundness.
+                if lemma.partial:
+                    if call.bound_def_scoped:
+                        scope = None
+                        placement = FactPlacement.GLOBAL  # rule 7
+                    else:
+                        scope = call.scope
+                        placement = FactPlacement.SCOPED
+                elif self.config.guard_axioms:
                     scope = call.scope
                     placement = FactPlacement.SCOPED
                 elif cfg.lemma_scope in {"callsite", "none"}:
                     scope = None
+                    placement = FactPlacement.GLOBAL
                 else:
                     raise ValueError(f"unknown lemma_scope {cfg.lemma_scope!r}")
                 self.facts.append(

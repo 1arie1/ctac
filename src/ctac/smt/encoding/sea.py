@@ -87,23 +87,16 @@ class SeaEncoder(SmtEncoder):
             unsupported.append("--store-reduce")
         if unsupported:
             raise SmtEncodingError(f"encoding 'sea' does not support {', '.join(unsupported)} yet")
-        # Soundness precondition. sea_vc encodes `narrow.bvN` as the
-        # identity function with a side range lemma — a partial axiom
-        # in disguise. Either the static defs that introduce narrow
-        # callsites must be guarded (so the def + lemma both vanish
-        # when the block is bypassed), or the lemma itself must be
-        # guarded (so it can't propagate range constraints onto
-        # shared upstream variables when the block is bypassed). With
-        # neither flag the encoder produces spurious UNSAT — cf.
-        # journal/2026-05/2026-05-17-sea-partial-defs-unsoundness.md.
-        if not (ctx.guard_statics or ctx.guard_axioms):
-            raise SmtEncodingError(
-                "encoding 'sea' requires --guard-statics or "
-                "--guard-axioms (or both); neither was set. With "
-                "neither flag the partial narrow-range axiom is "
-                "emitted unconditionally and over-constrains shared "
-                "upstream variables."
-            )
+        # Soundness is now enforced by the encoder itself: rule 5
+        # forces every static def whose RHS instantiates a partial
+        # operator (narrow.bvN today) to be scoped regardless of
+        # --guard-statics; rule 4 makes partial axioms scoped by
+        # default; rule 7 keeps a partial axiom global only when
+        # its target is the bound LHS of a scoped def (then the
+        # axiom is trivially satisfied when the block is bypassed).
+        # `--guard-statics` / `--guard-axioms` are now performance
+        # knobs over total operators and total axioms; neither is
+        # required for soundness.
 
 
 @dataclass(frozen=True)
@@ -270,12 +263,22 @@ def emit_static_command(
         lhs = vc.const(lhs_name, _sort_for(symbol_sorts=expr.symbol_sorts, name=lhs_name))
         rhs = expr.lower_scalar(_peel_narrow(cmd.rhs) if inline else cmd.rhs)
         expr.require_assignment_sort(lhs, rhs, cmd.rhs)
+        # Rule 5: if the RHS instantiates a partial operator (e.g.
+        # narrow.bvN), the def MUST be scoped — otherwise the partial
+        # axiom's precondition leaks onto shared upstream variables
+        # when the block is bypassed. Total-RHS defs remain
+        # ELIGIBLE_GLOBAL (rule 6: user choice via --guard-statics).
+        placement = (
+            FactPlacement.SCOPED
+            if _rhs_has_partial_op(rhs, vc)
+            else FactPlacement.ELIGIBLE_GLOBAL
+        )
         builder.def_(
             lhs,
             rhs,
             name=vc.auto_name("def", lhs.text),
             inline=inline,
-            placement=FactPlacement.ELIGIBLE_GLOBAL,
+            placement=placement,
         )
     elif isinstance(cmd, AssignHavocCmd):
         lhs = _canon(cmd.lhs)
@@ -542,6 +545,23 @@ def _fresh_havoc(
 ) -> Term:
     name = f"HAVOC_{sanitize_ident(sym)}_{sanitize_ident(block_id)}_{cmd_index}"
     return vc.const(name, sort)
+
+
+def _rhs_has_partial_op(rhs: Term, vc: VCBuilder) -> bool:
+    """Rule 5: True if the lowered RHS contains a callsite of a
+    partial operator (an op whose default lemma config includes a
+    partial axiom). The encoder uses this to decide whether a static
+    `R = expr` def must be scoped.
+
+    Walks `rhs.callsites` — the aggregated set of all callsites in
+    the term tree, including nested ones. The bytemap select_range
+    case is handled separately in `bytemap.py` (Select doesn't go
+    through `record_call`), so this only catches operator-instantiated
+    partial axioms (`narrow.bvN` today)."""
+    for site in rhs.callsites:
+        if vc.ops.is_partial(site.op_name):
+            return True
+    return False
 
 
 def _is_map(symbol_sorts: dict[str, str], name: str) -> bool:

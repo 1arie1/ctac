@@ -155,6 +155,13 @@ class CallSite:
     scope: object | None
     block: str | None
     stmt_id: str | int | None
+    # Rule 7: set to True when this call's bound_result is the LHS of
+    # a scoped (block-guarded) static def. Partial axioms whose target
+    # is such an LHS can stay global without unsoundness — when the
+    # block is bypassed, the LHS is free and the axiom is trivially
+    # satisfied. Provides loose bounds to NLA without leaking
+    # constraints onto shared upstream variables.
+    bound_def_scoped: bool = False
 
     def result_for_lemma(self) -> Term:
         return self.bound_result or self.raw_result
@@ -163,7 +170,14 @@ class CallSite:
 class LemmaSchema:
     name: str
     params: tuple[tuple[str, object], ...]
-    guardable: bool = True
+    # Rule 1 / 4: an axiom is `partial` if it is restricting (e.g.
+    # narrow-range, bytemap select_range) rather than defining (e.g.
+    # bvxor-bool, muldiv-bounds). Partial axioms imply preconditions
+    # on the operator's arguments after inlining, so they must be
+    # guarded by the callsite's block unless rule 7 applies. Total
+    # axioms add no constraint on arguments and are safe to emit
+    # globally.
+    partial: bool = False
 
     def body(self, vc: _Builder, params: tuple[Term, ...]) -> Term:
         raise NotImplementedError
@@ -326,11 +340,13 @@ class IntCeilDivOp(OpModel):
 # with the def `R = narrow.bvN(B)`, inlining turns the range into a
 # constraint on B. When the surrounding block is bypassed on the
 # chosen path the originating TAC never executes that arithmetic, so
-# this axiom must be guardable — emitting it unconditionally produces
-# spurious UNSAT (cf. journal/2026-05/2026-05-17-sea-partial-defs-
-# unsoundness.md).
+# this axiom must be guarded unless rule 7 applies (the axiom's target
+# is the LHS of a scoped def — then the LHS is free when the block
+# is bypassed and the axiom is trivially satisfied). See journal/
+# 2026-05/2026-05-17-sea-partial-defs-unsoundness.md.
 class NarrowRangeLemma(LemmaSchema):
     params = ((_R, Int),)
+    partial = True
 
     def __init__(self, width: int) -> None:
         self.width = width
@@ -770,3 +786,17 @@ class Ops:
 
     def by_name(self, name: str) -> OpModel:
         return self._by_name[name]
+
+    def is_partial(self, name: str) -> bool:
+        """An op is *partial* (rule 2) if applying it instantiates a
+        partial axiom — i.e. some lemma in its default config has
+        `partial=True`. Used by the encoder to enforce rule 5: a
+        static def whose RHS contains a partial-operator callsite
+        must be emitted SCOPED, regardless of --guard-statics."""
+        op = self._by_name.get(name)
+        if op is None:
+            return False
+        for lemma_key in op.default_config.lemmas:
+            if op.lemmas[lemma_key].partial:
+                return True
+        return False
