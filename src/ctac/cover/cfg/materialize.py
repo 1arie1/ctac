@@ -51,6 +51,18 @@ DEFAULT_RW_FLAGS = ()
 DEFAULT_SMT_FLAGS = (
     '--encoding', 'sea',
     '--cfg-encoding', 'fwd-edg',
+    # `--guard-statics` is REQUIRED for soundness here. Without it,
+    # sea_vc emits each block's static defs as bare top-level
+    # equalities — they fire even when the defining block isn't on
+    # the chosen path. On the full VC this can over-constrain
+    # (forcing a register to a value from an unreached block) and
+    # turn a real-SAT instance into spurious UNSAT. The cover's
+    # pipeline relies on cluster verdicts and the baseline smt2
+    # being faithful to the original TAC's semantics; guarded
+    # statics restore that. Confirmed on lopu (2026-05-17):
+    # without the flag, the full rw'd TAC's smt2 returns UNSAT
+    # despite an existing assertion-failing model; with it, SAT.
+    '--guard-statics',
 )
 
 
