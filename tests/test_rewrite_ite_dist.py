@@ -172,11 +172,12 @@ def test_sub_left_ite_does_not_fire_on_right_ite_alone():
 def test_compose_add_and_sub_on_r727_skeleton():
     # The R727 skeleton from kvault:
     # Sub(Add(A, Ite(c1, 1, 0)), Ite(c2, 1, 0))
-    # Distribution should push the outermost Sub/Add inward so the
-    # expression becomes nested Ites with Add/Sub leaves over simple
-    # operands. The test doesn't pin the whole nested shape — just
-    # that the outermost op is an Ite and the outermost Sub/Add are
-    # gone from the root.
+    #
+    # Inner Add distributes (non-Ite operand A is atomic). After that the
+    # outer becomes Sub(Ite(c1, A+1, A+0), Ite(c2, 1, 0)) — and the gate
+    # blocks further distribution because each Sub side is now a non-atomic
+    # Ite. Encoder handles Sub(Ite, Ite) directly, no need to balloon to
+    # four leaves.
     tac = parse_string(
         _wrap(
             "\tBlock e Succ [] {\n"
@@ -196,4 +197,56 @@ def test_compose_add_and_sub_on_r727_skeleton():
     )
     rhs = _rhs(res.program, "R")
     assert isinstance(rhs, ApplyExpr)
-    assert rhs.op == "Ite"
+    # Outer Sub stays (gated: both sides are Ite, not atomic).
+    assert rhs.op == "Sub"
+    lhs, rhs2 = rhs.args
+    # LHS got the inner Add distributed.
+    assert isinstance(lhs, ApplyExpr) and lhs.op == "Ite"
+    # RHS is the untouched Ite(c2, 1, 0).
+    assert isinstance(rhs2, ApplyExpr) and rhs2.op == "Ite"
+
+
+def test_add_ite_dist_skips_when_other_side_compound():
+    # Gate: Add(narrow(Mul(X, Y)), Ite(c, 1, 0)) — non-Ite operand is a
+    # compound ApplyExpr, distributing duplicates it for no payoff. The
+    # canonical kvault pathology before the gate was added.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd A\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssignHavocCmd c\n"
+            "\t\tAssignExpCmd R IntAdd(IntMul(A Y) Ite(c 0x1(int) 0x0(int)))\n"
+            "\t}",
+            syms="A:bv256\n\tY:bv256\n\tR:bv256\n\tc:bool",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (ADD_ITE_DIST,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "R")
+    # IntAdd stays at the root — distribution was suppressed by the gate.
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "IntAdd"
+
+
+def test_sub_ite_dist_right_skips_when_lhs_compound():
+    # Gate for Sub: Sub(Mul(X, Y), Ite(c, 1, 0)) — LHS is compound, so
+    # SUB_ITE_DIST_RIGHT doesn't fire (would duplicate the Mul).
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd A\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssignHavocCmd c\n"
+            "\t\tAssignExpCmd R IntSub(IntMul(A Y) Ite(c 0x1(int) 0x0(int)))\n"
+            "\t}",
+            syms="A:bv256\n\tY:bv256\n\tR:bv256\n\tc:bool",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (SUB_ITE_DIST_RIGHT,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "R")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "IntSub"

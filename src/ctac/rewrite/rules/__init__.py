@@ -48,6 +48,7 @@ from ctac.rewrite.rules.sign_extend import SIGN_EXTEND_UNWRAP
 from ctac.rewrite.rules.store_eq import STORE_EQ_NORM, normalize_store_eq
 from ctac.rewrite.rules.ite import (
     ADD_ITE_DIST,
+    ADD_SUB_ZERO_FOLD,
     BOOL_ABSORB,
     DE_MORGAN,
     EQ_CONST_FOLD,
@@ -143,6 +144,8 @@ simplify_pipeline: tuple[Rule, ...] = (
     ADD_ITE_DIST,
     SUB_ITE_DIST_LEFT,
     SUB_ITE_DIST_RIGHT,
+    # Retire +/-0 arms left by the distribution rules above.
+    ADD_SUB_ZERO_FOLD,
     ITE_SAME,
     ITE_SHARED_LEAF,
     # Bool-const fold: `Ite(true, X, _) -> X`, `Ite(false, _, Y) -> Y`,
@@ -269,6 +272,7 @@ all_rule_names: tuple[str, ...] = (
     ADD_ITE_DIST.name,
     SUB_ITE_DIST_LEFT.name,
     SUB_ITE_DIST_RIGHT.name,
+    ADD_SUB_ZERO_FOLD.name,
     ITE_SAME.name,
     ITE_SHARED_LEAF.name,
     BOOL_CONST_FOLD.name,
@@ -297,6 +301,7 @@ __all__ = [
     "ADD_BV_MAX_TO_ITE",
     "ADD_BV_TO_INT",
     "ADD_ITE_DIST",
+    "ADD_SUB_ZERO_FOLD",
     "AND_LIFT_EQ_DECREMENT",
     "BOOL_ABSORB",
     "BOOL_CONST_FOLD",

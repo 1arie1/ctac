@@ -15,7 +15,7 @@ the driver's fixed-point loop composes them.
 
 from __future__ import annotations
 
-from ctac.ast.nodes import ApplyExpr, ConstExpr, TacExpr
+from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
 from ctac.rewrite.range_infer import infer_expr_range
@@ -71,8 +71,29 @@ def _rewrite_eq_const_fold(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
     return _TRUE if va == vb else _FALSE
 
 
+def _eq_leaf_will_fold(leaf: TacExpr, other: TacExpr) -> bool:
+    """True iff ``Eq(leaf, other)`` will collapse via ``EqReflexive`` or
+    ``EqFold``. Used as the cost gate for ``EQ_ITE_DIST``: distribution
+    only pays off when at least one resulting branch fold-collapses,
+    otherwise we just duplicate the Ite tree (and ``other``) for no win.
+    """
+    if leaf == other:
+        return True  # EqReflexive
+    if isinstance(leaf, ConstExpr) and isinstance(other, ConstExpr):
+        return True  # EqFold
+    return False
+
+
 def _rewrite_eq_ite_distribute(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
-    """``Eq(Ite(c, T, E), V)`` -> ``Ite(c, Eq(T, V), Eq(E, V))`` (and symmetric)."""
+    """``Eq(Ite(c, T, E), V)`` -> ``Ite(c, Eq(T, V), Eq(E, V))`` (and symmetric).
+
+    Gated: fires only when at least one resulting branch equality will
+    collapse via ``EqReflexive`` or ``EqFold``. Without this gate the rule
+    distributes ``Eq`` across nested Ite definitions even when no leaf
+    folds, duplicating both the Ite tree and ``V`` for no reduction.
+    The motivating ``Eq(BigNestedIte, 0x1)`` pattern still fires because
+    the inlined Ite has a constant else-leaf at every level.
+    """
     if not (isinstance(expr, ApplyExpr) and expr.op == "Eq" and len(expr.args) == 2):
         return None
     a, b = expr.args
@@ -80,23 +101,38 @@ def _rewrite_eq_ite_distribute(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None
     if _is_ite(a_lt):
         assert isinstance(a_lt, ApplyExpr)
         cond, then, els = a_lt.args
-        return ApplyExpr(
-            "Ite",
-            (cond, ApplyExpr("Eq", (then, b)), ApplyExpr("Eq", (els, b))),
-        )
+        if _eq_leaf_will_fold(then, b) or _eq_leaf_will_fold(els, b):
+            return ApplyExpr(
+                "Ite",
+                (cond, ApplyExpr("Eq", (then, b)), ApplyExpr("Eq", (els, b))),
+            )
     b_lt = ctx.lookthrough(b)
     if _is_ite(b_lt):
         assert isinstance(b_lt, ApplyExpr)
         cond, then, els = b_lt.args
-        return ApplyExpr(
-            "Ite",
-            (cond, ApplyExpr("Eq", (a, then)), ApplyExpr("Eq", (a, els))),
-        )
+        if _eq_leaf_will_fold(then, a) or _eq_leaf_will_fold(els, a):
+            return ApplyExpr(
+                "Ite",
+                (cond, ApplyExpr("Eq", (a, then)), ApplyExpr("Eq", (a, els))),
+            )
     return None
 
 
 _ADD_OPS = frozenset({"Add", "IntAdd"})
 _SUB_OPS = frozenset({"Sub", "IntSub"})
+
+
+def _is_atomic_after_narrow(e: TacExpr, ctx: RewriteCtx) -> bool:
+    """True iff ``e`` is a ``SymbolRef`` or ``ConstExpr`` once ``safe_math_narrow``
+    wrappers are peeled. The cost gate for the Add/Sub-over-Ite distribution
+    rules: distribution duplicates the non-Ite operand into both branches, so
+    we fire only when that operand is "free to duplicate" (a single name or
+    literal). Compound operands like ``narrow(muldiv(...))`` or a nested Ite
+    would balloon the AST and rarely enable downstream folds, so we keep the
+    surrounding op intact and let the encoder handle the Ite uniformly.
+    """
+    peeled = ctx.peel_narrow(e)
+    return isinstance(peeled, (SymbolRef, ConstExpr))
 
 
 def _rewrite_add_ite_distribute(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
@@ -107,13 +143,19 @@ def _rewrite_add_ite_distribute(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | Non
     Ite(c, T, E)))`` also distributes. Distribution is sound in int,
     bv, and mixed semantics — the Ite selects an operand and the outer
     op commutes with branch selection.
+
+    Cost-gated: fires only when the non-Ite operand is atomic after
+    peeling ``safe_math_narrow`` (a ``SymbolRef`` or ``ConstExpr``).
+    Distributing across a compound operand duplicates it inside both
+    Ite arms and rarely enables a downstream fold; the encoder handles
+    ``Op(compound, Ite)`` directly without the duplication.
     """
     if not (isinstance(expr, ApplyExpr) and expr.op in _ADD_OPS and len(expr.args) == 2):
         return None
     op = expr.op
     a, b = expr.args
     a_lt = ctx.peel_narrow(a)
-    if _is_ite(a_lt):
+    if _is_ite(a_lt) and _is_atomic_after_narrow(b, ctx):
         assert isinstance(a_lt, ApplyExpr)
         cond, then, els = a_lt.args
         return ApplyExpr(
@@ -121,7 +163,7 @@ def _rewrite_add_ite_distribute(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | Non
             (cond, ApplyExpr(op, (then, b)), ApplyExpr(op, (els, b))),
         )
     b_lt = ctx.peel_narrow(b)
-    if _is_ite(b_lt):
+    if _is_ite(b_lt) and _is_atomic_after_narrow(a, ctx):
         assert isinstance(b_lt, ApplyExpr)
         cond, then, els = b_lt.args
         return ApplyExpr(
@@ -136,6 +178,9 @@ def _rewrite_sub_ite_distribute_left(expr: TacExpr, ctx: RewriteCtx) -> TacExpr 
 
     Applies to both ``Sub`` and ``IntSub``; peels narrows on the LHS.
     Sub is non-commutative, so LHS and RHS Ite are separate rules.
+
+    Cost-gated like ``ADD_ITE_DIST``: ``Y`` must be atomic
+    (``SymbolRef`` / ``ConstExpr``) after peeling narrow.
     """
     if not (isinstance(expr, ApplyExpr) and expr.op in _SUB_OPS and len(expr.args) == 2):
         return None
@@ -143,6 +188,8 @@ def _rewrite_sub_ite_distribute_left(expr: TacExpr, ctx: RewriteCtx) -> TacExpr 
     a, b = expr.args
     a_lt = ctx.peel_narrow(a)
     if not _is_ite(a_lt):
+        return None
+    if not _is_atomic_after_narrow(b, ctx):
         return None
     assert isinstance(a_lt, ApplyExpr)
     cond, then, els = a_lt.args
@@ -152,14 +199,52 @@ def _rewrite_sub_ite_distribute_left(expr: TacExpr, ctx: RewriteCtx) -> TacExpr 
     )
 
 
+def _is_zero_const(e: TacExpr) -> bool:
+    return isinstance(e, ConstExpr) and const_to_int(e) == 0
+
+
+def _rewrite_add_sub_zero_fold(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
+    """Additive identity. ``Add(X, 0)``, ``IntAdd(X, 0)``, ``Sub(X, 0)``,
+    ``IntSub(X, 0)`` -> ``X``; ``Add(0, X)`` / ``IntAdd(0, X)`` -> ``X``.
+
+    Pairs with ``ADD_ITE_DIST`` / ``SUB_ITE_DIST_*``: distributing
+    ``Y +/- Ite(c, K, 0)`` over the Ite produces a ``+/- 0`` arm that
+    this rule retires. Without it the zombie arm sits inside the Ite
+    forever and the outer narrow/Eq sees a structurally complex
+    operand. Sound for both bv-modular (``X + 0`` mod 2^N = X) and
+    Int (``X + 0`` = X) semantics. Sub-left-zero is *not* folded —
+    that is unary negation, not identity.
+    """
+    if not isinstance(expr, ApplyExpr) or len(expr.args) != 2:
+        return None
+    a, b = expr.args
+    if expr.op in _ADD_OPS:
+        if _is_zero_const(b):
+            return a
+        if _is_zero_const(a):
+            return b
+        return None
+    if expr.op in _SUB_OPS:
+        if _is_zero_const(b):
+            return a
+        return None
+    return None
+
+
 def _rewrite_sub_ite_distribute_right(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
-    """``Sub(X, Ite(c, T, E))`` -> ``Ite(c, Sub(X, T), Sub(X, E))``."""
+    """``Sub(X, Ite(c, T, E))`` -> ``Ite(c, Sub(X, T), Sub(X, E))``.
+
+    Cost-gated like ``ADD_ITE_DIST``: ``X`` must be atomic
+    (``SymbolRef`` / ``ConstExpr``) after peeling narrow.
+    """
     if not (isinstance(expr, ApplyExpr) and expr.op in _SUB_OPS and len(expr.args) == 2):
         return None
     op = expr.op
     a, b = expr.args
     b_lt = ctx.peel_narrow(b)
     if not _is_ite(b_lt):
+        return None
+    if not _is_atomic_after_narrow(a, ctx):
         return None
     assert isinstance(b_lt, ApplyExpr)
     cond, then, els = b_lt.args
@@ -415,6 +500,15 @@ SUB_ITE_DIST_RIGHT = Rule(
     name="SubIteRight",
     fn=_rewrite_sub_ite_distribute_right,
     description="Sub(X, Ite(c, T, E)) -> Ite(c, Sub(X, T), Sub(X, E)).",
+)
+ADD_SUB_ZERO_FOLD = Rule(
+    name="AddSubZero",
+    fn=_rewrite_add_sub_zero_fold,
+    description=(
+        "Additive identity: X + 0 -> X, 0 + X -> X, X - 0 -> X (for both "
+        "Add/IntAdd and Sub/IntSub). Retires zero-arm zombies produced by "
+        "ADD_ITE_DIST / SUB_ITE_DIST_* when an Ite arm is 0."
+    ),
 )
 ITE_SAME = Rule(
     name="IteSame",
