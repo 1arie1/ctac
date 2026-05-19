@@ -98,16 +98,7 @@ def test_rw_no_purify_ite_disables_tb_naming():
 
 
 def test_rw_purify_ite_output_round_trips(tmp_path):
-    """Default `--purify-ite` run produces output that re-parses cleanly.
-
-    Originally pinned ``TB0:bool`` in the symbol table as a stand-in
-    for "ITE_PURIFY introduced TB names". The cascading late
-    CSE/CP/DCE loop now folds TBs whose RHS coincides (after
-    propagation) with another static def, so on some targets every
-    TB gets absorbed before reaching the output file. ITE_PURIFY's
-    firing is independently pinned by
-    ``test_rw_no_purify_ite_disables_tb_naming`` via the report;
-    here we just guarantee the writer round-trips its own output."""
+    """Default `--purify-ite` run produces output that re-parses cleanly."""
     runner = CliRunner()
     src = _require_target(TARGET_TAC)
     out = tmp_path / "rw_ite.tac"
@@ -115,6 +106,91 @@ def test_rw_purify_ite_output_round_trips(tmp_path):
     assert result.exit_code == 0, result.output
     reparsed = parse_path(out)
     assert reparsed.program.blocks
+
+
+# Inline TAC fixture: a single Ite with a non-trivial Eq cond, designed so
+# ITE_PURIFY fires once and the resulting TB def has no duplicate to be
+# folded away by the late CSE pass. Used as the self-contained regression
+# for the program-passthrough bug where ITE_PURIFY's hits were reported
+# but its emitted TB defs were discarded by the late-CSE loop.
+_PURIFY_REGRESSION_TAC = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR0:bv256
+\tR1:bv256
+}
+Program {
+\tBlock 0_0_0_0_0_0 Succ [] {
+\t\tAssignHavocCmd R0
+\t\tAssignExpCmd R1 Ite(Eq(R0 0x5) 0x1 0x2)
+\t\tAssumeExpCmd Lt(R1 0xff)
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_rw_ite_purify_hits_actually_land_in_output(tmp_path):
+    """Regression: ITE_PURIFY's TB<N> defs must survive into the emitted
+    .tac. Previously the CLI's post-DCE loop seeded its first CSE pass
+    from the pre-purify ``program`` variable, so the purify phase's
+    output was silently discarded by ``_merge_phases`` — ``--report``
+    still showed ITE_PURIFY hits but no TB defs reached the writer.
+
+    Self-contained input: a single ``Ite(Eq(R0, 0x5), 0x1, 0x2)`` whose
+    cond ITE_PURIFY will name. With one occurrence there is nothing for
+    late CSE to fold, so the TB def must appear verbatim in the output.
+    """
+    runner = CliRunner()
+    src = tmp_path / "src.tac"
+    src.write_text(_PURIFY_REGRESSION_TAC)
+    out = tmp_path / "rw.tac"
+    result = runner.invoke(
+        app, ["rw", str(src), "-o", str(out), "--plain", "--report"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "ITE_PURIFY:" in result.output, "ITE_PURIFY did not fire on the fixture"
+    text = out.read_text()
+    # The TB-named bool def must be present in the symbol table and as
+    # an AssignExpCmd; the Ite must reference the named cond.
+    assert "TB0:bool" in text or "TB1:bool" in text, (
+        "ITE_PURIFY hit but no TB<N>:bool symbol declaration in output:\n"
+        + text
+    )
+    assert "AssignExpCmd TB" in text, (
+        "ITE_PURIFY hit but no AssignExpCmd TB<N> def in output:\n" + text
+    )
+    # Output must round-trip — paranoia, the writer must not lose the
+    # new symbol along the way.
+    reparsed = parse_path(out)
+    assert reparsed.program.blocks
+
+
+def test_rw_ite_purify_disabled_emits_no_tb_in_output(tmp_path):
+    """Companion to ``test_rw_ite_purify_hits_actually_land_in_output``:
+    with ``--no-purify-ite``, no TB defs must appear. Pins the
+    flag's negative direction so a default-flip can't silently
+    re-enable purification."""
+    runner = CliRunner()
+    src = tmp_path / "src.tac"
+    src.write_text(_PURIFY_REGRESSION_TAC)
+    out = tmp_path / "rw.tac"
+    result = runner.invoke(
+        app, ["rw", str(src), "-o", str(out), "--plain", "--no-purify-ite"]
+    )
+    assert result.exit_code == 0, result.output
+    text = out.read_text()
+    assert "TB0" not in text and "TB1" not in text, (
+        "ITE_PURIFY disabled but TB<N> appeared in output:\n" + text
+    )
 
 
 def test_rw_purify_assert_and_assume_flags_accepted():
