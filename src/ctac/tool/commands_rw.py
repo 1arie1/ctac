@@ -532,6 +532,12 @@ def rewrite_cmd(
             # control-flow region only collapse one level per `ctac rw`
             # invocation. Loop until none of CSE / CP / DCE make progress.
             phase_ite_merged = phase_ite
+            # Adopt phase_ite's program (with the TB / TA defs that
+            # ITE_PURIFY / PURIFY_ASSERT emitted) as the starting point
+            # for the late-CSE loop. Without this, the loop seeds CSE
+            # from the pre-purify `program` and the freshly named
+            # T-defs are discarded along with phase_ite's hits.
+            program = phase_ite.program
             while True:
                 phase_cse_late = rewrite_program(
                     program,
