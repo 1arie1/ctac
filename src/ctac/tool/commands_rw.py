@@ -29,6 +29,7 @@ from ctac.rewrite.framework import RewriteResult, RuleHit, TraceEntry, TraceSink
 from ctac.rewrite.trail import Substitution, Trail, resolve_substitutions
 from ctac.rewrite.lift_dynamic_ite import lift_dynamic_ite_rhs
 from ctac.rewrite.materialize_assumes import materialize_assumes
+from ctac.rewrite.propagate_aliases import propagate_aliases_into_annotations
 from ctac.rewrite.unpurify_div import unpurify_div
 from ctac.rewrite.rules import (
     CP_ALIAS,
@@ -481,6 +482,22 @@ def rewrite_cmd(
             )
         else:
             rw = _merge_phases(phase0, phase_cse_early, phase1)
+        # Propagate ``X = SymRef(Y)`` aliases into AnnotationCmd
+        # payloads + weak_refs BEFORE the DCE loop below. CP_ALIAS in
+        # simplify_pipeline turns a folded ``Ite(Eq(R, 0), 0, R)`` into
+        # ``Rnew = Rold`` and propagates the rename into expression
+        # uses; without this step the trailing AnnotationCmd (cex
+        # printer / inline-end retVal) still names Rnew, then DCE
+        # erases Rnew's def and the annotation points at an undefined
+        # ghost. Walking with the alias map after CP has settled
+        # rewrites both the JSON payload's symbol-position fields and
+        # the parsed ``weak_refs`` tuple; the substitution is
+        # idempotent and runs before each DCE pass that could remove
+        # the aliased def.
+        propagated_program, propagated_subs = propagate_aliases_into_annotations(
+            rw.program
+        )
+        rw = replace(rw, program=propagated_program)
         # Iterate DCE to fixed point: a chain of dead defs needs multiple sweeps
         # because liveness is computed once per pass and each pass only removes
         # the directly-dead leaves.
@@ -595,7 +612,12 @@ def rewrite_cmd(
                 phase_ite_merged = _merge_phases(
                     phase_ite_merged, phase_cse_late, phase_cp_cleanup
                 )
-                program = phase_cp_cleanup.program
+                # Propagate any new CP aliases into annotations before
+                # the per-round DCE pass below removes the alias defs.
+                propagated_program, _ = propagate_aliases_into_annotations(
+                    phase_cp_cleanup.program
+                )
+                program = propagated_program
                 round_dce_removed = 0
                 while True:
                     dce = eliminate_dead_assignments(program)
