@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import re
 
-from ctac.ast.nodes import ApplyExpr, ConstExpr, TacExpr
+from ctac.analysis.symbols import canonical_symbol
+from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 from ctac.ast.range_constraints import const_expr_to_int as _const_to_int
 
 DIV_OPS = frozenset({"Div", "IntDiv"})
@@ -81,3 +82,25 @@ def is_apply_in(expr: TacExpr, ops: frozenset[str], arity: int | None = None) ->
     if not isinstance(expr, ApplyExpr) or expr.op not in ops:
         return False
     return arity is None or len(expr.args) == arity
+
+
+def canonical_expr(expr: TacExpr) -> TacExpr:
+    """Strip DSA version suffixes (``:N``) from every SymbolRef name in
+    ``expr``, recursively.
+
+    Used by rules that need structural equality across the same TAC
+    register at different DSA versions — e.g. matching a sub-expression
+    in a static def against a sub-expression in a use site, where the
+    same upstream variable may carry different ``:N`` tags.
+    """
+    if isinstance(expr, SymbolRef):
+        return SymbolRef(canonical_symbol(expr.name))
+    if isinstance(expr, ApplyExpr):
+        return ApplyExpr(expr.op, tuple(canonical_expr(a) for a in expr.args))
+    return expr
+
+
+def eq_modulo_meta(a: TacExpr, b: TacExpr) -> bool:
+    """Equality of two :class:`TacExpr`s after stripping DSA version
+    suffixes from every contained :class:`SymbolRef`."""
+    return canonical_expr(a) == canonical_expr(b)
