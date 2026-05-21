@@ -19,7 +19,13 @@ from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
 from ctac.rewrite.range_infer import infer_expr_range
-from ctac.rewrite.rules.common import const_to_int
+from ctac.rewrite.rules.common import (
+    MUL_OPS,
+    as_int_const,
+    const_to_int,
+    eq_modulo_meta,
+    reformat_const,
+)
 
 _TRUE = ConstExpr("true")
 _FALSE = ConstExpr("false")
@@ -252,6 +258,220 @@ def _rewrite_sub_ite_distribute_right(expr: TacExpr, ctx: RewriteCtx) -> TacExpr
         "Ite",
         (cond, ApplyExpr(op, (a, then)), ApplyExpr(op, (a, els))),
     )
+
+
+_BV256_MOD = 1 << 256
+
+
+def _rewrite_arith_const_fold(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
+    """Fold binary arithmetic / bitwise ops over two :class:`ConstExpr`
+    operands. Covers Int and bv variants of Add/Sub/Mul/Div/Mod plus
+    BWAnd. Result preserves the operand's type tag via
+    :func:`as_int_const` (for Int ops) or :func:`reformat_const` (for
+    bv ops).
+
+    Sound by reduction to the standard arithmetic / bitwise
+    semantics: Int ops are non-modular; bv ops wrap mod 2^256;
+    Div/Mod abstain when the divisor is zero (the source code's
+    behavior on Div-by-zero is the existing rule output, not a fold).
+    """
+    if not (isinstance(expr, ApplyExpr) and len(expr.args) == 2):
+        return None
+    a, b = expr.args
+    if not (isinstance(a, ConstExpr) and isinstance(b, ConstExpr)):
+        return None
+    va = const_to_int(a)
+    vb = const_to_int(b)
+    if va is None or vb is None:
+        return None
+    op = expr.op
+    if op == "IntAdd":
+        return as_int_const(a, va + vb)
+    if op == "IntSub":
+        return as_int_const(a, va - vb)
+    if op == "IntMul":
+        return as_int_const(a, va * vb)
+    if op == "IntDiv" and vb != 0:
+        return as_int_const(a, va // vb)
+    if op == "IntMod" and vb != 0:
+        return as_int_const(a, va % vb)
+    if op == "Add":
+        return reformat_const(a, (va + vb) % _BV256_MOD)
+    if op == "Sub":
+        return reformat_const(a, (va - vb) % _BV256_MOD)
+    if op == "Mul":
+        return reformat_const(a, (va * vb) % _BV256_MOD)
+    if op == "Div" and vb != 0:
+        return reformat_const(a, va // vb)
+    if op == "Mod" and vb != 0:
+        return reformat_const(a, va % vb)
+    if op == "BWAnd":
+        return reformat_const(a, va & vb)
+    return None
+
+
+def _rewrite_mul_zero_one(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
+    """``X * 0`` -> ``0``, ``0 * X`` -> ``0``, ``X * 1`` -> ``X``,
+    ``1 * X`` -> ``X``. Applies to both ``Mul`` and ``IntMul``.
+
+    Soundness: ``bv * 0 ≡ 0 (mod 2^256)``, ``bv * 1 = bv``;
+    ``Int * 0 = 0``, ``Int * 1 = Int``. Zero-absorption preserves the
+    *constant* operand's type tag (so e.g. ``IntMul(X, 0(int))`` folds
+    to ``0(int)``, not bare ``0``).
+    """
+    if not (isinstance(expr, ApplyExpr) and expr.op in MUL_OPS and len(expr.args) == 2):
+        return None
+    a, b = expr.args
+    va = const_to_int(a)
+    vb = const_to_int(b)
+    if vb == 0:
+        return b
+    if va == 0:
+        return a
+    if vb == 1:
+        return a
+    if va == 1:
+        return b
+    return None
+
+
+def _rewrite_int_mul_eq_zero(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    """``Eq(IntMul(X, K), 0)`` -> ``Eq(X, 0)`` when ``K`` is a nonzero
+    integer constant. Symmetric in Eq's operand order and in IntMul's
+    operand order.
+
+    Argues from integer (non-modular) multiplication semantics:
+    ``X * K == 0`` iff ``X == 0 ∨ K == 0``; with ``K ≠ 0`` the disjunct
+    on K is impossible, so the equivalence collapses to ``X == 0``.
+
+    Unsound for the bv-modular ``Mul`` op — e.g. ``Mul(2^128, 2^128)``
+    is ``0 mod 2^256`` with both operands nonzero. The rule restricts
+    to ``IntMul`` for that reason.
+
+    Lookthrough is applied to both Eq operands so the rule fires
+    against the common shape where the IntMul arrives via a SymbolRef
+    alias (a static def ``R = IntMul(...)`` then ``Eq(R, 0)``).
+    """
+    if not (isinstance(expr, ApplyExpr) and expr.op == "Eq" and len(expr.args) == 2):
+        return None
+    a, b = expr.args
+    a_lt = ctx.lookthrough(a)
+    b_lt = ctx.lookthrough(b)
+    if _is_zero_const(b_lt):
+        mul_expr, zero = a_lt, b
+    elif _is_zero_const(a_lt):
+        mul_expr, zero = b_lt, a
+    else:
+        return None
+    if not (isinstance(mul_expr, ApplyExpr) and mul_expr.op == "IntMul" and len(mul_expr.args) == 2):
+        return None
+    arg1, arg2 = mul_expr.args
+    v1 = const_to_int(arg1)
+    v2 = const_to_int(arg2)
+    if v2 is not None and v2 != 0:
+        return ApplyExpr("Eq", (arg1, zero))
+    if v1 is not None and v1 != 0:
+        return ApplyExpr("Eq", (arg2, zero))
+    return None
+
+
+_ZERO_PRESERVING_FIRST_ARG = frozenset({
+    "Div", "IntDiv",
+    "Mod", "IntMod",
+    "ShiftLeftLogical", "ShiftRightLogical", "ShiftRightArithmetical",
+})
+# f(0, ...) == 0: ops whose value is zero whenever their FIRST arg is zero.
+# Div/Mod: standard semantics give 0/K = 0, 0 mod K = 0 (any K, including 0
+# under SMT-LIB div-by-zero conventions; the rewrite doesn't introduce new
+# UB because the original else-branch already evaluates the op).
+# Shifts: 0 shifted by anything is 0.
+
+_ZERO_PRESERVING_ANY_ARG = frozenset({
+    "Mul", "IntMul",
+    "BWAnd",
+})
+# f(..., 0, ...) == 0: ops whose value is zero whenever ANY arg is zero.
+# Mul/IntMul: standard. BWAnd: bitwise AND with zero is zero.
+
+
+def _is_zero_at_x(expr: TacExpr, x: TacExpr, ctx: RewriteCtx) -> bool:
+    """True iff ``expr`` is structurally zero when ``x`` is zero.
+
+    Sound under-approximation: walks zero-preserving op compositions
+    (Div/Mod/shift in first arg; Mul/IntMul/BWAnd in any arg;
+    IntMulDiv in either numerator arg) down to a leaf, returning True
+    when the leaf is ``x``. Uses :meth:`RewriteCtx.lookthrough` to see
+    through static-def aliases at every level — so a SymbolRef whose
+    def is ``Div(X, K)`` is recognized as zero-at-X.
+
+    Comparisons use :func:`eq_modulo_meta` so DSA version suffixes
+    (``:N``) on the symbol's references don't defeat the match: the
+    condition's ``X`` and the branch's ``X`` may be the same TAC
+    register at different versions.
+    """
+    if eq_modulo_meta(expr, x):
+        return True
+    expr_lt = ctx.lookthrough(expr)
+    if eq_modulo_meta(expr_lt, x):
+        return True
+    if not isinstance(expr_lt, ApplyExpr):
+        return False
+    if expr_lt.op in _ZERO_PRESERVING_FIRST_ARG and expr_lt.args:
+        return _is_zero_at_x(expr_lt.args[0], x, ctx)
+    if expr_lt.op in _ZERO_PRESERVING_ANY_ARG:
+        return any(_is_zero_at_x(a, x, ctx) for a in expr_lt.args)
+    if expr_lt.op == "IntMulDiv" and len(expr_lt.args) == 3:
+        # IntMulDiv(a, b, c) = (a * b) / c; zero when a or b is zero.
+        return _is_zero_at_x(expr_lt.args[0], x, ctx) or _is_zero_at_x(
+            expr_lt.args[1], x, ctx
+        )
+    return False
+
+
+def _rewrite_ite_zero_or_self(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    """``Ite(Eq(X, 0), 0, F(X))`` -> ``F(X)`` and
+    ``Ite(Eq(X, 0), F(X), 0)`` -> ``0``, where ``F(X)`` is any
+    zero-preserving composition (``F(0) = 0``) — at minimum
+    ``F = identity``, ``Div(X, _)``, ``IntMul(X, _)`` /
+    ``IntMul(_, X)``, ``BWAnd``, ``Mod``, shifts, and ``IntMulDiv``
+    with X as a numerator argument. See :func:`_is_zero_at_x`.
+
+    Both shapes return ``els``: on the cond-true branch X is
+    constrained to 0, so F(X) evaluates to 0 = the const-0 arm;
+    on the cond-false branch the else arm is selected. Either way
+    the result equals the else arm everywhere.
+
+    Lookthrough is applied to the condition so the rule fires when
+    the Ite condition arrives via a SymbolRef whose def is
+    ``Eq(X, 0)`` (the typical ``B = X == 0`` shape), and inside the
+    branch check via :func:`_is_zero_at_x` so a SymbolRef aliasing
+    ``Div(X, K)`` is still recognized.
+    """
+    if not _is_ite(expr):
+        return None
+    assert isinstance(expr, ApplyExpr)
+    cond, then, els = expr.args
+    cond_lt = ctx.lookthrough(cond)
+    if not (
+        isinstance(cond_lt, ApplyExpr)
+        and cond_lt.op == "Eq"
+        and len(cond_lt.args) == 2
+    ):
+        return None
+    a, b = cond_lt.args
+    if _is_zero_const(b):
+        x = a
+    elif _is_zero_const(a):
+        x = b
+    else:
+        return None
+    # Shape 1: Ite(Eq(X,0), 0, F(X)) -> F(X) (= els)
+    if _is_zero_const(then) and _is_zero_at_x(els, x, ctx):
+        return els
+    # Shape 2: Ite(Eq(X,0), F(X), 0) -> 0 (= els)
+    if _is_zero_at_x(then, x, ctx) and _is_zero_const(els):
+        return els
+    return None
 
 
 def _rewrite_ite_same(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
@@ -508,6 +728,40 @@ ADD_SUB_ZERO_FOLD = Rule(
         "Additive identity: X + 0 -> X, 0 + X -> X, X - 0 -> X (for both "
         "Add/IntAdd and Sub/IntSub). Retires zero-arm zombies produced by "
         "ADD_ITE_DIST / SUB_ITE_DIST_* when an Ite arm is 0."
+    ),
+)
+ARITH_CONST_FOLD = Rule(
+    name="ArithConstFold",
+    fn=_rewrite_arith_const_fold,
+    description=(
+        "Binary const-const fold for Add/Sub/Mul/Div/Mod/BWAnd in "
+        "both Int and bv variants. bv ops wrap mod 2^256; Int ops "
+        "are non-modular. Abstains on divisor-zero."
+    ),
+)
+MUL_ZERO_ONE_FOLD = Rule(
+    name="MulZeroOne",
+    fn=_rewrite_mul_zero_one,
+    description=(
+        "X*0 -> 0, X*1 -> X (and symmetric) for both Mul and IntMul. "
+        "Sound for bv-modular and Int."
+    ),
+)
+INT_MUL_EQ_ZERO = Rule(
+    name="IntMulEqZero",
+    fn=_rewrite_int_mul_eq_zero,
+    description=(
+        "Eq(IntMul(X, K), 0) -> Eq(X, 0) when K is a nonzero integer "
+        "constant. Lookthrough on both Eq operands; restricted to "
+        "IntMul (not the modular bv Mul)."
+    ),
+)
+ITE_ZERO_OR_SELF = Rule(
+    name="IteZeroOrSelf",
+    fn=_rewrite_ite_zero_or_self,
+    description=(
+        "Ite(Eq(X, 0), 0, X) -> X and Ite(Eq(X, 0), X, 0) -> 0. "
+        "Both shapes collapse to the else arm. Lookthrough on cond."
     ),
 )
 ITE_SAME = Rule(

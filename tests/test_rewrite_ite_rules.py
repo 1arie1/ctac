@@ -6,14 +6,18 @@ from ctac.ast.nodes import ApplyExpr, AssumeExpCmd, ConstExpr, SymbolRef
 from ctac.parse import parse_string
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.rules import (
+    ARITH_CONST_FOLD,
     BOOL_ABSORB,
     DE_MORGAN,
     EQ_CONST_FOLD,
     EQ_ITE_DIST,
     EQ_REFLEXIVE,
+    INT_MUL_EQ_ZERO,
     ITE_BOOL,
     ITE_SAME,
     ITE_SHARED_LEAF,
+    ITE_ZERO_OR_SELF,
+    MUL_ZERO_ONE_FOLD,
 )
 
 
@@ -400,3 +404,244 @@ def test_eq_reflexive_folds_same_const():
     res = rewrite_program(tac.program, (EQ_REFLEXIVE,))
     assert res.hits_by_rule == {"EqReflexive": 1}
     assert _assume_cond(res.program) == ConstExpr("true")
+
+
+# ---------------------------------------------------------------------------
+# IntMulEqZero: Eq(IntMul(X, K), 0) -> Eq(X, 0) when K != 0 (Int-domain only)
+# ---------------------------------------------------------------------------
+
+
+def test_int_mul_eq_zero_direct():
+    """``Eq(IntMul(R0, 0x4(int)), 0)`` -> ``Eq(R0, 0)``."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(IntMul(R0 0x4(int)) 0x0)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (INT_MUL_EQ_ZERO,))
+    assert res.hits_by_rule == {"IntMulEqZero": 1}
+    cond = _assume_cond(res.program)
+    assert cond == ApplyExpr("Eq", (SymbolRef("R0"), ConstExpr("0x0")))
+
+
+def test_int_mul_eq_zero_const_on_left():
+    """K on the left arg of IntMul; symmetric."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(IntMul(0x4(int) R0) 0x0)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (INT_MUL_EQ_ZERO,))
+    assert res.hits_by_rule == {"IntMulEqZero": 1}
+    cond = _assume_cond(res.program)
+    assert cond == ApplyExpr("Eq", (SymbolRef("R0"), ConstExpr("0x0")))
+
+
+def test_int_mul_eq_zero_zero_on_left():
+    """Zero const on the left of the outer Eq."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(0x0 IntMul(R0 0x4(int)))"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (INT_MUL_EQ_ZERO,))
+    assert res.hits_by_rule == {"IntMulEqZero": 1}
+
+
+def test_int_mul_eq_zero_unsound_on_bv_mul():
+    """``Mul`` (bv-modular) is NOT folded — would be unsound."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(Mul(R0 0x4) 0x0)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (INT_MUL_EQ_ZERO,))
+    assert res.hits_by_rule == {}
+
+
+def test_int_mul_eq_zero_skips_zero_constant_multiplier():
+    """``K == 0`` is the precondition's negation; rule abstains."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(IntMul(R0 0x0(int)) 0x0)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (INT_MUL_EQ_ZERO,))
+    assert res.hits_by_rule == {}
+
+
+def test_int_mul_eq_zero_via_lookthrough():
+    """The IntMul arrives via a SymbolRef whose def is the IntMul."""
+    body = (
+        "\t\tAssignExpCmd R1 IntMul(R0 0x4(int))\n"
+        "\t\tAssumeExpCmd Eq(R1 0x0)"
+    )
+    tac = parse_string(_wrap(body), path="<s>")
+    res = rewrite_program(tac.program, (INT_MUL_EQ_ZERO,))
+    assert res.hits_by_rule == {"IntMulEqZero": 1}
+    cond = _assume_cond(res.program)
+    assert cond == ApplyExpr("Eq", (SymbolRef("R0"), ConstExpr("0x0")))
+
+
+# ---------------------------------------------------------------------------
+# IteZeroOrSelf: Ite(Eq(X,0), 0, F(X)) -> F(X) for zero-preserving F
+# ---------------------------------------------------------------------------
+
+
+def test_ite_zero_or_self_identity_branch():
+    """``Ite(Eq(R0, 0), 0, R0)`` -> ``R0``."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(Ite(Eq(R0 0x0) 0x0 R0) R0)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ITE_ZERO_OR_SELF,))
+    assert res.hits_by_rule == {"IteZeroOrSelf": 1}
+
+
+def test_ite_zero_or_self_x_branch_then_zero_else():
+    """``Ite(Eq(R0, 0), R0, 0)`` -> ``0``."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(Ite(Eq(R0 0x0) R0 0x0) 0x0)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ITE_ZERO_OR_SELF,))
+    assert res.hits_by_rule == {"IteZeroOrSelf": 1}
+
+
+def test_ite_zero_or_self_div_branch():
+    """``Ite(Eq(R0, 0), 0, Div(R0, K))`` -> ``Div(R0, K)`` — K-independent."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssumeExpCmd Eq("
+            "Ite(Eq(R0 0x0) 0x0 Div(R0 0x4000)) "
+            "Div(R0 0x4000)"
+            ")"
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ITE_ZERO_OR_SELF,))
+    assert res.hits_by_rule == {"IteZeroOrSelf": 1}
+
+
+def test_ite_zero_or_self_div_via_lookthrough():
+    """X-side branch arrives via a SymbolRef whose def is ``Div(X, K)``."""
+    body = (
+        "\t\tAssignExpCmd R1 Div(R0 0x4000)\n"
+        "\t\tAssignExpCmd R2 Ite(Eq(R0 0x0) 0x0 R1)\n"
+        "\t\tAssumeExpCmd Eq(R2 R1)"
+    )
+    tac = parse_string(_wrap(body), path="<s>")
+    res = rewrite_program(tac.program, (ITE_ZERO_OR_SELF,))
+    assert res.hits_by_rule == {"IteZeroOrSelf": 1}
+
+
+def test_ite_zero_or_self_mul_branch():
+    """``IntMul(X, _)`` is zero-preserving on either arg."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssumeExpCmd Eq("
+            "Ite(Eq(R0 0x0) 0x0 IntMul(0x4(int) R0)) "
+            "IntMul(0x4(int) R0)"
+            ")"
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ITE_ZERO_OR_SELF,))
+    assert res.hits_by_rule == {"IteZeroOrSelf": 1}
+
+
+def test_ite_zero_or_self_unrelated_branch_no_fold():
+    """``Ite(Eq(R0, 0), 0, R1)`` does NOT fold — R1 is not zero-when-R0=0."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(Ite(Eq(R0 0x0) 0x0 R1) R1)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ITE_ZERO_OR_SELF,))
+    assert res.hits_by_rule == {}
+
+
+# ---------------------------------------------------------------------------
+# ArithConstFold: binary const-const arithmetic / bitwise
+# ---------------------------------------------------------------------------
+
+
+def test_arith_const_fold_int_add():
+    """``IntAdd(0x2(int), 0x3(int))`` -> ``0x5(int)`` — non-modular."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(IntAdd(0x2(int) 0x3(int)) 0x5(int))"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ARITH_CONST_FOLD,))
+    assert res.hits_by_rule.get("ArithConstFold", 0) >= 1
+
+
+def test_arith_const_fold_bv_mul_wraps():
+    """bv ``Mul`` folds mod 2^256."""
+    huge = "0x8000000000000000000000000000000000000000000000000000000000000000"
+    tac = parse_string(
+        _wrap(f"\t\tAssumeExpCmd Eq(Mul({huge} 0x2) 0x0)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ARITH_CONST_FOLD,))
+    # 2^255 * 2 = 2^256 == 0 mod 2^256 — bv wrap.
+    assert res.hits_by_rule.get("ArithConstFold", 0) >= 1
+
+
+def test_arith_const_fold_div_zero_abstains():
+    """Div by zero: rule abstains rather than introducing UB."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(Div(0x10 0x0) 0x0)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ARITH_CONST_FOLD,))
+    assert "ArithConstFold" not in res.hits_by_rule
+
+
+def test_arith_const_fold_one_symbolic_no_fold():
+    """At least one symbolic operand: no fold."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(IntAdd(R0 0x3(int)) 0x5(int))"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (ARITH_CONST_FOLD,))
+    assert "ArithConstFold" not in res.hits_by_rule
+
+
+# ---------------------------------------------------------------------------
+# MulZeroOne: X*0 -> 0; X*1 -> X
+# ---------------------------------------------------------------------------
+
+
+def test_mul_zero_one_int_mul_zero():
+    """``IntMul(R0, 0(int))`` -> ``0(int)``."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(IntMul(R0 0x0(int)) 0x0(int))"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (MUL_ZERO_ONE_FOLD,))
+    assert res.hits_by_rule == {"MulZeroOne": 1}
+
+
+def test_mul_zero_one_int_mul_one_identity():
+    """``IntMul(R0, 1(int))`` -> ``R0``."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(IntMul(R0 0x1(int)) R0)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (MUL_ZERO_ONE_FOLD,))
+    assert res.hits_by_rule == {"MulZeroOne": 1}
+
+
+def test_mul_zero_one_bv_mul_zero():
+    """``Mul(R0, 0)`` -> ``0`` — sound under bv-modular semantics."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(Mul(R0 0x0) 0x0)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (MUL_ZERO_ONE_FOLD,))
+    assert res.hits_by_rule == {"MulZeroOne": 1}
+
+
+def test_mul_zero_one_no_fold_on_const_two():
+    """``IntMul(R0, 2(int))`` is not absorbed."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(IntMul(R0 0x2(int)) R0)"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (MUL_ZERO_ONE_FOLD,))
+    assert "MulZeroOne" not in res.hits_by_rule

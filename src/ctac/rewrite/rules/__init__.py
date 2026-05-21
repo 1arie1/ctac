@@ -49,15 +49,19 @@ from ctac.rewrite.rules.store_eq import STORE_EQ_NORM, normalize_store_eq
 from ctac.rewrite.rules.ite import (
     ADD_ITE_DIST,
     ADD_SUB_ZERO_FOLD,
+    ARITH_CONST_FOLD,
     BOOL_ABSORB,
     DE_MORGAN,
     EQ_CONST_FOLD,
     EQ_ITE_DIST,
     EQ_REFLEXIVE,
+    INT_MUL_EQ_ZERO,
     ITE_BOOL,
     ITE_COND_FOLD,
     ITE_SAME,
     ITE_SHARED_LEAF,
+    ITE_ZERO_OR_SELF,
+    MUL_ZERO_ONE_FOLD,
     SUB_ITE_DIST_LEFT,
     SUB_ITE_DIST_RIGHT,
 )
@@ -138,6 +142,9 @@ simplify_pipeline: tuple[Rule, ...] = (
     # Boolean / Ite simplification.
     EQ_REFLEXIVE,
     EQ_CONST_FOLD,
+    # Strip nonzero-const multipliers from Eq(_, 0) so downstream
+    # ITE folds can see the underlying zero-test.
+    INT_MUL_EQ_ZERO,
     EQ_ITE_DIST,
     # Distribute Add/Sub over Ite operands so per-branch simplification
     # (constant folding, range-driven narrowing) can fire independently.
@@ -146,7 +153,18 @@ simplify_pipeline: tuple[Rule, ...] = (
     SUB_ITE_DIST_RIGHT,
     # Retire +/-0 arms left by the distribution rules above.
     ADD_SUB_ZERO_FOLD,
+    # Const-const arithmetic / bitwise folds (Add/Sub/Mul/Div/Mod/BWAnd).
+    # Int variants are non-modular; bv variants wrap mod 2^256.
+    ARITH_CONST_FOLD,
+    # Multiplicative absorb / identity: X*0 -> 0, X*1 -> X (both Mul
+    # and IntMul, both arg orderings).
+    MUL_ZERO_ONE_FOLD,
     ITE_SAME,
+    # Collapse Ite(Eq(X,0), 0, X) -> X and Ite(Eq(X,0), X, 0) -> 0.
+    # Lookthrough on the cond catches the typical `B = X == 0; Ite(B, ...)`
+    # shape, including after INT_MUL_EQ_ZERO normalizes `R == 0` where
+    # `R = IntMul(X, K)`.
+    ITE_ZERO_OR_SELF,
     ITE_SHARED_LEAF,
     # Bool-const fold: `Ite(true, X, _) -> X`, `Ite(false, _, Y) -> Y`,
     # plus LNot/LAnd/LOr/Eq over Bool ConstExpr operands. Universally
@@ -268,6 +286,9 @@ all_rule_names: tuple[str, ...] = (
     HAVOC_EQUATE_FOLD.name,
     EQ_REFLEXIVE.name,
     EQ_CONST_FOLD.name,
+    ARITH_CONST_FOLD.name,
+    MUL_ZERO_ONE_FOLD.name,
+    INT_MUL_EQ_ZERO.name,
     EQ_ITE_DIST.name,
     ADD_ITE_DIST.name,
     SUB_ITE_DIST_LEFT.name,
@@ -275,6 +296,7 @@ all_rule_names: tuple[str, ...] = (
     ADD_SUB_ZERO_FOLD.name,
     ITE_SAME.name,
     ITE_SHARED_LEAF.name,
+    ITE_ZERO_OR_SELF.name,
     BOOL_CONST_FOLD.name,
     ITE_BOOL.name,
     AND_LIFT_EQ_DECREMENT.name,
@@ -303,6 +325,7 @@ __all__ = [
     "ADD_ITE_DIST",
     "ADD_SUB_ZERO_FOLD",
     "AND_LIFT_EQ_DECREMENT",
+    "ARITH_CONST_FOLD",
     "BOOL_ABSORB",
     "BOOL_CONST_FOLD",
     "CHUNKED_MUL_BY_2N",
@@ -314,13 +337,16 @@ __all__ = [
     "EQ_REFLEXIVE",
     "HAVOC_EQUATE_FOLD",
     "HAVOC_EQUATE_SUBST",
+    "INT_MUL_EQ_ZERO",
     "ITE_BOOL",
     "ITE_COND_FOLD",
     "ITE_PURIFY",
     "ITE_SAME",
     "ITE_SHARED_LEAF",
+    "ITE_ZERO_OR_SELF",
     "MUL_BV_TO_INT",
     "MUL_DIV_TO_MULDIV",
+    "MUL_ZERO_ONE_FOLD",
     "N1_SHIFTED_BWAND",
     "N2_LOW_MASK",
     "N3_HIGH_MASK",

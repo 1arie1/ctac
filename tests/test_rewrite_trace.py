@@ -182,9 +182,13 @@ def test_trace_assert_host_kind() -> None:
 def test_cli_trace_writes_jsonl(tmp_path: Path) -> None:
     """End-to-end: ``ctac rw --trace <path>`` writes one JSON object per
     line, with the schema fields the user filters on."""
+    # Mul(0x2, R0) doesn't const-fold (one symbolic operand) and doesn't
+    # absorb (no 0/1 arg), so it has to go through MUL_BV_TO_INT (when
+    # the range fits) before further folds — a real multi-step trace.
     src = _wrap(
         "\t\tAssignHavocCmd R0\n"
-        "\t\tAssignExpCmd R1 Mul(0x0 R0)\n"
+        "\t\tAssumeExpCmd Le(R0 0x10)\n"
+        "\t\tAssignExpCmd R1 Mul(0x2 R0)\n"
         "\t\tAssignExpCmd R2 Add(R0 R1)\n"
         "\t\tAssertCmd false \"boom\"",
         syms="R0:bv256\n\tR1:bv256\n\tR2:bv256",
@@ -210,8 +214,10 @@ def test_cli_trace_writes_jsonl(tmp_path: Path) -> None:
     }
     for r in records:
         assert set(r.keys()) == expected_keys
-    # The Mul(0x0, R0) -> IntMul -> 0x0 chain at R1 is the easy anchor.
+    # R1's chain anchors the schema check. Range proves 0x2*R0 fits in
+    # bv256 (R0 <= 0x10), so MUL_BV_TO_INT fires at minimum; downstream
+    # folds may collapse further.
     r1_records = [r for r in records if r.get("host_lhs") == "R1"]
-    assert len(r1_records) >= 2
+    assert r1_records, "expected at least one R1 rewrite record"
     rules_seen = {r["rule"] for r in r1_records}
     assert "MUL_BV_TO_INT" in rules_seen
