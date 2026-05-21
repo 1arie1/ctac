@@ -235,26 +235,38 @@ simplify_pipeline: tuple[Rule, ...] = (
 # late (after ITE_PURIFY etc.) — see ``commands_rw.py``.
 cse_pipeline: tuple[Rule, ...] = (CSE,)
 
-# Div-purification phase: SMT-level rewrites that replace ``Div`` (or
-# its uses in comparisons) with their Euclidean-bounds expansion.
-# These rules don't enable further structural simplification on their
-# own — their output is a constraint shape sea_vc consumes — so they
-# run AFTER ``simplify_pipeline`` has reached fixpoint, never
-# alongside the cancellation rules (R2/R3). Mixing R4 with R3 in the
-# same phase produced unsound R4 firings against R3's stale
-# ``static_defs`` snapshot (R3 eliminated the Div on cmd N, R4 on
-# cmd M > N still saw the pre-R3 Div via ``lookthrough``).
-# R4A_DIV_PURIFY is appended in ``purify_pipeline`` (gated by
-# ``--purify-div``) since it depends on a non-constant divisor that
-# only the CLI can know is desired.
-div_purify_pipeline: tuple[Rule, ...] = (R4_DIV_IN_CMP,)
+# Final-step ``Div``-in-comparison simplification. ``R4_DIV_IN_CMP``
+# rewrites ``Cmp(Div(A, B), C) -> LAnd(Ge(A, B*C), Lt(A, B*(C+1)))``
+# (and friends). The output is an SMT-friendly Euclidean-bounds shape
+# but destroys the syntactic ``Div`` that downstream rewriters and
+# concept-recognizers (ceil-div reconstruction, IntCeilDiv lifting)
+# rely on for matching. The CLI runs this as the VERY LAST phase,
+# after every other simplification and purification has settled, so
+# intermediate phases see Div in its natural form.
+#
+# Paired with the const-folding rules so R4's output (which contains
+# nested ``IntMul(K, 0)``, ``IntAdd(0, 1)``, ``IntMul(K, 1)`` shapes
+# from the ``C=0`` / ``C+1`` instantiations) collapses cleanly to the
+# numeric bounds in the same fixed-point loop.
+final_div_in_cmp_pipeline: tuple[Rule, ...] = (
+    R4_DIV_IN_CMP,
+    ARITH_CONST_FOLD,
+    MUL_ZERO_ONE_FOLD,
+    ADD_SUB_ZERO_FOLD,
+)
+
+# Div-purification by fresh-quotient introduction (``R4A``). Lives
+# in its own phase, gated by ``--purify-div``; runs after simplify
+# reaches fixpoint so the cancellation rules (R2/R3) see the natural
+# Div shape first.
+div_purify_pipeline: tuple[Rule, ...] = (R4A_DIV_PURIFY,)
 
 # Full pipeline: chain recognition + simplification + purification. The
 # CLI drives these as separate phases so chain recognizers see the
 # unmolested input, distribution rules don't pre-empt R6, and the
-# div-purification rules fire only after simplify reaches fixpoint.
+# div-in-cmp simplification fires only at the very end.
 purify_pipeline: tuple[Rule, ...] = (
-    simplify_pipeline + div_purify_pipeline + (R4A_DIV_PURIFY,)
+    simplify_pipeline + div_purify_pipeline + final_div_in_cmp_pipeline
 )
 
 default_pipeline: tuple[Rule, ...] = purify_pipeline
@@ -372,6 +384,7 @@ __all__ = [
     "cse_pipeline",
     "default_pipeline",
     "div_purify_pipeline",
+    "final_div_in_cmp_pipeline",
     "normalize_store_eq",
     "purify_pipeline",
     "simplify_pipeline",

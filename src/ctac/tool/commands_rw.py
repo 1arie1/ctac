@@ -37,11 +37,11 @@ from ctac.rewrite.rules import (
     ITE_SHARED_LEAF,
     PURIFY_ASSERT,
     PURIFY_ASSUME,
-    R4A_DIV_PURIFY,
     SELECT_OVER_STORE,
     chain_recognition_pipeline,
     cse_pipeline,
     div_purify_pipeline,
+    final_div_in_cmp_pipeline,
     simplify_pipeline,
 )
 from ctac.tool.cli_runtime import (
@@ -262,6 +262,19 @@ def rewrite_cmd(
             "for non-constant positive-range B). Default on."
         ),
     ),
+    simplify_div_in_cmp: bool = typer.Option(
+        True,
+        "--simplify-div-in-cmp/--no-simplify-div-in-cmp",
+        help=(
+            "Enable R4 (rewrite `Cmp(Div(A, B), C)` to Euclidean range "
+            "bounds on A). Runs as the very last rewrite phase, after all "
+            "other simplification and concept-recognition has settled, "
+            "since the output destroys the syntactic Div that ceil-div "
+            "reconstruction and IntCeilDiv lifting rely on for matching. "
+            "Default on (SMT-side benefit assumed); pass --no-simplify-div-in-cmp "
+            "when iterating on Div-shape rewrites."
+        ),
+    ),
     purify_ite: bool = typer.Option(
         True,
         "--purify-ite/--no-purify-ite",
@@ -438,31 +451,36 @@ def rewrite_cmd(
             phase="simplify",
             trace_sink=trace_sink,
         )
-        # Phase 1.5: div purification (R4 always; R4a when --purify-div).
-        # These are SMT-shaping rewrites (Div -> Euclidean bounds) that
-        # don't enable other simplifications on their own and that
-        # would mis-fire against simplify_pipeline's per-iteration
-        # static_defs snapshot when run alongside R3 — R3 cancels
-        # `Div(narrow(c*X), c) -> X` on cmd N, but R4 on cmd M > N
-        # in the same iter still saw the pre-cancel Div via
-        # `lookthrough` and emitted Euclidean bounds on a Div R3 had
-        # already eliminated. Running R4 here, after simplify reaches
-        # fixpoint, makes R4 see R3's final state.
-        div_rules = div_purify_pipeline + ((R4A_DIV_PURIFY,) if purify_div else ())
-        phase_div_purify = rewrite_program(
-            phase1.program,
-            div_rules,
-            max_iterations=max_iterations,
-            ite_max_depth=ite_max_depth,
-            symbol_sorts=tac.symbol_sorts,
-            use_int_ceil_div=ceildiv_op,
-            use_interval_select=interval_select,
-            phase="div-purify",
-            trace_sink=trace_sink,
-        )
-        rw = _merge_phases(
-            phase0, phase_cse_early, phase1, phase_div_purify
-        )
+        # Phase 1.5: div purification (R4a only, gated by --purify-div).
+        # R4a replaces `X = Div(A, B)` with havoc + Euclidean assumes
+        # for non-constant divisors. SMT-shaping rewrite that doesn't
+        # enable further structural simplification on its own. Runs
+        # AFTER simplify reaches fixpoint so the cancellation rules
+        # (R2/R3) see the natural Div shape first — running R4a alongside
+        # R3 mis-fired against R3's stale `static_defs` snapshot on
+        # `Div(narrow(c*X), c)` chains.
+        #
+        # NOTE: R4 (Div-in-cmp -> Euclidean range bounds) used to run
+        # here too but moved to the very-last phase below, so
+        # downstream phases (ITE_PURIFY, materialize_assumes, concept
+        # recognition) see the Div in its natural form.
+        if purify_div:
+            phase_div_purify = rewrite_program(
+                phase1.program,
+                div_purify_pipeline,
+                max_iterations=max_iterations,
+                ite_max_depth=ite_max_depth,
+                symbol_sorts=tac.symbol_sorts,
+                use_int_ceil_div=ceildiv_op,
+                use_interval_select=interval_select,
+                phase="div-purify",
+                trace_sink=trace_sink,
+            )
+            rw = _merge_phases(
+                phase0, phase_cse_early, phase1, phase_div_purify
+            )
+        else:
+            rw = _merge_phases(phase0, phase_cse_early, phase1)
         # Iterate DCE to fixed point: a chain of dead defs needs multiple sweeps
         # because liveness is computed once per pass and each pass only removes
         # the directly-dead leaves.
@@ -594,16 +612,42 @@ def rewrite_cmd(
                 if round_progress == 0:
                     break
             rw = _merge_phases(rw, phase_ite_merged)
-        # Final phase (gated): selectively materialize range-derived
-        # assumes around uses of axiomatized operators (today: IntCeilDiv).
-        # Runs LAST so range analysis sees the post-rewrite program; the
-        # output flows directly into ctac rw-eq, which validates each
-        # materialized assume against the orig program's constraints.
+        # Phase 4 (gated): selectively materialize range-derived assumes
+        # around uses of axiomatized operators (today: IntCeilDiv). Runs
+        # late so range analysis sees the post-rewrite program; output
+        # flows into ctac rw-eq, which validates each materialized assume
+        # against the orig program's constraints.
         materialize_hits: dict[str, int] = {}
         if materialize_assumes_flag:
             mres = materialize_assumes(program, symbol_sorts=tac.symbol_sorts)
             program = mres.program
             materialize_hits = mres.hits
+        # Phase 5 (gated, VERY LAST): R4 simplify-Div-in-cmp. SMT-shaping
+        # rewrite that destroys the syntactic Div, so every preceding
+        # phase that wants to match the Div (ceil-div recognizers,
+        # IntCeilDiv lifting, downstream rewrites a user composes on top)
+        # has already settled. DCE re-runs to clear newly-dead Div defs
+        # whose only uses were the Cmp(Div, C) sites R4 just rewrote.
+        if simplify_div_in_cmp:
+            phase_div_cmp = rewrite_program(
+                program,
+                final_div_in_cmp_pipeline,
+                max_iterations=max_iterations,
+                ite_max_depth=ite_max_depth,
+                symbol_sorts=tac.symbol_sorts,
+                use_int_ceil_div=ceildiv_op,
+                use_interval_select=interval_select,
+                phase="final-div-in-cmp",
+                trace_sink=trace_sink,
+            )
+            program = phase_div_cmp.program
+            rw = _merge_phases(rw, phase_div_cmp)
+            while True:
+                dce = eliminate_dead_assignments(program)
+                total_removed += len(dce.removed)
+                if not dce.removed:
+                    break
+                program = dce.program
         final_program = program
         after_count = _command_count(final_program)
 
