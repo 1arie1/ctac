@@ -181,6 +181,27 @@ def mod_by_pos_const(a: Interval, k: int) -> Interval | None:
     return Interval(0, k - 1)
 
 
+def floor_div_nonneg(a: Interval, b: Interval) -> Interval | None:
+    """``floor(a / b)`` for non-negative ``a`` and strictly positive ``b``.
+
+    For non-negative ``a`` and positive ``b``, ``a // b`` is increasing
+    in ``a`` and decreasing in ``b``, so the result interval is
+    ``[a_lo // b_hi, a_hi // b_lo]``. Returns ``None`` when soundness
+    conditions don't hold (negative ``a``, non-positive ``b``, or
+    unbounded operands needed for the corner used).
+    """
+    if (
+        not a.is_nonneg()
+        or b.lo is None
+        or b.lo <= 0
+        or a.hi is None
+        or b.hi is None
+    ):
+        return None
+    assert a.lo is not None
+    return Interval(a.lo // b.hi, a.hi // b.lo)
+
+
 def ceil_div_nonneg(a: Interval, b: Interval) -> Interval | None:
     """`ceil(a / b)` for non-negative `a` and strictly positive `b`.
 

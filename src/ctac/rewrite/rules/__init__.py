@@ -27,6 +27,7 @@ from ctac.rewrite.rules.copyprop import CP_ALIAS
 from ctac.rewrite.rules.cse import CSE
 from ctac.rewrite.rules.havoc_equate_fold import HAVOC_EQUATE_FOLD
 from ctac.rewrite.rules.havoc_equate_subst import HAVOC_EQUATE_SUBST
+from ctac.rewrite.rules.mod_identity_cp import MOD_IDENTITY_CP
 from ctac.rewrite.rules.mod_over_ite import MOD_OVER_ITE
 from ctac.rewrite.rules.mul_div import CHUNKED_MUL_BY_2N, MUL_DIV_TO_MULDIV
 from ctac.rewrite.rules.div import (
@@ -221,6 +222,11 @@ simplify_pipeline: tuple[Rule, ...] = (
     # Euclidean-division identity that collapses (lift, op, split)
     # round-trips back to the wide register.
     CHUNK_MERGE,
+    # SymRef R -> X when R's def is Mod(X, M) and range proves
+    # X in [0, M-1]. CP-style alias when Mod is structurally
+    # identity but the program kept the Mod for the SBF
+    # narrow-to-N-bits check shape.
+    MOD_IDENTITY_CP,
     # Recognize the ``unwrap_twos_complement_256(SignExtend(b, x))``
     # idiom and lift it to an Int-domain Ite over linear arms. Runs
     # after MUL/ADD/SUB_BV_TO_INT so operand ``x`` is in canonical
@@ -348,6 +354,7 @@ all_rule_names: tuple[str, ...] = (
     SUB_BV_TO_INT.name,
     SHIFT_LEFT_TO_INT_MUL.name,
     CHUNK_MERGE.name,
+    MOD_IDENTITY_CP.name,
     RANGE_FOLD.name,
     ADD_BV_MAX_TO_ITE.name,
     SAR_TO_SHR_NONNEG.name,
@@ -387,6 +394,7 @@ __all__ = [
     "ITE_SAME",
     "ITE_SHARED_LEAF",
     "ITE_ZERO_OR_SELF",
+    "MOD_IDENTITY_CP",
     "MOD_OVER_ITE",
     "MUL_BV_TO_INT",
     "MUL_DIV_TO_MULDIV",

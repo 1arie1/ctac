@@ -221,6 +221,14 @@ def _eval_apply(
             result = iv.floor_div_by_pos_const(a, k)
             if result is not None:
                 return result
+        else:
+            # Symbolic positive denominator: compose floor_div_nonneg
+            # over the operand intervals.
+            a_iv = recurse(args[0])
+            b_iv = recurse(args[1])
+            result = iv.floor_div_nonneg(a_iv, b_iv)
+            if result is not None:
+                return result
         return iv.TOP
     if op == "IntCeilDiv" and len(args) == 2:
         a = recurse(args[0])
@@ -264,6 +272,16 @@ def _eval_apply(
                 result = iv.floor_div_by_pos_const(a, k)
             else:
                 result = iv.mod_by_pos_const(a, k)
+            if result is not None:
+                return result
+        elif op == "Div":
+            # Symbolic positive denominator: compose floor_div_nonneg
+            # over operand intervals (Mod's int-domain bound is just
+            # ``[0, b_hi - 1]`` — handled the same way as the const
+            # case via the conservative fallback).
+            a_iv = recurse(args[0])
+            b_iv = recurse(args[1])
+            result = iv.floor_div_nonneg(a_iv, b_iv)
             if result is not None:
                 return result
         return iv.TOP
