@@ -29,6 +29,9 @@ from ctac.rewrite.rules.havoc_equate_fold import HAVOC_EQUATE_FOLD
 from ctac.rewrite.rules.havoc_equate_subst import HAVOC_EQUATE_SUBST
 from ctac.rewrite.rules.mod_identity_cp import MOD_IDENTITY_CP
 from ctac.rewrite.rules.mod_over_ite import MOD_OVER_ITE
+from ctac.rewrite.rules.muldiv_to_full_product_div import (
+    MULDIV_TO_FULL_PRODUCT_DIV,
+)
 from ctac.rewrite.rules.mul_div import CHUNKED_MUL_BY_2N, MUL_DIV_TO_MULDIV
 from ctac.rewrite.rules.div import (
     R1_BITFIELD_STRIP,
@@ -227,6 +230,11 @@ simplify_pipeline: tuple[Rule, ...] = (
     # identity but the program kept the Mod for the SBF
     # narrow-to-N-bits check shape.
     MOD_IDENTITY_CP,
+    # IntMulDiv(A, B, K) -> Div(V, M*K) when V = narrow(IntMul(A, W))
+    # is a static def with W ≡ M*B (M a positive const). Recognizes
+    # the "muldiv-style" high chunk of a u64×u46→u128 product as
+    # the canonical Div(V, 2^N) shape that CHUNK_MERGE consumes.
+    MULDIV_TO_FULL_PRODUCT_DIV,
     # Recognize the ``unwrap_twos_complement_256(SignExtend(b, x))``
     # idiom and lift it to an Int-domain Ite over linear arms. Runs
     # after MUL/ADD/SUB_BV_TO_INT so operand ``x`` is in canonical
@@ -355,6 +363,7 @@ all_rule_names: tuple[str, ...] = (
     SHIFT_LEFT_TO_INT_MUL.name,
     CHUNK_MERGE.name,
     MOD_IDENTITY_CP.name,
+    MULDIV_TO_FULL_PRODUCT_DIV.name,
     RANGE_FOLD.name,
     ADD_BV_MAX_TO_ITE.name,
     SAR_TO_SHR_NONNEG.name,
@@ -396,6 +405,7 @@ __all__ = [
     "ITE_ZERO_OR_SELF",
     "MOD_IDENTITY_CP",
     "MOD_OVER_ITE",
+    "MULDIV_TO_FULL_PRODUCT_DIV",
     "MUL_BV_TO_INT",
     "MUL_DIV_TO_MULDIV",
     "MUL_ZERO_ONE_FOLD",

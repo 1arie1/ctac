@@ -146,44 +146,66 @@ def _match_mod_with_k(
     return t if isinstance(t, SymbolRef) else None
 
 
+def _flatten_int_add(expr: TacExpr) -> list[TacExpr]:
+    """Flatten a binary-IntAdd tree into a list of additive terms.
+    Non-IntAdd inputs return ``[expr]``."""
+    if not (
+        isinstance(expr, ApplyExpr) and expr.op == "IntAdd" and len(expr.args) == 2
+    ):
+        return [expr]
+    return _flatten_int_add(expr.args[0]) + _flatten_int_add(expr.args[1])
+
+
 def _rewrite_chunk_merge(
     expr: TacExpr, ctx: RewriteCtx
 ) -> TacExpr | None:
-    """``narrow(IntAdd(IntMul(Div(T, K), K), Mod(T, K))) -> T``.
+    """``narrow(IntAdd(IntMul(Div(T, K), K), Mod(T, K) + ...rest))`` ->
+    ``narrow(T + ...rest)`` (and the 2-term special case
+    ``narrow(IntMul(Div(T, K), K) + Mod(T, K))`` -> ``T``).
 
-    Matches both ``IntAdd`` orderings. Looks through SymbolRef
-    aliases on the ``Div(T, K)`` and ``Mod(T, K)`` sub-expressions
-    (chunks are typically named via ``hi = Div(T, K); lo = Mod(T, K)``
-    assignments emitted by the lift/op/split passes).
+    Flattens the IntAdd tree, searches for a ``IntMul(Div(T, K), K)``
+    term paired with a ``Mod(T, K)`` term (same T, same K). Replaces
+    both with ``T`` and rebuilds the narrow over the remaining sum.
+    Looks through SymbolRef aliases on the ``Div(T, K)`` and
+    ``Mod(T, K)`` sub-expressions.
     """
     if not _is_safe_narrow_apply(expr):
         return None
     assert isinstance(expr, ApplyExpr)
+    narrow_fn = expr.args[0]
     inner = expr.args[1]
-    if not (
-        isinstance(inner, ApplyExpr)
-        and inner.op == "IntAdd"
-        and len(inner.args) == 2
-    ):
+    terms = _flatten_int_add(inner)
+    if len(terms) < 2:
         return None
-    a, b = inner.args
-    # Try (mul-side, mod-side) and the symmetric pair.
-    for mul_side, mod_side in ((a, b), (b, a)):
-        mul_match = _match_int_mul_with_const_k(mul_side, ctx)
+    for i, t_i in enumerate(terms):
+        mul_match = _match_int_mul_with_const_k(t_i, ctx)
         if mul_match is None:
             continue
         div_expr, k_value = mul_match
         t_from_div = _match_div_with_k(div_expr, k_value, ctx)
         if t_from_div is None:
             continue
-        t_from_mod = _match_mod_with_k(mod_side, k_value, ctx)
-        if t_from_mod is None:
-            continue
-        if canonical_symbol(t_from_div.name) != canonical_symbol(
-            t_from_mod.name
-        ):
-            continue
-        return t_from_div
+        for j, t_j in enumerate(terms):
+            if i == j:
+                continue
+            t_from_mod = _match_mod_with_k(t_j, k_value, ctx)
+            if t_from_mod is None:
+                continue
+            if canonical_symbol(t_from_div.name) != canonical_symbol(
+                t_from_mod.name
+            ):
+                continue
+            # Combine the pair into ``T``; rebuild the narrow.
+            remaining = [
+                terms[k] for k in range(len(terms)) if k != i and k != j
+            ]
+            if not remaining:
+                # Pure 2-term Euclidean identity — drop the narrow.
+                return t_from_div
+            new_sum: TacExpr = t_from_div
+            for r in remaining:
+                new_sum = ApplyExpr("IntAdd", (new_sum, r))
+            return ApplyExpr("Apply", (narrow_fn, new_sum))
     return None
 
 

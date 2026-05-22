@@ -121,6 +121,41 @@ def test_chunk_merge_handles_symmetric_intadd_order():
     assert res.hits_by_rule.get("ChunkMerge", 0) >= 1
 
 
+def test_chunk_merge_with_extra_additive_term():
+    """``narrow(IntMul(Div(T, K), K) + Mod(T, K) + X)`` collapses to
+    ``narrow(T + X)``. The pair-merge still finds the pair inside
+    a multi-term IntAdd tree."""
+    body = (
+        "\t\tAssignHavocCmd T\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd Hi Div(T 0x10000000000000000)\n"
+        "\t\tAssignExpCmd Lo Mod(T 0x10000000000000000)\n"
+        "\t\tAssumeExpCmd Eq("
+        "Apply(safe_math_narrow_bv256:bif "
+        "IntAdd(IntMul(Hi 0x10000000000000000(int)) IntAdd(Lo X))) T)\n"
+        "\t\tAssertCmd false\n"
+    )
+    syms = (
+        "T:bv256\n\tX:bv256\n\tHi:bv256\n\tLo:bv256\n\t"
+        "safe_math_narrow_bv256:bif"
+    )
+    tac = parse_string(_wrap(body, syms=syms), path="<s>")
+    res = rewrite_program(
+        tac.program, (CHUNK_MERGE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("ChunkMerge", 0) >= 1
+    cond = _assume_cond(res.program)
+    assert cond is not None
+    assert isinstance(cond, ApplyExpr) and cond.op == "Eq"
+    # LHS of the Eq: narrow(IntAdd(T, X)).
+    narrow_apply = cond.args[0]
+    assert isinstance(narrow_apply, ApplyExpr) and narrow_apply.op == "Apply"
+    inner = narrow_apply.args[1]
+    assert isinstance(inner, ApplyExpr) and inner.op == "IntAdd"
+    assert SymbolRef("T") in inner.args
+    assert SymbolRef("X") in inner.args
+
+
 def test_chunk_merge_skips_when_constants_dont_match():
     """``narrow(IntAdd(IntMul(Div(T, K1), K2), Mod(T, K3)))`` with
     differing K — no Euclidean identity, no fire."""
