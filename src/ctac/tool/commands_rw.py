@@ -31,6 +31,7 @@ from ctac.rewrite.lift_dynamic_ite import lift_dynamic_ite_rhs
 from ctac.rewrite.materialize_assumes import materialize_assumes
 from ctac.rewrite.materialize_equate_bounds import materialize_havoc_equate_bounds
 from ctac.rewrite.propagate_aliases import propagate_aliases_into_annotations
+from ctac.rewrite.rewrite_u128_carry_add import rewrite_u128_carry_add
 from ctac.rewrite.unpurify_div import unpurify_div
 from ctac.rewrite.rules import (
     CP_ALIAS,
@@ -71,6 +72,7 @@ def _print_report(
     total_cmds_after: int,
     materialize_hits: dict[str, int] | None = None,
     materialize_equate_bound_hits: int = 0,
+    u128_carry_add_hits: int = 0,
     lift_dynamic_ite_hits: int = 0,
     unpurified_div_count: int = 0,
 ) -> None:
@@ -99,6 +101,8 @@ def _print_report(
             line(
                 f"  materialized_equate_bounds: {materialize_equate_bound_hits}"
             )
+        if u128_carry_add_hits:
+            line(f"  u128_carry_add: {u128_carry_add_hits}")
         if materialize_hits:
             line(f"  materialized_assumes: {materialize_total}")
             for name in sorted(materialize_hits):
@@ -121,6 +125,8 @@ def _print_report(
             "  materialized_equate_bounds: "
             f"[bold]{materialize_equate_bound_hits}[/bold]"
         )
+    if u128_carry_add_hits:
+        line(f"  u128_carry_add: [bold]{u128_carry_add_hits}[/bold]")
     if materialize_hits:
         line(f"  materialized_assumes: [bold]{materialize_total}[/bold]")
         for name in sorted(materialize_hits):
@@ -530,6 +536,34 @@ def rewrite_cmd(
             if not dce.removed:
                 break
             program = dce.program
+        # Phase 1.7: u128 carry-add rewrite. Lifts the chunked-u64
+        # carry-correct add idiom into a fresh wide-int ``T_sum`` plus
+        # ``R_low = Mod(T_sum, 2^64); R_hi = IntDiv(T_sum, 2^64)`` —
+        # the lift/op/split shape the downstream concept recognizers
+        # (decrement, ceil-div) and the eventual merge rule consume.
+        # Runs after the DCE that follows simplify so the matcher sees
+        # the post-fixed-point canonical shape (Mod / SymRef carry /
+        # AddIte-distributed Ite). Soundness via per-cmd rw-eq rule-2
+        # CHKs on R_low and R_hi (z3 closes each by case-split on the
+        # carry).
+        u128_add_res = rewrite_u128_carry_add(
+            program, symbol_sorts=tac.symbol_sorts
+        )
+        program = u128_add_res.program
+        u128_add_hits = u128_add_res.hits
+        if u128_add_res.fresh_symbols:
+            rw = replace(
+                rw,
+                extra_symbols=rw.extra_symbols + u128_add_res.fresh_symbols,
+            )
+        # DCE again: with R_low / R_hi rewritten to use T_sum, the old
+        # R_sum and R_carry defs are dead.
+        while True:
+            dce = eliminate_dead_assignments(program)
+            total_removed += len(dce.removed)
+            if not dce.removed:
+                break
+            program = dce.program
         # Lift dynamic ``Ite``-RHS assignments out of their host block as
         # static T-defs *before* the first dynamic in the block. This
         # gives ITE_PURIFY a clean static prefix to insert ``TB<N>`` defs
@@ -707,6 +741,7 @@ def rewrite_cmd(
             total_cmds_after=after_count,
             materialize_hits=materialize_hits,
             materialize_equate_bound_hits=materialize_eq_hits,
+            u128_carry_add_hits=u128_add_hits,
             lift_dynamic_ite_hits=lift_hits,
             unpurified_div_count=unpurified_count,
         )
