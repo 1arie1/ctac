@@ -18,6 +18,7 @@ from ctac.rewrite.rules.bv_to_int import (
     MUL_BV_TO_INT,
     SUB_BV_TO_INT,
 )
+from ctac.rewrite.rules.chunk_merge import CHUNK_MERGE, SHIFT_LEFT_TO_INT_MUL
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
 from ctac.rewrite.rules.bv_max_to_ite_validation import ADD_BV_MAX_TO_ITE_CASES
 from ctac.rewrite.rules.ceildiv_validation import R6_CASES
@@ -213,6 +214,13 @@ simplify_pipeline: tuple[Rule, ...] = (
     MUL_BV_TO_INT,
     ADD_BV_TO_INT,
     SUB_BV_TO_INT,
+    # ShiftLeft(X, K) -> IntMul(X, 2^K) when range proves X * 2^K
+    # fits bv256. Exposes the multiplicative form to ChunkMerge.
+    SHIFT_LEFT_TO_INT_MUL,
+    # narrow(IntAdd(IntMul(Div(T, K), K), Mod(T, K))) -> T. The
+    # Euclidean-division identity that collapses (lift, op, split)
+    # round-trips back to the wide register.
+    CHUNK_MERGE,
     # Recognize the ``unwrap_twos_complement_256(SignExtend(b, x))``
     # idiom and lift it to an Int-domain Ite over linear arms. Runs
     # after MUL/ADD/SUB_BV_TO_INT so operand ``x`` is in canonical
@@ -338,6 +346,8 @@ all_rule_names: tuple[str, ...] = (
     MUL_BV_TO_INT.name,
     ADD_BV_TO_INT.name,
     SUB_BV_TO_INT.name,
+    SHIFT_LEFT_TO_INT_MUL.name,
+    CHUNK_MERGE.name,
     RANGE_FOLD.name,
     ADD_BV_MAX_TO_ITE.name,
     SAR_TO_SHR_NONNEG.name,
@@ -360,6 +370,7 @@ __all__ = [
     "ARITH_CONST_FOLD",
     "BOOL_ABSORB",
     "BOOL_CONST_FOLD",
+    "CHUNK_MERGE",
     "CHUNKED_MUL_BY_2N",
     "CP_ALIAS",
     "CSE",
@@ -395,6 +406,7 @@ __all__ = [
     "RANGE_FOLD",
     "SAR_TO_SHR_NONNEG",
     "SELECT_OVER_STORE",
+    "SHIFT_LEFT_TO_INT_MUL",
     "SIGN_EXTEND_UNWRAP",
     "STORE_EQ_NORM",
     "SUB_BV_TO_INT",

@@ -606,6 +606,33 @@ def rewrite_cmd(
             if not dce.removed:
                 break
             program = dce.program
+        # Phase 1.9: re-run simplify_pipeline. The u128 lift passes
+        # introduce new bv registers (H0, H1, ...) and new chunk
+        # extractions (Mod / Div by 2^64); subsequent
+        # ``ShiftLeft -> IntMul`` lifts and the Euclidean
+        # ``narrow(IntAdd(IntMul(Div, K), Mod)) -> T`` chunk-merge
+        # only become applicable once those forms are in the program.
+        # Running the same pipeline a second time lets the merges
+        # fire to fixpoint without dedicated rerun machinery.
+        phase_simplify_post_u128 = rewrite_program(
+            program,
+            simplify_pipeline,
+            max_iterations=max_iterations,
+            ite_max_depth=ite_max_depth,
+            symbol_sorts=tac.symbol_sorts,
+            use_int_ceil_div=ceildiv_op,
+            use_interval_select=interval_select,
+            phase="simplify-post-u128",
+            trace_sink=trace_sink,
+        )
+        program = phase_simplify_post_u128.program
+        rw = _merge_phases(rw, phase_simplify_post_u128)
+        while True:
+            dce = eliminate_dead_assignments(program)
+            total_removed += len(dce.removed)
+            if not dce.removed:
+                break
+            program = dce.program
         # Lift dynamic ``Ite``-RHS assignments out of their host block as
         # static T-defs *before* the first dynamic in the block. This
         # gives ITE_PURIFY a clean static prefix to insert ``TB<N>`` defs
