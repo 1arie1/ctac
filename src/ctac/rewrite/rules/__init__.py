@@ -26,6 +26,7 @@ from ctac.rewrite.rules.copyprop import CP_ALIAS
 from ctac.rewrite.rules.cse import CSE
 from ctac.rewrite.rules.havoc_equate_fold import HAVOC_EQUATE_FOLD
 from ctac.rewrite.rules.havoc_equate_subst import HAVOC_EQUATE_SUBST
+from ctac.rewrite.rules.mod_over_ite import MOD_OVER_ITE
 from ctac.rewrite.rules.mul_div import CHUNKED_MUL_BY_2N, MUL_DIV_TO_MULDIV
 from ctac.rewrite.rules.div import (
     R1_BITFIELD_STRIP,
@@ -172,6 +173,11 @@ simplify_pipeline: tuple[Rule, ...] = (
     # Multiplicative absorb / identity: X*0 -> 0, X*1 -> X (both Mul
     # and IntMul, both arg orderings).
     MUL_ZERO_ONE_FOLD,
+    # Distribute Mod over Ite when both arms simplify under
+    # path-refined ranges. Strict cost gate: only fires when both
+    # arms reduce, so the distribution shrinks rather than just
+    # duplicating the Mod.
+    MOD_OVER_ITE,
     ITE_SAME,
     # Collapse Ite(Eq(X,0), 0, X) -> X and Ite(Eq(X,0), X, 0) -> 0.
     # Lookthrough on the cond catches the typical `B = X == 0; Ite(B, ...)`
@@ -312,6 +318,7 @@ all_rule_names: tuple[str, ...] = (
     EQ_REFLEXIVE.name,
     EQ_CONST_FOLD.name,
     ARITH_CONST_FOLD.name,
+    MOD_OVER_ITE.name,
     MUL_ZERO_ONE_FOLD.name,
     INT_MUL_EQ_ZERO.name,
     EQ_ITE_DIST.name,
@@ -369,6 +376,7 @@ __all__ = [
     "ITE_SAME",
     "ITE_SHARED_LEAF",
     "ITE_ZERO_OR_SELF",
+    "MOD_OVER_ITE",
     "MUL_BV_TO_INT",
     "MUL_DIV_TO_MULDIV",
     "MUL_ZERO_ONE_FOLD",
