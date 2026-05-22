@@ -30,8 +30,10 @@ from ctac.rewrite.trail import Substitution, Trail, resolve_substitutions
 from ctac.rewrite.lift_dynamic_ite import lift_dynamic_ite_rhs
 from ctac.rewrite.materialize_assumes import materialize_assumes
 from ctac.rewrite.materialize_equate_bounds import materialize_havoc_equate_bounds
+from ctac.rewrite.materialize_h_nonzero import materialize_h_nonzero
 from ctac.rewrite.propagate_aliases import propagate_aliases_into_annotations
 from ctac.rewrite.rewrite_u128_carry_add import rewrite_u128_carry_add
+from ctac.rewrite.rewrite_u128_decrement import rewrite_u128_decrement
 from ctac.rewrite.unpurify_div import unpurify_div
 from ctac.rewrite.rules import (
     CP_ALIAS,
@@ -73,6 +75,8 @@ def _print_report(
     materialize_hits: dict[str, int] | None = None,
     materialize_equate_bound_hits: int = 0,
     u128_carry_add_hits: int = 0,
+    h_nonzero_hits: int = 0,
+    u128_decrement_hits: int = 0,
     lift_dynamic_ite_hits: int = 0,
     unpurified_div_count: int = 0,
 ) -> None:
@@ -103,6 +107,10 @@ def _print_report(
             )
         if u128_carry_add_hits:
             line(f"  u128_carry_add: {u128_carry_add_hits}")
+        if h_nonzero_hits:
+            line(f"  materialized_h_nonzero: {h_nonzero_hits}")
+        if u128_decrement_hits:
+            line(f"  u128_decrement: {u128_decrement_hits}")
         if materialize_hits:
             line(f"  materialized_assumes: {materialize_total}")
             for name in sorted(materialize_hits):
@@ -127,6 +135,10 @@ def _print_report(
         )
     if u128_carry_add_hits:
         line(f"  u128_carry_add: [bold]{u128_carry_add_hits}[/bold]")
+    if h_nonzero_hits:
+        line(f"  materialized_h_nonzero: [bold]{h_nonzero_hits}[/bold]")
+    if u128_decrement_hits:
+        line(f"  u128_decrement: [bold]{u128_decrement_hits}[/bold]")
     if materialize_hits:
         line(f"  materialized_assumes: [bold]{materialize_total}[/bold]")
         for name in sorted(materialize_hits):
@@ -556,8 +568,38 @@ def rewrite_cmd(
                 rw,
                 extra_symbols=rw.extra_symbols + u128_add_res.fresh_symbols,
             )
+        # Phase 1.8: materialize ``assume Ge(H, 1)`` from the chunked
+        # nonzero precondition ``LNot(LAnd(Eq(low, 0), Eq(hi, 0)))``
+        # so range inference (and the decrement rewrite below) see
+        # H's lower bound directly. Pure additive (rw-eq's rule-4
+        # CHK closes by case-split on H = 0).
+        h_nonzero_res = materialize_h_nonzero(
+            program, symbol_sorts=tac.symbol_sorts
+        )
+        program = h_nonzero_res.program
+        h_nonzero_hits = h_nonzero_res.hits
+        # Phase 1.85: u128 decrement rewrite. Recognizes the chunked
+        # borrow chain
+        # (R_lo_dec = Ite(low>=1, low-1, 2^64-1) plus
+        #  R_hi_dec = Ite(low==0, hi-1, hi)) and emits a fresh
+        # ``H_new = Sub(H, 1)`` register; R_lo_dec / R_hi_dec become
+        # bv ``Mod`` / ``Div`` of H_new. Gated on Ge(H, 1) which the
+        # phase above materialized. Drops the now-redundant
+        # ``LNot(LAnd(...))`` assume.
+        u128_dec_res = rewrite_u128_decrement(
+            program, symbol_sorts=tac.symbol_sorts
+        )
+        program = u128_dec_res.program
+        u128_dec_hits = u128_dec_res.hits
+        if u128_dec_res.fresh_symbols:
+            rw = replace(
+                rw,
+                extra_symbols=rw.extra_symbols + u128_dec_res.fresh_symbols,
+            )
         # DCE again: with R_low / R_hi rewritten to use T_sum, the old
-        # R_sum and R_carry defs are dead.
+        # R_sum and R_carry defs are dead; the decrement rewrite also
+        # leaves B_lo / B_hi / TB defs dead once their consumers are
+        # redirected through H_new.
         while True:
             dce = eliminate_dead_assignments(program)
             total_removed += len(dce.removed)
@@ -742,6 +784,8 @@ def rewrite_cmd(
             materialize_hits=materialize_hits,
             materialize_equate_bound_hits=materialize_eq_hits,
             u128_carry_add_hits=u128_add_hits,
+            h_nonzero_hits=h_nonzero_hits,
+            u128_decrement_hits=u128_dec_hits,
             lift_dynamic_ite_hits=lift_hits,
             unpurified_div_count=unpurified_count,
         )
