@@ -412,6 +412,21 @@ def rewrite_u128_carry_add(
             ):
                 continue
 
+            # BASE's bound. Materialize alongside the partial-sum
+            # bound so the H<N> bound is *locally* provable from
+            # in-scope facts (BASE_hi, partial_hi -> H<N>_hi) without
+            # needing the reader to walk BASE's def chain. Skip if
+            # BASE is already a literal (bound is trivially the
+            # literal value).
+            base_range = infer_expr_range(site.base, ctx)
+            if (
+                base_range is None
+                or base_range[0] is None
+                or base_range[1] is None
+            ):
+                continue
+            base_is_const = isinstance(site.base, ConstExpr)
+
             h_name = _pick_fresh_name(taken, prefix="H")
             fresh_symbols.append((h_name, "bv256"))
 
@@ -421,6 +436,24 @@ def rewrite_u128_carry_add(
             h_cmd = canonicalize_cmd(
                 AssignExpCmd(raw="", lhs=h_name, rhs=narrow_rhs)
             )
+            # BASE bound: ``assume Le(BASE, base_hi)``. Without this,
+            # H<N>'s bound's derivation routes through BASE's
+            # arbitrary upstream def chain (e.g. on csb_lemma BASE is
+            # ``I102 = IntMulDiv(R96, R90, 2^50)`` and the
+            # ``infer_expr_range`` traversal needs the IntMulDiv
+            # handler — fine for the encoder, opaque to a reader).
+            # Materializing it here makes the bound visible locally.
+            base_bound_cmd: TacCmd | None = None
+            if not base_is_const:
+                base_bound_cmd = canonicalize_cmd(
+                    AssumeExpCmd(
+                        raw="",
+                        condition=ApplyExpr(
+                            "Le",
+                            (site.base, _bv_const(base_range[1])),
+                        ),
+                    )
+                )
             # Partial-sum bound: ``assume Le(R_lo +int R_b, partial_hi)``.
             # Materializes the carry-precondition for the user: if the
             # partial sum exceeds u64 the carry bit fires, and the
@@ -440,8 +473,8 @@ def rewrite_u128_carry_add(
             )
             # H<N>'s u128-ish bound: ``assume Le(H<N>, t_hi)``. Tighter
             # than the bv256-sort default; not obvious from
-            # ``H = narrow(...)`` alone. Derived from the operand u64
-            # bounds via interval composition.
+            # ``H = narrow(...)`` alone. Locally derivable from the
+            # BASE bound + partial-sum bound emitted just above.
             h_bound_cmd = canonicalize_cmd(
                 AssumeExpCmd(
                     raw="",
@@ -474,9 +507,13 @@ def rewrite_u128_carry_add(
                 drops.add(site.carry_idx)
             replacements[site.low_idx] = new_low_cmd
             replacements[site.hi_idx] = new_hi_cmd
-            inserts_before.setdefault(site.sum_idx, []).extend(
-                [partial_bound_cmd, h_cmd, h_bound_cmd]
-            )
+            pre_h_cmds: list[TacCmd] = []
+            if base_bound_cmd is not None:
+                pre_h_cmds.append(base_bound_cmd)
+            pre_h_cmds.append(partial_bound_cmd)
+            pre_h_cmds.append(h_cmd)
+            pre_h_cmds.append(h_bound_cmd)
+            inserts_before.setdefault(site.sum_idx, []).extend(pre_h_cmds)
             hits += 1
 
         new_cmds: list[TacCmd] = []

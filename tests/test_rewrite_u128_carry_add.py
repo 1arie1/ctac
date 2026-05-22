@@ -190,14 +190,14 @@ def test_idempotent_on_already_rewritten_form():
     assert _named_assigns(res.program).keys() == _named_assigns(tac.program).keys()
 
 
-def test_emits_partial_sum_bound_and_h_bound():
-    """The rewrite emits two new assume commands: the partial-sum
-    bound (R_lo + R_b ≤ derived) and H<N>'s u128-ish bound."""
+def test_emits_three_bound_assumes():
+    """The rewrite emits three new assume commands: the BASE bound,
+    the partial-sum bound (R_lo + R_b ≤ derived), and H<N>'s
+    u128-ish bound — together they make H<N>'s upper bound locally
+    derivable without walking BASE's upstream def chain."""
     tac = parse_string(_wrap(_body_inline_carry(), syms=_SYMS), path="<s>")
     res = rewrite_u128_carry_add(tac.program, symbol_sorts=tac.symbol_sorts)
     assert res.hits == 1
-    # Pre-rewrite has 3 assume commands (the operand bounds); post
-    # should have 3 + 2 (partial + H bound) = 5.
     pre_assumes = sum(
         1
         for block in tac.program.blocks
@@ -210,7 +210,7 @@ def test_emits_partial_sum_bound_and_h_bound():
         for cmd in block.commands
         if isinstance(cmd, AssumeExpCmd)
     )
-    assert post_assumes == pre_assumes + 2
+    assert post_assumes == pre_assumes + 3
 
 
 def test_original_assumes_preserved():
