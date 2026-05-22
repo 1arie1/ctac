@@ -227,6 +227,19 @@ def _eval_apply(
         b = recurse(args[1])
         result = iv.ceil_div_nonneg(a, b)
         return result if result is not None else iv.TOP
+    if op == "IntMulDiv" and len(args) == 3:
+        # ``IntMulDiv(a, b, c) = (a * b) / c`` (floor; non-negative a, b
+        # and positive c per the rule's emission contract). The
+        # arithmetic-level lift uses mul_nonneg followed by
+        # floor_div_by_pos_const when c is a constant.
+        k = const_to_int(args[2]) if isinstance(args[2], ConstExpr) else None
+        if k is not None and k > 0:
+            mul = iv.mul_nonneg(recurse(args[0]), recurse(args[1]))
+            if mul is not None:
+                result = iv.floor_div_by_pos_const(mul, k)
+                if result is not None:
+                    return result
+        return iv.TOP
     if op == "IntMod" and len(args) == 2:
         k = const_to_int(args[1]) if isinstance(args[1], ConstExpr) else None
         if k is not None and k > 0:
