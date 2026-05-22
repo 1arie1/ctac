@@ -10,7 +10,7 @@ from __future__ import annotations
 from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef
 from ctac.parse import parse_string
 from ctac.rewrite.framework import rewrite_program
-from ctac.rewrite.rules import default_pipeline
+from ctac.rewrite.rules import HAVOC_EQUATE_FOLD
 from ctac.rewrite.trail import (
     Substitution,
     Trail,
@@ -254,7 +254,13 @@ def test_havoc_equate_fold_records_substitution():
     a non-assume use) so the rule doesn't reject X as a sibling
     dummy, and X's def must come after R's constraint assume so
     HavocEquateSubst can't apply first (which would also produce
-    a substitution but tagged as ``HavocEquateSubst``)."""
+    a substitution but tagged as ``HavocEquateSubst``).
+
+    NOTE: ``HAVOC_EQUATE_FOLD`` is intentionally NOT in the default
+    pipeline (rw-eq cannot verify the cross-symbol drop) but the
+    rule is still exported and its substitution-recording contract
+    is part of its public API, so the test pins it via a
+    rule-specific pipeline."""
     tac = parse_string(
         _wrap(
             "\tBlock e Succ [] {\n"
@@ -270,7 +276,9 @@ def test_havoc_equate_fold_records_substitution():
         ),
         path="<s>",
     )
-    res = rewrite_program(tac.program, default_pipeline, symbol_sorts=tac.symbol_sorts)
+    res = rewrite_program(
+        tac.program, (HAVOC_EQUATE_FOLD,), symbol_sorts=tac.symbol_sorts
+    )
     fold_subs = [s for s in res.substitutions if s.rule == "HavocEquateFold"]
     assert len(fold_subs) == 1
     sub = fold_subs[0]

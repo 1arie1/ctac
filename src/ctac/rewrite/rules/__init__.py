@@ -132,13 +132,26 @@ simplify_pipeline: tuple[Rule, ...] = (
     # assumes; the post-substitution `Eq(X, X)` collapses via
     # EQ_REFLEXIVE; DCE clears the now-unused havoc def.
     HAVOC_EQUATE_SUBST,
-    # Sister rule to HAVOC_EQUATE_SUBST: when SUBST can't fire
-    # because X's def is later than R's uses (e.g. SBF-frontend
-    # "pre-allocate slot R, later equate to nondet result X" shape),
-    # FOLD drops R + its constraints and rewrites the equality assume
-    # to a conjunction of the moved constraints. Soundness via
-    # same-block restriction.
-    HAVOC_EQUATE_FOLD,
+    # NOTE: ``HAVOC_EQUATE_FOLD`` is intentionally NOT in this
+    # pipeline. It produces sound rewrites but rw-eq's per-command
+    # walker cannot verify them: FOLD removes the LHS's bound-on-R
+    # assume and the equality, replacing them with a single
+    # bound-on-X assume in the RHS. rw-eq, walking LHS and RHS in
+    # source order, sees the LHS's bound-on-R as a lhs-only assume
+    # (rule 4b) and emits a CHK that asserts ``R <= K`` from
+    # whatever context precedes it — at that point R is just
+    # havoc'd, the constraint isn't yet available, so the CHK is
+    # SAT-able and rw-eq reports unsoundness. The fact really
+    # follows from the LHS's later equality assume, but
+    # ua-strategy-split truncates after each assertion so the
+    # equality is unreachable in the CHK's VC.
+    #
+    # Making rw-eq trail-aware would close this, but rw-eq is the
+    # soundness gate and we keep it as simple as possible. The
+    # ``materialize_havoc_equate_bounds`` pass below achieves the
+    # same downstream benefit (bound on X visible to range
+    # inference) without removing anything, so rw-eq trivially
+    # admits the new RHS-only assume.
     # Boolean / Ite simplification.
     EQ_REFLEXIVE,
     EQ_CONST_FOLD,
