@@ -1,5 +1,12 @@
 """Rewrite the chunked-u64 carry-correct addition idiom into a
-lift / op / split form over a fresh wide-int.
+fresh u128 ``half-register`` (``H<N>``) plus bv Mod / Div chunks.
+
+Naming convention: ``H<N>`` is a bv256-typed register that holds
+a u128 value (half of the bv256 width — hence "H"). ``Q<N>``
+(reserved for upcoming rules) is a bv256 register holding a u64.
+Both are bv registers; their operations are bv operations
+(``Mod`` / ``Div``, not ``IntMod`` / ``IntDiv``). Int-domain
+arithmetic appears only inside ``narrow(...)`` at the boundary.
 
 Input (the canonical SBF lowering of a u128 add, after simplify
 has settled on Mod / SymRef-named carry / AddIte-distributed Ite):
@@ -11,46 +18,60 @@ has settled on Mod / SymRef-named carry / AddIte-distributed Ite):
                          IntAdd(narrow(BASE), 1),
                          narrow(BASE)))         ; BASE u64
 
-Output (T_sum holds the unwrapped int-domain wide sum; R_low and
-R_hi become its low and high 64-bit chunks):
+Output: fresh u128 half-register ``H<N>`` capturing the wide sum,
+with an explicit u128 bound assume (derived, not invented); the
+original ``R_low`` and ``R_hi`` chunks become bv ``Mod`` / ``Div``
+of ``H<N>``:
 
-    T_sum = IntAdd(IntMul(BASE, 2^64), IntAdd(R_lo, R_b))
-    R_low = Mod(T_sum, 2^64)
-    R_hi  = IntDiv(T_sum, 2^64)
+    H<N>  = narrow(IntAdd(IntMul(BASE, 2^64), IntAdd(R_lo, R_b)))
+    assume Le(H<N>, derived_hi)            ; from range-inference
+    R_low = Mod(H<N>, 2^64)                ; bv Mod (bound obvious)
+    R_hi  = Div(H<N>, 2^64)                ; bv Div
 
-``R_sum`` and ``R_carry`` are dropped (DCE handles the residual
-cleanup after their only consumers — R_low's Mod and R_hi's Ite —
-get rewritten to consume T_sum instead).
+The ``narrow`` is sound only when the inner int expression is
+provably in ``[0, 2^256-1]``; the rewrite checks this via
+``infer_expr_range`` and bails when the bound can't be derived.
+
+``R_sum`` and (if separately named) ``R_carry`` are dropped — DCE
+clears them once ``R_low`` / ``R_hi`` route through ``H<N>``.
 
 Why a rewrite (not a materialized assume): the goal is that
 downstream sees ONLY the lift / op / split shape, so the next
 concept recognizer (decrement, divmod, ceil-div) can pattern-match
 on uniform u128 arithmetic. A second "merge" rewrite will then
-collapse adjacent ``Mod(T, 2^64) / IntDiv(T, 2^64)``-then-recombine
+collapse adjacent ``Mod(H, 2^64) / Div(H, 2^64)``-then-recombine
 round-trips, leaving only the lifted wide-int operations.
 
 rw-eq verification (per the per-cmd walker):
 
 * LHS ``R_sum`` vs RHS (no counterpart) — rule 9b lhs-only-DCE.
 * LHS ``R_carry`` vs RHS (no counterpart) — rule 9b.
-* RHS ``T_sum`` (fresh name) — rule 3 rhs-only-fresh, no CHK.
+* RHS ``H<N>`` (fresh name) — rule 3 rhs-only-fresh, no CHK.
+* RHS ``assume Le(H<N>, derived_hi)`` — rule 4 rhs-only-assume.
+  CHK = ``Le(narrow(<int sum>), derived_hi)``. Discharges via the
+  operand range bounds in scope (the rewrite gates the operand u64
+  bounds before firing, so the int sum's bound is a derived
+  arithmetic fact).
 * LHS / RHS ``R_low`` paired — rule 2 ``CHK = Eq(Mod(R_sum, 2^64),
-  Mod(T_sum, 2^64))``. Discharges via ``T_sum = BASE*2^64 + R_sum``
+  Mod(H<N>, 2^64))``. Discharges via ``H<N> = BASE*2^64 + R_sum``
   so the two are equal mod 2^64.
 * LHS / RHS ``R_hi`` paired — rule 2 ``CHK = Eq(narrow(Ite(R_carry,
-  BASE+1, BASE)), IntDiv(T_sum, 2^64))``. Discharges via case-split
-  on ``R_lo + R_b >= 2^64``.
+  BASE+1, BASE)), Div(H<N>, 2^64))``. Discharges via case-split on
+  ``R_lo + R_b >= 2^64``.
 
-Both CHKs are closed-form and small; z3 closes them in
+All CHKs are closed-form and small; z3 closes them in
 milliseconds. The proof obligation that the original chunked-add
 implements wide-int addition has been moved from the SMT of the
-overall VC into two local rw-eq lemmas — exactly the "rw-eq as the
+overall VC into local rw-eq lemmas — exactly the "rw-eq as the
 soundness gate, work pushed in rather than out" principle.
 
 Range gates: strict. ``infer_expr_range`` must prove
-``R_lo, R_b, BASE <= 2^64-1`` before the rewrite fires.
+``R_lo, R_b, BASE <= 2^64-1`` AND derive a concrete upper bound on
+the int-domain sum that fits in bv256 (i.e. the narrow is
+provably safe) before the rewrite fires. Bounds are never invented.
 
-Idempotent: skips a chain whose T_sum-style def already exists.
+Idempotent: a program already in the H<N>-narrow shape is a no-op
+(the matcher only fires on the chunked carry-Ite shape).
 """
 
 from __future__ import annotations
@@ -61,6 +82,7 @@ from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
     ApplyExpr,
     AssignExpCmd,
+    AssumeExpCmd,
     ConstExpr,
     SymbolRef,
     TacCmd,
@@ -73,8 +95,11 @@ from ctac.rewrite.rules.common import const_to_int
 from ctac.rewrite.unparse import canonicalize_cmd
 
 _U64_MAX = (1 << 64) - 1
+_BV256_MAX = (1 << 256) - 1
 _TWO_TO_64 = 1 << 64
 _TWO_TO_64_INT = ConstExpr(f"{hex(_TWO_TO_64)}(int)")
+_TWO_TO_64_BV = ConstExpr(f"{hex(_TWO_TO_64)}")  # bv-style (untagged)
+_NARROW_FN = SymbolRef("safe_math_narrow_bv256:bif")
 
 
 @dataclass(frozen=True)
@@ -188,7 +213,9 @@ def _build_t_sum_rhs(base: TacExpr, r_lo: TacExpr, r_b: TacExpr) -> TacExpr:
     )
 
 
-def _pick_fresh_name(taken: set[str], prefix: str = "T_u128_") -> str:
+def _pick_fresh_name(taken: set[str], *, prefix: str = "H") -> str:
+    """Pick ``<prefix><N>`` not present in ``taken``; default ``H<N>``
+    for the u128 half-register."""
     n = 0
     while True:
         name = f"{prefix}{n}"
@@ -196,6 +223,16 @@ def _pick_fresh_name(taken: set[str], prefix: str = "T_u128_") -> str:
             taken.add(name)
             return name
         n += 1
+
+
+def _bv_const(value: int) -> ConstExpr:
+    """Render ``value`` as an untagged bv-style hex literal."""
+    return ConstExpr(f"{hex(value)}")
+
+
+def _int_const(value: int) -> ConstExpr:
+    """Render ``value`` as an ``(int)``-tagged hex literal."""
+    return ConstExpr(f"{hex(value)}(int)")
 
 
 @dataclass(frozen=True)
@@ -345,27 +382,81 @@ def rewrite_u128_carry_add(
         if not block_sites:
             new_blocks.append(block)
             continue
-        # Order sites by sum_idx (earliest first) so the T_sum insertion
-        # position is stable when there's more than one chain per block.
         block_sites = sorted(block_sites, key=lambda s: s.sum_idx)
-        # Map cmd_index -> action to apply.
-        # action = ("drop",) or ("replace", new_cmd) or ("insert_before", new_cmd).
         drops: set[int] = set()
         replacements: dict[int, AssignExpCmd] = {}
-        inserts_before: dict[int, list[AssignExpCmd]] = {}
+        inserts_before: dict[int, list[TacCmd]] = {}
         for site in block_sites:
-            t_sum_name = _pick_fresh_name(taken)
-            fresh_symbols.append((t_sum_name, "int"))
-            t_sum_rhs = _build_t_sum_rhs(site.base, site.r_lo, site.r_b)
-            t_sum_cmd = canonicalize_cmd(
-                AssignExpCmd(raw="", lhs=t_sum_name, rhs=t_sum_rhs)
+            # Derive the full int-sum's range. Bail unless we can
+            # prove the sum fits in bv256 (the narrow precondition);
+            # bounds are never invented.
+            t_int_rhs = _build_t_sum_rhs(site.base, site.r_lo, site.r_b)
+            t_int_range = infer_expr_range(t_int_rhs, ctx)
+            if t_int_range is None:
+                continue
+            t_lo, t_hi = t_int_range
+            if t_lo is None or t_hi is None:
+                continue
+            if t_hi > _BV256_MAX or t_lo < 0:
+                continue
+
+            # Partial sum (R_lo +int R_b): we materialize its bound
+            # too so the partial intermediate's range is explicit in
+            # the TAC and downstream rules don't have to re-derive it.
+            partial_rhs = ApplyExpr("IntAdd", (site.r_lo, site.r_b))
+            partial_range = infer_expr_range(partial_rhs, ctx)
+            if (
+                partial_range is None
+                or partial_range[0] is None
+                or partial_range[1] is None
+            ):
+                continue
+
+            h_name = _pick_fresh_name(taken, prefix="H")
+            fresh_symbols.append((h_name, "bv256"))
+
+            # Build the H<N>-narrow def: ``H = narrow(int_sum)``. The
+            # ``narrow`` is sound because t_hi <= 2^256-1 and t_lo >= 0.
+            narrow_rhs = ApplyExpr("Apply", (_NARROW_FN, t_int_rhs))
+            h_cmd = canonicalize_cmd(
+                AssignExpCmd(raw="", lhs=h_name, rhs=narrow_rhs)
+            )
+            # Partial-sum bound: ``assume Le(R_lo +int R_b, partial_hi)``.
+            # Materializes the carry-precondition for the user: if the
+            # partial sum exceeds u64 the carry bit fires, and the
+            # explicit bound makes that visible to range inference and
+            # to rw-eq's CHK without re-deriving from operand ranges.
+            partial_bound_cmd = canonicalize_cmd(
+                AssumeExpCmd(
+                    raw="",
+                    condition=ApplyExpr(
+                        "Le",
+                        (
+                            partial_rhs,
+                            _int_const(partial_range[1]),
+                        ),
+                    ),
+                )
+            )
+            # H<N>'s u128-ish bound: ``assume Le(H<N>, t_hi)``. Tighter
+            # than the bv256-sort default; not obvious from
+            # ``H = narrow(...)`` alone. Derived from the operand u64
+            # bounds via interval composition.
+            h_bound_cmd = canonicalize_cmd(
+                AssumeExpCmd(
+                    raw="",
+                    condition=ApplyExpr(
+                        "Le",
+                        (SymbolRef(h_name), _bv_const(t_hi)),
+                    ),
+                )
             )
             new_low_cmd = canonicalize_cmd(
                 AssignExpCmd(
                     raw="",
                     lhs=site.r_low_name,
                     rhs=ApplyExpr(
-                        "Mod", (SymbolRef(t_sum_name), _TWO_TO_64_INT)
+                        "Mod", (SymbolRef(h_name), _TWO_TO_64_BV)
                     ),
                 )
             )
@@ -374,19 +465,18 @@ def rewrite_u128_carry_add(
                     raw="",
                     lhs=site.r_hi_name,
                     rhs=ApplyExpr(
-                        "IntDiv", (SymbolRef(t_sum_name), _TWO_TO_64_INT)
+                        "Div", (SymbolRef(h_name), _TWO_TO_64_BV)
                     ),
                 )
             )
-            # Drop R_sum and (if separately named) R_carry; replace
-            # R_low and R_hi; insert T_sum just before where R_sum used
-            # to live so it dominates both rewrites.
             drops.add(site.sum_idx)
             if site.carry_idx is not None:
                 drops.add(site.carry_idx)
             replacements[site.low_idx] = new_low_cmd
             replacements[site.hi_idx] = new_hi_cmd
-            inserts_before.setdefault(site.sum_idx, []).append(t_sum_cmd)
+            inserts_before.setdefault(site.sum_idx, []).extend(
+                [partial_bound_cmd, h_cmd, h_bound_cmd]
+            )
             hits += 1
 
         new_cmds: list[TacCmd] = []

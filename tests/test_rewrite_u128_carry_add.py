@@ -99,32 +99,36 @@ _SYMS = (
 
 
 def test_inline_carry_chain_rewritten():
-    """Inline ``Lt`` in the Ite cond is matched and rewritten."""
+    """Inline ``Lt`` in the Ite cond is matched and rewritten into a
+    fresh bv256 ``H<N>`` half-register with explicit bounds and bv
+    Mod / Div on R_low / R_hi."""
     tac = parse_string(_wrap(_body_inline_carry(), syms=_SYMS), path="<s>")
     res = rewrite_u128_carry_add(tac.program, symbol_sorts=tac.symbol_sorts)
     assert res.hits == 1
+    # Exactly one fresh symbol: the H<N> bv256 half-register.
     assert len(res.fresh_symbols) == 1
-    t_sum_name, sort = res.fresh_symbols[0]
-    assert sort == "int"
+    h_name, sort = res.fresh_symbols[0]
+    assert sort == "bv256"
+    assert h_name.startswith("H")
     cmds = _named_assigns(res.program)
-    # Rsum dropped (was a separate AssignExpCmd).
+    # Rsum dropped.
     assert "Rsum" not in cmds
-    # Rlow rewritten to Mod(T_sum, 2^64).
+    # H<N> = narrow(int_sum).
+    h_rhs = cmds[h_name].rhs
+    assert isinstance(h_rhs, ApplyExpr) and h_rhs.op == "Apply"
+    narrow_fn, narrow_arg = h_rhs.args
+    assert (
+        isinstance(narrow_fn, SymbolRef)
+        and narrow_fn.name.startswith("safe_math_narrow_bv")
+    )
+    assert isinstance(narrow_arg, ApplyExpr) and narrow_arg.op == "IntAdd"
+    # Rlow = bv Mod(H<N>, 2^64); Rhi = bv Div(H<N>, 2^64).
     rlow_rhs = cmds["Rlow"].rhs
     assert isinstance(rlow_rhs, ApplyExpr) and rlow_rhs.op == "Mod"
-    assert rlow_rhs.args[0] == SymbolRef(t_sum_name)
-    # Rhi rewritten to IntDiv(T_sum, 2^64).
+    assert rlow_rhs.args[0] == SymbolRef(h_name)
     rhi_rhs = cmds["Rhi"].rhs
-    assert isinstance(rhi_rhs, ApplyExpr) and rhi_rhs.op == "IntDiv"
-    assert rhi_rhs.args[0] == SymbolRef(t_sum_name)
-    # T_sum's RHS shape.
-    t_rhs = cmds[t_sum_name].rhs
-    assert isinstance(t_rhs, ApplyExpr) and t_rhs.op == "IntAdd"
-    # Outer IntAdd's first arg is IntMul(Base, 2^64); second is IntAdd(Rlo, Rb).
-    outer_left, outer_right = t_rhs.args
-    assert isinstance(outer_left, ApplyExpr) and outer_left.op == "IntMul"
-    assert outer_left.args[0] == SymbolRef("Base")
-    assert isinstance(outer_right, ApplyExpr) and outer_right.op == "IntAdd"
+    assert isinstance(rhi_rhs, ApplyExpr) and rhi_rhs.op == "Div"
+    assert rhi_rhs.args[0] == SymbolRef(h_name)
 
 
 def test_named_carry_chain_drops_carry_def():
@@ -160,7 +164,8 @@ def test_range_gate_blocks_overlarge_base():
 
 
 def test_idempotent_on_already_rewritten_form():
-    """A program that's already in lift/op/split shape is a no-op."""
+    """A program already in H<N>-narrow / bv-Mod / bv-Div shape is a
+    no-op — the matcher only fires on the chunked carry-Ite shape."""
     body = (
         "\t\tAssignHavocCmd Rlo\n"
         "\t\tAssumeExpCmd Le(Rlo 0xffffffffffffffff)\n"
@@ -168,36 +173,63 @@ def test_idempotent_on_already_rewritten_form():
         "\t\tAssumeExpCmd Le(Rb 0xffffffffffffffff)\n"
         "\t\tAssignHavocCmd Base\n"
         "\t\tAssumeExpCmd Le(Base 0xffffffffffffffff)\n"
-        "\t\tAssignExpCmd Tsum IntAdd(IntMul(Base 0x10000000000000000(int)) IntAdd(Rlo Rb))\n"
-        "\t\tAssignExpCmd Rlow Mod(Tsum 0x10000000000000000)\n"
-        "\t\tAssignExpCmd Rhi IntDiv(Tsum 0x10000000000000000)\n"
+        "\t\tAssignExpCmd H0 Apply(safe_math_narrow_bv256:bif "
+        "IntAdd(IntMul(Base 0x10000000000000000(int)) IntAdd(Rlo Rb)))\n"
+        "\t\tAssumeExpCmd Le(H0 0x100000000000000000000000000000000)\n"
+        "\t\tAssignExpCmd Rlow Mod(H0 0x10000000000000000)\n"
+        "\t\tAssignExpCmd Rhi Div(H0 0x10000000000000000)\n"
         "\t\tAssertCmd Le(Rhi 0xffffffffffffffff)\n"
     )
     syms = (
-        "Rlo:bv256\n\tRb:bv256\n\tBase:bv256\n\tTsum:int\n"
+        "Rlo:bv256\n\tRb:bv256\n\tBase:bv256\n\tH0:bv256\n"
         "\tRlow:bv256\n\tRhi:bv256"
     )
     tac = parse_string(_wrap(body, syms=syms), path="<s>")
     res = rewrite_u128_carry_add(tac.program, symbol_sorts=tac.symbol_sorts)
     assert res.hits == 0
-    # No commands change.
     assert _named_assigns(res.program).keys() == _named_assigns(tac.program).keys()
 
 
-def test_assumes_preserved():
-    """All original AssumeExpCmds remain after the rewrite."""
+def test_emits_partial_sum_bound_and_h_bound():
+    """The rewrite emits two new assume commands: the partial-sum
+    bound (R_lo + R_b ≤ derived) and H<N>'s u128-ish bound."""
     tac = parse_string(_wrap(_body_inline_carry(), syms=_SYMS), path="<s>")
-    assumes_before = sum(
+    res = rewrite_u128_carry_add(tac.program, symbol_sorts=tac.symbol_sorts)
+    assert res.hits == 1
+    # Pre-rewrite has 3 assume commands (the operand bounds); post
+    # should have 3 + 2 (partial + H bound) = 5.
+    pre_assumes = sum(
         1
         for block in tac.program.blocks
         for cmd in block.commands
         if isinstance(cmd, AssumeExpCmd)
     )
-    res = rewrite_u128_carry_add(tac.program, symbol_sorts=tac.symbol_sorts)
-    assumes_after = sum(
+    post_assumes = sum(
         1
         for block in res.program.blocks
         for cmd in block.commands
         if isinstance(cmd, AssumeExpCmd)
     )
-    assert assumes_after == assumes_before
+    assert post_assumes == pre_assumes + 2
+
+
+def test_original_assumes_preserved():
+    """All original AssumeExpCmds remain after the rewrite (the two new
+    ones — partial-sum bound + H<N> bound — are checked separately in
+    ``test_emits_partial_sum_bound_and_h_bound``)."""
+    tac = parse_string(_wrap(_body_inline_carry(), syms=_SYMS), path="<s>")
+    original_assumes = {
+        cmd.condition
+        for block in tac.program.blocks
+        for cmd in block.commands
+        if isinstance(cmd, AssumeExpCmd)
+    }
+    res = rewrite_u128_carry_add(tac.program, symbol_sorts=tac.symbol_sorts)
+    post_assumes = {
+        cmd.condition
+        for block in res.program.blocks
+        for cmd in block.commands
+        if isinstance(cmd, AssumeExpCmd)
+    }
+    # Every original assume is still present.
+    assert original_assumes <= post_assumes
