@@ -29,6 +29,7 @@ from ctac.rewrite.framework import RewriteResult, RuleHit, TraceEntry, TraceSink
 from ctac.rewrite.trail import Substitution, Trail, resolve_substitutions
 from ctac.rewrite.lift_dynamic_ite import lift_dynamic_ite_rhs
 from ctac.rewrite.materialize_assumes import materialize_assumes
+from ctac.rewrite.materialize_equate_bounds import materialize_havoc_equate_bounds
 from ctac.rewrite.propagate_aliases import propagate_aliases_into_annotations
 from ctac.rewrite.unpurify_div import unpurify_div
 from ctac.rewrite.rules import (
@@ -69,6 +70,7 @@ def _print_report(
     total_cmds_before: int,
     total_cmds_after: int,
     materialize_hits: dict[str, int] | None = None,
+    materialize_equate_bound_hits: int = 0,
     lift_dynamic_ite_hits: int = 0,
     unpurified_div_count: int = 0,
 ) -> None:
@@ -93,6 +95,10 @@ def _print_report(
             line(f"  substitutions_recorded: {len(rewrite.substitutions)}")
         if lift_dynamic_ite_hits:
             line(f"  lifted_dynamic_ite: {lift_dynamic_ite_hits}")
+        if materialize_equate_bound_hits:
+            line(
+                f"  materialized_equate_bounds: {materialize_equate_bound_hits}"
+            )
         if materialize_hits:
             line(f"  materialized_assumes: {materialize_total}")
             for name in sorted(materialize_hits):
@@ -110,6 +116,11 @@ def _print_report(
         line(f"  unpurified_div: [bold]{unpurified_div_count}[/bold]")
     if lift_dynamic_ite_hits:
         line(f"  lifted_dynamic_ite: [bold]{lift_dynamic_ite_hits}[/bold]")
+    if materialize_equate_bound_hits:
+        line(
+            "  materialized_equate_bounds: "
+            f"[bold]{materialize_equate_bound_hits}[/bold]"
+        )
     if materialize_hits:
         line(f"  materialized_assumes: [bold]{materialize_total}[/bold]")
         for name in sorted(materialize_hits):
@@ -403,6 +414,18 @@ def rewrite_cmd(
     unpurify_res = unpurify_div(tac.program)
     starting_program = unpurify_res.program
     unpurified_count = unpurify_res.hits
+    # Phase -0.5: materialize bounds across havoc'd-equality assumes.
+    # SBF frontend pattern: ``R = havoc; assume R <= K; ...; X = ...;
+    # assume Eq(R, X)``. We insert ``assume <bound>[R := X]`` right
+    # after the equality so downstream range inference sees the bound
+    # on X directly. Pure RHS-only addition (LHS structure preserved),
+    # so rw-eq's rule-4 CHK discharges trivially via the in-scope
+    # ``Eq(R, X)`` + bound-on-R assumes. Runs once, idempotent per-Eq.
+    materialize_eq_res = materialize_havoc_equate_bounds(
+        starting_program, symbol_sorts=tac.symbol_sorts
+    )
+    starting_program = materialize_eq_res.program
+    materialize_eq_hits = materialize_eq_res.hits
     with _open_trace_file(trace) as trace_fh:
         trace_sink = _make_trace_sink(trace_fh)
         # Phase 0: chain recognition (R6's ceildiv idiom + bit-op
@@ -494,9 +517,7 @@ def rewrite_cmd(
         # the parsed ``weak_refs`` tuple; the substitution is
         # idempotent and runs before each DCE pass that could remove
         # the aliased def.
-        propagated_program, propagated_subs = propagate_aliases_into_annotations(
-            rw.program
-        )
+        propagated_program, _ = propagate_aliases_into_annotations(rw.program)
         rw = replace(rw, program=propagated_program)
         # Iterate DCE to fixed point: a chain of dead defs needs multiple sweeps
         # because liveness is computed once per pass and each pass only removes
@@ -685,6 +706,7 @@ def rewrite_cmd(
             total_cmds_before=before_count,
             total_cmds_after=after_count,
             materialize_hits=materialize_hits,
+            materialize_equate_bound_hits=materialize_eq_hits,
             lift_dynamic_ite_hits=lift_hits,
             unpurified_div_count=unpurified_count,
         )

@@ -130,6 +130,11 @@ def propagate_aliases_into_annotations(
     and ``weak_refs`` tuple from each aliased name to its
     chain-resolved target.
 
+    Alias source: ``AssignExpCmd X SymbolRef(Y)`` static defs in
+    ``program``. CP_ALIAS / IteZeroOrSelf turn an Ite-fold into
+    ``Rnew = Rold`` and propagate the rename into operand uses; this
+    pass closes the loop on the annotation refs that CP can't reach.
+
     The full alias map is passed to every annotation (not just those
     whose extracted ``weak_refs`` happen to name the symbol) — only
     ``snippet.cmd`` annotations have weak_refs surfaced today, but
