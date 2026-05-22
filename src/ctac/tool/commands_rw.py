@@ -27,6 +27,9 @@ from dataclasses import replace
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.framework import RewriteResult, RuleHit, TraceEntry, TraceSink
 from ctac.rewrite.trail import Substitution, Trail, resolve_substitutions
+from ctac.rewrite.drop_range_redundant_assumes import (
+    drop_range_redundant_assumes,
+)
 from ctac.rewrite.lift_dynamic_ite import lift_dynamic_ite_rhs
 from ctac.rewrite.materialize_assumes import materialize_assumes
 from ctac.rewrite.materialize_equate_bounds import materialize_havoc_equate_bounds
@@ -77,6 +80,7 @@ def _print_report(
     u128_carry_add_hits: int = 0,
     h_nonzero_hits: int = 0,
     u128_decrement_hits: int = 0,
+    range_redundant_assumes_dropped: int = 0,
     lift_dynamic_ite_hits: int = 0,
     unpurified_div_count: int = 0,
 ) -> None:
@@ -111,6 +115,11 @@ def _print_report(
             line(f"  materialized_h_nonzero: {h_nonzero_hits}")
         if u128_decrement_hits:
             line(f"  u128_decrement: {u128_decrement_hits}")
+        if range_redundant_assumes_dropped:
+            line(
+                "  range_redundant_assumes_dropped: "
+                f"{range_redundant_assumes_dropped}"
+            )
         if materialize_hits:
             line(f"  materialized_assumes: {materialize_total}")
             for name in sorted(materialize_hits):
@@ -139,6 +148,11 @@ def _print_report(
         line(f"  materialized_h_nonzero: [bold]{h_nonzero_hits}[/bold]")
     if u128_decrement_hits:
         line(f"  u128_decrement: [bold]{u128_decrement_hits}[/bold]")
+    if range_redundant_assumes_dropped:
+        line(
+            "  range_redundant_assumes_dropped: "
+            f"[bold]{range_redundant_assumes_dropped}[/bold]"
+        )
     if materialize_hits:
         line(f"  materialized_assumes: [bold]{materialize_total}[/bold]")
         for name in sorted(materialize_hits):
@@ -627,6 +641,19 @@ def rewrite_cmd(
         )
         program = phase_simplify_post_u128.program
         rw = _merge_phases(rw, phase_simplify_post_u128)
+        # Phase 1.95: drop range-redundant assumes. The carry-add lift
+        # materialized intermediate bounds (on the partial sum, on
+        # BASE) so H's bound was locally provable. After
+        # ``chunk-merge`` and ``muldiv-to-V-Div`` collapse the chunked
+        # encoding, those intermediates are no longer load-bearing —
+        # range inference can derive their bounds from the operand
+        # ranges in scope. Dropping the range-tautological assumes
+        # lets DCE clear the now-dead chunk defs (R_low, R_hi-ish).
+        drop_redundant_res = drop_range_redundant_assumes(
+            program, symbol_sorts=tac.symbol_sorts
+        )
+        program = drop_redundant_res.program
+        dropped_redundant_assumes = drop_redundant_res.hits
         while True:
             dce = eliminate_dead_assignments(program)
             total_removed += len(dce.removed)
@@ -813,6 +840,7 @@ def rewrite_cmd(
             u128_carry_add_hits=u128_add_hits,
             h_nonzero_hits=h_nonzero_hits,
             u128_decrement_hits=u128_dec_hits,
+            range_redundant_assumes_dropped=dropped_redundant_assumes,
             lift_dynamic_ite_hits=lift_hits,
             unpurified_div_count=unpurified_count,
         )

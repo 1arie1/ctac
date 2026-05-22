@@ -127,7 +127,7 @@ Program {
 \tBlock 0_0_0_0_0_0 Succ [] {
 \t\tAssignHavocCmd R0
 \t\tAssignExpCmd R1 Ite(Eq(R0 0x5) 0x1 0x2)
-\t\tAssumeExpCmd Lt(R1 0xff)
+\t\tAssertCmd Lt(R1 0xff) "stay-alive"
 \t}
 }
 Axioms {
