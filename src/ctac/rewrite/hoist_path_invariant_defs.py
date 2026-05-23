@@ -242,11 +242,22 @@ def hoist_path_invariant_defs(
     program: TacProgram,
     *,
     symbol_sorts: "dict[str, str] | None" = None,
+    move_assumes: bool = True,
 ) -> HoistPathInvariantResult:
-    """Walk JumpiCmds; hoist semantically-equivalent branch defs."""
+    """Walk JumpiCmds; hoist semantically-equivalent branch defs.
+
+    ``move_assumes`` is reserved for an upcoming sub-step that, when a
+    def-hoist fires, also relocates the chain's range-bound assume from
+    the complex branch up to the host block — gated on the assume's
+    content being derivable at the target via ``infer_expr_range``.
+    Currently no assume-motion is performed; the def-hoist always
+    leaves the orig's branch-local assume in place.
+    """
     sorts = symbol_sorts or {}
     ctx = RewriteCtx(program, symbol_sorts=sorts)
     by_id = program.block_by_id()
+    # Currently unused; reserved for the assume-motion sub-step.
+    _ = move_assumes
 
     # Dynamic-symbol → list[(block_id, cmd_index)] of its defs.
     sym_defs: dict[str, list[tuple[str, int]]] = {}

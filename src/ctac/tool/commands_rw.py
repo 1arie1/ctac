@@ -387,6 +387,23 @@ def rewrite_cmd(
             "program's existing constraints. Default on."
         ),
     ),
+    move_assumes: bool = typer.Option(
+        True,
+        "--move-assumes/--no-move-assumes",
+        help=(
+            "Allow rewrite passes (notably ``hoist_path_invariant_defs``) "
+            "to relocate ``AssumeExpCmd`` between blocks — typically "
+            "hoisting an assume from a branch up to a dominator when the "
+            "assume's content is derivable from in-scope facts at the "
+            "target. Soundness is the pass's responsibility (derive the "
+            "content via ``infer_expr_range`` before moving). When off, "
+            "passes leave assumes in their original blocks; useful as a "
+            "fallback when an rw-eq CHK on a hoisted assume fails to "
+            "discharge — pinning assumes to their original scope gives "
+            "z3 the larger set of in-scope facts the assume originally "
+            "sat under. Default on."
+        ),
+    ),
     validate: bool = typer.Option(
         True,
         "--validate/--no-validate",
@@ -679,7 +696,9 @@ def rewrite_cmd(
         # rerun; the original chain in the complex branch becomes dead
         # and DCE clears it.
         hoist_res = hoist_path_invariant_defs(
-            program, symbol_sorts=tac.symbol_sorts
+            program,
+            symbol_sorts=tac.symbol_sorts,
+            move_assumes=move_assumes,
         )
         program = hoist_res.program
         hoist_hits = hoist_res.hits
