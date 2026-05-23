@@ -183,6 +183,7 @@ class HumanPrettyPrinter(PrettyPrinter):
     _int_func_remap = {
         "IntCeilDiv": "int_div_ceil",
         "IntMulDiv": "muldiv",
+        "IntMulDivCeil": "muldiv_ceil",
     }
 
     @staticmethod
