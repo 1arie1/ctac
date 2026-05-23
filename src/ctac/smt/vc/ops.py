@@ -35,6 +35,7 @@ _LEMMA_BV256_RANGE = "bv256_range"
 
 class _OpName:
     INT_MUL_DIV = "int.muldiv"
+    INT_MUL_DIV_CEIL = "int.mul_div_ceil"
     INT_CEIL_DIV = "int.ceil_div"
     BV256_AND = "int.bv256_and"
     BV256_XOR = "int.bv256_xor"
@@ -47,6 +48,7 @@ class _OpName:
 
 class _SmtName:
     INT_MUL_DIV = "int.muldiv"
+    INT_MUL_DIV_CEIL = "int_mul_div_ceil"
     INT_CEIL_DIV = "int_ceil_div"
     BV256_ADD = "int.bv256_add"
     BV256_SUB = "int.bv256_sub"
@@ -92,6 +94,7 @@ class _SmtName:
 
 class _LemmaName:
     INT_MUL_DIV_BOUNDS = "lemma_int_mul_div_bounds"
+    INT_MUL_DIV_CEIL_BOUNDS = "lemma_int_mul_div_ceil_bounds"
     INT_CEIL_DIV_BOUNDS = "lemma_int_ceil_div_bounds"
     BV256_AND_BOOL = "lemma_bv256_and_bool"
     BV256_XOR_BOOL = "lemma_bv256_xor_bool"
@@ -284,6 +287,82 @@ class IntMulDivOp(OpModel):
             Int,
             div(mul(a, b), c),
         )
+
+
+# Lemma: if c > 0 and r = int.mul_div_ceil(a, b, c), then r is the
+# ceiling quotient of a*b by c: c*r >= a*b and c*r < a*b + c.
+class IntMulDivCeilBoundsLemma(LemmaSchema):
+    name = _LemmaName.INT_MUL_DIV_CEIL_BOUNDS
+    params = ((_A, Int), (_B, Int), (_C, Int), (_R, Int))
+
+    def body(self, vc: _Builder, params: tuple[Term, ...]) -> Term:
+        a, b, c, r = params
+        zero = vc.int_lit(0)
+        prod = mul(a, b)
+        return implies(
+            gt(c, zero),
+            and_(
+                ge(mul(c, r), prod),
+                lt(mul(c, r), add(prod, c)),
+            ),
+        )
+
+    def instance_args(self, call: CallSite) -> tuple[Term, ...]:
+        a, b, c = call.args
+        return (a, b, c, call.result_for_lemma())
+
+
+class IntMulDivCeilOp(OpModel):
+    name = _OpName.INT_MUL_DIV_CEIL
+    default_config = OpConfig(
+        mode=OpMode.UF,
+        lemmas=(_LEMMA_BOUNDS,),
+        instantiate_lemmas=True,
+    )
+    lemmas = {_LEMMA_BOUNDS: IntMulDivCeilBoundsLemma()}
+
+    def __call__(self, a: Term, b: Term, c: Term) -> Term:
+        cfg = self.config()
+        if cfg.mode is OpMode.INLINE:
+            return _mul_div_ceil_body(self.vc, a, b, c)
+        if cfg.mode is OpMode.DEFINE_FUN:
+            self._require_define_fun()
+            return app(_SmtName.INT_MUL_DIV_CEIL, [a, b, c], Int)
+        if cfg.mode is OpMode.UF:
+            self.vc.declare_fun(
+                _SmtName.INT_MUL_DIV_CEIL, (Int, Int, Int), Int
+            )
+            raw = app(_SmtName.INT_MUL_DIV_CEIL, [a, b, c], Int)
+            call = self.vc.record_call(self.name, (a, b, c), raw)
+            return Term(
+                raw.text,
+                raw.sort,
+                callsites=raw.callsites + (call,),
+                direct_callsite=call,
+            )
+        raise ValueError(cfg.mode)
+
+    def _require_define_fun(self) -> None:
+        a = term(_A, Int)
+        b = term(_B, Int)
+        c = term(_C, Int)
+        self.vc.define_fun(
+            _SmtName.INT_MUL_DIV_CEIL,
+            ((_A, Int), (_B, Int), (_C, Int)),
+            Int,
+            _mul_div_ceil_body(self.vc, a, b, c),
+        )
+
+
+def _mul_div_ceil_body(vc: _Builder, a: Term, b: Term, c: Term) -> Term:
+    """``ceil(a*b/c) = (a*b + c - 1) / c`` for ``a, b >= 0, c > 0``.
+
+    Same Knuth-identity reasoning as in ``_ceil_div_body``; the
+    bounds lemma is what nails the value in UF mode (the production
+    path), this expression matters only for INLINE / DEFINE_FUN.
+    """
+    one = vc.int_lit(1)
+    return div(add(mul(a, b), sub(c, one)), c)
 
 
 # Lemma: if b > 0 and r = int.ceil_div(a, b), then r is the ceiling
@@ -808,11 +887,13 @@ class Bv256Ops:
 class Ops:
     def __init__(self, vc: _Builder) -> None:
         self.int_mul_div = IntMulDivOp(vc)
+        self.int_mul_div_ceil = IntMulDivCeilOp(vc)
         self.int_ceil_div = IntCeilDivOp(vc)
         self.narrow = NarrowOps(vc)
         self.bv256 = Bv256Ops(vc)
         self._by_name = {
             self.int_mul_div.name: self.int_mul_div,
+            self.int_mul_div_ceil.name: self.int_mul_div_ceil,
             self.int_ceil_div.name: self.int_ceil_div,
             self.bv256.and_model.name: self.bv256.and_model,
             self.bv256.xor_model.name: self.bv256.xor_model,

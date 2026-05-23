@@ -242,6 +242,18 @@ def _int_ceil_div_axiom_define_fun() -> str:
     )
 
 
+def _int_mul_div_ceil_axiom_define_fun() -> str:
+    # Partial axiom for ``int_mul_div_ceil(a, b, c) = ceil(a*b / c)``;
+    # defined for ``c > 0``. Mirrors the int_ceil_div axiom shape:
+    # ``c*r >= a*b`` and ``c*r < a*b + c`` pins ``r = ceil(a*b/c)``.
+    return (
+        "(define-fun int_mul_div_ceil_axiom ((a Int) (b Int) (c Int)) Bool "
+        "(=> (> c 0) "
+        "(and (>= (* c (int_mul_div_ceil a b c)) (* a b)) "
+        "(< (* c (int_mul_div_ceil a b c)) (+ (* a b) c)))))"
+    )
+
+
 def _int_mul_div_axiom_define_fun() -> str:
     # Total axiom for ``int_mul_div``. Two branches by divisor sign:
     #
@@ -279,6 +291,10 @@ _UF_AXIOM_DEFINE_BY_UF: dict[str, tuple[str, Callable[[], str]]] = {
     "bv256_xor": ("bv256_xor_axiom", _xor_axiom_define_fun),
     "int_ceil_div": ("int_ceil_div_axiom", _int_ceil_div_axiom_define_fun),
     "int_mul_div": ("int_mul_div_axiom", _int_mul_div_axiom_define_fun),
+    "int_mul_div_ceil": (
+        "int_mul_div_ceil_axiom",
+        _int_mul_div_ceil_axiom_define_fun,
+    ),
 }
 
 
@@ -943,6 +959,23 @@ class SeaVcEncoder(SmtEncoder):
                     a3, _ = emit_expr(expr.args[2], expected_sort="Int")
                     uf = "int_mul_div"
                     uf_decl_lines.add(f"(declare-fun {uf} (Int Int Int) Int)")
+                    _add_uf_app(uf, (a1, a2, a3))
+                    return f"({uf} {a1} {a2} {a3})", "Int"
+                if op == "IntMulDivCeil":
+                    # Ceil multiply-then-divide: ceil((a*b)/c). Partial UF
+                    # axiomatized for ``c > 0`` via
+                    # ``int_mul_div_ceil_axiom``.
+                    if len(expr.args) != 3:
+                        raise SmtEncodingError(
+                            "IntMulDivCeil expects three args"
+                        )
+                    a1, _ = emit_expr(expr.args[0], expected_sort="Int")
+                    a2, _ = emit_expr(expr.args[1], expected_sort="Int")
+                    a3, _ = emit_expr(expr.args[2], expected_sort="Int")
+                    uf = "int_mul_div_ceil"
+                    uf_decl_lines.add(
+                        f"(declare-fun {uf} (Int Int Int) Int)"
+                    )
                     _add_uf_app(uf, (a1, a2, a3))
                     return f"({uf} {a1} {a2} {a3})", "Int"
                 if op in {"Shl", "BvShl", "BVShl", "LShift", "ShiftLeft"}:
