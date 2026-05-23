@@ -206,6 +206,13 @@ class VCBuilder:
         self.ops = Ops(self)
         self.bytemap = UfDefineFunBytemap(self, self.config.bytemap)
         self._finalized = False
+        # Map from 0-ary define-fun name to its integer body, populated
+        # by ``define_int_const`` when an ``int`` value is supplied.
+        # Lets op lowerings (``shl``/``lshr``/``and_``) recognize a named
+        # integer constant (e.g. ``BV64_MAX``, ``POW2_14``) as a literal
+        # and route through the const-fold path instead of falling
+        # through to a UF.
+        self.named_int_consts: dict[str, int] = {}
 
     def const(self, name: str, sort: Sort) -> Term:
         self.const_decls.setdefault(name, ConstDecl(name, sort))
@@ -232,6 +239,8 @@ class VCBuilder:
             body = value
         else:
             body = term(str(value), Int)
+            if isinstance(value, int):
+                self.named_int_consts.setdefault(name, value)
         self.define_fun(name, (), Int, body)
         return term(name, Int)
 
@@ -271,19 +280,24 @@ class VCBuilder:
         else:
             delta_term = self.int_lit(delta_abs)
             delta_name = str(delta_abs)
-        return self.define_int_const(
-            f"POW2_{pow_k}_{sign_name}_{delta_name}",
+        name = f"POW2_{pow_k}_{sign_name}_{delta_name}"
+        result = self.define_int_const(
+            name,
             app(op, [self.pow2_const(pow_k), delta_term], Int),
         )
+        self.named_int_consts.setdefault(name, (1 << pow_k) + delta)
+        return result
 
     def bv256_mod(self) -> Term:
         return self.define_int_const("BV256_MOD", _BV256_MOD)
 
     def bv256_max(self) -> Term:
-        return self.define_int_const(
+        result = self.define_int_const(
             "BV256_MAX",
             app("-", [self.bv256_mod(), self.int_lit(1)], Int),
         )
+        self.named_int_consts.setdefault("BV256_MAX", _BV256_MOD - 1)
+        return result
 
     def bv_mod(self, width: int) -> Term:
         if width == 256:
@@ -295,10 +309,13 @@ class VCBuilder:
         if width == 256:
             return self.bv256_max()
         self._check_common_bv_width(width)
-        return self.define_int_const(
-            f"BV{width}_MAX",
+        name = f"BV{width}_MAX"
+        result = self.define_int_const(
+            name,
             app("-", [self.bv_mod(width), self.int_lit(1)], Int),
         )
+        self.named_int_consts.setdefault(name, (1 << width) - 1)
+        return result
 
     def bv_range(self, width: int, x: Term) -> Term:
         self.require_bv_range_define_fun(width)

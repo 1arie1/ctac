@@ -758,7 +758,10 @@ def test_bv256_constant_shift_and_mask_ops_use_readable_define_funs() -> None:
     text = render_vc_script(vc.script())
 
     assert "(define-fun POW2_8 () Int 256)" in text
-    assert "(define-fun bv256.shl_8 ((x Int)) Int (* x POW2_8))" in text
+    assert (
+        "(define-fun bv256.shl_8 ((x Int)) Int (mod (* x POW2_8) BV256_MOD))"
+        in text
+    )
     assert "(define-fun bv256.lshr_8 ((x Int)) Int (div x POW2_8))" in text
     assert "(define-fun bv256.and_FF ((x Int)) Int (mod x POW2_8))" in text
     assert "(define-fun bv256.and_clear_low_8 ((x Int)) Int (* (div x POW2_8) POW2_8))" in text

@@ -229,6 +229,12 @@ class TacExprLowerer:
             b = self.lower_int(args[1])
             c = self.lower_int(args[2])
             return self.vc.ops.int_mul_div(a, b, c)
+        if op == "IntCeilDiv":
+            if len(args) != 2:
+                self.unsupported(expr, "IntCeilDiv expects two args")
+            a = self.lower_int(args[0])
+            b = self.lower_int(args[1])
+            return self.vc.ops.int_ceil_div(a, b)
         if len(args) != 2:
             self.unsupported(expr, f"{op} expects two args")
         a = self.lower_int(args[0])

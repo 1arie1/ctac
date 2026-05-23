@@ -115,12 +115,27 @@ def _hex_mask_suffix(value: int) -> str:
     return f"{value:X}"
 
 
-def _literal_value(term_: Term) -> int | None:
+def _literal_value(term_: Term, vc: "_Builder | None" = None) -> int | None:
+    """Return the integer value of ``term_`` if it's a literal or a
+    named 0-ary define-fun bound to one. Returns ``None`` otherwise.
+
+    The named-constant lookup matters for sea: ``int_lit`` routes
+    large constants (``BV64_MAX``, ``POW2_14``, ``POW2_256_MINUS_16384``,
+    ...) through ``define_int_const``, so their term text is the name
+    rather than the literal. Without the lookup the ``shl``/``lshr``/
+    ``and_`` const-fold special cases miss and the op falls through
+    to a UF, leaving z3 free to pick wrong values.
+    """
     text = term_.text
     try:
         return int(text, 0)
     except ValueError:
-        return None
+        pass
+    if vc is not None:
+        named = getattr(vc, "named_int_consts", None)
+        if named is not None:
+            return named.get(text)
+    return None
 
 
 class _Builder(Protocol):
@@ -305,7 +320,7 @@ class IntCeilDivOp(OpModel):
     def __call__(self, a: Term, b: Term) -> Term:
         cfg = self.config()
         if cfg.mode is OpMode.INLINE:
-            return div(add(a, b), b)
+            return _ceil_div_body(self.vc, a, b)
         if cfg.mode is OpMode.DEFINE_FUN:
             self._require_define_fun()
             return app(_SmtName.INT_CEIL_DIV, [a, b], Int)
@@ -328,8 +343,21 @@ class IntCeilDivOp(OpModel):
             _SmtName.INT_CEIL_DIV,
             ((_A, Int), (_B, Int)),
             Int,
-            div(add(a, b), b),
+            _ceil_div_body(self.vc, a, b),
         )
+
+
+def _ceil_div_body(vc: _Builder, a: Term, b: Term) -> Term:
+    """``ceil(a/b) = (a + b - 1) / b`` for ``a >= 0, b > 0``.
+
+    Not ``(a + b) / b`` — that's off-by-one when ``b | a`` (gives
+    ``r + 1`` instead of ``r``). The bounds lemma
+    ``b*r >= a AND b*r < a + b`` pins the right value, so the UF mode
+    is sound regardless; this expression matters for INLINE and
+    DEFINE_FUN modes.
+    """
+    one = vc.int_lit(1)
+    return div(add(a, sub(b, one)), b)
 
 
 # Lemma: if r is the result of narrow.bvN(x), then r is in the unsigned
@@ -635,7 +663,7 @@ class Bv256Ops:
         return app(_SmtName.BV256_MOD, [a, b], Int)
 
     def shl(self, a: Term, b: Term) -> Term:
-        k = _literal_value(b)
+        k = _literal_value(b, self.vc)
         if k is not None:
             return self.shl_const(a, k)
         return self._uf(_SmtName.BV256_SHL, a, b)
@@ -645,11 +673,19 @@ class Bv256Ops:
             raise ValueError("negative shift is unsupported")
         name = _SmtName.bv256_shl_const(k)
         x = term(_X, Int)
-        self.vc.define_fun(name, ((_X, Int),), Int, mul(x, self._pow2(k)))
+        # bv256 shl wraps: ``(x * 2^k) mod 2^256``. The rewriter's
+        # SHIFT_LEFT_TO_INT_MUL only fires when range proves
+        # ``x * 2^k < 2^256`` (so the mod is identity there), but the
+        # encoder must remain sound for shifts the rewriter didn't
+        # convert.
+        body = mul(x, self._pow2(k))
+        if k > 0:
+            body = mod(body, self.vc.bv256_mod())
+        self.vc.define_fun(name, ((_X, Int),), Int, body)
         return app(name, [a], Int)
 
     def lshr(self, a: Term, b: Term) -> Term:
-        k = _literal_value(b)
+        k = _literal_value(b, self.vc)
         if k is not None:
             return self.lshr_const(a, k)
         return self._uf(_SmtName.BV256_LSHR, a, b)
@@ -663,10 +699,10 @@ class Bv256Ops:
         return app(name, [a], Int)
 
     def and_(self, a: Term, b: Term) -> Term:
-        a_value = _literal_value(a)
+        a_value = _literal_value(a, self.vc)
         if a_value is not None:
             return self.and_mask(b, a_value)
-        b_value = _literal_value(b)
+        b_value = _literal_value(b, self.vc)
         if b_value is not None:
             return self.and_mask(a, b_value)
         return self.and_model(a, b)
