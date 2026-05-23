@@ -18,6 +18,7 @@ from ctac.rewrite.rules.bv_to_int import (
     MUL_BV_TO_INT,
     SUB_BV_TO_INT,
 )
+from ctac.rewrite.rules.ceil_to_multiple import CEIL_TO_MULTIPLE
 from ctac.rewrite.rules.chunk_merge import CHUNK_MERGE, SHIFT_LEFT_TO_INT_MUL
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
 from ctac.rewrite.rules.bv_max_to_ite_validation import ADD_BV_MAX_TO_ITE_CASES
@@ -235,6 +236,13 @@ simplify_pipeline: tuple[Rule, ...] = (
     # the "muldiv-style" high chunk of a u64×u46→u128 product as
     # the canonical Div(V, 2^N) shape that CHUNK_MERGE consumes.
     MULDIV_TO_FULL_PRODUCT_DIV,
+    # Ite(Eq(V%K,0), (V/K)*K, narrow(K+(V/K)*K)%2^64) ->
+    # K *int IntCeilDiv(V, K). The SBF-chunked "ceil to multiple of K"
+    # idiom; the disjunctive wrap-guard assume is required and scanned
+    # for in the host block. Runs here so the floor-mul and Mod shapes
+    # above (CHUNK_MERGE, MOD_IDENTITY_CP, MULDIV_TO_FULL_PRODUCT_DIV)
+    # have already normalized the chain interior.
+    CEIL_TO_MULTIPLE,
     # Recognize the ``unwrap_twos_complement_256(SignExtend(b, x))``
     # idiom and lift it to an Int-domain Ite over linear arms. Runs
     # after MUL/ADD/SUB_BV_TO_INT so operand ``x`` is in canonical
@@ -364,6 +372,7 @@ all_rule_names: tuple[str, ...] = (
     CHUNK_MERGE.name,
     MOD_IDENTITY_CP.name,
     MULDIV_TO_FULL_PRODUCT_DIV.name,
+    CEIL_TO_MULTIPLE.name,
     RANGE_FOLD.name,
     ADD_BV_MAX_TO_ITE.name,
     SAR_TO_SHR_NONNEG.name,
@@ -386,6 +395,7 @@ __all__ = [
     "ARITH_CONST_FOLD",
     "BOOL_ABSORB",
     "BOOL_CONST_FOLD",
+    "CEIL_TO_MULTIPLE",
     "CHUNK_MERGE",
     "CHUNKED_MUL_BY_2N",
     "CP_ALIAS",
