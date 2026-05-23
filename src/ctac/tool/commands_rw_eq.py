@@ -151,10 +151,22 @@ def rw_eq_cmd(
         exit_code = 2 if "rule-6 rehavoc" in str(e) else 1
         raise typer.Exit(exit_code) from e
 
+    # Carry over rw's fresh symbols (e.g. ITE_PURIFY's ``TB<N>:bool``,
+    # PURIFY_ASSERT's ``TA<N>:bool``) that aren't in orig's symbol
+    # table. ``render_tac_file`` takes orig as the symbol-table source,
+    # so without this step the merged TAC references rw's symbols
+    # without declaring them and stricter encoders (e.g. ``--encoding
+    # sea``) reject them with a sort mismatch.
+    rw_only_symbols = tuple(
+        (name, sort)
+        for name, sort in rw_tac.symbol_sorts.items()
+        if name not in orig_tac.symbol_sorts
+    )
+    merged_extra = result.extra_symbols + rw_only_symbols
     # Filter extra_symbols to those still referenced (defs / strong /
     # weak uses) in the merged program. Keeps the symbol table free of
     # orphan declarations whose AssignExpCmd was DCE'd upstream.
-    extra_symbols = filter_live_extra_symbols(result.extra_symbols, result.program)
+    extra_symbols = filter_live_extra_symbols(merged_extra, result.program)
 
     if output_path is None:
         # No -o: stream raw TAC to stdout. Useful for piping into a
