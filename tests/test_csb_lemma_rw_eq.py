@@ -30,6 +30,7 @@ soundness through the actual VC.
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -49,7 +50,38 @@ _FIXTURE = (
 
 
 def _z3_available() -> bool:
-    return shutil.which("z3") is not None
+    return _preferred_z3() is not None
+
+
+def _preferred_z3() -> str | None:
+    """Resolution order: ``CTAC_Z3`` env -> ``~/ag/z3/wt-master/build/z3``
+    (the developer setup) -> PATH. Returns None if no z3 is found.
+
+    The wt-master fallback lets local runs use a current z3 build that
+    closes the rw-eq CHKs in seconds, while CI / standard envs still
+    work via PATH (just slower)."""
+    env_z3 = os.environ.get("CTAC_Z3")
+    if env_z3 and Path(env_z3).is_file():
+        return env_z3
+    wt_master = Path.home() / "ag" / "z3" / "wt-master" / "build" / "z3"
+    if wt_master.is_file():
+        return str(wt_master)
+    return shutil.which("z3")
+
+
+def _smt_args(assert_path: Path) -> list[str]:
+    args = [
+        "smt",
+        str(assert_path),
+        "--plain",
+        "--run",
+        "--timeout",
+        "60",
+    ]
+    z3 = _preferred_z3()
+    if z3 is not None:
+        args.extend(["--z3-path", z3])
+    return args
 
 
 @pytest.mark.skipif(not _FIXTURE.is_file(), reason="csb_lemma fixture missing")
@@ -112,21 +144,7 @@ def test_csb_lemma_full_pipeline_rw_eq_all_unsat(tmp_path: Path) -> None:
     )
 
     for assert_path in asserts:
-        smt_result = runner.invoke(
-            app,
-            [
-                "smt",
-                str(assert_path),
-                "--plain",
-                "--run",
-                # 60s instead of 30s because the residual ShiftLeft in
-                # I122's def now correctly emits as ``mod (* x 2^64)
-                # BV256_MOD)`` (sea_vc shl mod-wrap fix); z3 4.16 needs
-                # ~50s on that CHK. z3 4.17 closes in <1s.
-                "--timeout",
-                "60",
-            ],
-        )
+        smt_result = runner.invoke(app, _smt_args(assert_path))
         assert smt_result.exit_code == 0, smt_result.output
         verdict = smt_result.output.strip().splitlines()[-1]
         assert verdict == "unsat", (
