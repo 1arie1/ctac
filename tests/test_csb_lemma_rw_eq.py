@@ -119,8 +119,12 @@ def test_csb_lemma_full_pipeline_rw_eq_all_unsat(tmp_path: Path) -> None:
                 str(assert_path),
                 "--plain",
                 "--run",
+                # 60s instead of 30s because the residual ShiftLeft in
+                # I122's def now correctly emits as ``mod (* x 2^64)
+                # BV256_MOD)`` (sea_vc shl mod-wrap fix); z3 4.16 needs
+                # ~50s on that CHK. z3 4.17 closes in <1s.
                 "--timeout",
-                "30",
+                "60",
             ],
         )
         assert smt_result.exit_code == 0, smt_result.output

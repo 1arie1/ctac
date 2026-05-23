@@ -446,7 +446,7 @@ def test_sea_vc_shift_mask_rewrites_and_uf_fallback() -> None:
     tac = parse_string(TAC_OPS, path="<string>")
     rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
     assert "(set-logic QF_UFNIA)" in rendered
-    assert "(assert (= y (* x 8)))" in rendered
+    assert "(assert (= y (mod (* x 8) BV256_MOD)))" in rendered
     assert "(assert (= r (div y 2)))" in rendered
     assert "(assert (= z (mod r 256)))" in rendered
     assert "(assert (= hm (* (div r 8) 8)))" in rendered

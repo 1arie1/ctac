@@ -958,7 +958,17 @@ class SeaVcEncoder(SmtEncoder):
                     k = _parse_const(expr.args[1].value)
                     if k < 0:
                         raise SmtEncodingError("negative shift is unsupported")
-                    return f"(* {x} {_int_literal(1 << k)})", "Int"
+                    if k == 0:
+                        return x, "Int"
+                    # bv256 shl wraps: ``(x * 2^k) mod 2^256``. The rewriter's
+                    # SHIFT_LEFT_TO_INT_MUL only fires when range proves
+                    # ``x * 2^k < 2^256`` (so the mod is identity there), but
+                    # the encoder must remain sound for shifts the rewriter
+                    # didn't promote.
+                    return (
+                        f"(mod (* {x} {_int_literal(1 << k)}) BV256_MOD)",
+                        "Int",
+                    )
                 if op in {"ShiftRightLogical", "Lshr", "LShr", "BvLShr", "BVLShr"}:
                     if len(expr.args) != 2:
                         raise SmtEncodingError(f"{op} expects two args")
