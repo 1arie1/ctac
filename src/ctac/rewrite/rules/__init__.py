@@ -18,6 +18,7 @@ from ctac.rewrite.rules.bv_to_int import (
     MUL_BV_TO_INT,
     SUB_BV_TO_INT,
 )
+from ctac.rewrite.rules.ceil_div_knuth import CEIL_DIV_KNUTH
 from ctac.rewrite.rules.ceil_to_multiple import CEIL_TO_MULTIPLE
 from ctac.rewrite.rules.chunk_merge import CHUNK_MERGE, SHIFT_LEFT_TO_INT_MUL
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
@@ -243,6 +244,13 @@ simplify_pipeline: tuple[Rule, ...] = (
     # above (CHUNK_MERGE, MOD_IDENTITY_CP, MULDIV_TO_FULL_PRODUCT_DIV)
     # have already normalized the chain interior.
     CEIL_TO_MULTIPLE,
+    # IntDiv(IntSub(narrow(IntAdd(V, W)), 1), W) -> IntCeilDiv(V, W).
+    # The Knuth ceil-div idiom that emerges from the u128 carry-add +
+    # decrement chain. Runs here so CHUNK_MERGE has already collapsed
+    # the chunked H reconstruction to the bare three-line form, and
+    # MOD_IDENTITY_CP has cleared any path-redundant Mods that would
+    # otherwise mask the IntAdd shape.
+    CEIL_DIV_KNUTH,
     # Recognize the ``unwrap_twos_complement_256(SignExtend(b, x))``
     # idiom and lift it to an Int-domain Ite over linear arms. Runs
     # after MUL/ADD/SUB_BV_TO_INT so operand ``x`` is in canonical
@@ -373,6 +381,7 @@ all_rule_names: tuple[str, ...] = (
     MOD_IDENTITY_CP.name,
     MULDIV_TO_FULL_PRODUCT_DIV.name,
     CEIL_TO_MULTIPLE.name,
+    CEIL_DIV_KNUTH.name,
     RANGE_FOLD.name,
     ADD_BV_MAX_TO_ITE.name,
     SAR_TO_SHR_NONNEG.name,
@@ -395,6 +404,7 @@ __all__ = [
     "ARITH_CONST_FOLD",
     "BOOL_ABSORB",
     "BOOL_CONST_FOLD",
+    "CEIL_DIV_KNUTH",
     "CEIL_TO_MULTIPLE",
     "CHUNK_MERGE",
     "CHUNKED_MUL_BY_2N",
