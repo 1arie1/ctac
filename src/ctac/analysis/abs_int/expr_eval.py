@@ -236,17 +236,27 @@ def _eval_apply(
         result = iv.ceil_div_nonneg(a, b)
         return result if result is not None else iv.TOP
     if op == "IntMulDiv" and len(args) == 3:
-        # ``IntMulDiv(a, b, c) = (a * b) / c`` (floor; non-negative a, b
-        # and positive c per the rule's emission contract). The
-        # arithmetic-level lift uses mul_nonneg followed by
-        # floor_div_by_pos_const when c is a constant.
-        k = const_to_int(args[2]) if isinstance(args[2], ConstExpr) else None
-        if k is not None and k > 0:
-            mul = iv.mul_nonneg(recurse(args[0]), recurse(args[1]))
-            if mul is not None:
-                result = iv.floor_div_by_pos_const(mul, k)
-                if result is not None:
-                    return result
+        # ``IntMulDiv(a, b, c) = floor((a * b) / c)`` (floor; non-negative
+        # a, b and positive c per the rule's emission contract). Compose
+        # ``mul_nonneg`` with ``floor_div_nonneg``: handles both constant
+        # and symbolic c uniformly (const case is just c_iv with
+        # ``lo == hi``, which floor_div_nonneg already handles).
+        mul = iv.mul_nonneg(recurse(args[0]), recurse(args[1]))
+        if mul is not None:
+            result = iv.floor_div_nonneg(mul, recurse(args[2]))
+            if result is not None:
+                return result
+        return iv.TOP
+    if op == "IntMulDivCeil" and len(args) == 3:
+        # ``IntMulDivCeil(a, b, c) = ceil((a * b) / c)`` — ceiling variant.
+        # Same composition as IntMulDiv but with ``ceil_div_nonneg``.
+        # Specials (``a == 0`` or ``b == 0``) fall out via
+        # ``mul_nonneg`` returning a singleton ``[0, 0]``.
+        mul = iv.mul_nonneg(recurse(args[0]), recurse(args[1]))
+        if mul is not None:
+            result = iv.ceil_div_nonneg(mul, recurse(args[2]))
+            if result is not None:
+                return result
         return iv.TOP
     if op == "IntMod" and len(args) == 2:
         k = const_to_int(args[1]) if isinstance(args[1], ConstExpr) else None

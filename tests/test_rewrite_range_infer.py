@@ -200,3 +200,166 @@ def test_unknown_sort_returns_none_without_assume():
     ctx = _ctx(tac)
     ctx.set_position("e", 0)
     assert infer_expr_range(SymbolRef("I1"), ctx) is None
+
+
+# ---------------------------------------------------------------------------
+# Concept-op transfer functions (IntCeilDiv, IntMulDiv, IntMulDivCeil).
+# Each is multi-fused arithmetic; the transfer is tighter than naively
+# decomposing because the concept's contract pins non-negativity and
+# positive divisor.
+# ---------------------------------------------------------------------------
+
+
+def test_int_ceil_div_const_divisor_bounds_tight():
+    # IntCeilDiv(A, 2^14) with A in [0, 2^32-1]: ceil(0/2^14)=0,
+    # ceil((2^32-1)/2^14) = ((2^32-1) + 2^14 - 1) / 2^14 = 2^18 (one above
+    # the floor).
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd A\n"
+            "\t\tAssumeExpCmd Le(A 0xffffffff)\n"
+            "\t}",
+            syms="A:bv256",
+        ),
+        path="<s>",
+    )
+    ctx = _ctx(tac)
+    ctx.set_position("e", 2)
+    expr = ApplyExpr(
+        op="IntCeilDiv", args=(SymbolRef("A"), ConstExpr("0x4000"))
+    )
+    r = infer_expr_range(expr, ctx)
+    assert r is not None
+    lo, hi = r
+    assert lo == 0
+    assert hi == (1 << 18)
+
+
+def test_int_ceil_div_symbolic_divisor_with_known_range():
+    # IntCeilDiv(A, B) with A in [0, 100] and B in [1, 10]:
+    # lo = ceil(0/10) = 0, hi = ceil(100/1) = 100.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd A\n"
+            "\t\tAssumeExpCmd Le(A 0x64)\n"
+            "\t\tAssignHavocCmd B\n"
+            "\t\tAssumeExpCmd LAnd(Ge(B 0x1) Le(B 0xa))\n"
+            "\t}",
+            syms="A:bv256\n\tB:bv256",
+        ),
+        path="<s>",
+    )
+    ctx = _ctx(tac)
+    ctx.set_position("e", 4)
+    expr = ApplyExpr(op="IntCeilDiv", args=(SymbolRef("A"), SymbolRef("B")))
+    r = infer_expr_range(expr, ctx)
+    assert r == (0, 100)
+
+
+def test_int_mul_div_symbolic_divisor_uses_floor_div_nonneg():
+    # IntMulDiv(A, B, C) with A in [0, 10], B in [0, 20], C in [1, 5]:
+    # mul = [0, 200], floor_div = [0/5, 200/1] = [0, 200].
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd A\n"
+            "\t\tAssumeExpCmd Le(A 0xa)\n"
+            "\t\tAssignHavocCmd B\n"
+            "\t\tAssumeExpCmd Le(B 0x14)\n"
+            "\t\tAssignHavocCmd C\n"
+            "\t\tAssumeExpCmd LAnd(Ge(C 0x1) Le(C 0x5))\n"
+            "\t}",
+            syms="A:bv256\n\tB:bv256\n\tC:bv256",
+        ),
+        path="<s>",
+    )
+    ctx = _ctx(tac)
+    ctx.set_position("e", 6)
+    expr = ApplyExpr(
+        op="IntMulDiv",
+        args=(SymbolRef("A"), SymbolRef("B"), SymbolRef("C")),
+    )
+    r = infer_expr_range(expr, ctx)
+    assert r == (0, 200)
+
+
+def test_int_mul_div_ceil_const_divisor_bounds_tight():
+    # IntMulDivCeil(A, 2^14, 2^14) — degenerate b=c=2^14: ceil(A*2^14/2^14) = A.
+    # With A in [0, 2^32-1], result is [0, 2^32-1].
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd A\n"
+            "\t\tAssumeExpCmd Le(A 0xffffffff)\n"
+            "\t}",
+            syms="A:bv256",
+        ),
+        path="<s>",
+    )
+    ctx = _ctx(tac)
+    ctx.set_position("e", 2)
+    expr = ApplyExpr(
+        op="IntMulDivCeil",
+        args=(SymbolRef("A"), ConstExpr("0x4000"), ConstExpr("0x4000")),
+    )
+    r = infer_expr_range(expr, ctx)
+    assert r is not None
+    lo, hi = r
+    assert lo == 0
+    # The interval-arithmetic bound is loose: mul gives [0, A_hi * 2^14],
+    # then ceil-div by 2^14 gives [0, A_hi]. So hi == 2^32-1.
+    assert hi == (1 << 32) - 1
+
+
+def test_int_mul_div_ceil_symbolic_divisor():
+    # IntMulDivCeil(A, B, C): a in [0,10], b in [0,20], c in [1,5]:
+    # mul = [0, 200]; ceil(0/5)=0; ceil(200/1)=200.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd A\n"
+            "\t\tAssumeExpCmd Le(A 0xa)\n"
+            "\t\tAssignHavocCmd B\n"
+            "\t\tAssumeExpCmd Le(B 0x14)\n"
+            "\t\tAssignHavocCmd C\n"
+            "\t\tAssumeExpCmd LAnd(Ge(C 0x1) Le(C 0x5))\n"
+            "\t}",
+            syms="A:bv256\n\tB:bv256\n\tC:bv256",
+        ),
+        path="<s>",
+    )
+    ctx = _ctx(tac)
+    ctx.set_position("e", 6)
+    expr = ApplyExpr(
+        op="IntMulDivCeil",
+        args=(SymbolRef("A"), SymbolRef("B"), SymbolRef("C")),
+    )
+    r = infer_expr_range(expr, ctx)
+    assert r == (0, 200)
+
+
+def test_int_mul_div_ceil_zero_operand_pins_zero():
+    # IntMulDivCeil(0, B, C) with B, C symbolic: A=0 makes mul=0, hence
+    # ceil(0/C)=0 for any positive C. Tight singleton.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd B\n"
+            "\t\tAssumeExpCmd Le(B 0x14)\n"
+            "\t\tAssignHavocCmd C\n"
+            "\t\tAssumeExpCmd LAnd(Ge(C 0x1) Le(C 0x5))\n"
+            "\t}",
+            syms="B:bv256\n\tC:bv256",
+        ),
+        path="<s>",
+    )
+    ctx = _ctx(tac)
+    ctx.set_position("e", 4)
+    expr = ApplyExpr(
+        op="IntMulDivCeil",
+        args=(ConstExpr("0x0"), SymbolRef("B"), SymbolRef("C")),
+    )
+    r = infer_expr_range(expr, ctx)
+    assert r == (0, 0)
