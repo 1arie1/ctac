@@ -361,12 +361,12 @@ def test_human_skips_non_warning_debug_snippet() -> None:
 
 def test_human_renders_int_ceil_div_as_function_call() -> None:
     """``IntCeilDiv(a, b)`` is a TAC concept (not a primitive op). The human
-    printer renders it as ``int_div_ceil(a, b)`` (Rust naming convention);
-    the raw printer round-trips the PascalCase form."""
+    printer renders it as ``div_ceil(a, b)`` for readability; the raw
+    printer round-trips the PascalCase form."""
     cmd = parse_command_line("AssignExpCmd R IntCeilDiv(A B)")
     human = DEFAULT_PRINTERS.get("human")
     raw = DEFAULT_PRINTERS.get("raw")
-    assert pretty_lines([cmd], printer=human) == ["R = int_div_ceil(A, B)"]
+    assert pretty_lines([cmd], printer=human) == ["R = div_ceil(A, B)"]
     # Raw printer preserves the input verbatim.
     assert pretty_lines([cmd], printer=raw) == ["AssignExpCmd R IntCeilDiv(A B)"]
 

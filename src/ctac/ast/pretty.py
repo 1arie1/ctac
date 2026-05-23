@@ -181,7 +181,7 @@ class HumanPrettyPrinter(PrettyPrinter):
     # name (PascalCase, e.g. ``IntCeilDiv``) round-trips unchanged; only
     # the human printer remaps to a snake_case alias.
     _int_func_remap = {
-        "IntCeilDiv": "int_div_ceil",
+        "IntCeilDiv": "div_ceil",
         "IntMulDiv": "muldiv",
         "IntMulDivCeil": "muldiv_ceil",
     }
