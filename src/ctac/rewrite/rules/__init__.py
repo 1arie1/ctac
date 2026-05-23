@@ -20,6 +20,7 @@ from ctac.rewrite.rules.bv_to_int import (
 )
 from ctac.rewrite.rules.ceil_div_knuth import CEIL_DIV_KNUTH
 from ctac.rewrite.rules.ceil_to_multiple import CEIL_TO_MULTIPLE
+from ctac.rewrite.rules.int_mul_div_ceil import INT_MUL_DIV_CEIL
 from ctac.rewrite.rules.chunk_merge import CHUNK_MERGE, SHIFT_LEFT_TO_INT_MUL
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
 from ctac.rewrite.rules.bv_max_to_ite_validation import ADD_BV_MAX_TO_ITE_CASES
@@ -251,6 +252,12 @@ simplify_pipeline: tuple[Rule, ...] = (
     # MOD_IDENTITY_CP has cleared any path-redundant Mods that would
     # otherwise mask the IntAdd shape.
     CEIL_DIV_KNUTH,
+    # IntCeilDiv(narrow(IntMul(A, B)), W) -> IntMulDivCeil(A, B, W).
+    # Folds the narrow-wrapped product + ceil-div chain to the
+    # IntMulDivCeil concept, mirroring MULDIV_TO_FULL_PRODUCT_DIV for
+    # the ceil-div variant. Runs after CEIL_DIV_KNUTH so the IntCeilDiv
+    # is already in scope on the relevant chains.
+    INT_MUL_DIV_CEIL,
     # Recognize the ``unwrap_twos_complement_256(SignExtend(b, x))``
     # idiom and lift it to an Int-domain Ite over linear arms. Runs
     # after MUL/ADD/SUB_BV_TO_INT so operand ``x`` is in canonical
@@ -382,6 +389,7 @@ all_rule_names: tuple[str, ...] = (
     MULDIV_TO_FULL_PRODUCT_DIV.name,
     CEIL_TO_MULTIPLE.name,
     CEIL_DIV_KNUTH.name,
+    INT_MUL_DIV_CEIL.name,
     RANGE_FOLD.name,
     ADD_BV_MAX_TO_ITE.name,
     SAR_TO_SHR_NONNEG.name,
@@ -406,6 +414,7 @@ __all__ = [
     "BOOL_CONST_FOLD",
     "CEIL_DIV_KNUTH",
     "CEIL_TO_MULTIPLE",
+    "INT_MUL_DIV_CEIL",
     "CHUNK_MERGE",
     "CHUNKED_MUL_BY_2N",
     "CP_ALIAS",
