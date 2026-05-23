@@ -31,6 +31,7 @@ from ctac.rewrite.drop_range_redundant_assumes import (
     drop_range_redundant_assumes,
 )
 from ctac.rewrite.lift_dynamic_ite import lift_dynamic_ite_rhs
+from ctac.rewrite.hoist_path_invariant_defs import hoist_path_invariant_defs
 from ctac.rewrite.materialize_assumes import materialize_assumes
 from ctac.rewrite.materialize_equate_bounds import materialize_havoc_equate_bounds
 from ctac.rewrite.materialize_h_nonzero import materialize_h_nonzero
@@ -81,6 +82,7 @@ def _print_report(
     h_nonzero_hits: int = 0,
     u128_decrement_hits: int = 0,
     range_redundant_assumes_dropped: int = 0,
+    hoist_path_invariant_hits: int = 0,
     lift_dynamic_ite_hits: int = 0,
     unpurified_div_count: int = 0,
 ) -> None:
@@ -120,6 +122,8 @@ def _print_report(
                 "  range_redundant_assumes_dropped: "
                 f"{range_redundant_assumes_dropped}"
             )
+        if hoist_path_invariant_hits:
+            line(f"  hoist_path_invariant: {hoist_path_invariant_hits}")
         if materialize_hits:
             line(f"  materialized_assumes: {materialize_total}")
             for name in sorted(materialize_hits):
@@ -152,6 +156,11 @@ def _print_report(
         line(
             "  range_redundant_assumes_dropped: "
             f"[bold]{range_redundant_assumes_dropped}[/bold]"
+        )
+    if hoist_path_invariant_hits:
+        line(
+            "  hoist_path_invariant: "
+            f"[bold]{hoist_path_invariant_hits}[/bold]"
         )
     if materialize_hits:
         line(f"  materialized_assumes: [bold]{materialize_total}[/bold]")
@@ -660,6 +669,47 @@ def rewrite_cmd(
             if not dce.removed:
                 break
             program = dce.program
+        # Phase 1.97: hoist semantically-equivalent branch defs.
+        # Recognizes patterns where a join's dynamic-defed symbol has two
+        # branch defs that compute the same value under the branch
+        # condition (e.g. ``muldiv(a, b, b) == a`` and
+        # ``narrow(K * 0) == 0``). The complex form is hoisted to the
+        # JumpiCmd's host block, both branch defs become aliases to the
+        # hoisted name. Composes with CP via the post-hoist simplify
+        # rerun; the original chain in the complex branch becomes dead
+        # and DCE clears it.
+        hoist_res = hoist_path_invariant_defs(
+            program, symbol_sorts=tac.symbol_sorts
+        )
+        program = hoist_res.program
+        hoist_hits = hoist_res.hits
+        if hoist_res.fresh_symbols:
+            rw = replace(
+                rw,
+                extra_symbols=rw.extra_symbols + hoist_res.fresh_symbols,
+            )
+        # Re-run simplify + DCE so CP propagates the hoisted aliases
+        # and the now-dead complex chain gets cleared.
+        if hoist_hits:
+            phase_simplify_post_hoist = rewrite_program(
+                program,
+                simplify_pipeline,
+                max_iterations=max_iterations,
+                ite_max_depth=ite_max_depth,
+                symbol_sorts=tac.symbol_sorts,
+                use_int_ceil_div=ceildiv_op,
+                use_interval_select=interval_select,
+                phase="simplify-post-hoist",
+                trace_sink=trace_sink,
+            )
+            program = phase_simplify_post_hoist.program
+            rw = _merge_phases(rw, phase_simplify_post_hoist)
+            while True:
+                dce = eliminate_dead_assignments(program)
+                total_removed += len(dce.removed)
+                if not dce.removed:
+                    break
+                program = dce.program
         # Lift dynamic ``Ite``-RHS assignments out of their host block as
         # static T-defs *before* the first dynamic in the block. This
         # gives ITE_PURIFY a clean static prefix to insert ``TB<N>`` defs
@@ -841,6 +891,7 @@ def rewrite_cmd(
             h_nonzero_hits=h_nonzero_hits,
             u128_decrement_hits=u128_dec_hits,
             range_redundant_assumes_dropped=dropped_redundant_assumes,
+            hoist_path_invariant_hits=hoist_hits,
             lift_dynamic_ite_hits=lift_hits,
             unpurified_div_count=unpurified_count,
         )
