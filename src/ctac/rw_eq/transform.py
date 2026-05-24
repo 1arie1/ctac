@@ -163,6 +163,7 @@ from ctac.rw_eq.model import (
     RehavocSite,
 )
 from ctac.rw_eq.sim_precheck import SimDecomposition, analyze_simulation
+from ctac.smt.encoding.path_skeleton import reachability_var_name
 
 _TERMINATOR_TYPES = (JumpCmd, JumpiCmd)
 _NOISE_TYPES = (AnnotationCmd, LabelCmd)
@@ -239,6 +240,11 @@ def emit_equivalence_program(
 
     new_blocks: list[TacBlock] = []
     by_id_rw = rw.block_by_id()
+    # ReachabilityCertora<bid> symbols referenced in IN_DEST ITEs. Tracked
+    # during the walk so we can declare + havoc them at the entry block
+    # afterwards (so use-before-def passes; sea_vc aliases them to its
+    # internal BLK_<id> guards downstream).
+    rc_vars_referenced: set[str] = set()
     # Iterate orig in topological order. Declared order is usually topo
     # but not guaranteed; Cfg.ordered_blocks() makes the dependency on
     # ordering explicit.
@@ -310,6 +316,11 @@ def emit_equivalence_program(
                 dest_sym_for=dest_sym_for,
                 chk_name=chk_name,
             )
+            # Track RC vars referenced in this sync's ITE — we declare
+            # and havoc them after the walk so use-before-def passes
+            # and sea_vc can alias them to its internal BLK_<id> guards.
+            for p in lhs_pred_ids:
+                rc_vars_referenced.add(reachability_var_name(p))
             # emit_in_dest_ite increments asserts on its own via the
             # AssertCmd it emits; ensure the walker's counter
             # reflects this for downstream `--report` counts.
@@ -319,6 +330,28 @@ def emit_equivalence_program(
         new_cmds = _hoist_statics_above_dynamics(new_cmds, dynamic_symbols)
         new_blocks.append(
             TacBlock(id=orig_b.id, successors=list(orig_b.successors), commands=new_cmds)
+        )
+
+    # Post-walk: declare and havoc the ReachabilityCertora<bid> symbols
+    # the IN_DEST ITEs reference. sea_vc aliases ``ReachabilityCertora<id>``
+    # → ``BLK_<id>`` (the encoder's internal block-reachability guard)
+    # via define-fun, so the havoc'd value is overridden semantically;
+    # but the input use-before-def check fires before sea_vc, hence
+    # the explicit havoc def. No-op when the orig program already
+    # declared / havoc'd these symbols (we let the parser handle
+    # any duplicate declarations downstream).
+    if decomp is not None and rc_vars_referenced and new_blocks:
+        for rc in sorted(rc_vars_referenced):
+            state.extra_symbols.append((rc, "bool"))
+        entry = new_blocks[0]
+        havoc_cmds: list[TacCmd] = [
+            canonicalize_cmd(AssignHavocCmd(raw="", lhs=rc))
+            for rc in sorted(rc_vars_referenced)
+        ]
+        new_blocks[0] = TacBlock(
+            id=entry.id,
+            successors=list(entry.successors),
+            commands=havoc_cmds + list(entry.commands),
         )
 
     if decomp is not None:

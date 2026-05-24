@@ -160,3 +160,24 @@ def test_csb_lemma_drop_count_and_rw_eq() -> None:
 
     # Some IN_DEST CHK asserts were emitted (count > 0 in stutter mode).
     assert result.asserts_emitted >= 1
+
+    # Every ReachabilityCertora<bid> symbol referenced by the IN_DEST
+    # ITEs must be declared and havoc'd in the merged program — else
+    # use-before-def fires when ctac smt consumes the output. This is
+    # the regression guard for the SMT-pipeline integration.
+    extra_names = {name for name, _ in result.extra_symbols}
+    rc_extras = {n for n in extra_names if n.startswith("ReachabilityCertora")}
+    assert rc_extras, "expected ReachabilityCertora<bid> symbols in extra_symbols"
+
+    # Each declared RC var must have a corresponding AssignHavocCmd
+    # somewhere in the merged program (typically prepended to entry).
+    from ctac.ast.nodes import AssignHavocCmd
+    havoc_targets: set[str] = set()
+    for b in result.program.blocks:
+        for c in b.commands:
+            if isinstance(c, AssignHavocCmd):
+                havoc_targets.add(c.lhs)
+    missing_havocs = rc_extras - havoc_targets
+    assert not missing_havocs, (
+        f"RC vars declared but not havoc'd: {missing_havocs}"
+    )
