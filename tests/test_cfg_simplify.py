@@ -270,6 +270,69 @@ def test_entry_block_excluded():
 # --- Bonus: chain of fall-throughs collapses in one pass --------------
 
 
+def test_fixpoint_iteration_unlocks_followups():
+    """A block that's multi-pred in the original may become single-
+    pred after a first round of drops removes its other predecessors.
+    Verify simplify_cfg iterates internally and catches the followup."""
+    # LHS:                     after pass 1:           after pass 2:
+    #   E → P1, P2               E → P1, P2              E → P1, P2
+    #   P1 → S1 → M              P1 → M                  P1 → M
+    #   P2 → S2 → M              P2 → M                  P2 → M
+    #   M → A (stutter)          M → A (stutter)         M → end
+    #   A → end                  A → end
+    # In the original, M's preds = {S1, S2}; M is multi-pred.
+    # After pass 1 drops S1, S2 (each single-pred), P1 → M and
+    # P2 → M directly — but M's pred set is now {P1, P2}, still
+    # multi. So this specific fixture doesn't unlock M.
+    #
+    # Build a tighter case: a chain that gives M a unique pred only
+    # after stutter drops.
+    #   LHS: E → S1 → M → A → end          (S1, A are stutters with
+    #                                        unique preds)
+    #   After pass 1: E → M → end          (S1 and A dropped)
+    #   After pass 2: M, if now annotation-only, gets dropped.
+    # But M has executable content here; the test fixture needs M
+    # to be annotation-only to test the followup-unlock.
+    #
+    # Concrete fixture: A → X1 → M → X2 → B, where X1 and X2 are
+    # multi-pred initially but become unique after some other drop.
+    src = _wrap(
+        '\tBlock E Succ [P] {\n'
+        '\t\tJumpCmd P\n'
+        '\t}\n'
+        '\tBlock P Succ [F1, F2] {\n'
+        '\t\tAssignExpCmd C true\n'
+        '\t\tJumpiCmd F1 F2 C\n'
+        '\t}\n'
+        '\tBlock F1 Succ [J] {\n'
+        '\t\tAnnotationCmd JSON{"k":1}\n'
+        '\t}\n'
+        '\tBlock F2 Succ [J] {\n'
+        '\t\tAnnotationCmd JSON{"k":2}\n'
+        '\t}\n'
+        '\tBlock J Succ [End] {\n'
+        '\t\tAnnotationCmd JSON{"k":3}\n'
+        '\t}\n'
+        '\tBlock End Succ [] {\n'
+        '\t}',
+        syms="C:bool",
+    )
+    prog = parse_string(src, path="<t>").program
+    new_prog, report = simplify_cfg(prog)
+    # Pass 1: F1, F2 (each unique-pred via P's JumpiCmd arms) drop;
+    # P's JumpiCmd both arms collapse to → J, becoming JumpCmd J.
+    # Now J has unique pred {P}; J was multi-pred in the original
+    # ({F1, F2}) → would have been skipped in single-pass mode.
+    # Pass 2: J (annotation-only, unique pred now) drops; P → End.
+    assert set(report.dropped_blocks) == {"F1", "F2", "J"}
+    assert "J" not in [b.id for b in new_prog.blocks]
+    # P ends up with JumpCmd End (both JumpiCmd arms collapsed
+    # twice, through F1/F2 then J).
+    p = _block(new_prog, "P")
+    assert isinstance(p.commands[-1], JumpCmd)
+    assert p.commands[-1].target == "End"
+
+
 def test_chain_of_fall_throughs():
     """LHS A -> X -> Y -> Z; X and Y both annotation-only fall-throughs.
     One invocation drops both and rewires A directly to Z."""

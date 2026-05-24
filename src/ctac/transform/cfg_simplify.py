@@ -73,18 +73,43 @@ def simplify_cfg(program: TacProgram) -> tuple[TacProgram, CfgSimplifyReport]:
     """Drop annotation-only fall-through blocks with unique predecessors;
     rewire each predecessor's terminator to skip the dropped block.
 
-    The pass collapses chains transparently: if ``A → X → Y → Z`` and
-    both ``X`` and ``Y`` are droppable fall-throughs, the result is
-    ``A → Z`` with both blocks removed in one invocation.
+    Iterates to a fixed point: after each round of drops, some blocks
+    that previously had multiple predecessors may now have a unique
+    one (because their other predecessors were themselves dropped),
+    so they become candidates on the next pass. The final report
+    aggregates drops across all rounds and lists the multi-pred
+    candidates that *remained* multi-pred at the fixed point.
+
+    The pass also collapses chains within a single round: if
+    ``A → X → Y → Z`` and both ``X`` and ``Y`` are droppable fall-
+    throughs, the result is ``A → Z`` with both blocks removed.
 
     Idempotent: re-running on the result is a no-op (the report's
     ``is_noop`` property holds).
-
-    Raises:
-        ValueError: a fall-through candidate's terminator-free shape
-            is inconsistent with its successors list (defensive guard
-            against malformed input).
     """
+    all_dropped: list[NBId] = []
+    all_rewires: list[tuple[NBId, NBId, NBId]] = []
+    current = program
+    last_skipped: tuple[NBId, ...] = ()
+    while True:
+        current, step_report = _simplify_cfg_one_pass(current)
+        all_dropped.extend(step_report.dropped_blocks)
+        all_rewires.extend(step_report.rewires)
+        last_skipped = step_report.skipped_multipred
+        if step_report.is_noop:
+            break
+    return current, CfgSimplifyReport(
+        dropped_blocks=tuple(all_dropped),
+        rewires=tuple(all_rewires),
+        skipped_multipred=last_skipped,
+    )
+
+
+def _simplify_cfg_one_pass(
+    program: TacProgram,
+) -> tuple[TacProgram, CfgSimplifyReport]:
+    """One round of the simplifier. See :func:`simplify_cfg` for the
+    iterating wrapper."""
     # Step 1: identify candidates (annotation-only body, single succ,
     # not a self-loop).
     candidate_succ: dict[NBId, NBId] = {}
