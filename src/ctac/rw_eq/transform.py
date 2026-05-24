@@ -131,6 +131,7 @@ Assumptions and caveats
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from dataclasses import replace
 
@@ -352,6 +353,34 @@ def emit_equivalence_program(
             id=entry.id,
             successors=list(entry.successors),
             commands=havoc_cmds + list(entry.commands),
+        )
+
+    # Stash the id_of mapping at the head of the entry block so
+    # downstream htac printers can annotate DEST_<bid> / IN_DEST_<bid>
+    # integer constants with the source block id (huge readability
+    # win when manually validating the simulation).
+    if decomp is not None and id_of and new_blocks:
+        id_map_payload = {str(i): b.id for b, i in id_of.items()}
+        annot = AnnotationCmd(
+            raw="",
+            payload=(
+                "JSON"
+                + json.dumps(
+                    {
+                        "key": {"name": "rw-eq.id-of"},
+                        "value": id_map_payload,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            ),
+        )
+        annot = canonicalize_cmd(annot)
+        entry = new_blocks[0]
+        new_blocks[0] = TacBlock(
+            id=entry.id,
+            successors=list(entry.successors),
+            commands=[annot, *entry.commands],
         )
 
     if decomp is not None:

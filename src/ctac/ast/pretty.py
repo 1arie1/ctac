@@ -140,6 +140,12 @@ class HumanPrettyPrinter(PrettyPrinter):
     def __init__(self, *, strip_var_suffixes: bool = True, human_patterns: bool = True) -> None:
         super().__init__(strip_var_suffixes=strip_var_suffixes)
         self.human_patterns = human_patterns
+        # Optional block-id back-mapping used to annotate rw-eq's
+        # DEST_<bid> / IN_DEST_<bid> integer constants with the source
+        # block id. Populated from a top-of-program ``rw-eq.id-of``
+        # annotation (see ``visit_AnnotationCmd``). When ``None`` the
+        # printer behaves identically to before.
+        self._id_to_block: dict[int, str] | None = None
 
     _binary_infix = {
         "Eq": "==",
@@ -465,6 +471,21 @@ class HumanPrettyPrinter(PrettyPrinter):
         val = obj.get("value")
         if not isinstance(key, dict) or not isinstance(val, dict):
             return None
+        # rw-eq's stuttering walker stashes the id_of mapping (int →
+        # block id, used by DEST/IN_DEST constants) here so downstream
+        # printers can render it inline. Consume it: populate state,
+        # suppress from output.
+        if key.get("name") == "rw-eq.id-of":
+            mapping: dict[int, str] = {}
+            for k, v in val.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    try:
+                        mapping[int(k)] = v
+                    except ValueError:
+                        continue
+            if mapping:
+                self._id_to_block = mapping
+            return None
         warn = self._format_warning_line(key, val)
         if warn is not None:
             return warn
@@ -537,6 +558,45 @@ class HumanPrettyPrinter(PrettyPrinter):
     def visit_JumpiCmd(self, node: JumpiCmd) -> str | None:
         # Block terminator is rendered from CFG successors in `pp`.
         return None
+
+    def visit_AssignExpCmd(self, node: AssignExpCmd) -> str:
+        line = super().visit_AssignExpCmd(node)
+        # Annotate rw-eq's DEST_<bid> / IN_DEST_<bid> assignments with
+        # the block-id back-mapping for each integer constant in the
+        # rhs. Requires the ``rw-eq.id-of`` annotation to have been
+        # seen earlier (sets ``self._id_to_block``).
+        if self._id_to_block is None:
+            return line
+        if not (node.lhs.startswith("DEST_") or node.lhs.startswith("IN_DEST_")):
+            return line
+        pairs = self._collect_id_constants(node.rhs)
+        if not pairs:
+            return line
+        annot = ", ".join(f"{n} → {bid}" for n, bid in pairs)
+        return f"{line}  # {annot}"
+
+    def _collect_id_constants(
+        self, expr: TacExpr
+    ) -> list[tuple[int, str]]:
+        """Walk ``expr`` collecting (int_value, block_id) pairs for any
+        ``ConstExpr`` whose integer value is a key in ``_id_to_block``.
+        Order is left-to-right traversal; duplicates removed while
+        preserving first-seen order."""
+        if self._id_to_block is None:
+            return []
+        seen: set[int] = set()
+        out: list[tuple[int, str]] = []
+        stack: list[TacExpr] = [expr]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, ConstExpr):
+                n = self._const_to_int(cur)
+                if n is not None and n in self._id_to_block and n not in seen:
+                    seen.add(n)
+                    out.append((n, self._id_to_block[n]))
+            elif isinstance(cur, ApplyExpr):
+                stack.extend(reversed(cur.args))
+        return out
 
 
 class RawPrettyPrinter(PrettyPrinter):

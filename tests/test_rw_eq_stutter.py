@@ -633,6 +633,47 @@ def test_unsound_rewrite_emits_chk_with_rw_condition():
 # --- Sanity: existing lockstep mode still triggers when ids match ----
 
 
+def test_htac_annotates_dest_with_block_id_mapping():
+    """rw-eq stashes the id_of mapping as a top-of-entry-block
+    annotation; the human pretty-printer consumes it and annotates
+    DEST/IN_DEST integer constants with their source block id."""
+    from ctac.tool.tac_output import render_pp_lines
+
+    orig_src = _wrap(
+        "\tBlock A Succ [S] {\n"
+        "\t\tJumpCmd S\n"
+        "\t}\n"
+        "\tBlock S Succ [B] {\n"
+        "\t\tJumpCmd B\n"
+        "\t}\n"
+        "\tBlock B Succ [] {\n"
+        "\t}"
+    )
+    rw_src = _wrap(
+        "\tBlock A Succ [B] {\n"
+        "\t\tJumpCmd B\n"
+        "\t}\n"
+        "\tBlock B Succ [] {\n"
+        "\t}"
+    )
+    orig = parse_string(orig_src, path="<o>").program
+    rw = parse_string(rw_src, path="<r>").program
+
+    res = emit_equivalence_program(orig, rw)
+    lines = render_pp_lines(res.program)
+    text = "\n".join(lines)
+
+    # DEST_A := id_of[B]; id_of sorts matched {A, B}: A=0, B=1.
+    # Expect the annotation comment in the htac.
+    assert "DEST_A = 1" in text
+    assert "1 → B" in text
+    # IN_DEST_B == id_of[B] = 1; the assert line lives in B.
+    assert "IN_DEST_B" in text
+    # The annotation cmd itself should not appear in the htac
+    # (consumed by visit_AnnotationCmd, returns None).
+    assert "rw-eq.id-of" not in text
+
+
 def test_lockstep_mode_unchanged():
     """When orig and rw have identical block-id sets in the same order,
     the existing lockstep path engages (no stutter machinery, no extras)."""
