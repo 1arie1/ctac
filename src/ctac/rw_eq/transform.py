@@ -155,12 +155,14 @@ from ctac.graph.cfg import Cfg
 from ctac.ir.models import TacBlock, TacProgram
 from ctac.rewrite.rules.store_eq import normalize_store_eq
 from ctac.rewrite.unparse import canonicalize_cmd, unparse_cmd
+from ctac.rw_eq.dest_emit import emit_dest_write, emit_in_dest_ite
 from ctac.rw_eq.model import (
     BlockRef,
     EquivContractError,
     EquivResult,
     RehavocSite,
 )
+from ctac.rw_eq.sim_precheck import SimDecomposition, analyze_simulation
 
 _TERMINATOR_TYPES = (JumpCmd, JumpiCmd)
 _NOISE_TYPES = (AnnotationCmd, LabelCmd)
@@ -189,8 +191,11 @@ def emit_equivalence_program(
         EquivContractError: structural mismatch (different block ids,
             different successor lists, terminator mismatch, or a
             lockstep step that no rule accepts).
+        StructuralSimError: stuttering-mode input (rw is a structural
+            sub-CFG of orig) fails the simulation pre-check
+            (joint-post-dom violation or shared stutter region).
     """
-    _check_block_set(orig, rw)
+    decomp = _detect_mode(orig, rw)
     lhs_defined = _collect_defined_symbols(orig)
     rhs_defined = _collect_defined_symbols(rw)
     # Dynamic-symbol classification from orig (DSA on orig). Used to
@@ -211,24 +216,119 @@ def emit_equivalence_program(
         check_feasibility=check_feasibility,
     )
 
+    # Stuttering-mode setup: pre-mint DEST_A and IN_DEST_B symbols,
+    # build id_of enumeration, and compute LHS predecessor index for
+    # IN_DEST ITE construction.
+    dest_sym_for: dict[BlockRef, "SymbolRef"] = {}
+    in_dest_sym_for: dict[BlockRef, "SymbolRef"] = {}
+    id_of: dict[BlockRef, int] = {}
+    orig_preds: dict[str, frozenset[str]] = {}
+    if decomp is not None:
+        id_of = {
+            b: i for i, b in enumerate(sorted(decomp.matched, key=lambda x: x.id))
+        }
+        for A in sorted(decomp.divergence_points, key=lambda x: x.id):
+            dest_sym_for[A] = state.fresh_dest_for(A)
+        orig_preds = _build_pred_index(orig)
+        for B in sorted(decomp.sync_points, key=lambda x: x.id):
+            # Skip if B has no LHS preds (rw's entry block case —
+            # no IN_DEST CHK needed; resolves the journal's
+            # OPEN-entry-block item).
+            if orig_preds.get(B.id):
+                in_dest_sym_for[B] = state.fresh_in_dest_for(B)
+
     new_blocks: list[TacBlock] = []
     by_id_rw = rw.block_by_id()
     # Iterate orig in topological order. Declared order is usually topo
     # but not guaranteed; Cfg.ordered_blocks() makes the dependency on
-    # ordering explicit (file-position-stable tie-breaking; gracefully
-    # handles cycles via SCC condensation if a future input has them).
+    # ordering explicit.
     for orig_b in Cfg(orig).ordered_blocks():
-        rw_b = by_id_rw[orig_b.id]
-        if list(orig_b.successors) != list(rw_b.successors):
-            raise EquivContractError(
-                f"block {orig_b.id}: successor lists differ "
-                f"(orig={orig_b.successors!r}, rw={rw_b.successors!r})"
+        bref = BlockRef.of(orig_b)
+
+        if decomp is None:
+            # Lockstep mode (block-id-isomorphic) — original behavior.
+            rw_b = by_id_rw[orig_b.id]
+            if list(orig_b.successors) != list(rw_b.successors):
+                raise EquivContractError(
+                    f"block {orig_b.id}: successor lists differ "
+                    f"(orig={orig_b.successors!r}, rw={rw_b.successors!r})"
+                )
+            new_cmds = _walk_block(orig_b, rw_b, state)
+        elif bref in decomp.stutter:
+            # Stutter block — LHS-only. Synthesize empty rw block;
+            # rule 9 ("eos rhs") emits each LHS cmd verbatim.
+            empty_rw_b = TacBlock(id=orig_b.id, successors=[], commands=[])
+            new_cmds = _walk_block(orig_b, empty_rw_b, state)
+        elif bref in decomp.divergence_points:
+            # Divergence common block. Strip rw's terminator so the
+            # walker pairs the bodies and rule 9 emits LHS's
+            # terminator verbatim once R is exhausted.
+            rw_b_orig = by_id_rw[orig_b.id]
+            rw_terminator = _last_terminator(rw_b_orig, orig_b.id)
+            rw_b_stripped = TacBlock(
+                id=orig_b.id,
+                successors=[],
+                commands=list(rw_b_orig.commands[:-1]),
             )
-        new_cmds = _walk_block(orig_b, rw_b, state)
+            new_cmds = _walk_block(orig_b, rw_b_stripped, state)
+            # Splice DEST_A := <expr> immediately before LHS's
+            # terminator (the last cmd in new_cmds is the LHS
+            # terminator, emitted verbatim by rule 9).
+            dest_cmd = emit_dest_write(
+                divergence=bref,
+                rw_terminator=rw_terminator,
+                dest_sym=dest_sym_for[bref],
+                id_of=id_of,
+            )
+            new_cmds = _splice_before_terminator(new_cmds, [dest_cmd])
+        else:
+            # Non-divergence matched block — walk lockstep against
+            # the same-id rw block. Successor lists must agree (else
+            # the block would be a divergence point).
+            rw_b = by_id_rw[orig_b.id]
+            if list(orig_b.successors) != list(rw_b.successors):
+                raise EquivContractError(
+                    f"block {orig_b.id}: non-divergence matched block has "
+                    f"mismatched successors "
+                    f"(orig={orig_b.successors!r}, rw={rw_b.successors!r}) "
+                    f"— this should be a divergence point but the decomp "
+                    f"didn't flag it"
+                )
+            new_cmds = _walk_block(orig_b, rw_b, state)
+
+        # Prepend IN_DEST_B ITE + CHK at sync entry.
+        if decomp is not None and bref in in_dest_sym_for:
+            lhs_pred_ids = sorted(orig_preds.get(orig_b.id, frozenset()))
+            lhs_preds = [BlockRef(id=p) for p in lhs_pred_ids]
+            chk_name = state.fresh_chk()
+            in_dest_cmds = emit_in_dest_ite(
+                sync=bref,
+                in_dest_sym=in_dest_sym_for[bref],
+                lhs_preds=lhs_preds,
+                decomp=decomp,
+                id_of=id_of,
+                dest_sym_for=dest_sym_for,
+                chk_name=chk_name,
+            )
+            # emit_in_dest_ite increments asserts on its own via the
+            # AssertCmd it emits; ensure the walker's counter
+            # reflects this for downstream `--report` counts.
+            state.asserts_emitted += 1
+            new_cmds = list(in_dest_cmds) + new_cmds
+
         new_cmds = _hoist_statics_above_dynamics(new_cmds, dynamic_symbols)
         new_blocks.append(
             TacBlock(id=orig_b.id, successors=list(orig_b.successors), commands=new_cmds)
         )
+
+    if decomp is not None:
+        stutter_tup = tuple(sorted(decomp.stutter, key=lambda b: b.id))
+        div_tup = tuple(sorted(decomp.divergence_points, key=lambda b: b.id))
+        sync_tup = tuple(sorted(decomp.sync_points, key=lambda b: b.id))
+    else:
+        stutter_tup = ()
+        div_tup = ()
+        sync_tup = ()
 
     return EquivResult(
         program=TacProgram(blocks=new_blocks),
@@ -237,7 +337,75 @@ def emit_equivalence_program(
         extra_symbols=tuple(state.extra_symbols),
         asserts_emitted=state.asserts_emitted,
         feasibility_asserts_emitted=state.feasibility_asserts_emitted,
+        stutter_blocks=stutter_tup,
+        divergence_points=div_tup,
+        sync_points=sync_tup,
     )
+
+
+def _detect_mode(orig: TacProgram, rw: TacProgram) -> SimDecomposition | None:
+    """Decide whether to walk in lockstep or stuttering mode.
+
+    Returns ``None`` for lockstep (block-id-isomorphic inputs) or the
+    :class:`SimDecomposition` for stuttering. Raises
+    :class:`EquivContractError` for inputs that are neither shape (rw
+    not a subsequence of orig).
+    """
+    orig_ids = [b.id for b in orig.blocks]
+    rw_ids = [b.id for b in rw.blocks]
+    if orig_ids == rw_ids:
+        return None  # lockstep
+    # Stuttering candidate: rw's ids must be a (proper) subsequence of orig's.
+    if set(rw_ids) - set(orig_ids):
+        # rw has ids orig doesn't — not a structural sub-CFG.
+        _check_block_set(orig, rw)  # delegate to existing diagnostic
+    if not _is_subsequence(rw_ids, orig_ids):
+        _check_block_set(orig, rw)  # ordering wrong; delegate diagnostic
+    return analyze_simulation(orig, rw)
+
+
+def _is_subsequence(needle: list[str], haystack: list[str]) -> bool:
+    """Whether ``needle``'s elements appear in ``haystack`` in order
+    (gaps allowed). Used to verify rw's blocks are a topological
+    subsequence of orig's blocks."""
+    it = iter(haystack)
+    return all(x in it for x in needle)
+
+
+def _build_pred_index(program: TacProgram) -> dict[str, frozenset[str]]:
+    """Inverse of ``block.successors``: ``bid -> {predecessor_bids}``."""
+    preds: dict[str, set[str]] = {b.id: set() for b in program.blocks}
+    for b in program.blocks:
+        for s in b.successors:
+            preds.setdefault(s, set()).add(b.id)
+    return {k: frozenset(v) for k, v in preds.items()}
+
+
+def _last_terminator(block: TacBlock, block_id: str) -> JumpCmd | JumpiCmd:
+    if not block.commands:
+        raise EquivContractError(
+            f"block {block_id}: empty command list — no terminator to extract"
+        )
+    last = block.commands[-1]
+    if not isinstance(last, _TERMINATOR_TYPES):
+        raise EquivContractError(
+            f"block {block_id}: last command is not a terminator "
+            f"({type(last).__name__})"
+        )
+    return last
+
+
+def _splice_before_terminator(
+    cmds: list[TacCmd], to_insert: list[TacCmd]
+) -> list[TacCmd]:
+    """Insert ``to_insert`` just before the trailing terminator of
+    ``cmds``. Pure helper used to put DEST_A := <expr> writes between
+    the body and the LHS terminator."""
+    if not cmds or not isinstance(cmds[-1], _TERMINATOR_TYPES):
+        # No terminator at the end (rare — would indicate a malformed
+        # block); append at the end.
+        return cmds + to_insert
+    return cmds[:-1] + to_insert + [cmds[-1]]
 
 
 def _check_block_set(orig: TacProgram, rw: TacProgram) -> None:
