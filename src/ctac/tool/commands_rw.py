@@ -85,6 +85,7 @@ def _print_report(
     hoist_path_invariant_hits: int = 0,
     lift_dynamic_ite_hits: int = 0,
     unpurified_div_count: int = 0,
+    cfg_simplify_report=None,
 ) -> None:
     def line(s: str) -> None:
         c.print(s, markup=not plain)
@@ -128,6 +129,12 @@ def _print_report(
             line(f"  materialized_assumes: {materialize_total}")
             for name in sorted(materialize_hits):
                 line(f"    {name}: {materialize_hits[name]}")
+        if cfg_simplify_report is not None:
+            line(
+                f"  cfg_simplify: dropped={cfg_simplify_report.n_dropped} "
+                f"rewires={len(cfg_simplify_report.rewires)} "
+                f"skipped_multipred={len(cfg_simplify_report.skipped_multipred)}"
+            )
         return
     line("[bold]Rewrite Summary[/bold]")
     line(f"  iterations: [bold]{rewrite.iterations}[/bold]")
@@ -168,6 +175,14 @@ def _print_report(
             line(
                 f"    [cyan]{escape(name)}[/cyan]: {materialize_hits[name]}"
             )
+    if cfg_simplify_report is not None:
+        line(
+            "  cfg_simplify: "
+            f"dropped=[bold]{cfg_simplify_report.n_dropped}[/bold] "
+            f"rewires=[bold]{len(cfg_simplify_report.rewires)}[/bold] "
+            "skipped_multipred="
+            f"[bold]{len(cfg_simplify_report.skipped_multipred)}[/bold]"
+        )
 
 
 def _command_count(program: TacProgram) -> int:
@@ -414,6 +429,19 @@ def rewrite_cmd(
             "use-before-def); failing loudly here saves the user a "
             "debugging round-trip. The (possibly broken) output is still "
             "written so the failure can be inspected. Default on."
+        ),
+    ),
+    simplify_cfg: bool = typer.Option(
+        False,
+        "--simplify-cfg/--no-simplify-cfg",
+        help=(
+            "After all rewrite phases, drop annotation-only fall-through "
+            "blocks and rewire their predecessors directly to the dropped "
+            "block's successor. Pure CFG-shape transform (not a rewrite "
+            "rule). Sound w.r.t. the un-simplified output under "
+            "``ctac rw-eq``'s stuttering-simulation walker. Off by "
+            "default; the same pass is invocable standalone via "
+            "``ctac cfg-simplify``."
         ),
     ),
     trace: Annotated[
@@ -893,6 +921,17 @@ def rewrite_cmd(
         final_program = program
         after_count = _command_count(final_program)
 
+    # Optional final CFG-simplification phase. Pure CFG-shape transform;
+    # not part of the rewrite-rule pipeline above (its soundness is
+    # certified by ``ctac rw-eq``'s stuttering walker, not the
+    # rule-by-rule rw-eq dispatch). Off by default.
+    cfg_simplify_report = None
+    if simplify_cfg:
+        from ctac.transform.cfg_simplify import simplify_cfg as _simplify_cfg
+
+        final_program, cfg_simplify_report = _simplify_cfg(final_program)
+        after_count = _command_count(final_program)
+
     for w in dict.fromkeys(rw.warnings):
         c.print(f"# rewrite warning: {w}", markup=False)
 
@@ -913,6 +952,7 @@ def rewrite_cmd(
             hoist_path_invariant_hits=hoist_hits,
             lift_dynamic_ite_hits=lift_hits,
             unpurified_div_count=unpurified_count,
+            cfg_simplify_report=cfg_simplify_report,
         )
 
     # Prune symbol-table declarations whose AssignExpCmd was DCE'd so
