@@ -151,6 +151,7 @@ from ctac.ast.nodes import (
 from ctac.analysis.defuse import extract_def_use
 from ctac.analysis.passes import analyze_dsa
 from ctac.ast.subst import subst_symbol
+from ctac.graph.cfg import Cfg
 from ctac.ir.models import TacBlock, TacProgram
 from ctac.rewrite.rules.store_eq import normalize_store_eq
 from ctac.rewrite.unparse import canonicalize_cmd, unparse_cmd
@@ -207,7 +208,11 @@ def emit_equivalence_program(
 
     new_blocks: list[TacBlock] = []
     by_id_rw = rw.block_by_id()
-    for orig_b in orig.blocks:
+    # Iterate orig in topological order. Declared order is usually topo
+    # but not guaranteed; Cfg.ordered_blocks() makes the dependency on
+    # ordering explicit (file-position-stable tie-breaking; gracefully
+    # handles cycles via SCC condensation if a future input has them).
+    for orig_b in Cfg(orig).ordered_blocks():
         rw_b = by_id_rw[orig_b.id]
         if list(orig_b.successors) != list(rw_b.successors):
             raise EquivContractError(
