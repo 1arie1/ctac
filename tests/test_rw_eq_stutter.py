@@ -12,6 +12,8 @@ following commit.
 
 from __future__ import annotations
 
+import pytest
+
 from ctac.ast.nodes import (
     ApplyExpr,
     AssertCmd,
@@ -22,7 +24,7 @@ from ctac.ast.nodes import (
 )
 from ctac.parse import parse_string
 from ctac.rw_eq import emit_equivalence_program
-from ctac.rw_eq.model import BlockRef
+from ctac.rw_eq.model import BlockRef, StructuralSimError
 
 
 def _wrap(body: str, *, syms: str = "") -> str:
@@ -389,6 +391,243 @@ def test_three_way_case_split():
     assert rc_s == SymbolRef(name="ReachabilityCertoraS")
     assert val_s == SymbolRef(name="DEST_A")
     assert val_x == SymbolRef(name="DEST_X")
+
+
+# --- Fixture 5: shared stutter raises through the integration ---------
+
+
+def test_multi_divergence_sharing_raises():
+    """The journal's counterexample threaded through the full walker:
+    emit_equivalence_program propagates StructuralSimError naming both
+    divergence points and the shared stutter."""
+    orig_src = _wrap(
+        "\tBlock E Succ [A1, A2] {\n"
+        "\t\tAssignExpCmd C0 true\n"
+        "\t\tJumpiCmd A1 A2 C0\n"
+        "\t}\n"
+        "\tBlock A1 Succ [S] {\n"
+        "\t\tJumpCmd S\n"
+        "\t}\n"
+        "\tBlock A2 Succ [S] {\n"
+        "\t\tJumpCmd S\n"
+        "\t}\n"
+        "\tBlock S Succ [B] {\n"
+        "\t\tJumpCmd B\n"
+        "\t}\n"
+        "\tBlock B Succ [] {\n"
+        "\t}",
+        syms="C0:bool",
+    )
+    rw_src = _wrap(
+        "\tBlock E Succ [A1, A2] {\n"
+        "\t\tAssignExpCmd C0 true\n"
+        "\t\tJumpiCmd A1 A2 C0\n"
+        "\t}\n"
+        "\tBlock A1 Succ [B] {\n"
+        "\t\tJumpCmd B\n"
+        "\t}\n"
+        "\tBlock A2 Succ [B] {\n"
+        "\t\tJumpCmd B\n"
+        "\t}\n"
+        "\tBlock B Succ [] {\n"
+        "\t}",
+        syms="C0:bool",
+    )
+    orig = parse_string(orig_src, path="<o>").program
+    rw = parse_string(rw_src, path="<r>").program
+
+    with pytest.raises(StructuralSimError) as ei:
+        emit_equivalence_program(orig, rw)
+    msg = str(ei.value)
+    assert "'S'" in msg
+    assert "'A1'" in msg
+    assert "'A2'" in msg
+
+
+# --- Fixture 6: joint-post-dom violation raises through integration ---
+
+
+def test_joint_post_dom_violation_raises():
+    """A's LHS stutter region leaks to a matched block outside rw's
+    target set at A. Integration must surface StructuralSimError naming
+    A and the extra-frontier block."""
+    orig_src = _wrap(
+        "\tBlock A Succ [S] {\n"
+        "\t\tJumpCmd S\n"
+        "\t}\n"
+        "\tBlock S Succ [B, C] {\n"
+        "\t\tAssignExpCmd C1 true\n"
+        "\t\tJumpiCmd B C C1\n"
+        "\t}\n"
+        "\tBlock B Succ [C] {\n"
+        "\t\tJumpCmd C\n"
+        "\t}\n"
+        "\tBlock C Succ [] {\n"
+        "\t}",
+        syms="C1:bool",
+    )
+    rw_src = _wrap(
+        "\tBlock A Succ [B] {\n"
+        "\t\tJumpCmd B\n"
+        "\t}\n"
+        "\tBlock B Succ [C] {\n"
+        "\t\tJumpCmd C\n"
+        "\t}\n"
+        "\tBlock C Succ [] {\n"
+        "\t}",
+    )
+    orig = parse_string(orig_src, path="<o>").program
+    rw = parse_string(rw_src, path="<r>").program
+
+    with pytest.raises(StructuralSimError) as ei:
+        emit_equivalence_program(orig, rw)
+    msg = str(ei.value)
+    assert "'A'" in msg
+    # C is the extra-frontier block (leak from S → C outside rw's T={B}).
+    assert "'C'" in msg
+
+
+# --- Fixture 7: no CHK at rhs entry block -----------------------------
+
+
+def test_no_chk_at_rhs_entry():
+    """When the divergence is at the rw entry block, that block has
+    no predecessors in either CFG. No IN_DEST CHK should be emitted at
+    entry (it would have no rational meaning), even though entry is
+    technically also a "sync point" by the pred-set-mismatch definition
+    (∅ ≠ ∅ is vacuously false, so entry isn't actually flagged — but
+    confirm no IN_DEST_<entry> symbol leaks anyway)."""
+    orig_src = _wrap(
+        "\tBlock E Succ [S] {\n"
+        "\t\tJumpCmd S\n"
+        "\t}\n"
+        "\tBlock S Succ [B] {\n"
+        "\t\tJumpCmd B\n"
+        "\t}\n"
+        "\tBlock B Succ [] {\n"
+        "\t}"
+    )
+    rw_src = _wrap(
+        "\tBlock E Succ [B] {\n"
+        "\t\tJumpCmd B\n"
+        "\t}\n"
+        "\tBlock B Succ [] {\n"
+        "\t}"
+    )
+    orig = parse_string(orig_src, path="<o>").program
+    rw = parse_string(rw_src, path="<r>").program
+
+    res = emit_equivalence_program(orig, rw)
+
+    # Divergence is at E; sync at B (single pred S).
+    assert res.divergence_points == (_b("E"),)
+    assert res.sync_points == (_b("B"),)
+    names = _sym_names(res)
+    # IN_DEST is for the sync at B, NOT for the entry block E.
+    assert "IN_DEST_B" in names
+    assert "IN_DEST_E" not in names
+    assert "DEST_E" in names
+
+    # Block E has no IN_DEST CHK at its entry (E has no preds).
+    e_block = _block(res.program, "E")
+    assert not any(
+        isinstance(c, AssignExpCmd) and c.lhs == "IN_DEST_E"
+        for c in e_block.commands
+    )
+
+
+# --- Fixture 8: structural-validation of unsound-rewrite case --------
+
+
+def test_unsound_rewrite_emits_chk_with_rw_condition():
+    """Deliberately construct a structurally-valid rewrite where the
+    rw side uses a DIFFERENT condition variable than the LHS branch.
+    The rw-eq emission must use the *rw* condition in DEST_A's ITE —
+    that's the load-bearing piece for catching value-level
+    unsoundness via SMT discharge downstream.
+
+    LHS:                          RHS:
+      A → S1, S2 (JumpiCmd C_L)    A → B, C (JumpiCmd C_R)
+      S1 → B (stutter)
+      S2 → C (stutter)
+      ... (E entry, terminals)     ... (same)
+
+    A is divergence (succ_L = {S1, S2}, succ_R = {B, C}).
+    τ-frontier from A = {B, C} = T. Structurally OK.
+
+    The emitted DEST_A must read:
+      DEST_A := ite(C_R, id(B), id(C))   -- uses RHS's condition
+    not
+      DEST_A := ite(C_L, id(B), id(C))   -- WRONG
+
+    If C_L and C_R can disagree (no walker-CHK ties them), an SMT
+    discharge will find a SAT model on the IN_DEST CHK — which is
+    the simulation's intended catch for this kind of unsoundness.
+    """
+    orig_src = _wrap(
+        "\tBlock E Succ [A] {\n"
+        "\t\tJumpCmd A\n"
+        "\t}\n"
+        "\tBlock A Succ [S1, S2] {\n"
+        "\t\tJumpiCmd S1 S2 CL\n"
+        "\t}\n"
+        "\tBlock S1 Succ [B] {\n"
+        "\t\tJumpCmd B\n"
+        "\t}\n"
+        "\tBlock S2 Succ [C] {\n"
+        "\t\tJumpCmd C\n"
+        "\t}\n"
+        "\tBlock B Succ [] {\n"
+        "\t}\n"
+        "\tBlock C Succ [] {\n"
+        "\t}",
+        syms="CL:bool\n\tCR:bool",
+    )
+    rw_src = _wrap(
+        "\tBlock E Succ [A] {\n"
+        "\t\tJumpCmd A\n"
+        "\t}\n"
+        "\tBlock A Succ [B, C] {\n"
+        "\t\tJumpiCmd B C CR\n"
+        "\t}\n"
+        "\tBlock B Succ [] {\n"
+        "\t}\n"
+        "\tBlock C Succ [] {\n"
+        "\t}",
+        syms="CL:bool\n\tCR:bool",
+    )
+    orig = parse_string(orig_src, path="<o>").program
+    rw = parse_string(rw_src, path="<r>").program
+
+    res = emit_equivalence_program(orig, rw)
+
+    # Pre-check passes (structurally sound shape)
+    assert res.divergence_points == (_b("A"),)
+    assert res.stutter_blocks == (_b("S1"), _b("S2"))
+
+    # DEST_A := ite(CR, id_of[B], id_of[C]) — note CR (rw's cond), not CL.
+    a_block = _block(res.program, "A")
+    dest_cmd = next(
+        c for c in a_block.commands
+        if isinstance(c, AssignExpCmd) and c.lhs == "DEST_A"
+    )
+    assert isinstance(dest_cmd.rhs, ApplyExpr) and dest_cmd.rhs.op == "Ite"
+    cond_in_ite = dest_cmd.rhs.args[0]
+    assert cond_in_ite == SymbolRef(name="CR"), (
+        f"DEST_A ITE condition should be CR (rw's condition), "
+        f"not CL (lhs's condition); got {cond_in_ite!r}"
+    )
+    # The LHS terminator is preserved verbatim (JumpiCmd ... CL).
+    # The DEST is set ahead of it, capturing rw's intent.
+
+    # Each sync (B and C) has an IN_DEST CHK. The CHKs collectively
+    # would discharge to SAT under z3 if CL and CR can disagree —
+    # that's the simulation's safety net, not something this unit test
+    # runs (SMT discharge requires the full pipeline + a z3 binary).
+    b_block = _block(res.program, "B")
+    c_block = _block(res.program, "C")
+    assert any(isinstance(c, AssertCmd) for c in b_block.commands)
+    assert any(isinstance(c, AssertCmd) for c in c_block.commands)
 
 
 # --- Sanity: existing lockstep mode still triggers when ids match ----
