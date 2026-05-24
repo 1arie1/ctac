@@ -155,7 +155,12 @@ from ctac.graph.cfg import Cfg
 from ctac.ir.models import TacBlock, TacProgram
 from ctac.rewrite.rules.store_eq import normalize_store_eq
 from ctac.rewrite.unparse import canonicalize_cmd, unparse_cmd
-from ctac.rw_eq.model import EquivContractError, EquivResult, RehavocSite
+from ctac.rw_eq.model import (
+    BlockRef,
+    EquivContractError,
+    EquivResult,
+    RehavocSite,
+)
 
 _TERMINATOR_TYPES = (JumpCmd, JumpiCmd)
 _NOISE_TYPES = (AnnotationCmd, LabelCmd)
@@ -360,6 +365,22 @@ class _WalkerState:
         name = f"{base}__rw_eq{n}"
         self.extra_symbols.append((name, sort))
         return name
+
+    def fresh_dest_for(self, divergence: BlockRef) -> SymbolRef:
+        """Mint ``DEST_<block_id>`` (sort ``int``). Static (single def
+        at A's terminator). Returns the typed handle; the underlying
+        name is also registered in ``extra_symbols`` for symbol-table
+        wiring downstream."""
+        name = f"DEST_{divergence.id}"
+        self.extra_symbols.append((name, "int"))
+        return SymbolRef(name=name)
+
+    def fresh_in_dest_for(self, sync: BlockRef) -> SymbolRef:
+        """Mint ``IN_DEST_<block_id>`` (sort ``int``). Static (single
+        def at B's entry, the ITE-chain assignment)."""
+        name = f"IN_DEST_{sync.id}"
+        self.extra_symbols.append((name, "int"))
+        return SymbolRef(name=name)
 
     def hit(self, rule: str) -> None:
         self.rule_hits[rule] += 1
