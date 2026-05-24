@@ -110,6 +110,18 @@ class JumpiCmd(TacCmd):
     else_target: str
     condition: str
 
+    def condition_expr(self) -> "TacExpr":
+        """Return the condition as a SymbolRef. New code should use this
+        rather than accessing ``.condition`` (bare str) directly."""
+        return SymbolRef(name=self.condition)
+
+    def condition_expr_str(self) -> str:
+        """Return the condition's symbol name as a string. Same value as
+        ``.condition`` today; routing through this helper lets future
+        migrations rework the underlying representation without touching
+        call sites that only need a string."""
+        return self.condition
+
 
 @dataclass(frozen=True)
 class AssertCmd(TacCmd):
