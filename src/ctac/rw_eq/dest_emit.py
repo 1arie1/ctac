@@ -33,6 +33,7 @@ from ctac.ast.nodes import (
     TacCmd,
     TacExpr,
 )
+from ctac.rewrite.unparse import canonicalize_cmd
 from ctac.rw_eq.model import BlockRef
 from ctac.rw_eq.sim_precheck import SimDecomposition
 from ctac.smt.encoding.path_skeleton import reachability_var_name
@@ -85,7 +86,7 @@ def emit_dest_write(
         then_id = _const_int(id_of[BlockRef(id=rw_terminator.then_target)])
         else_id = _const_int(id_of[BlockRef(id=rw_terminator.else_target)])
         rhs = ApplyExpr(op="Ite", args=(cond, then_id, else_id))
-    return AssignExpCmd(raw="", lhs=dest_sym.name, rhs=rhs)
+    return canonicalize_cmd(AssignExpCmd(raw="", lhs=dest_sym.name, rhs=rhs))
 
 
 def emit_in_dest_ite(
@@ -132,15 +133,21 @@ def emit_in_dest_ite(
         rc_var = SymbolRef(name=reachability_var_name(pred.id))
         rhs = ApplyExpr(op="Ite", args=(rc_var, _val_for(pred), rhs))
 
-    assign = AssignExpCmd(raw="", lhs=in_dest_sym.name, rhs=rhs)
+    assign = canonicalize_cmd(
+        AssignExpCmd(raw="", lhs=in_dest_sym.name, rhs=rhs)
+    )
     eq_expr = ApplyExpr(
         op="Eq", args=(SymbolRef(name=in_dest_sym.name), _const_int(id_of[sync]))
     )
-    chk_def = AssignExpCmd(raw="", lhs=chk_name, rhs=eq_expr)
-    chk_assert = AssertCmd(
-        raw="",
-        predicate=SymbolRef(name=chk_name),
-        message=f"rw-eq:sim:{sync.id} in-dest",
+    chk_def = canonicalize_cmd(
+        AssignExpCmd(raw="", lhs=chk_name, rhs=eq_expr)
+    )
+    chk_assert = canonicalize_cmd(
+        AssertCmd(
+            raw="",
+            predicate=SymbolRef(name=chk_name),
+            message=f"rw-eq:sim:{sync.id} in-dest",
+        )
     )
     return [assign, chk_def, chk_assert]
 

@@ -194,6 +194,44 @@ def test_emit_in_dest_ite_three_way_case_split():
     assert val_s == SymbolRef(name="DEST_D")
 
 
+def test_emitted_cmds_have_non_empty_raw():
+    """Regression: emit_in_dest_ite and emit_dest_write must produce
+    cmds with .raw populated by canonicalize_cmd. Without this,
+    render_program emits blank lines in place of the simulation
+    machinery, making the merged TAC unreadable."""
+    decomp = SimDecomposition(
+        matched=frozenset({_b("A"), _b("B")}),
+        stutter=frozenset({_b("S")}),
+        divergence_points=frozenset({_b("A")}),
+        sync_points=frozenset({_b("B")}),
+        stutter_owner={_b("S"): _b("A")},
+    )
+    id_of = {_b("A"): 0, _b("B"): 1}
+    dest_sym_for = {_b("A"): SymbolRef(name="DEST_A")}
+
+    # emit_dest_write
+    rw_term = JumpCmd(raw="JumpCmd B", target="B")
+    dest_cmd = emit_dest_write(_b("A"), rw_term, dest_sym_for[_b("A")], id_of)
+    assert dest_cmd.raw, "emit_dest_write returned an AssignExpCmd with empty .raw"
+    assert "DEST_A" in dest_cmd.raw
+
+    # emit_in_dest_ite
+    cmds = emit_in_dest_ite(
+        sync=_b("B"),
+        in_dest_sym=SymbolRef(name="IN_DEST_B"),
+        lhs_preds=[_b("S")],
+        decomp=decomp,
+        id_of=id_of,
+        dest_sym_for=dest_sym_for,
+        chk_name="CHK0",
+    )
+    for c in cmds:
+        assert c.raw, (
+            f"emit_in_dest_ite returned a cmd with empty .raw: {c!r} — "
+            f"render_program will emit a blank line, breaking inspection."
+        )
+
+
 def test_emit_in_dest_ite_rejects_empty_preds():
     decomp = SimDecomposition(
         matched=frozenset({_b("B")}),
