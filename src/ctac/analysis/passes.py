@@ -37,6 +37,7 @@ from ctac.ast.nodes import (
     ConstExpr,
     SymbolRef,
 )
+from ctac.graph import Cfg
 from ctac.ir.models import TacBlock, TacProgram
 from ctac.ast.range_constraints import (
     MAX_U256,
@@ -790,7 +791,16 @@ def analyze_control_dependence(program: TacProgram) -> ControlDependenceResult:
                 if y not in postdom[b]:
                     edges.add((b, y))
 
+    topo_index = {b.id: i for i, b in enumerate(Cfg(program).ordered_blocks())}
+    controllers: dict[str, list[str]] = {b: [] for b in blocks}
+    for ctrl, dep in edges:
+        controllers.setdefault(dep, []).append(ctrl)
+    for deps in controllers.values():
+        deps.sort(key=lambda c: topo_index.get(c, -1), reverse=True)
+
     return ControlDependenceResult(
         edges=tuple(sorted(edges)),
         postdominators={bid: tuple(sorted(nodes)) for bid, nodes in postdom.items()},
+        topo_index=topo_index,
+        controllers={dep: tuple(cs) for dep, cs in controllers.items()},
     )

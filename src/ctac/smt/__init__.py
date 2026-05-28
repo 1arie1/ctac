@@ -12,6 +12,7 @@ from ctac.smt.encoding import (
 )
 from ctac.smt.encoding.leino import LeinoEncoder
 from ctac.smt.encoding.sea import SeaEncoder
+from ctac.smt.encoding.sea_gate import SeaGateEncoder
 from ctac.smt.encoding.sea_vc import SeaVcEncoder
 from ctac.smt.model import SmtDeclaration, SmtScript
 from ctac.smt.render import render_any_smt_script, render_smt_script
@@ -28,6 +29,7 @@ from ctac.splitcrit import split_critical_edges
 
 register_encoder("leino", LeinoEncoder)
 register_encoder("sea", SeaEncoder)
+register_encoder("sea_gate", SeaGateEncoder)
 register_encoder("sea_vc", SeaVcEncoder)
 
 

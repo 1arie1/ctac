@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Callable
 
 from ctac.analysis import analyze_dsa, analyze_use_before_def, extract_def_use
 from ctac.analysis.model import DefUseResult, DefinitionSite, DsaDynamicAssignment, DsaResult
@@ -205,7 +206,15 @@ def check_supported_commands(program: TacProgram) -> None:
             )
 
 
-def emit_static_blocks(state: SeaEncodingState, *, use_block_guards: bool = True) -> None:
+def emit_static_blocks(
+    state: SeaEncodingState,
+    *,
+    use_block_guards: bool = True,
+    keep: Callable[[str, int], bool] | None = None,
+) -> None:
+    def _kept(block_id: str, idx: int) -> bool:
+        return keep is None or keep(block_id, idx)
+
     for block in Cfg(state.program).ordered_blocks():
         guard = _block_guard_term(state.vc, block.id, state.entry) if use_block_guards else true()
         with state.vc.block(block.id, guard=guard) as builder:
@@ -216,6 +225,9 @@ def emit_static_blocks(state: SeaEncodingState, *, use_block_guards: bool = True
                     continue
                 havoc_range = _havoc_range_event(block, i)
                 if havoc_range is not None:
+                    if not _kept(block.id, i):
+                        i += 2
+                        continue
                     cmd, lo, hi = havoc_range
                     lhs = _canon(cmd.lhs)
                     if lhs in state.expr.symbol_aliases:
@@ -232,6 +244,9 @@ def emit_static_blocks(state: SeaEncodingState, *, use_block_guards: bool = True
                         placement=FactPlacement.ELIGIBLE_GLOBAL,
                     )
                     i += 2
+                    continue
+                if not _kept(block.id, i):
+                    i += 1
                     continue
                 cmd = block.commands[i]
                 with state.vc.stmt(_stmt_id(cmd, i), cmd.raw):

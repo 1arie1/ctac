@@ -83,6 +83,42 @@ def predecessor_edges(program: TacProgram, *, symbol_term_by_name: dict[str, str
     return out
 
 
+@dataclass(frozen=True)
+class BranchCondition:
+    block_id: str
+    cond: str  # encoded SMT term for the JumpiCmd condition symbol
+    then_target: str
+    else_target: str
+
+
+def branch_conditions(
+    program: TacProgram, *, symbol_term_by_name: dict[str, str]
+) -> dict[str, BranchCondition]:
+    """Per controlling block, its branch condition and the two targets.
+
+    The controller-keyed complement to :func:`predecessor_edges` (which
+    is successor-keyed). ``cond`` is lowered identically to
+    ``predecessor_edges`` so a gamma gate built from it references the
+    *same* symbol the CFG-constraint layer uses — wiring the branch
+    condition once into both planes. Only blocks whose terminator is a
+    ``JumpiCmd`` appear; unconditional edges carry no gate.
+    """
+    out: dict[str, BranchCondition] = {}
+    for blk in program.blocks:
+        if not blk.commands or not isinstance(blk.commands[-1], JumpiCmd):
+            continue
+        j = blk.commands[-1]
+        cond_sym = canonical_symbol(j.condition, strip_var_suffixes=True)
+        cond = symbol_term_by_name.get(cond_sym, sanitize_ident(cond_sym))
+        out[blk.id] = BranchCondition(
+            block_id=blk.id,
+            cond=cond,
+            then_target=j.then_target,
+            else_target=j.else_target,
+        )
+    return out
+
+
 def block_by_id(program: TacProgram, block_id: str) -> TacBlock:
     by_id = program.block_by_id()
     if block_id not in by_id:

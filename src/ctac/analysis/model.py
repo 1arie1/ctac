@@ -143,6 +143,13 @@ class DsaResult:
 class ControlDependenceResult:
     edges: tuple[tuple[str, str], ...]  # controller -> dependent
     postdominators: dict[str, tuple[str, ...]]
+    # block id -> topological position (entry first). Reverse-topo is
+    # descending order; gamma placement processes control-dependent
+    # blocks closest-to-the-merge first, i.e. highest topo_index first.
+    topo_index: dict[str, int] = field(default_factory=dict)
+    # dependent block -> controllers, sorted reverse-topo. The gating
+    # skeleton for a value merged in the dependent block.
+    controllers: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
