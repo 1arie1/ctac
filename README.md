@@ -185,9 +185,9 @@ legacy-arith); drop a `.ctac-z3-configs.json` next to the input
 to add custom named configs. Binary resolution: `--z3 PATH` /
 `CTAC_Z3` env / `$PATH`.
 
-`ctac smt` requires loop-free, single-assert TAC (run `ua` first),
-and bytemap-free / bytemap-ro memory capability (check with
-`ctac stats`). The sole encoder is `sea_vc` — QF_UFNIA, DSA +
+`ctac smt` requires loop-free, single-assert TAC (run `ua` first);
+any bytemap capability is supported (`bytemap-rw` is encoded via
+Store/Select). The default encoder is `sea_vc` — QF_UFNIA, DSA +
 block-reachability, sound bv256 domain constraints, bytemap-as-UF
 with a per-application range axiom.
 

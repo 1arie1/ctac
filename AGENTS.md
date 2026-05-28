@@ -18,9 +18,9 @@ Use `ctac` in plain mode unless color is required.
 - For cross-build comparison, start with `op-diff` (per-stat delta);
   drill into blocks with `cfg-match` + `bb-diff`.
 - For CFG reasoning, prefer structured text (edges + block summaries), not images.
-- Before `ctac smt`: run `ctac ua` to ensure single-assert TAC, and
-  check `memory.capability` in `ctac stats` (must be `bytemap-free`
-  or `bytemap-ro`).
+- Before `ctac smt`: run `ctac ua` to ensure single-assert TAC. Any
+  bytemap capability is fine (`bytemap-rw` is encoded via Store/Select);
+  the single-assert precondition is the usual blocker.
 - Soundness of rewrite rules: `ctac rw-valid -o <dir>` emits per-rule
   SMT specs; run z3 on each (expected `unsat`).
 
@@ -294,9 +294,10 @@ Prompt template:
     bytemap-as-UF with per-application range axiom; currently the
     only supported encoder).
   - Preconditions: loop-free TAC, exactly one `AssertCmd` (run
-    `ctac ua` first to merge), `AssertCmd` must be the last command
-    in its block, and memory capability must be `bytemap-free` or
-    `bytemap-ro` (check with `ctac stats`).
+    `ctac ua` first to merge), and `AssertCmd` must be the last command
+    in its block. Any bytemap capability is supported (`bytemap-rw` is
+    encoded via Store/Select); there is no `bytemap-free`/`bytemap-ro`
+    requirement.
   - VC semantics: SAT iff assertion-failure state is reachable.
   - Solver mode: `--run` invokes z3 and reports `sat|unsat|unknown|timeout`.
   - SAT model export: `--model <path>` writes TAC model text compatible with `ctac run --model`.

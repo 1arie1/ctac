@@ -136,8 +136,9 @@ TYPICAL:
   ctac stats f.tac --plain --top-blocks 0 --no-by-cmd-kind   # compact
   ctac stats <certora-output-dir> --plain        # auto-resolves a .tac
 
-WATCH: `memory.capability` — if `bytemap-rw`, ctac smt will reject; if
-`bytemap-ro`, sea_vc needs the memory range axiom (already emitted).
+WATCH: `memory.capability` — `ctac smt` encodes any capability
+(`bytemap-rw` included, via Store/Select); the memory range axiom is
+always emitted.
 """,
     "parse": """ctac parse --agent
 
@@ -617,8 +618,8 @@ TYPICAL:
   ctac smt f.tac --plain --run --unsat-core        # name asserts, print core
 
 PRECONDITIONS: exactly one `AssertCmd` (run `ctac ua` first if you
-have multiple); loop-free; bytemap usage must be `bytemap-free` or
-`bytemap-ro` (run `ctac stats` to check).
+have multiple); loop-free. Any bytemap capability is supported
+(`bytemap-rw` included).
 
 BYTEMAP STORE-REDUCE: `--store-reduce` (off by default) builds a
 per-map chain data structure during encoding, prunes shadowed Store
