@@ -121,6 +121,23 @@ _DIAMOND_JUNK = _wrap(
     "\tBlock m Succ [] {\n\t\tAssertCmd Le(x 0x2) \"valid\"\n\t}",
 )
 
+# A branch whose condition (and its cone, `junk`) is irrelevant to the
+# assert: `x` is single-def in entry (dominates the assert), so no phi
+# gates on `cond`. Thin COI leaves `cond` a free boolean and drops `junk`;
+# coarse keeps both.
+_BRANCH_JUNK = _wrap(
+    "junk:bv256\n\tcond:bool\n\tx:bv256",
+    "\tBlock entry Succ [t, e] {\n"
+    "\t\tAssignExpCmd junk 0x7\n"
+    "\t\tAssignExpCmd cond Ge(junk 0x5)\n"
+    "\t\tAssignExpCmd x 0x1\n"
+    "\t\tJumpiCmd t e cond\n"
+    "\t}\n"
+    "\tBlock t Succ [join] {\n\t\tJumpCmd join\n\t}\n"
+    "\tBlock e Succ [join] {\n\t\tJumpCmd join\n\t}\n"
+    "\tBlock join Succ [] {\n\t\tAssertCmd Eq(x 0x1) \"valid\"\n\t}",
+)
+
 # Straight-line program: no RC vars, no DSA merges -> no gates at all.
 _STRAIGHT = _wrap(
     "a:bv256\n\tb:bv256",
@@ -132,12 +149,16 @@ _STRAIGHT = _wrap(
 )
 
 
-def _verdict(program_text: str, encoding: str) -> str:
+def _verdict_with(program_text: str, *, encoding: str = "sea_gate", **kw) -> str:
     z3 = pytest.importorskip("z3")
-    rendered = render_smt_script(build_vc(parse_string(program_text), encoding=encoding))
+    rendered = render_smt_script(build_vc(parse_string(program_text), encoding=encoding, **kw))
     solver = z3.Solver()
     solver.from_string(rendered)
     return str(solver.check())
+
+
+def _verdict(program_text: str, encoding: str) -> str:
+    return _verdict_with(program_text, encoding=encoding)
 
 
 @pytest.mark.parametrize(
@@ -195,6 +216,36 @@ def test_coi_keeps_virtual_phi_and_drops_irrelevant() -> None:
     assert "junk2" not in rendered
     # and the verdict still matches sea.
     assert _verdict(program, "sea") == _verdict(program, "sea_gate") == "unsat"
+
+
+def _render(program: str, **kw) -> str:
+    return render_smt_script(build_vc(parse_string(program), encoding="sea_gate", **kw))
+
+
+def test_coi_thin_is_default() -> None:
+    # No explicit coi -> same as coi="thin".
+    assert _render(_BRANCH_JUNK) == _render(_BRANCH_JUNK, coi="thin")
+
+
+def test_coi_thin_frees_irrelevant_branch_condition() -> None:
+    thin = _render(_BRANCH_JUNK, coi="thin")
+    # cond is declared and used in the CFG, but left undefined (free)...
+    assert "(declare-const cond Bool)" in thin
+    assert "(=> BLK_t cond)" in thin
+    assert "(= cond " not in thin
+    # ...and its irrelevant cone is gone entirely.
+    assert "junk" not in thin
+    # verdict still matches sea.
+    assert _verdict(_BRANCH_JUNK, "sea") == _verdict(_BRANCH_JUNK, "sea_gate") == "unsat"
+
+
+def test_coi_coarse_keeps_branch_condition_cone() -> None:
+    coarse = _render(_BRANCH_JUNK, coi="coarse")
+    assert "(= cond " in coarse
+    assert "(= junk 7)" in coarse
+    # coarse prunes less but stays verdict-equivalent.
+    coarse_verdict = _verdict_with(_BRANCH_JUNK, coi="coarse")
+    assert coarse_verdict == _verdict(_BRANCH_JUNK, "sea") == "unsat"
 
 
 def test_coi_drops_irrelevant_static_def() -> None:

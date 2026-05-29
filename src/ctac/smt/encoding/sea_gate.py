@@ -12,6 +12,7 @@ from ctac.smt.encoding.base import EncoderContext, SmtEncoder, SmtEncodingError
 from ctac.smt.encoding.path_skeleton import (
     block_id_for_reachability_var,
     branch_conditions,
+    is_reachability_var,
     sanitize_ident,
 )
 from ctac.smt.encoding.sea import (
@@ -36,7 +37,7 @@ class SeaGateEncoder(SmtEncoder):
         self._reject_unsupported_options(ctx)
         state = prepare_sea_state(ctx)
         gate = _install_gates(state)
-        coi = compute_coi_defs(state, ctx)
+        coi = compute_coi_defs(state, ctx, mode=ctx.coi)
         emit_static_blocks(state, keep=lambda b, i: ProgramPoint(b, i) in coi)
         dynamic_defs = _filter_dynamic(_collect_gate_dynamic_defs(state, gate), coi)
         if dynamic_defs:
@@ -144,6 +145,18 @@ def _install_gates(state: SeaEncodingState) -> Callable[[str], Term]:
         else:
             rebuilt[name] = df
     state.vc.define_funs = rebuilt
+
+    # Branch-condition booleans are referenced by the gates and the CFG
+    # constraints regardless of COI, so declare them all. Each is *defined*
+    # (its equality emitted) only when emit_static_blocks keeps it (the
+    # condition is in the COI because it gates a kept phi); otherwise it
+    # stays a free boolean. A branch that gates no kept phi can be left
+    # free soundly — the CFG just explores both edges, which yield the
+    # same asserted value.
+    for bc in bcs.values():
+        if bc.cond in ("true", "false") or bc.cond in state.vc.define_funs:
+            continue
+        state.vc.const(bc.cond, Bool)
     return gate_ref
 
 
@@ -163,60 +176,90 @@ def _collect_gate_dynamic_defs(
     }
 
 
-def compute_coi_defs(state: SeaEncodingState, ctx: EncoderContext) -> frozenset[ProgramPoint]:
+def compute_coi_defs(
+    state: SeaEncodingState, ctx: EncoderContext, *, mode: str = "thin"
+) -> frozenset[ProgramPoint]:
     """Cone of influence: the definition points to emit.
 
-    Seeded by the assert, every ``assume``, and every branch condition
-    (``JumpiCmd``) — the latter because the control plane (CFG constraints)
-    and the gates reference branch-condition symbols of *all* blocks, so
-    those defs must stay defined. The backward closure over data
-    (reaching-defs) and control (control-dependence controllers) then pulls
-    in exactly what feeds them. Definitions feeding none of these — the
-    bytemap Store-chains / arithmetic irrelevant to the assertion — drop.
+    ``thin`` (default): seed the assert and every ``assume`` only; the
+    backward data closure (reaching-defs) pulls what feeds them.
+    Definitions feeding none of these — the bytemap Store-chains /
+    arithmetic irrelevant to the assertion — drop. Branch conditions are
+    NOT seeded wholesale: they are declared unconditionally (in
+    ``_install_gates``) and may stay free booleans. The only ones we must
+    *define* are those a **kept phi gates on** — otherwise a free gate
+    could pick the wrong arm and diverge from ``sea`` — so on reaching a
+    phi we ``need_gate`` its gate block and pull the branch conditions of
+    that block's transitive control-dependence controllers (virtual phi:
+    kept DSA case at ``b`` -> ``need_gate(b)``; materialized: a use of
+    ``ReachabilityCertora_k`` -> ``need_gate(k)``). Static defs are
+    single-def and dominated, so their values are fixed by the objective
+    regardless of branch values; they need no path conditions.
 
-    Traversal through both phi kinds is automatic: a materialized
-    ``Ite(RC_k, a, b)`` exposes ``a``/``b`` and ``RC_k`` via ``command_uses``;
-    a virtual (DSA-merge) symbol's uses resolve through reaching-defs to its
-    case sites, and control-dependence closure on each case block keeps that
-    case's synthesized gate conditions.
+    ``coarse``: additionally seed every branch condition (``JumpiCmd``) and
+    walk control-dependence on every kept block, keeping all branch cones.
+    Prunes less; a conservative fallback.
     """
+    coarse = mode == "coarse"
     program = state.program
     rd = analyze_reaching_definitions(program, def_use=state.du)
     cd = analyze_control_dependence(program)
     term_idx = {b.id: len(b.commands) - 1 for b in program.blocks if b.commands}
     by_id = program.block_by_id()
+    block_ids = set(by_id)
 
-    seeds: list[ProgramPoint] = [
-        ProgramPoint(ctx.assert_site.block_id, ctx.assert_site.cmd_index)
-    ]
+    selected: set[ProgramPoint] = set()
+    work: deque[ProgramPoint] = deque()
+
+    def add(pt: ProgramPoint) -> None:
+        if pt not in selected:
+            selected.add(pt)
+            work.append(pt)
+
+    gate_needed: set[str] = set()
+
+    def need_gate(start: str) -> None:
+        # `start` and its transitive controllers have gates that reference
+        # those controllers' branch conditions; pull each condition's def.
+        stack = [start]
+        while stack:
+            blk = stack.pop()
+            if blk in gate_needed or blk not in block_ids:
+                continue
+            gate_needed.add(blk)
+            for ctrl in cd.controllers.get(blk, ()):
+                last = term_idx.get(ctrl)
+                if last is not None:
+                    add(ProgramPoint(ctrl, last))
+                stack.append(ctrl)
+
+    add(ProgramPoint(ctx.assert_site.block_id, ctx.assert_site.cmd_index))
     for block in program.blocks:
         for idx, cmd in enumerate(block.commands):
-            if isinstance(cmd, (AssumeExpCmd, JumpiCmd)):
-                seeds.append(ProgramPoint(block.id, idx))
+            if isinstance(cmd, AssumeExpCmd) or (coarse and isinstance(cmd, JumpiCmd)):
+                add(ProgramPoint(block.id, idx))
 
-    selected: set[ProgramPoint] = set(seeds)
-    work: deque[ProgramPoint] = deque(dict.fromkeys(seeds))
     while work:
         pt = work.popleft()
         block = by_id.get(pt.block_id)
         if block is None or not (0 <= pt.cmd_index < len(block.commands)):
             continue
         cmd = block.commands[pt.cmd_index]
+        if coarse:
+            for ctrl in cd.controllers.get(pt.block_id, ()):
+                last = term_idx.get(ctrl)
+                if last is not None:
+                    add(ProgramPoint(ctrl, last))
+        elif (pt.block_id, pt.cmd_index) in state.dynamic_points:
+            need_gate(pt.block_id)
         in_here = rd.in_by_command.get(pt, {})
         for sym in command_uses(cmd):
+            if not coarse and is_reachability_var(sym):
+                k = block_id_for_reachability_var(sym)
+                if k is not None:
+                    need_gate(k)
             for ds in in_here.get(sym, ()):
-                cand = ProgramPoint(ds.block_id, ds.cmd_index)
-                if cand not in selected:
-                    selected.add(cand)
-                    work.append(cand)
-        for ctrl in cd.controllers.get(pt.block_id, ()):
-            last = term_idx.get(ctrl)
-            if last is None:
-                continue
-            cand = ProgramPoint(ctrl, last)
-            if cand not in selected:
-                selected.add(cand)
-                work.append(cand)
+                add(ProgramPoint(ds.block_id, ds.cmd_index))
     return frozenset(selected)
 
 

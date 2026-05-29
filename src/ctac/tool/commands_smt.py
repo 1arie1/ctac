@@ -209,6 +209,21 @@ def smt_cmd(
             ),
         ),
     ] = "bwd0",
+    coi: Annotated[
+        str,
+        typer.Option(
+            "--coi",
+            help=(
+                "Cone-of-influence pruning for the sea_gate encoder "
+                "(ignored otherwise). thin (default): seed assert + "
+                "assumes, define a branch condition only when a kept phi "
+                "gates on it (others stay free booleans). coarse: also "
+                "seed every branch condition and keep all branch cones; "
+                "prunes less."
+            ),
+            autocompletion=complete_choices(["thin", "coarse"]),
+        ),
+    ] = "thin",
     narrow_range: bool = typer.Option(
         False,
         "--narrow-range",
@@ -305,6 +320,7 @@ def smt_cmd(
             store_reduce=store_reduce,
             inline_scalars=inline_scalars,
             annotate_with_cmds=annotate_with_cmds,
+            coi=coi,
         )
         smt_text = render_smt_script(script)
     except ParseError as e:

@@ -34,6 +34,7 @@ register_encoder("sea_vc", SeaVcEncoder)
 
 
 _BV_ADD_SUB_AXIOM_VARIANTS = ("no-mod", "mod")
+_COI_MODES = ("thin", "coarse")
 
 
 def build_vc(
@@ -51,12 +52,15 @@ def build_vc(
     store_reduce: bool = False,
     inline_scalars: bool = False,
     annotate_with_cmds: bool = False,
+    coi: str = "thin",
 ) -> SmtScript | VCScript:
     if bv_add_sub_axiom not in _BV_ADD_SUB_AXIOM_VARIANTS:
         known = ", ".join(_BV_ADD_SUB_AXIOM_VARIANTS)
         raise SmtEncodingError(
             f"unknown bv_add_sub_axiom {bv_add_sub_axiom!r}; available: {known}"
         )
+    if coi not in _COI_MODES:
+        raise SmtEncodingError(f"unknown coi mode {coi!r}; available: {', '.join(_COI_MODES)}")
     # Pre-pass: break any critical edges so sea_vc's predecessor
     # exclusivity stays sound. Idempotent when the input is already clean.
     split = split_critical_edges(tac_file.program)
@@ -78,6 +82,7 @@ def build_vc(
             store_reduce=store_reduce,
             inline_scalars=inline_scalars,
             annotate_with_cmds=annotate_with_cmds,
+            coi=coi,
         )
     )
 

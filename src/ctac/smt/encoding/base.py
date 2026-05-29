@@ -141,6 +141,14 @@ class EncoderContext:
     """If True, VC assertions include comments with the raw TAC command
     text that produced each fact. Default False keeps SMT-LIB output
     compact and stable."""
+    coi: str = "thin"
+    """Cone-of-influence pruning mode for the ``sea_gate`` encoder
+    (ignored by other encoders). ``thin`` (default) seeds the COI from
+    the assert and assumes only and pulls a branch condition's definition
+    in only when a kept phi gates on it (other branch conditions stay
+    free booleans). ``coarse`` additionally seeds every branch condition
+    and walks control-dependence on every kept block, keeping all branch
+    cones; it prunes less but is a conservative fallback."""
 
 
 class SmtEncoder(Protocol):
