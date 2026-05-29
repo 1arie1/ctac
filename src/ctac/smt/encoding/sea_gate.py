@@ -199,8 +199,17 @@ def compute_coi_defs(
     ``coarse``: additionally seed every branch condition (``JumpiCmd``) and
     walk control-dependence on every kept block, keeping all branch cones.
     Prunes less; a conservative fallback.
+
+    ``aggressive``: seed the assert ONLY (not all assumes); an ``assume`` is
+    kept only when it shares a variable with the assert's cone (transitively
+    — a kept assume's own variables join the cone and may pull more
+    assumes). Assumes over disjoint variables drop. This is NOT verdict-
+    equivalent to ``sea``: dropping assumes *widens* the model set, so it is
+    **sound only for UNSAT** (an UNSAT result proves the full VC; a SAT may
+    be spurious). A proof obstruction — useful when assume mass obstructs z3.
     """
     coarse = mode == "coarse"
+    aggressive = mode == "aggressive"
     program = state.program
     rd = analyze_reaching_definitions(program, def_use=state.du)
     cd = analyze_control_dependence(program)
@@ -233,10 +242,23 @@ def compute_coi_defs(
                     add(ProgramPoint(ctrl, last))
                 stack.append(ctrl)
 
+    # In aggressive mode assumes are not seeded; they are pulled in only
+    # when they share a variable with the cone. Index them by used symbol.
+    assumes_by_sym: dict[str, list[ProgramPoint]] = {}
+    if aggressive:
+        for block in program.blocks:
+            for idx, cmd in enumerate(block.commands):
+                if isinstance(cmd, AssumeExpCmd):
+                    apt = ProgramPoint(block.id, idx)
+                    for sym in command_uses(cmd):
+                        assumes_by_sym.setdefault(sym, []).append(apt)
+
     add(ProgramPoint(ctx.assert_site.block_id, ctx.assert_site.cmd_index))
     for block in program.blocks:
         for idx, cmd in enumerate(block.commands):
-            if isinstance(cmd, AssumeExpCmd) or (coarse and isinstance(cmd, JumpiCmd)):
+            if (isinstance(cmd, AssumeExpCmd) and not aggressive) or (
+                coarse and isinstance(cmd, JumpiCmd)
+            ):
                 add(ProgramPoint(block.id, idx))
 
     while work:
@@ -258,6 +280,9 @@ def compute_coi_defs(
                 k = block_id_for_reachability_var(sym)
                 if k is not None:
                     need_gate(k)
+            if aggressive:
+                for apt in assumes_by_sym.get(sym, ()):
+                    add(apt)
             for ds in in_here.get(sym, ()):
                 add(ProgramPoint(ds.block_id, ds.cmd_index))
     return frozenset(selected)

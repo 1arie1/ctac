@@ -148,7 +148,12 @@ class EncoderContext:
     in only when a kept phi gates on it (other branch conditions stay
     free booleans). ``coarse`` additionally seeds every branch condition
     and walks control-dependence on every kept block, keeping all branch
-    cones; it prunes less but is a conservative fallback."""
+    cones; it prunes less but is a conservative fallback. ``aggressive``
+    seeds the assert only and keeps an ``assume`` only when it shares a
+    variable with the assert's cone — dropping irrelevant assumes. It is
+    NOT verdict-equivalent: dropping assumes widens the model set, so it
+    is sound only for UNSAT (UNSAT proves the full VC; SAT may be
+    spurious). A proof obstruction / over-approximation."""
 
 
 class SmtEncoder(Protocol):

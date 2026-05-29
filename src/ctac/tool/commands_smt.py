@@ -219,9 +219,13 @@ def smt_cmd(
                 "assumes, define a branch condition only when a kept phi "
                 "gates on it (others stay free booleans). coarse: also "
                 "seed every branch condition and keep all branch cones; "
-                "prunes less."
+                "prunes less. aggressive: seed the assert only and keep an "
+                "assume only when it shares a variable with the assert's "
+                "cone; drops irrelevant assumes. NOT verdict-equivalent — "
+                "sound only for UNSAT (an UNSAT result proves the VC; a "
+                "SAT may be spurious)."
             ),
-            autocompletion=complete_choices(["thin", "coarse"]),
+            autocompletion=complete_choices(["thin", "coarse", "aggressive"]),
         ),
     ] = "thin",
     narrow_range: bool = typer.Option(

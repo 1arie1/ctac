@@ -248,6 +248,43 @@ def test_coi_coarse_keeps_branch_condition_cone() -> None:
     assert coarse_verdict == _verdict(_BRANCH_JUNK, "sea") == "unsat"
 
 
+def test_coi_aggressive_drops_assume_disjoint_from_assert() -> None:
+    # `keep` is asserted; `noise` is constrained by an assume but feeds
+    # nothing the assert needs. Aggressive COI drops that assume (and
+    # noise); thin keeps all assumes.
+    program = _wrap(
+        "keep:bv256\n\tnoise:bv256",
+        "\tBlock entry Succ [] {\n"
+        "\t\tAssignExpCmd keep 0x1\n"
+        "\t\tAssignHavocCmd noise\n"
+        "\t\tAssumeExpCmd Ge(noise 0x5)\n"
+        "\t\tAssertCmd Eq(keep 0x1) \"valid\"\n"
+        "\t}",
+    )
+    thin = _render(program, coi="thin")
+    aggressive = _render(program, coi="aggressive")
+    assert "noise" in thin  # thin keeps the assume + its var
+    assert "noise" not in aggressive  # aggressive drops the disjoint assume
+    # aggressive is sound for UNSAT: this valid assert stays unsat.
+    assert _verdict_with(program, coi="aggressive") == "unsat"
+
+
+def test_coi_aggressive_keeps_relevant_assume() -> None:
+    # Here the assume constrains the asserted variable, so aggressive must
+    # keep it (else the assert would become violable -> wrong).
+    program = _wrap(
+        "r:bv256",
+        "\tBlock entry Succ [] {\n"
+        "\t\tAssignHavocCmd r\n"
+        "\t\tAssumeExpCmd Eq(r 0x1)\n"
+        "\t\tAssertCmd Eq(r 0x1) \"follows from assume\"\n"
+        "\t}",
+    )
+    # If aggressive wrongly dropped the relevant assume, `r == 1` would be
+    # violable (sat); unsat proves the assume was kept.
+    assert _verdict_with(program, coi="aggressive") == "unsat"
+
+
 def test_coi_drops_irrelevant_static_def() -> None:
     program = _wrap(
         "a:bv256\n\tb:bv256\n\tjunk:bv256",

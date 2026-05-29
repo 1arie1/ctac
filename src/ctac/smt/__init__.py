@@ -34,7 +34,7 @@ register_encoder("sea_vc", SeaVcEncoder)
 
 
 _BV_ADD_SUB_AXIOM_VARIANTS = ("no-mod", "mod")
-_COI_MODES = ("thin", "coarse")
+_COI_MODES = ("thin", "coarse", "aggressive")
 
 
 def build_vc(
