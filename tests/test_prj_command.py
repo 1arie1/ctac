@@ -78,7 +78,9 @@ def test_prj_list_smoke(tmp_path: Path) -> None:
     assert res.exit_code == 0
     # HEAD marker, the friendly name, and the label all appear.
     assert "HEAD" in res.stdout
-    assert "in.tac" in res.stdout
+    assert "base.tac" in res.stdout
+    # Source filename shown as provenance hint.
+    assert "<- in.tac" in res.stdout
     assert "labels:" in res.stdout
     assert "base ->" in res.stdout
 
@@ -143,7 +145,7 @@ def test_prj_set_head_label(tmp_path: Path) -> None:
     res = runner.invoke(app, ["prj", "set-head", str(prj_dir), "base", "--plain"])
     assert res.exit_code == 0, res.stdout
     prj2 = Project.open(prj_dir)
-    assert "in.tac" in prj2.head.names
+    assert "base.tac" in prj2.head.names
 
 
 def test_prj_set_head_focus_member(tmp_path: Path) -> None:
@@ -320,7 +322,7 @@ def test_prj_archive_then_clone(tmp_path: Path) -> None:
     src_prj = Project.open(prj_dir)
     dst_prj = Project.open(dst)
     assert dst_prj.head_sha == src_prj.head_sha
-    link = dst / "in.tac"
+    link = dst / "base.tac"
     assert link.is_symlink()
 
 
@@ -335,7 +337,7 @@ def test_prj_clone_dir_to_dir(tmp_path: Path) -> None:
     )
     assert res.exit_code == 0, res.stdout
     assert Project.is_project(dst)
-    assert (dst / "in.tac").is_symlink()
+    assert (dst / "base.tac").is_symlink()
 
 
 def test_prj_clone_existing_destination(tmp_path: Path) -> None:

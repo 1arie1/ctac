@@ -67,13 +67,13 @@ def test_rw_advances_head(tmp_path: Path) -> None:
     assert res.exit_code == 0, res.stdout
     prj1 = Project.open(prj_dir)
     # The rw output replaces HEAD (it might be the same sha if rw is a
-    # no-op on this input, but the friendly name `in.rw.tac` should
+    # no-op on this input, but the friendly name `base.rw.tac` should
     # exist regardless).
-    new_link = prj_dir / "in.rw.tac"
-    assert new_link.is_symlink(), f"expected friendly symlink in.rw.tac, got {sorted(p.name for p in prj_dir.iterdir())}"
+    new_link = prj_dir / "base.rw.tac"
+    assert new_link.is_symlink(), f"expected friendly symlink base.rw.tac, got {sorted(p.name for p in prj_dir.iterdir())}"
     # If the simplifier actually changed something the head moved.
     if prj1.head_sha != head0:
-        assert "in.rw.tac" in prj1.head.names
+        assert "base.rw.tac" in prj1.head.names
 
 
 def test_rw_explicit_output_does_not_advance_head(tmp_path: Path) -> None:
@@ -86,10 +86,10 @@ def test_rw_explicit_output_does_not_advance_head(tmp_path: Path) -> None:
     )
     assert res.exit_code == 0, res.stdout
     assert out_path.exists()
-    # HEAD did not move; no in.rw.tac symlink in the project either.
+    # HEAD did not move; no base.rw.tac symlink in the project either.
     prj1 = Project.open(prj_dir)
     assert prj1.head_sha == head0
-    assert not (prj_dir / "in.rw.tac").exists()
+    assert not (prj_dir / "base.rw.tac").exists()
 
 
 def test_rw_records_provenance(tmp_path: Path) -> None:
@@ -177,7 +177,7 @@ def test_ua_advances_head(tmp_path: Path) -> None:
     assert res.exit_code == 0, res.stdout
     prj1 = Project.open(prj_dir)
     assert prj1.head_sha != head0
-    assert (prj_dir / "in.ua.tac").is_symlink()
+    assert (prj_dir / "base.ua.tac").is_symlink()
     assert prj1.head.command == "ua"
     assert head0 in prj1.head.parents
 
@@ -190,10 +190,10 @@ def test_ua_pipeline_after_rw(tmp_path: Path) -> None:
     assert r1.exit_code == 0, r1.stdout
     r2 = runner.invoke(app, ["ua", str(prj_dir), "--plain"])
     assert r2.exit_code == 0, r2.stdout
-    assert (prj_dir / "in.rw.tac").is_symlink()
-    assert (prj_dir / "in.rw.ua.tac").is_symlink()
+    assert (prj_dir / "base.rw.tac").is_symlink()
+    assert (prj_dir / "base.rw.ua.tac").is_symlink()
     prj = Project.open(prj_dir)
-    assert "in.rw.ua.tac" in prj.head.names
+    assert "base.rw.ua.tac" in prj.head.names
 
 
 def test_ua_split_ingests_fileset(tmp_path: Path) -> None:
@@ -209,7 +209,7 @@ def test_ua_split_ingests_fileset(tmp_path: Path) -> None:
     prj = Project.open(prj_dir)
     assert prj.head.kind == "tac-set"
     assert head0 in prj.head.parents
-    assert (prj_dir / "in.ua.split").is_symlink()
+    assert (prj_dir / "base.ua.split").is_symlink()
     head_dir = prj.head_path()
     files = sorted(p.name for p in head_dir.iterdir())
     assert "manifest.json" in files
@@ -230,7 +230,7 @@ def test_pp_registers_htac_without_advancing_head(tmp_path: Path) -> None:
     # HEAD did not move.
     assert prj1.head_sha == head0
     # An htac sibling was registered.
-    htac_link = prj_dir / "in.htac"
+    htac_link = prj_dir / "base.htac"
     assert htac_link.is_symlink()
     htac_objs = [o for o in prj1.list_objects() if o.kind == "htac"]
     assert len(htac_objs) == 1
@@ -261,7 +261,7 @@ def test_smt_registers_smt2_without_advancing_head(tmp_path: Path) -> None:
     assert res.exit_code == 0, res.stdout
     prj1 = Project.open(prj_dir)
     assert prj1.head_sha == head0
-    assert (prj_dir / "in.smt2").is_symlink()
+    assert (prj_dir / "base.smt2").is_symlink()
     smt_objs = [o for o in prj1.list_objects() if o.kind == "smt"]
     assert len(smt_objs) == 1
     assert smt_objs[0].command == "smt"
@@ -280,13 +280,13 @@ def test_full_pipeline_rw_ua_smt(tmp_path: Path) -> None:
     assert runner.invoke(app, ["smt", str(prj_dir), "--plain"]).exit_code == 0
     # All four expected friendly names should be present.
     names = {p.name for p in prj_dir.iterdir() if p.is_symlink()}
-    assert "in.tac" in names
-    assert "in.rw.tac" in names
-    assert "in.rw.ua.tac" in names
-    assert "in.rw.ua.smt2" in names
+    assert "base.tac" in names
+    assert "base.rw.tac" in names
+    assert "base.rw.ua.tac" in names
+    assert "base.rw.ua.smt2" in names
     prj = Project.open(prj_dir)
     # HEAD ends on the .ua.tac (smt is non-HEAD-advancing).
-    assert "in.rw.ua.tac" in prj.head.names
+    assert "base.rw.ua.tac" in prj.head.names
     # smt object's parent is HEAD (the .ua.tac).
     smt_objs = [o for o in prj.list_objects() if o.kind == "smt"]
     assert len(smt_objs) == 1
@@ -368,7 +368,7 @@ def test_pin_split_ingests_fileset(tmp_path: Path) -> None:
     assert "manifest.json" in files
     assert any(f.endswith(".tac") for f in files)
     # Friendly symlink in the project root: <stem>.<cmd>.split.
-    set_link = prj_dir / "in.pin.split"
+    set_link = prj_dir / "base.pin.split"
     assert set_link.is_symlink()
     assert set_link.is_dir()
 

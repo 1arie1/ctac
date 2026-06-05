@@ -79,6 +79,11 @@ class Project:
         """
         if not base_tac.is_file():
             raise ProjectError(f"base TAC not found or not a file: {base_tac}")
+        if not label or "/" in label or label in (".", ".."):
+            raise ProjectError(
+                f"label {label!r} is not usable as a friendly-name stem "
+                "(must be non-empty, no '/')"
+            )
         root.mkdir(parents=True, exist_ok=True)
         dot = root / DOT_CTAC
         if dot.exists():
@@ -92,16 +97,20 @@ class Project:
         (dot / "refs").mkdir(parents=True)
 
         prj = cls(root, Manifest())
-        # Determine the friendly name from the input filename.
-        suggested = base_tac.name
+        # The friendly name comes from the label, not the (often long)
+        # source filename; the original path is kept as provenance in
+        # the object's ``source`` field.
+        kind = _kind_from_extension(base_tac, default="tac")
+        suggested = f"{label}.{_ext_for_kind(kind)}"
         info = prj.add(
             base_tac,
-            kind=_kind_from_extension(base_tac, default="tac"),
+            kind=kind,
             parents=[],
             command="init",
             args=[],
             suggested_name=suggested,
             advance_head=True,
+            source=str(base_tac.resolve()),
         )
         prj.set_label(info.sha, label)
         return prj
@@ -201,6 +210,7 @@ class Project:
         args: list[str],
         suggested_name: str | None = None,
         advance_head: bool = False,
+        source: str | None = None,
     ) -> ObjectInfo:
         """Ingest ``content_path`` (file or directory) as a project object.
 
@@ -259,6 +269,7 @@ class Project:
                 names=tuple(names),
                 created=_iso_now(),
                 size=size,
+                source=source,
             )
         else:
             # Same content, extend names; keep the original creation record.
@@ -271,6 +282,7 @@ class Project:
                 names=tuple(names),
                 created=existing.created,
                 size=existing.size,
+                source=existing.source or source,
             )
         self.manifest.objects[sha] = info
 

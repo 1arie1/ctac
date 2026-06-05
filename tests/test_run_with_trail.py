@@ -166,7 +166,7 @@ def test_file_inside_project_auto_discovers_trail(tmp_path: Path) -> None:
     assert res.exit_code == 0, res.output
 
     # The original .tac as a friendly-name symlink inside the project.
-    in_tac = prj / "in.tac"
+    in_tac = prj / "base.tac"
     assert in_tac.is_symlink()
 
     model_path = tmp_path / "m.txt"
@@ -212,7 +212,7 @@ def test_project_mode_auto_emits_and_consumes_trail(tmp_path: Path) -> None:
     res = runner.invoke(app, ["rw", str(prj), "--plain"])
     assert res.exit_code == 0, res.output
     # Trail object was emitted into the project.
-    trail_friendly = prj / "in.rw.trail.json"
+    trail_friendly = prj / "base.rw.trail.json"
     assert trail_friendly.exists()
 
     # Move HEAD back to base; trail should still auto-apply via the

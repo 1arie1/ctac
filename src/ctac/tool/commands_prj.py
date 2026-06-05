@@ -41,9 +41,12 @@ _PRJ_EPILOG = (
     "with a [cyan].ctac/[/cyan] sidecar. HEAD is "
     "\"the current TAC\"; intermediate artifacts (TAC, htac, smt2) "
     "are content-addressed in [cyan].ctac/objects/[/cyan] and "
-    "exposed as friendly symlinks in the project root "
-    "([cyan]in.tac[/cyan], [cyan]in.rw.tac[/cyan], "
-    "[cyan]in.rw.ua.tac[/cyan], ...).\n\n"
+    "exposed as friendly symlinks in the project root, named from "
+    "the project label "
+    "([cyan]base.tac[/cyan], [cyan]base.rw.tac[/cyan], "
+    "[cyan]base.rw.ua.tac[/cyan], ...). The original filename is kept "
+    "as [cyan]source[/cyan] provenance (see [cyan]prj list[/cyan] / "
+    "[cyan]prj info[/cyan]).\n\n"
     "[bold green]Project-aware commands[/bold green]  "
     "Pass [cyan]mytac[/cyan] in place of a [cyan].tac[/cyan] path. "
     "Single-file producers ([cyan]rw[/cyan], [cyan]ua --strategy merge[/cyan], "
@@ -60,11 +63,11 @@ _PRJ_EPILOG = (
     "[cyan]ctac prj init f.tac -o mytac --plain[/cyan]"
     "  [dim]# create project[/dim]\n\n"
     "[cyan]ctac rw mytac --plain[/cyan]"
-    "  [dim]# HEAD -> in.rw.tac[/dim]\n\n"
+    "  [dim]# HEAD -> base.rw.tac[/dim]\n\n"
     "[cyan]ctac ua mytac --plain[/cyan]"
-    "  [dim]# HEAD -> in.rw.ua.tac[/dim]\n\n"
+    "  [dim]# HEAD -> base.rw.ua.tac[/dim]\n\n"
     "[cyan]ctac smt mytac --plain[/cyan]"
-    "  [dim]# writes in.rw.ua.smt2 (sibling)[/dim]\n\n"
+    "  [dim]# writes base.rw.ua.smt2 (sibling)[/dim]\n\n"
     "[cyan]ctac prj list mytac --plain[/cyan]"
     "  [dim]# list objects[/dim]\n\n"
     "[cyan]ctac prj info mytac base --plain[/cyan]"
@@ -150,12 +153,16 @@ def prj_init(
         c.print(f"label: {label}", markup=False)
         if head_link is not None:
             c.print(f"head_path: {head_link}", markup=False)
+        if head.source:
+            c.print(f"source: {head.source}", markup=False)
     else:
         c.print(f"[bold]Created project[/bold] [cyan]{prj.root}[/cyan]")
         c.print(f"  HEAD:    [yellow]{head.sha[:12]}[/yellow]")
         c.print(f"  label:   [magenta]{label}[/magenta]")
         if head_link is not None:
             c.print(f"  HEAD →   [cyan]{head_link}[/cyan]")
+        if head.source:
+            c.print(f"  source:  [dim]{head.source}[/dim]")
 
 
 # ----------------------------------------------------------- prj list
@@ -209,9 +216,10 @@ def prj_list(
         for o in objects:
             head_marker = "*" if o.sha == head_sha else " "
             names = ",".join(o.names) if o.names else "-"
+            src = f"  <- {Path(o.source).name}" if o.source else ""
             c.print(
                 f"{head_marker}     {o.sha[:8]}  {o.kind:<8}  "
-                f"{o.command:<8}  {names}",
+                f"{o.command:<8}  {names}{src}",
                 markup=False,
             )
         # Labels footer.
@@ -227,10 +235,11 @@ def prj_list(
         for o in objects:
             marker = "[bold green]*[/bold green]" if o.sha == head_sha else " "
             names = ", ".join(o.names) if o.names else "-"
+            src = f"  [dim]<- {Path(o.source).name}[/dim]" if o.source else ""
             c.print(
                 f"  {marker} [yellow]{o.sha[:8]}[/yellow]  "
                 f"[magenta]{o.kind:<8}[/magenta] "
-                f"[cyan]{o.command}[/cyan]  {names}"
+                f"[cyan]{o.command}[/cyan]  {names}{src}"
             )
         if prj.manifest.labels:
             c.print("")
@@ -579,6 +588,7 @@ def _print_one(
             )
             c.print(f"created: {o.created}", markup=False)
             c.print(f"size: {o.size}", markup=False)
+            c.print(f"source: {o.source or '-'}", markup=False)
             if recursive and idx + 1 < len(chain):
                 c.print("", markup=False)
         else:
@@ -597,6 +607,7 @@ def _print_one(
             c.print(f"  names:   {', '.join(o.names) if o.names else '-'}")
             c.print(f"  created: {o.created}")
             c.print(f"  size:    {o.size}")
+            c.print(f"  source:  {o.source or '-'}")
             if recursive and idx + 1 < len(chain):
                 c.print("")
 

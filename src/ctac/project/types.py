@@ -34,7 +34,9 @@ class ObjectInfo:
     ``sha`` is the canonical id (full sha256 hex). ``names`` is the
     list of friendly symlinks in the project root that point at this
     object — there can be more than one if the same content was added
-    twice with different ``suggested_name`` values.
+    twice with different ``suggested_name`` values. ``source`` is the
+    absolute path of the external file the object was ingested from
+    (``init``); ``None`` for objects produced inside the project.
     """
 
     sha: str
@@ -45,6 +47,7 @@ class ObjectInfo:
     names: tuple[str, ...]
     created: str  # ISO8601 UTC, e.g. "2026-05-03T12:34:56Z"
     size: int
+    source: str | None = None
 
 
 class ProjectError(Exception):

@@ -102,8 +102,9 @@ def test_init_creates_layout(tmp_path: Path) -> None:
     assert prj.head_sha == expected_sha
     assert read_ref(dot, "base") == expected_sha
 
-    # Friendly symlink in the project root points at the object.
-    link = prj_dir / "in.tac"
+    # Friendly symlink in the project root is label-derived, not the
+    # source filename.
+    link = prj_dir / "base.tac"
     assert link.is_symlink()
     target = os.readlink(link)
     assert "objects" in target
@@ -128,7 +129,8 @@ def test_open_roundtrips(tmp_path: Path) -> None:
     prj2 = Project.open(prj_dir)
     assert prj1.head_sha == prj2.head_sha
     assert prj1.head.kind == prj2.head.kind
-    assert prj2.head.names == ("in.tac",)
+    assert prj2.head.names == ("base.tac",)
+    assert prj2.head.source == str(base.resolve())
 
 
 def test_is_project(tmp_path: Path) -> None:
@@ -179,7 +181,7 @@ def test_resolve_by_label(tmp_path: Path) -> None:
 def test_resolve_by_friendly_name(tmp_path: Path) -> None:
     base = _write_tac(tmp_path / "in.tac")
     prj = Project.init(tmp_path / "mytac", base)
-    assert prj.resolve("in.tac") == prj.head_sha
+    assert prj.resolve("base.tac") == prj.head_sha
 
 
 def test_resolve_unknown_raises(tmp_path: Path) -> None:
@@ -223,7 +225,7 @@ def test_add_same_content_new_alias(tmp_path: Path) -> None:
         suggested_name="aliased.tac",
     )
     assert info2.sha == sha0
-    assert "in.tac" in info2.names
+    assert "base.tac" in info2.names
     assert "aliased.tac" in info2.names
     assert (prj.root / "aliased.tac").is_symlink()
 
@@ -241,11 +243,11 @@ def test_add_collision_suffixes(tmp_path: Path) -> None:
         parents=[prj.head_sha],
         command="rw",
         args=[],
-        suggested_name="in.tac",  # already taken
+        suggested_name="base.tac",  # already taken
     )
     assert info2.sha != prj.head_sha
-    assert info2.names == ("in.2.tac",)
-    assert (prj.root / "in.2.tac").is_symlink()
+    assert info2.names == ("base.2.tac",)
+    assert (prj.root / "base.2.tac").is_symlink()
 
 
 # --------------------------------------------------------- log + manifest
@@ -304,7 +306,7 @@ def test_relink_all_rebuilds_missing_symlinks(tmp_path: Path) -> None:
     base = _write_tac(tmp_path / "in.tac")
     prj = Project.init(tmp_path / "mytac", base)
     # Delete the symlink to simulate a partial copy.
-    link = prj.root / "in.tac"
+    link = prj.root / "base.tac"
     link.unlink()
     assert not link.exists()
     skipped = prj.relink_all()
@@ -316,13 +318,13 @@ def test_relink_all_preserves_existing_correct_links(tmp_path: Path) -> None:
     base = _write_tac(tmp_path / "in.tac")
     prj = Project.init(tmp_path / "mytac", base)
     # relink_all is a no-op when symlinks already point at the right targets.
-    inode_before = (prj.root / "in.tac").lstat().st_ino
+    inode_before = (prj.root / "base.tac").lstat().st_ino
     prj.relink_all()
-    inode_after = (prj.root / "in.tac").lstat().st_ino
+    inode_after = (prj.root / "base.tac").lstat().st_ino
     # Symlink may have been recreated (different inode) or left alone;
     # either way the target should resolve to the same content.
     assert inode_before is not None and inode_after is not None
-    assert (prj.root / "in.tac").resolve() == prj.head_path()
+    assert (prj.root / "base.tac").resolve() == prj.head_path()
 
 
 def test_archive_to_and_clone_to_round_trip(tmp_path: Path) -> None:
@@ -335,7 +337,8 @@ def test_archive_to_and_clone_to_round_trip(tmp_path: Path) -> None:
     assert arc.read_bytes()[:2] == b"\x1f\x8b"
     dst = Project.clone_to(arc, tmp_path / "dst")
     assert dst.head_sha == src.head_sha
-    assert (dst.root / "in.tac").is_symlink()
+    assert (dst.root / "base.tac").is_symlink()
+    assert dst.head.source == src.head.source
 
 
 def test_clone_to_dir_source(tmp_path: Path) -> None:
@@ -493,7 +496,7 @@ def test_focus_on_non_fileset_rejected(tmp_path: Path) -> None:
     base = _write_tac(tmp_path / "in.tac")
     prj = Project.init(tmp_path / "mytac", base)
     with pytest.raises(ProjectError, match="not a fileset"):
-        prj.set_head("in.tac:foo")
+        prj.set_head("base.tac:foo")
 
 
 def test_fileset_size_reports_total_bytes(tmp_path: Path) -> None:
@@ -513,3 +516,59 @@ def test_set_label_writes_ref(tmp_path: Path) -> None:
     prj.set_label(prj.head_sha, "v1")
     assert read_ref(prj.dot_ctac, "v1") == prj.head_sha
     assert prj.resolve("v1") == prj.head_sha
+
+
+# --------------------------------------------- label-derived names + source
+
+
+def test_init_link_named_after_custom_label(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "PresolverRule-rule_with_a_long_name.tac")
+    prj = Project.init(tmp_path / "mytac", base, label="verify")
+    assert (prj.root / "verify.tac").is_symlink()
+    assert prj.head.names == ("verify.tac",)
+    assert prj.resolve("verify") == prj.head_sha
+    # No link named after the long source filename.
+    assert not (prj.root / base.name).exists()
+
+
+def test_init_htac_base_gets_htac_extension(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.htac")
+    prj = Project.init(tmp_path / "mytac", base)
+    assert prj.head.kind == "htac"
+    assert prj.head.names == ("base.htac",)
+
+
+def test_init_records_source(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    assert prj.head.source == str(base.resolve())
+    # Derived objects carry no source.
+    other = tmp_path / "other.tac"
+    other.write_text("derived\n", encoding="utf-8")
+    info = prj.add(
+        other, kind="tac", parents=[prj.head_sha], command="rw", args=[]
+    )
+    assert info.source is None
+    # Round-trips through the on-disk manifest.
+    m_disk = read_manifest(prj.dot_ctac)
+    assert m_disk.objects[prj.head_sha].source == str(base.resolve())
+    assert m_disk.objects[info.sha].source is None
+
+
+def test_init_rejects_pathy_label(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    with pytest.raises(ProjectError, match="friendly-name stem"):
+        Project.init(tmp_path / "mytac", base, label="a/b")
+
+
+def test_manifest_without_source_key_loads(tmp_path: Path) -> None:
+    """Pre-source manifests (no ``source`` field) read back as None."""
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    mpath = prj.dot_ctac / "manifest.json"
+    d = json.loads(mpath.read_text(encoding="utf-8"))
+    for obj in d["objects"].values():
+        obj.pop("source", None)
+    mpath.write_text(json.dumps(d), encoding="utf-8")
+    prj2 = Project.open(tmp_path / "mytac")
+    assert prj2.head.source is None

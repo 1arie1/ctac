@@ -453,16 +453,23 @@ A *project* is a working directory with a `.ctac/` sidecar that
 tracks "the current TAC" through a multi-step pipeline. Content is
 content-addressed under `.ctac/objects/<sha[:2]>/<sha[2:]>`; the
 project root carries friendly-name symlinks (`base.tac`,
-`base.rw.tac`, ...) for quick access.
+`base.rw.tac`, ...) for quick access. Friendly names derive from
+the project label, not the (often long) original filename; the
+original path is kept as `source` provenance, visible in
+`prj list` / `prj info`.
 
 - `ctac prj init <FILE> -o <DIR> --plain`
   - Create a project at DIR with FILE as the base. HEAD is set to
-    the base; label `base` points at the same sha.
-  - `--label NAME` overrides the default `base` label.
+    the base; label `base` points at the same sha; the friendly
+    link is `<label>.<ext>` (`base.tac`), with FILE's path recorded
+    as the object's `source`.
+  - `--label NAME` overrides the default `base` label (and the
+    link stem: `NAME.tac`).
   - `--force` overwrites an existing `.ctac/`.
 
 - `ctac prj list <DIR> [<OBJ_ID>] --plain`
-  - Tabular list of all objects (sha, kind, command, names). With
+  - Tabular list of all objects (sha, kind, command, names; rows
+    ingested from outside show `<- <original filename>`). With
     `OBJ_ID`, falls through to `prj info` for that one object.
 
 - `ctac prj info <DIR> <OBJ_ID> --plain [--recursive]`
@@ -501,8 +508,8 @@ Project-aware commands (give the project dir in place of a `.tac`):
 - HEAD-moving fileset producers: `pin --split`, `ua --strategy
   split`. Output is a tac-set (directory of cases + manifest);
   HEAD advances to the fileset object, friendly name
-  `<stem>.<command>.split` (e.g. `in.pin.split/`,
-  `in.ua.split/`).
+  `<stem>.<command>.split` (e.g. `base.pin.split/`,
+  `base.ua.split/`).
 - Sibling-producing (no `-o` ingests as a non-HEAD-advancing
   object whose parent is HEAD): `pp` writes `.htac`, `smt`
   writes `.smt2`.
@@ -513,18 +520,18 @@ When HEAD is a fileset, single-file consumers (`rw`, `ua`, `pp`,
 `smt`) refuse to run — focus a member first:
 
 ```bash
-ctac prj set-head mytac in.ua.split:assert_01.tac
+ctac prj set-head mytac base.ua.split:assert_01.tac
 ctac smt mytac --plain
 ```
 
 Typical pipeline:
 
 ```bash
-ctac prj init f.tac -o mytac --plain         # HEAD = in.tac
-ctac rw mytac --plain                        # HEAD -> in.rw.tac
-ctac ua mytac --strategy split --plain       # HEAD -> in.rw.ua.split/
-ctac prj list mytac in.rw.ua.split --plain   # show members + hint
-ctac prj set-head mytac in.rw.ua.split:assert_01.tac --plain
+ctac prj init f.tac -o mytac --plain         # HEAD = base.tac (source: f.tac)
+ctac rw mytac --plain                        # HEAD -> base.rw.tac
+ctac ua mytac --strategy split --plain       # HEAD -> base.rw.ua.split/
+ctac prj list mytac base.rw.ua.split --plain # show members + hint
+ctac prj set-head mytac base.rw.ua.split:assert_01.tac --plain
 ctac smt mytac --plain                       # writes assert_01.smt2
 ```
 

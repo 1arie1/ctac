@@ -48,6 +48,9 @@ class Manifest:
                     "names": list(info.names),
                     "created": info.created,
                     "size": info.size,
+                    # Optional field omitted when absent so pre-source
+                    # manifests rewrite byte-stable.
+                    **({"source": info.source} if info.source is not None else {}),
                 }
                 for sha, info in self.objects.items()
             },
@@ -73,6 +76,7 @@ class Manifest:
                 names=tuple(raw.get("names", ())),
                 created=raw.get("created", ""),
                 size=int(raw.get("size", 0)),
+                source=raw.get("source"),
             )
         return cls(
             schema_version=sv,

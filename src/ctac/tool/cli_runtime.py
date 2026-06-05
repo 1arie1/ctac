@@ -96,13 +96,14 @@ CANONICAL WORKFLOWS:
 
 PROJECT WORKFLOW (recommended for multi-step pipelines):
   ctac prj init f.tac -o mytac --plain    # create a HEAD-tracked workspace
-  ctac rw mytac --plain                   # HEAD -> in.rw.tac
-  ctac ua mytac --plain                   # HEAD -> in.rw.ua.tac
-  ctac smt mytac --plain                  # writes in.rw.ua.smt2
+  ctac rw mytac --plain                   # HEAD -> base.rw.tac
+  ctac ua mytac --plain                   # HEAD -> base.rw.ua.tac
+  ctac smt mytac --plain                  # writes base.rw.ua.smt2
   ctac prj list mytac --plain             # see the whole graph
 The project tracks "the current TAC" for you, ingests every command's
 output as a content-addressed object, and exposes friendly-name
-symlinks (`mytac/in.rw.tac` etc.) you can read with cat/grep/`vim`
+symlinks (`mytac/base.rw.tac` etc., named from the project label, not
+the original long filename) you can read with cat/grep/`vim`
 directly. See `ctac prj --agent` for the full surface (init / list /
 info / set-head / label / export-path / archive / clone) and the raw
 file-access patterns.
@@ -717,14 +718,14 @@ PRJ COMMANDS:
 
 TYPICAL PIPELINE (linear):
   ctac prj init f.tac -o mytac --plain
-  ctac rw mytac --plain                        # HEAD -> in.rw.tac
-  ctac ua mytac --plain                        # HEAD -> in.rw.ua.tac
-  ctac smt mytac --plain                       # writes in.rw.ua.smt2
+  ctac rw mytac --plain                        # HEAD -> base.rw.tac
+  ctac ua mytac --plain                        # HEAD -> base.rw.ua.tac
+  ctac smt mytac --plain                       # writes base.rw.ua.smt2
 
 TYPICAL PIPELINE (split):
-  ctac ua mytac --strategy split --plain       # HEAD -> in.ua.split/
-  ctac prj list mytac in.ua.split --plain      # see members
-  ctac prj set-head mytac in.ua.split:assert_01.tac
+  ctac ua mytac --strategy split --plain       # HEAD -> base.ua.split/
+  ctac prj list mytac base.ua.split --plain      # see members
+  ctac prj set-head mytac base.ua.split:assert_01.tac
   ctac smt mytac --plain                       # solve focused case
 
 LAYOUT:
@@ -733,12 +734,12 @@ LAYOUT:
   mytac/.ctac/objects/<pfx>/<rest>    # canonical content (file or dir)
   mytac/.ctac/manifest.json           # provenance graph
   mytac/.ctac/log.jsonl               # append-only command log
-  mytac/in.tac                        # symlink -> objects/<sha>
-  mytac/in.ua.split/                  # symlink -> objects/<sha>/ (set)
+  mytac/base.tac                        # symlink -> objects/<sha>
+  mytac/base.ua.split/                  # symlink -> objects/<sha>/ (set)
 
 REFS: any of these resolve an object — full sha, unique short sha
 (>= 4 hex chars), label name (`base`), friendly symlink name
-(`in.rw.tac`), or a path inside the project root. The form
+(`base.rw.tac`), or a path inside the project root. The form
 `<set-ref>:<member-name>` is accepted by `prj set-head` to
 materialize and focus a fileset member.
 
@@ -746,19 +747,19 @@ RAW FILE ACCESS (for experiments / quick edits / non-ctac tools):
 The project format never hides files — every object is a real file
 (or directory) on disk that any tool can read.
 - Friendly-name symlinks in the project root resolve transparently:
-    cat mytac/in.rw.tac
-    vim mytac/in.rw.ua.tac
-    diff mytac/in.tac mytac/in.rw.tac
-    grep -c AssertCmd mytac/in.rw.ua.tac
+    cat mytac/base.rw.tac
+    vim mytac/base.rw.ua.tac
+    diff mytac/base.tac mytac/base.rw.tac
+    grep -c AssertCmd mytac/base.rw.ua.tac
 - For shell pipes, `prj export-path` prints one line, undecorated:
-    z3 $(ctac prj export-path mytac in.rw.ua.smt2) -T:30
+    z3 $(ctac prj export-path mytac base.rw.ua.smt2) -T:30
     cp $(ctac prj export-path mytac) /tmp/scratch.tac
 - The content-addressed store is browsable directly under
   `<DIR>/.ctac/objects/<sha[:2]>/<sha[2:]>` — files for single-file
   objects, directories for filesets. Symlinks point at these.
 - Filesets behave like ordinary directories on disk:
-    ls mytac/in.ua.split/
-    cat mytac/in.ua.split/assert_01.tac
+    ls mytac/base.ua.split/
+    cat mytac/base.ua.split/assert_01.tac
 - `prj archive` produces a tar / tar.gz of `.ctac/`; `prj clone`
   unpacks one (or copies a project directory) and rebuilds the
   friendly-name symlinks at the destination.
@@ -772,7 +773,7 @@ object, write it to a path outside the project (or use the
 NOT YET PROJECT-AWARE: `stats`, `cfg`, `search`, `slice`, `df`,
 `types`, `run`, `cfg-match`, `bb-diff`, `op-diff`, `splitcrit`,
 `absint`, `rw-eq`. Pass an explicit object path for those today —
-either the friendly symlink (`mytac/in.rw.tac`) or
+either the friendly symlink (`mytac/base.rw.tac`) or
 `$(ctac prj export-path mytac)`.
 """,
     "cover-cfg": """ctac cover-cfg --agent
