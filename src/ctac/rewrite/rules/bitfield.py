@@ -6,9 +6,11 @@
 - N3: ``BWAnd(X, 2^256 - 2^k) -> Mul(Div(X, 2^k), 2^k)`` (clear-low-k mask).
 - N4: ``ShiftRightLogical(X, k_const) -> Div(X, 2^k)``.
 
-Promotes the SMT-emission-time normalizations at ``sea_vc.py:614-648`` to
-TAC-level rewrites so R6's ceiling-div matcher can key on canonical
-``Mod`` / ``Div`` shapes rather than duplicating the bit-op recognition.
+Promotes the SMT-emission-time mask/shift normalizations in
+``src/ctac/smt/encoding/sea_vc.py`` (keyed on ``_is_low_mask`` /
+``_is_high_mask_clear_low_k`` / ``shifted_contiguous_mask``) to TAC-level
+rewrites so R6's ceiling-div matcher can key on canonical ``Mod`` / ``Div``
+shapes rather than duplicating the bit-op recognition.
 """
 
 from __future__ import annotations

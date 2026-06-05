@@ -1,8 +1,9 @@
 """SMT-LIB v2 tokenizer.
 
 Produces a stream of typed `Token`s with byte-offset spans. Comments
-and whitespace boundaries are preserved as tokens so the parser can
-reconstruct exact source for round-trip emit.
+are preserved as COMMENT tokens; whitespace is skipped silently. Byte-
+offset spans on tokens let the parser reconstruct exact source for
+round-trip emit.
 
 Reference: SMT-LIB v2 standard, section 3.1 (Lexicon). We don't aim
 for full Unicode symbol coverage — the ctac corpus is ASCII, and we

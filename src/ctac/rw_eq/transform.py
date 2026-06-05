@@ -76,16 +76,21 @@ parallel-assignment shape (where phi-likes live at end of block).
 Assumptions and caveats
 -----------------------
 
-1. **Block topology matches**: ``orig`` and ``rw`` must have the same
-   set of block ids and the same successor list per block. Rule 6
+1. **Block topology matches (lockstep mode)**: in lockstep mode
+   ``orig`` and ``rw`` must have the same set of block ids and the
+   same successor list per block. Stuttering mode relaxes this: ``rw``
+   may carry a subsequence of ``orig``'s block ids (fewer blocks,
+   divergent topology), decomposed at divergence/sync points by
+   :func:`_detect_mode` / :func:`analyze_simulation`. Rule 6
    introduces shadow vars only in the entry block; it does not touch
    block topology.
 
 2. **Single namespace**: variable names are preserved across orig and
    rw — the rwriter renames nothing. Rule 6 mints fresh
    ``X__rw_eq<n>`` shadow vars; that's the only walker-introduced
-   namespace addition. Rules 3 / 4 / 5 / 6 also mint fresh ``CHK<n>``
-   bools for equivalence checks.
+   namespace addition. Rules 2 / 4 / 5 / 6 also mint fresh ``CHK<n>``
+   bools for equivalence checks (rule 3 emits its rhs-only command
+   verbatim with no CHK).
 
 3. **Asserts → assumes**: the orig's AssertCmds are converted to
    assumes by rule 5b (paired) so the merged program doesn't carry

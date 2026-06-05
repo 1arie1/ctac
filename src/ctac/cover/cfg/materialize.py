@@ -11,9 +11,9 @@ Output layout under `<cluster_dir>/`:
 ```
 cluster_<i>/
   pinned.tac         # ctac pin --drop ...
-  pinned.rw.tac      # ctac rw --interval-select
+  pinned.rw.tac      # ctac rw
   v.smt2             # ctac smt --encoding sea --cfg-encoding fwd-edg
-                     #          --inline-scalars [--unsat-core]
+                     #          --guard-statics [--unsat-core]
   pin.cmd            # ready-to-run pin command
   rw.cmd             # ready-to-run rw command
   smt.cmd            # ready-to-run smt command

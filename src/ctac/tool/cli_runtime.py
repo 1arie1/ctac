@@ -498,8 +498,8 @@ TYPICAL:
 
 EXPECTED: `unsat` on every script means the rule is sound. `sat` is a
 counterexample (bug). `unknown` means escalate (tactics, Lean).
-Currently covers R4, R4a, R6 (9 cases); other rules are listed under
-`manifest.json`:`missing`.
+Currently covers R1, R4, R4a, R6, ADD_BV_MAX_TO_ITE (11 cases); other
+rules are listed under `manifest.json`:`missing`.
 """,
     "rw-eq": """ctac rw-eq --agent
 
@@ -781,7 +781,7 @@ object, write it to a path outside the project (or use the
 `Project.add(...)` library API directly).
 
 NOT YET PROJECT-AWARE: `stats`, `cfg`, `search`, `slice`, `df`,
-`types`, `run`, `cfg-match`, `bb-diff`, `op-diff`, `splitcrit`,
+`types`, `run`, `cfg-match`, `bb-diff`, `op-diff`, `split-crit`,
 `absint`, `rw-eq`. Pass an explicit object path for those today —
 either the friendly symlink (`mytac/base.rw.tac`) or
 `$(ctac prj export-path mytac)`.
@@ -789,8 +789,9 @@ either the friendly symlink (`mytac/base.rw.tac`) or
     "cover-cfg": """ctac cover-cfg --agent
 
 WHAT: Sound CFG cover for single-assert TAC VCs. Decomposes the
-program into clusters by sampling random entry→assert paths and
-clustering them; solves each cluster's wider sub-problem; on
+program into clusters by sampling boolean-feasible entry→assert
+paths via an iterated SMT completeness probe and clustering them;
+solves each cluster's wider sub-problem; on
 first SAT cluster, returns SAT (first-SAT-wins). Otherwise runs a
 completeness CEGAR loop with a PB linear-path probe; UNSAT means
 every CFG path is covered. Residuals (clusters that didn't close
@@ -827,8 +828,8 @@ OUTPUT (under -o):
 - subgoals/<id>.json — residuals (only when verdict=unknown)
 
 KEY FLAGS:
-- --samples N         random-path sample count (default 32)
-- --k N               cluster count (default: max(3, samples/4))
+- --samples N         max probe-sampling iterations (default 32)
+- --k N               cluster count (default: singleton-per-path)
 - --budget SECS       per-cluster z3 timeout (default 30)
 - --absorb-budget SECS  short-budget probe for cluster widening (8)
 - --absorb-threshold N  max |π \\ K_j| for absorption (5)
@@ -843,11 +844,13 @@ the cover. The cover is only sound iff verify-cover exits 0.
     "smtlib": """ctac smtlib --agent
 
 WHAT: Inspect / pretty-print / sanity-check SMT-LIB v2 files (typically
-the output of `ctac smt`). Three subcommands:
+the output of `ctac smt`). Four subcommands:
   stats     statement-kind counts, declare-const sort distribution,
             bytemap-chain depths, UF argument scan
   pp        pretty-print via the Doc algebra (Wadler-style),
             configurable target width; `-o` writes to a file
+  slice     filter statements by --kinds / --range and pretty-print;
+            `-o` writes to a file
   roundtrip parse then emit; verify result is byte-identical to source
             (sanity check for the round-trip emitter)
 
@@ -891,8 +894,8 @@ PARSER NOTES: `Smt2LexError` / `Smt2ParseError` carry
 unchanged statements emit byte-identical via slicing; mutated
 statements re-render through the Doc-algebra pretty-printer.
 
-OUTPUT WRITE: only `pp -o PATH` writes a file; `stats` and `roundtrip`
-print to stdout (use `> file` to redirect).
+OUTPUT WRITE: `pp -o PATH` and `slice -o PATH` write a file; `stats`
+and `roundtrip` print to stdout (use `> file` to redirect).
 """,
 }
 

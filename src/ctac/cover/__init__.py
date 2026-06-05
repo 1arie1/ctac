@@ -1,9 +1,8 @@
 """`ctac.cover` — sound decomposition procedures for single-assert TAC VCs.
 
-Two strategies (independent decision procedures, not stacked):
+One strategy today (alias cover, SMT-level aliasing decomposition, is future):
 
 - `ctac.cover.cfg`   — CFG cover (TAC-level path decomposition).
-- `ctac.cover.alias` — alias cover (SMT-level aliasing decomposition).
 
 Shared certification infrastructure (this round):
 

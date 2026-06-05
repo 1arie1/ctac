@@ -8,7 +8,7 @@ Two operations:
   feasible successor leads only to non-assert sinks. Returns the
   ordered block list or None on stuck.
 
-- `path_through_block(info, target, seed)`: shortest path
+- `path_through_block(info, target)`: shortest path
   `entry -> target -> assert`, useful for *block-level saturation*
   — when a block hasn't been covered by any sample, ensure at least
   one path goes through it.

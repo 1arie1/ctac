@@ -1,6 +1,6 @@
 """`ctac cover-cfg` — sound CFG cover for single-assert TAC VCs.
 
-Bottom-up cover via random-path sampling + K-medoid clustering +
+Bottom-up cover via probe-based path sampling + K-medoid clustering +
 PB linear-path completeness probe. Per the first-SAT-wins rule,
 returns immediately on the first SAT slice; otherwise runs the
 completeness CEGAR loop to a sound UNSAT verdict (or reports
@@ -68,7 +68,8 @@ def cover_cfg_cmd(
         help='Initial random-path samples (before saturation).'),
     k: Optional[int] = typer.Option(
         None, '--k',
-        help='K-medoid cluster count. Defaults to max(3, samples/4).'),
+        help='K-medoid cluster count. Defaults to one cluster per '
+              'sampled path (singleton-per-path).'),
     budget: int = typer.Option(
         30, '--budget',
         help='Per-cluster z3 timeout (seconds).'),

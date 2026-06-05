@@ -52,7 +52,7 @@ class EncoderContext:
     the SMT core when its trigger block is not reachable on the
     current path."""
     cfg_encoding: str = "bwd0"
-    """Which CFG-constraint encoding strategy to use. Five strategies
+    """Which CFG-constraint encoding strategy to use. Eight strategies
     ship today (``ctac.smt.cfg.CFG_ENCODERS``):
     ``bwd0`` (default) — predecessor-oriented edge-feasibility
       OR-of-ANDs + block-level existence + AMO. Historical sea_vc shape.
@@ -60,6 +60,10 @@ class EncoderContext:
       sound under the same AMO.
     ``fwd`` — successor-oriented one-way implication
       (``BLK_i => ⋁ BLK_succ``) + AMO over successors + per-edge guard.
+    ``fwd-bwd`` — ``fwd`` plus backward immediate-dominator clauses
+      ``BLK_i => BLK_idom(i)`` for each non-entry block, giving BCP a
+      1-hop backward propagation path (redundant given ``fwd``'s
+      transitive chain, but shorter).
     ``fwd-edg`` — like ``fwd`` but introduces per-edge Bool variables;
       block existence becomes a biconditional over edge vars
       (sound on diamond CFGs because edge vars decouple parents).

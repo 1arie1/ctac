@@ -10,9 +10,8 @@ extension-based convention:
   format, like the default of ``ctac pp``.
 
 Centralizing the dispatch here so every emitting command (``rw``,
-``ua``, ``rw-eq``, ``splitcrit``, ``df`` when its ``--style`` isn't
-explicit) makes the same choice. Adding a new emitting command? Use
-:func:`write_program_to_path`.
+``ua``, ``rw-eq``, ``splitcrit``) makes the same choice. Adding a
+new emitting command? Use :func:`write_program_to_path`.
 """
 
 from __future__ import annotations

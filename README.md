@@ -7,11 +7,11 @@ A quick map of what `ctac` gives you beyond `grep`:
 
 | Purpose | Commands |
 |---|---|
-| **Inspect** a TAC file | `stats`, `parse`, `pp`, `cfg`, `search` (alias: `grep`) |
-| **Compare** two builds | `op-diff`, `cfg-match`, `bb-diff` |
-| **Analyze** data-flow | `df` |
-| **Transform** TAC | `rw` (rewrites + DCE), `ua` (uniquify asserts), `strip` (remove client metadata) |
-| **Verify** | `run` (concrete interpreter), `smt` (SMT-LIB VC + z3) |
+| **Inspect** a TAC file | `stats`, `parse`, `pp`, `cfg`, `search` (alias: `grep`), `slice` |
+| **Compare** two builds | `op-diff`, `cfg-match`, `bb-diff`, `sbf-tac` |
+| **Analyze** data-flow | `df`, `types`, `absint` |
+| **Transform** TAC | `rw` (rewrites + DCE), `ua` (uniquify asserts), `strip` (remove client metadata), `pin` (specialize), `cfg-simplify` |
+| **Verify** | `run` (concrete interpreter), `smt` (SMT-LIB VC + z3), `verify-cover` |
 | **Validate** the rewriter | `rw-valid` |
 
 Every command has its own `--help` (full flags + examples in the
@@ -21,7 +21,7 @@ manual — drill into `--help` for flag-level detail.
 
 ## Environment 🧳
 
-Python **3.13+** (3.14 is fine). From the repo root:
+Python **3.11+** (3.14 is fine). From the repo root:
 
 ```bash
 python3.14 -m venv .venv
@@ -90,6 +90,8 @@ ctac search f.tac 'BWAnd' --plain -C 2  # grep-style context (-B / -A / -C)
 ctac search f.tac '0x[0-9a-f]+' --plain --count-by-match  # frequency table
 ctac search f.tac 'BWAnd' --plain -q --count  # pipeable; awk on `matches:`
 
+ctac slice f.tac -c B1054 --plain  # backward static slice from a symbol/block
+
 ctac smtlib stats f.smt2 --plain  # for .smt2 inputs: kinds, sorts,
                                   # bytemap chain depth, UF-arg vars
 ctac smtlib pp f.smt2 --width 100  # pretty-print via Doc algebra
@@ -114,6 +116,8 @@ ctac op-diff a.tac b.tac --json  # machine-readable
 
 ctac cfg-match a.tac b.tac --plain --const-weight 0.2
 ctac bb-diff  a.tac b.tac --plain --drop-empty --max-diff-lines 120
+
+ctac sbf-tac f.sbf.json f.tac --plain  # join SBF instrs with same-address TAC
 ```
 
 `op-diff` is the fastest way to spot encoder-level drift between two
@@ -127,6 +131,9 @@ ctac df f.tac --plain  # all analyses, summary
 ctac df f.tac --plain --show dsa  # validate DSA (rejecter for sea_vc)
 ctac df f.tac --plain --show dce --details  # per-item dead-code listing
 ctac df f.tac --plain --json  # machine-readable
+
+ctac types f.tac --plain --show ptr  # kind inference: provable pointers
+ctac absint f.tac --plain  # abstract-interpreter analyses (polynomial degree, ...)
 ```
 
 Available analyses: `def-use`, `liveness`, `dce`, `use-before-def`,
@@ -144,6 +151,9 @@ ctac ua f.tac -o f_ua.tac --plain  # fold asserts into one __UA_ERROR block
 ctac ua f.tac -o f_ua.tac --plain --report  # + counts
 
 ctac strip f.tac -o f_open.tac --plain --report  # remove client metadata
+
+ctac pin f.tac --drop B7 --bind R3=0 -o sp.tac --plain  # specialize the CFG
+ctac cfg-simplify f.tac -o out.tac --plain  # drop annotation-only fall-through blocks
 ```
 
 `rw` runs the iterated simplification pipeline (N1–N4 bit-op
@@ -181,6 +191,8 @@ ctac z3 f.smt2 --seeds 0-7 -j 4  # seed sweep race; first verdict wins
 ctac z3 f.smt2 --configs default,alt-then,bp-off --seeds 0-3 -j auto
 ctac z3 f.smt2 --show-output --save-rerun winner.sh  # capture winner artifacts
 ctac z3 --list-configs  # see available configs (defaults + discovered file)
+
+ctac verify-cover cover.json --plain  # re-verify a cover certificate via z3
 ```
 
 `ctac z3` runs z3 on an existing `.smt2` with classification +

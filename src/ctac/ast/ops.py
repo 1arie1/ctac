@@ -32,7 +32,7 @@ EXPRESSION_OPS: tuple[str, ...] = (
     "BWAnd",
     "BWOr",
     "BWXOr",
-    "BNot",
+    "BWNot",
     "ShiftLeft",
     "ShiftRightLogical",
     "ShiftRightArithmetical",

@@ -1,7 +1,8 @@
 """`ctac absint` — abstract-interpreter-driven analyses.
 
-For now the only exposed analysis is polynomial degree (a stats case
-that ranks the program's non-linear expressions). Most absint work is
+Two analyses are exposed: polynomial degree (a stats case that ranks
+the program's non-linear expressions) and per-variable interval
+analysis (DSA-aware abstract interpretation). Most absint work is
 analysis in support of other transformations; this command surfaces
 the analyses that produce useful standalone reports.
 """
@@ -124,7 +125,7 @@ def absint_cmd(
         str,
         typer.Option(
             "--show",
-            help="Comma-separated analysis outputs: degree,all",
+            help="Comma-separated analysis outputs: degree,interval,all",
             autocompletion=complete_choices(list(_VALID_SHOW)),
         ),
     ] = _DEFAULT_SHOW,

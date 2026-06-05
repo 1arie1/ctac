@@ -226,13 +226,24 @@ Prompt template:
       `--no-purify-assume` — disable individual post-DCE naming phases.
   - Soundness of every rewrite rule is documented by `ctac rw-valid`.
 
+- `ctac cfg-simplify <file> --plain`
+  - Drop annotation-only fall-through blocks (single declared
+    successor, body only `AnnotationCmd`/`LabelCmd`) and rewire each
+    unique predecessor to the successor.
+  - Key flags:
+    - `-o <path>` — write `.tac` / `.htac` output.
+    - `--report` — drop / rewire / skip counts.
+  - Soundness verifiable via `ctac rw-eq`.
+
 - `ctac ua <file> --plain`
-  - Uniquify assertions: fold every `AssertCmd` into a single
-    `__UA_ERROR` block so the output satisfies `ctac smt`'s
+  - Uniquify assertions so the output satisfies `ctac smt`'s
     one-assert precondition. Predicates are used verbatim — no
     inversion, Floyd-Hoare style.
   - Key flags:
     - `-o <path>` — write `.tac` / `.htac` output.
+    - `--strategy merge|split` (default `merge`) — `merge` folds
+      every `AssertCmd` into a single `__UA_ERROR` block; `split`
+      emits one `.tac` per assertion.
     - `--report` — counts.
   - Single-assert input is a no-op (`was_noop: true`).
 
@@ -286,8 +297,9 @@ Prompt template:
 - `ctac rw-valid --plain`
   - Emit per-rule SMT-LIB soundness specs (one `.smt2` per rule +
     `manifest.json`). Does NOT invoke z3 — run the solver yourself.
-  - Currently covers R4 (4 op variants), R4a (base + signed), R6
-    (base + signed). Other rules listed under `manifest.json:missing`.
+  - Currently covers R1, R4 (5 op variants), R4a (base + signed),
+    R6 (base + signed), and ADD_BV_MAX_TO_ITE. Other rules listed
+    under `manifest.json:missing`.
   - Key flags:
     - `-o <dir>` (required) — output directory.
     - `--rule <NAME>` (repeatable) — emit specs for named rules only.
@@ -308,16 +320,20 @@ Prompt template:
     - Non-`Assertions` suffix models are ignored with an input warning.
 
 - `ctac smt <file> --plain`
-  - Emit SMT-LIB VC. Encoder: `sea_vc` (QF_UFNIA, DSA +
+  - Emit SMT-LIB VC. Default encoder: `sea_vc` (QF_UFNIA, DSA +
     block-reachability, sound bv256 domain constraints,
-    bytemap-as-UF with per-application range axiom; currently the
-    only supported encoder).
+    bytemap-as-UF with per-application range axiom). Select others
+    via `--encoding`: `leino`, `sea`, `sea_gate`, `sea_vc`.
   - Preconditions: loop-free TAC, exactly one `AssertCmd` (run
     `ctac ua` first to merge), and `AssertCmd` must be the last command
     in its block. Any bytemap capability is supported (`bytemap-rw` is
     encoded via Store/Select); there is no `bytemap-free`/`bytemap-ro`
     requirement.
   - VC semantics: SAT iff assertion-failure state is reachable.
+  - Encoder selection: `--encoding {leino,sea,sea_gate,sea_vc}`
+    (default `sea_vc`). `--coi {thin,coarse,aggressive}` tunes the
+    `sea_gate` cone-of-influence pruning (ignored for other
+    encoders); `aggressive` is sound only for UNSAT.
   - Solver mode: `--run` invokes z3 and reports `sat|unsat|unknown|timeout`.
   - SAT model export: `--model <path>` writes TAC model text compatible with `ctac run --model`.
   - Unsat-core mode: `--unsat-core` names asserts and prints the core on UNSAT.
@@ -447,6 +463,36 @@ Prompt template:
       reproduces the winning invocation.
     - `--z3 PATH` / `CTAC_Z3` env / `$PATH` — binary resolution.
 
+- `ctac cover-cfg <file> --plain`
+  - Sound CFG cover for a single-assert TAC VC: bottom-up
+    path-decomposition via probe sampling + K-medoid clustering +
+    a PB linear-path completeness probe. First SAT slice wins;
+    otherwise runs the completeness CEGAR loop to a sound UNSAT
+    verdict (or reports residual subgoals on timeout).
+  - Key flags:
+    - `-o <path>` — write the cover certificate (manifest JSON).
+    - `--samples`, `--k`, `--budget`, `--absorb-budget`,
+      `--absorb-threshold`, `--completeness-iter`,
+      `--completeness-budget` — cover-loop tuning.
+    - `--workers`, `--seed`, `--abort-on-timeout`,
+      `--core-forbids/--no-core-forbids`.
+    - `--z3 PATH`, `--ctac BIN`.
+
+- `ctac verify-cover <cover.json> --plain`
+  - Independent re-verifier: reads a cover manifest, re-runs every
+    recorded z3 invocation, and confirms the verdicts match. Exits
+    0 on full match; passing here implies the cover verdict is
+    sound regardless of bugs in the producing loop.
+  - Key flags:
+    - `--z3 PATH` — override the z3 binary.
+    - `--rederive-timeout <s>` — budget for pin / rw / smt
+      re-derivation steps.
+    - `--timeout-multiplier <x>` / `--timeout-slack <s>` —
+      per-z3-step budget = `recorded wall_s * x + slack`.
+    - `--ctac BIN` — ctac binary for re-derivation + SAT replay.
+    - `--strict-validation` — SAT replay must have zero havoc
+      fallbacks (default lax).
+
 ## Project (HEAD-tracked workspace)
 
 A *project* is a working directory with a `.ctac/` sidecar that
@@ -548,7 +594,7 @@ ctac smt mytac --plain                       # writes assert_01.smt2
 ```
 
 Other commands (`stats`, `cfg`, `search`, `slice`, `df`, `types`,
-`run`, `cfg-match`, `bb-diff`, `op-diff`, `splitcrit`, `absint`,
+`run`, `cfg-match`, `bb-diff`, `op-diff`, `split-crit`, `absint`,
 `rw-eq`) still take an explicit TAC path; routing them through
 the project is on the follow-up list.
 

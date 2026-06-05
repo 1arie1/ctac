@@ -56,7 +56,7 @@ def test_complete_rule_names_returns_registered_cases():
 def test_complete_search_tokens_covers_ops_and_cmds():
     fn = complete_search_tokens()
     # Expression ops: bitwise family complete from a common prefix.
-    assert fn("BW") == ["BWAnd", "BWOr", "BWXOr"]
+    assert fn("BW") == ["BWAnd", "BWOr", "BWXOr", "BWNot"]
     # Shift family — all three.
     assert fn("Shift") == [
         "ShiftLeft",

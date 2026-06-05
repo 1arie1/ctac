@@ -11,7 +11,7 @@ Two-phase architecture:
 
 * **Phase 2 — transformation.** Given the dead set from Phase 1,
   apply CFG surgery + substitution + cleanup folds in a single
-  straight-line pass. (Implemented in subsequent commits.)
+  straight-line pass.
 
 The result satisfies a structural contract: every block in the
 output is reachable from entry AND can reach a terminal block (no

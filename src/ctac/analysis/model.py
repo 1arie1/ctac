@@ -15,8 +15,8 @@ class BytemapCapability(str, Enum):
     - ``BYTEMAP_FREE``: no memory symbols in the program at all.
     - ``BYTEMAP_RO``: memory symbols exist but are only havoced and read
       (via ``Select``). No ``Store`` and no ``AssignExpCmd`` targeting a
-      memory-sorted LHS. This is the shape the upcoming sea_vc memory
-      support will accept first.
+      memory-sorted LHS. sea_vc encodes this shape as havoc + ``Select``
+      reads.
     - ``BYTEMAP_RW``: memory is updated — either a ``Store`` expression
       appears somewhere, or some ``AssignExpCmd`` writes to a
       memory-sorted symbol (direct aliasing).

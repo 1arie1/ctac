@@ -1,9 +1,9 @@
 """Rule protocol + fixed-point driver for TAC rewrites.
 
 Rules are expression-level functions: ``(expr, ctx) -> new_expr | None``. The
-driver walks every :class:`AssignExpCmd` RHS and :class:`AssumeExpCmd`
-condition bottom-up, applies rules at each subexpression, and rebuilds the
-program. When any rule fires, the driver iterates again (up to
+driver walks every :class:`AssignExpCmd` RHS, :class:`AssumeExpCmd`
+condition, and :class:`AssertCmd` predicate bottom-up, applies rules at each
+subexpression, and rebuilds the program. When any rule fires, the driver iterates again (up to
 ``max_iterations``) until a fixed point is reached.
 
 Commands whose AST changes are canonicalized via :func:`canonicalize_cmd` so
@@ -256,8 +256,8 @@ def rewrite_program(
 ) -> RewriteResult:
     """Run ``rules`` over ``program`` to fixed point.
 
-    Only RHS of :class:`AssignExpCmd` and condition of :class:`AssumeExpCmd` are
-    considered for expression rewrites. Rules may additionally request
+    RHS of :class:`AssignExpCmd`, condition of :class:`AssumeExpCmd`, and
+    predicate of :class:`AssertCmd` are considered for expression rewrites. Rules may additionally request
     fresh havoc-and-assume pairs via :meth:`RewriteCtx.emit_fresh_var`; those
     are spliced into the entry block at the end of each outer iteration.
 

@@ -75,7 +75,7 @@ def try_absorb(*,
     - `.verdict == 'sat'`: first-SAT-wins; caller should exit.
 
     Returns None if no cluster was close enough to attempt absorption,
-    or if the widened solve was unknown/timeout — in that case the
+    or if the widened solve was unknown — in that case the
     caller falls through to singleton+core."""
     if not states:
         return None

@@ -1,9 +1,11 @@
 """Polynomial-degree domain.
 
 Estimates the polynomial degree of TAC variables. `deg(const) = 0`,
-`deg(symbol) = 1`, `deg(a * b) = deg(a) + deg(b)`, division and bitwise
-ops add 1 (treated as non-linear), comparisons and boolean ops take
-the max of operand degrees.
+`deg(symbol) = 1`, `deg(a * b) = deg(a) + deg(b)`, division, bitwise,
+and shift ops add 1 only when the divisor / second bitwise operand /
+shift amount is symbolic (against a constant they are linear, same
+degree as the symbolic operand), comparisons and boolean ops take the
+max of operand degrees.
 
 Storage strategy 1 (global): all frontier entries share a single
 `dict[var, AbsVal]`. The per-block key is ignored — degree is path-

@@ -15,10 +15,10 @@ Storage strategy 2 from `analysis/abs_int/__init__.py`'s ladder:
 
 Lookup precedence at block B: ``local[var]`` → ``static[var]`` → top.
 
-The DSA classification mirrors `ctac.rewrite.context.RewriteCtx`
-(``src/ctac/rewrite/context.py:159``): a var is DSA-dynamic iff it
-appears in ``DsaResult.dynamic_assignments``; otherwise (with at
-least one definition) it's DSA-static.
+The DSA classification mirrors `ctac.rewrite.context.RewriteCtx`: a
+var is DSA-dynamic iff it appears in
+``DsaResult.dynamic_assignments``; otherwise (with at least one
+definition) it's DSA-static.
 """
 
 from __future__ import annotations

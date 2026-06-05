@@ -206,7 +206,7 @@ def _rewrite_mul_div_to_muldiv(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None
     ``narrow`` peeling on the numerator is sound: ``narrow`` is a
     type assertion (precondition that the value already fits in
     bv256), not a runtime mod. The encoder treats it as a no-op
-    (``sea_vc.py:619-620``).
+    (see ``sea_vc.py:_peel_narrow``).
     """
     if not (isinstance(expr, ApplyExpr) and expr.op in _INT_DIV_OPS and len(expr.args) == 2):
         return None
