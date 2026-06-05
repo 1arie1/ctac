@@ -78,6 +78,21 @@ def store_fileset(dot_ctac: Path, src_dir: Path) -> tuple[str, Path, bool]:
     return sha, target, True
 
 
+def remove_object(dot_ctac: Path, sha: str) -> None:
+    """Delete the stored object (file or fileset dir). No-op if absent.
+
+    Removes the two-char prefix directory when it becomes empty.
+    """
+    target = object_path(dot_ctac, sha)
+    if target.is_dir():
+        shutil.rmtree(target)
+    elif target.exists():
+        target.unlink()
+    prefix_dir = target.parent
+    if prefix_dir.is_dir() and not any(prefix_dir.iterdir()):
+        prefix_dir.rmdir()
+
+
 def relink_friendly_name(
     project_root: Path, dot_ctac: Path, name: str, sha: str
 ) -> Path:

@@ -711,6 +711,8 @@ PRJ COMMANDS:
   ctac prj info mytac base --plain --recursive  # walk parents
   ctac prj set-head mytac <ref>                 # move HEAD
   ctac prj set-head mytac <set>:<member>        # focus a member
+  ctac prj rewind mytac                         # HEAD back to base, keep artifacts
+  ctac prj reset mytac                          # back to init state, delete derived
   ctac prj label mytac <ref> <name>             # name an object
   ctac prj export-path mytac [<ref>]            # abs path of HEAD/ref
   ctac prj archive mytac -o snap.tar.gz         # pack .ctac/
@@ -727,6 +729,14 @@ TYPICAL PIPELINE (split):
   ctac prj list mytac base.ua.split --plain      # see members
   ctac prj set-head mytac base.ua.split:assert_01.tac
   ctac smt mytac --plain                       # solve focused case
+
+TRY A DIFFERENT PIPELINE (rewind + compare):
+  ctac prj rewind mytac --plain                # HEAD -> base; old objects kept
+  ctac rw mytac --no-purify-div --plain        # different flags -> base.rw.2.tac
+  ctac bb-diff mytac/base.rw.tac mytac/base.rw.2.tac --plain
+Use `prj reset` instead when the old pipeline should be deleted —
+it returns the project to its init state without needing the
+original source file (the base lives in the object store).
 
 LAYOUT:
   mytac/.ctac/HEAD                    # text: <sha>

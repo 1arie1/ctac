@@ -148,6 +148,65 @@ def test_prj_set_head_label(tmp_path: Path) -> None:
     assert "base.tac" in prj2.head.names
 
 
+def test_prj_rewind_smoke(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac", "first\n")
+    prj_dir = tmp_path / "mytac"
+    runner = CliRunner()
+    runner.invoke(app, ["prj", "init", str(base), "-o", str(prj_dir), "--plain"])
+    prj = Project.open(prj_dir)
+    base_sha = prj.head_sha
+    other = tmp_path / "other.tac"
+    other.write_text("second\n", encoding="utf-8")
+    derived = prj.add(
+        other, kind="tac", parents=[base_sha], command="rw", args=[],
+        advance_head=True,
+    )
+    res = runner.invoke(app, ["prj", "rewind", str(prj_dir), "--plain"])
+    assert res.exit_code == 0, res.stdout
+    assert f"head: {base_sha}" in res.stdout
+    assert "base.tac" in res.stdout
+    prj2 = Project.open(prj_dir)
+    assert prj2.head_sha == base_sha
+    # Derived artifact survives the rewind.
+    assert (prj_dir / derived.names[0]).is_symlink()
+
+
+def test_prj_reset_after_rw_pipeline(tmp_path: Path) -> None:
+    body = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tR0:bv256
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignExpCmd R0 0x1
+\t}
+}
+Axioms {
+}
+Metas { "0": [] }
+"""
+    base = tmp_path / "in.tac"
+    base.write_text(body, encoding="utf-8")
+    prj_dir = tmp_path / "mytac"
+    runner = CliRunner()
+    runner.invoke(app, ["prj", "init", str(base), "-o", str(prj_dir), "--plain"])
+    res = runner.invoke(app, ["rw", str(prj_dir), "--plain"])
+    assert res.exit_code == 0, res.stdout
+    res = runner.invoke(app, ["prj", "reset", str(prj_dir), "--plain"])
+    assert res.exit_code == 0, res.stdout
+    assert "removed_objects:" in res.stdout
+    assert "removed_labels: 0" in res.stdout
+    prj = Project.open(prj_dir)
+    assert set(prj.manifest.objects) == {prj.head_sha}
+    links = [p.name for p in prj_dir.iterdir() if p.name != ".ctac"]
+    assert links == ["base.tac"]
+
+
 def test_prj_set_head_focus_member(tmp_path: Path) -> None:
     """End-to-end: ingest a fileset via the library, then `prj set-head <set>:<member>`."""
     base = _write_tac(tmp_path / "in.tac")

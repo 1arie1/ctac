@@ -7,6 +7,8 @@ Commands:
 - ``prj info <DIR> <OBJ_ID> [--recursive]`` — full provenance record.
 - ``prj set-head <DIR> <REF>`` — move HEAD; ``<set>:<member>``
   syntax materializes + focuses a fileset member.
+- ``prj rewind <DIR>`` — HEAD back to the base; derived objects kept.
+- ``prj reset <DIR>`` — back to init state; derived objects deleted.
 - ``prj label <DIR> <OBJ_ID> <LABEL>`` — name an object.
 - ``prj export-path <DIR> [<REF>]`` — print the abs path of HEAD or
   a named ref (one line, undecorated, shell-pipeable).
@@ -71,7 +73,11 @@ _PRJ_EPILOG = (
     "[cyan]ctac prj list mytac --plain[/cyan]"
     "  [dim]# list objects[/dim]\n\n"
     "[cyan]ctac prj info mytac base --plain[/cyan]"
-    "  [dim]# show base object provenance[/dim]"
+    "  [dim]# show base object provenance[/dim]\n\n"
+    "[cyan]ctac prj rewind mytac --plain[/cyan]"
+    "  [dim]# HEAD back to base; try a different pipeline, compare[/dim]\n\n"
+    "[cyan]ctac prj reset mytac --plain[/cyan]"
+    "  [dim]# wipe derived state, keep the base[/dim]"
 )
 
 
@@ -302,6 +308,86 @@ def prj_set_head(
         c.print(f"[bold]HEAD[/bold] -> [yellow]{head.sha[:12]}[/yellow]")
         if head.names:
             c.print(f"  path: [cyan]{prj.root / head.names[-1]}[/cyan]")
+
+
+# ----------------------------------------------------------- prj rewind
+
+
+@prj_app.command("rewind")
+def prj_rewind(
+    project_dir: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            help="Project directory (the one containing .ctac/).",
+        ),
+    ],
+    plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
+    agent: bool = agent_option(),
+) -> None:
+    """Move HEAD back to the base object; derived artifacts are kept."""
+    _ = agent
+    plain = plain_requested(plain)
+    c = console(plain)
+    try:
+        prj = Project.open(project_dir)
+        base = prj.rewind()
+    except ProjectError as e:
+        c.print(f"rewind error: {e}" if plain else f"[red]rewind error:[/red] {e}")
+        raise typer.Exit(1) from e
+    if plain:
+        c.print(f"head: {base.sha}", markup=False)
+        if base.names:
+            c.print(f"head_path: {prj.root / base.names[0]}", markup=False)
+    else:
+        c.print(f"[bold]HEAD[/bold] -> [yellow]{base.sha[:12]}[/yellow] (base)")
+        if base.names:
+            c.print(f"  path: [cyan]{prj.root / base.names[0]}[/cyan]")
+
+
+# ----------------------------------------------------------- prj reset
+
+
+@prj_app.command("reset")
+def prj_reset(
+    project_dir: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            help="Project directory (the one containing .ctac/).",
+        ),
+    ],
+    plain: bool = typer.Option(False, "--plain", help=PLAIN_HELP),
+    agent: bool = agent_option(),
+) -> None:
+    """Delete all derived objects and return the project to its init state."""
+    _ = agent
+    plain = plain_requested(plain)
+    c = console(plain)
+    try:
+        prj = Project.open(project_dir)
+        result = prj.reset()
+    except ProjectError as e:
+        c.print(f"reset error: {e}" if plain else f"[red]reset error:[/red] {e}")
+        raise typer.Exit(1) from e
+    if plain:
+        c.print(f"head: {result.base.sha}", markup=False)
+        c.print(f"removed_objects: {result.removed_objects}", markup=False)
+        c.print(f"removed_names: {result.removed_names}", markup=False)
+        c.print(f"removed_labels: {result.removed_labels}", markup=False)
+    else:
+        c.print(f"[bold]HEAD[/bold] -> [yellow]{result.base.sha[:12]}[/yellow] (base)")
+        c.print(
+            f"  removed: [bold]{result.removed_objects}[/bold] object(s), "
+            f"[bold]{result.removed_names}[/bold] link(s), "
+            f"[bold]{result.removed_labels}[/bold] label(s)"
+        )
 
 
 # ----------------------------------------------------------- prj clone

@@ -50,5 +50,15 @@ class ObjectInfo:
     source: str | None = None
 
 
+@dataclass(frozen=True)
+class ResetResult:
+    """Outcome of :meth:`Project.reset`."""
+
+    base: ObjectInfo
+    removed_objects: int
+    removed_names: int
+    removed_labels: int
+
+
 class ProjectError(Exception):
     """Raised by ``ctac.project`` for project-specific failures."""

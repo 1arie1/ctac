@@ -223,6 +223,8 @@ ctac prj init f.tac -o mytac --plain          # create a project, HEAD = base
 ctac prj list mytac --plain                   # show all objects + labels
 ctac prj info mytac base --recursive --plain  # walk parents back to base
 ctac prj label mytac <sha> tip --plain        # name an object
+ctac prj rewind mytac --plain                 # HEAD back to base; keep artifacts
+ctac prj reset mytac --plain                  # back to init state; delete derived
 ctac prj export-path mytac                    # abs path to HEAD (shell-pipe)
 ctac prj archive mytac -o snap.tar.gz --plain # pack .ctac/ for sharing
 ctac prj clone snap.tar.gz -o restored        # extract + rebuild symlinks

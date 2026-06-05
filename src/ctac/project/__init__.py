@@ -15,7 +15,13 @@ Public API:
 """
 
 from ctac.project.core import DOT_CTAC, Project
-from ctac.project.types import OBJECT_KINDS, ObjectInfo, ObjectKind, ProjectError
+from ctac.project.types import (
+    OBJECT_KINDS,
+    ObjectInfo,
+    ObjectKind,
+    ProjectError,
+    ResetResult,
+)
 
 
 __all__ = [
@@ -25,4 +31,5 @@ __all__ = [
     "ObjectKind",
     "Project",
     "ProjectError",
+    "ResetResult",
 ]

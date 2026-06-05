@@ -30,7 +30,13 @@ from ctac.project.manifest import (
     write_manifest,
 )
 from ctac.project.naming import auto_name, auto_set_name, collision_suffix
-from ctac.project.types import OBJECT_KINDS, ObjectInfo, ObjectKind, ProjectError
+from ctac.project.types import (
+    OBJECT_KINDS,
+    ObjectInfo,
+    ObjectKind,
+    ProjectError,
+    ResetResult,
+)
 
 
 DOT_CTAC = ".ctac"
@@ -370,6 +376,119 @@ class Project:
             advance_head=False,
         )
         return info.sha
+
+    def base_sha(self) -> str:
+        """Sha of the project's base: the object created by ``init``.
+
+        The root of the provenance graph — labels are user-renamable,
+        so ``command == "init"`` is the reliable anchor.
+        """
+        for sha, info in self.manifest.objects.items():
+            if info.command == "init":
+                return sha
+        raise ProjectError("project has no init object (corrupt manifest?)")
+
+    def rewind(self) -> ObjectInfo:
+        """Move HEAD back to the base object; keep all derived objects.
+
+        Re-running a pipeline after a rewind compares naturally with
+        the old one: identical content reuses the same object (sha
+        idempotency), different content gets a collision-suffixed
+        friendly name (``base.rw.2.tac``).
+        """
+        sha = self.base_sha()
+        refs_mod.write_head(self.dot_ctac, sha)
+        self.manifest.head = sha
+        write_manifest(self.manifest, self.dot_ctac)
+        append_log(
+            self.dot_ctac,
+            LogEntry(
+                ts=_iso_now(),
+                command="rewind",
+                result_sha=sha,
+                advance_head=True,
+            ),
+        )
+        return self.manifest.objects[sha]
+
+    def reset(self) -> ResetResult:
+        """Return the project to its init state.
+
+        Deletes every derived object (store content + friendly-name
+        symlinks), prunes the base object's later aliases back to its
+        init-time name, drops labels that point at deleted objects,
+        and moves HEAD to the base. The command log stays append-only
+        (a ``reset`` entry is appended; history is not truncated).
+        """
+        base = self.base_sha()
+        removed_objects = 0
+        removed_names = 0
+        removed_labels = 0
+
+        for sha, info in list(self.manifest.objects.items()):
+            if sha == base:
+                continue
+            removed_names += self._unlink_names(info.names, sha)
+            store_mod.remove_object(self.dot_ctac, sha)
+            del self.manifest.objects[sha]
+            removed_objects += 1
+
+        base_info = self.manifest.objects[base]
+        keep_name = base_info.names[0] if base_info.names else ""
+        extra_aliases = tuple(n for n in base_info.names if n != keep_name)
+        removed_names += self._unlink_names(extra_aliases, base)
+        if keep_name:
+            store_mod.relink_friendly_name(self.root, self.dot_ctac, keep_name, base)
+            base_info = ObjectInfo(
+                sha=base_info.sha,
+                kind=base_info.kind,
+                parents=base_info.parents,
+                command=base_info.command,
+                args=base_info.args,
+                names=(keep_name,),
+                created=base_info.created,
+                size=base_info.size,
+                source=base_info.source,
+            )
+            self.manifest.objects[base] = base_info
+
+        for label, sha in list(self.manifest.labels.items()):
+            if sha != base:
+                refs_mod.remove_ref(self.dot_ctac, label)
+                del self.manifest.labels[label]
+                removed_labels += 1
+
+        refs_mod.write_head(self.dot_ctac, base)
+        self.manifest.head = base
+        write_manifest(self.manifest, self.dot_ctac)
+        append_log(
+            self.dot_ctac,
+            LogEntry(
+                ts=_iso_now(),
+                command="reset",
+                result_sha=base,
+                advance_head=True,
+            ),
+        )
+        return ResetResult(
+            base=base_info,
+            removed_objects=removed_objects,
+            removed_names=removed_names,
+            removed_labels=removed_labels,
+        )
+
+    def _unlink_names(self, names: tuple[str, ...], sha: str) -> int:
+        """Unlink project-root symlinks for ``names`` that point at ``sha``.
+
+        Paths occupied by anything other than a symlink into the
+        object store (e.g. a user's own file) are left alone.
+        """
+        removed = 0
+        for name in names:
+            if store_mod.friendly_name_target_sha(self.root, name) == sha:
+                (self.root / name).unlink()
+                removed += 1
+        return removed
 
     def relink_all(self) -> list[str]:
         """Re-create every friendly-name symlink declared in the manifest.

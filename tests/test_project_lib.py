@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -559,6 +560,128 @@ def test_init_rejects_pathy_label(tmp_path: Path) -> None:
     base = _write_tac(tmp_path / "in.tac")
     with pytest.raises(ProjectError, match="friendly-name stem"):
         Project.init(tmp_path / "mytac", base, label="a/b")
+
+
+# ----------------------------------------------------- rewind / reset
+
+
+def _add_derived(prj: Project, root: Path, content: str, command: str = "rw"):
+    f = root / f"derived-{abs(hash(content))}.tac"
+    f.write_text(content, encoding="utf-8")
+    return prj.add(
+        f, kind="tac", parents=[prj.head_sha], command=command, args=[],
+        advance_head=True,
+    )
+
+
+def test_rewind_moves_head_keeps_objects(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    base_sha = prj.head_sha
+    derived = _add_derived(prj, tmp_path, "derived one\n")
+    assert prj.head_sha == derived.sha
+
+    info = prj.rewind()
+    assert info.sha == base_sha
+    assert prj.head_sha == base_sha
+    # Derived object + its symlink survive.
+    assert derived.sha in prj.manifest.objects
+    assert (prj.root / derived.names[0]).is_symlink()
+
+
+def test_rewind_then_rerun_collision_suffixes(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    first = _add_derived(prj, tmp_path, "pipeline A\n")
+    assert first.names == ("base.rw.tac",)
+    prj.rewind()
+    # A different pipeline produces different content under the same
+    # auto-name -> collision suffix; both remain comparable.
+    second = _add_derived(prj, tmp_path, "pipeline B\n")
+    assert second.names == ("base.rw.2.tac",)
+    assert (prj.root / "base.rw.tac").is_symlink()
+    assert (prj.root / "base.rw.2.tac").is_symlink()
+
+
+def test_rewind_when_head_is_base_is_noop(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    sha0 = prj.head_sha
+    info = prj.rewind()
+    assert info.sha == sha0
+    assert prj.head_sha == sha0
+
+
+def test_reset_prunes_to_init_state(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    base_sha = prj.head_sha
+    derived = _add_derived(prj, tmp_path, "derived one\n")
+    fileset = _build_fileset(tmp_path)
+    prj.add(
+        fileset, kind="tac-set", parents=[derived.sha], command="ua",
+        args=[], advance_head=True,
+    )
+    prj.set_label(derived.sha, "tip")
+    prj.set_label(base_sha, "v0")
+    # Alias the base under a second name.
+    prj.add(base, kind="tac", parents=[], command="init",
+            suggested_name="alias.tac", args=[])
+
+    result = prj.reset()
+    assert result.base.sha == base_sha
+    assert result.removed_objects == 2
+    assert result.removed_names == 3  # derived link, fileset link, base alias
+    assert result.removed_labels == 1  # "tip"; "base" and "v0" point at base
+
+    assert prj.head_sha == base_sha
+    assert set(prj.manifest.objects) == {base_sha}
+    assert prj.manifest.objects[base_sha].names == ("base.tac",)
+    assert sorted(prj.manifest.labels) == ["base", "v0"]
+    # Project root has only the base link; store has only the base object.
+    links = [p.name for p in prj.root.iterdir() if p.name != ".ctac"]
+    assert links == ["base.tac"]
+    leaves = [p for p in (prj.dot_ctac / "objects").rglob("*") if p.is_file()]
+    assert len(leaves) == 1
+    # Survives reopen.
+    prj2 = Project.open(prj.root)
+    assert prj2.head_sha == base_sha
+
+
+def test_reset_preserves_user_files(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    derived = _add_derived(prj, tmp_path, "derived one\n")
+    # Replace the derived symlink with a real user file of the same name.
+    link = prj.root / derived.names[0]
+    link.unlink()
+    link.write_text("user data\n", encoding="utf-8")
+
+    result = prj.reset()
+    assert result.removed_objects == 1
+    assert result.removed_names == 0  # the path is not a store symlink
+    assert link.read_text(encoding="utf-8") == "user data\n"
+
+
+def test_reset_twice_second_is_noop(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    _add_derived(prj, tmp_path, "derived one\n")
+    prj.reset()
+    result = prj.reset()
+    assert result.removed_objects == 0
+    assert result.removed_names == 0
+    assert result.removed_labels == 0
+
+
+def test_base_sha_missing_init_raises(tmp_path: Path) -> None:
+    base = _write_tac(tmp_path / "in.tac")
+    prj = Project.init(tmp_path / "mytac", base)
+    # Corrupt the manifest: rewrite the init object's command.
+    info = prj.manifest.objects[prj.head_sha]
+    prj.manifest.objects[prj.head_sha] = dataclasses.replace(info, command="rw")
+    with pytest.raises(ProjectError, match="no init object"):
+        prj.base_sha()
 
 
 def test_manifest_without_source_key_loads(tmp_path: Path) -> None:

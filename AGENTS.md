@@ -482,6 +482,18 @@ original path is kept as `source` provenance, visible in
     materializes a fileset member as a fresh single-file object
     whose parent is the fileset, then moves HEAD to it.
 
+- `ctac prj rewind <DIR> --plain`
+  - Move HEAD back to the base object to try a different pipeline.
+    Derived objects and links are kept for comparison: a re-run
+    with different output gets a collision-suffixed name
+    (`base.rw.2.tac`); identical output reuses the same object.
+
+- `ctac prj reset <DIR> --plain`
+  - Return the project to its init state: derived objects, their
+    symlinks, and labels pointing at them are deleted; HEAD moves
+    to the base. The base lives in the object store, so no re-init
+    (and no access to the original source file) is needed.
+
 - `ctac prj label <DIR> <OBJ_ID> <LABEL> --plain`
   - Attach a user-visible name to an object. Labels resolve like
     any other ref (sha / short sha / friendly name / label).
