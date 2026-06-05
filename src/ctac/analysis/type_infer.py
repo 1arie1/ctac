@@ -7,7 +7,7 @@ constraints:
 
 * ``Select(M, idx)`` / ``Store(M, idx, v)`` index → ``Ptr``.
 * ``Mul`` / ``Div`` / ``IntMul`` / ``IntDiv`` / ``Shift*`` /
-  ``BWXOr`` / ``BNot`` operand → ``Int``.
+  ``BWXOr`` / ``BWNot`` operand → ``Int``.
 * ``Add`` / ``IntAdd`` and ``Sub`` / ``IntSub`` resolve their result
   kind from the operand kinds: ``Int + Int = Int``, ``Int - Int =
   Int``, ``Ptr + Int = Ptr``, ``Ptr - Int = Ptr``. Two constant
@@ -118,7 +118,7 @@ _INT_OPERAND_OPS: frozenset[str] = frozenset(
         "ShiftRightLogical",
         "ShiftRightArithmetical",
         "BWXOr",
-        "BNot",
+        "BWNot",
     }
 )
 

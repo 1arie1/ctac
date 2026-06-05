@@ -381,7 +381,7 @@ intrinsics not yet in the operator table — sound over-approximation).
 Sound, possibly-incomplete kind inference for TAC registers. Lattice
 `Top (= Int+Ptr) | Int | Ptr | Bot`. Pin every register to one of the
 four kinds based on its structural use: index of `Select`/`Store` ->
-Ptr; operand of `Mul`/`Div`/`IntMul`/`IntDiv`/`Shift*`/`BWXOr`/`BNot`
+Ptr; operand of `Mul`/`Div`/`IntMul`/`IntDiv`/`Shift*`/`BWXOr`/`BWNot`
 -> Int; `narrow` and `BWAnd`/`BWOr` with a constant operand are
 identity (passthrough); `R = SymRef(R')` and `assume R == R'` unify
 classes; `Add`/`IntAdd` of one Ptr and one Int is Ptr.

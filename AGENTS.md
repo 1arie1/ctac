@@ -199,7 +199,7 @@ Prompt template:
     over the lattice `Top (= Int+Ptr) | Int | Ptr | Bot`.
     Pointer kind comes from use as a `Select`/`Store` index;
     integer kind comes from operand position of arithmetic ops
-    (`Mul`, `Div`, `IntMul`, `IntDiv`, `Shift*`, `BWXOr`, `BNot`).
+    (`Mul`, `Div`, `IntMul`, `IntDiv`, `Shift*`, `BWXOr`, `BWNot`).
     `narrow` and `BWAnd`/`BWOr` with a constant operand are
     identity (passthrough); `R = SymRef(R')` and
     `assume R == R'` unify classes; `Add`/`IntAdd` of one Ptr

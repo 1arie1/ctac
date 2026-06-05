@@ -156,6 +156,14 @@ def test_bwxor_operand_meets_to_int() -> None:
     assert res.kind["S"] == TypeKind.INT
 
 
+def test_bwnot_operand_meets_to_int() -> None:
+    res = _run([
+        _havoc("R"),
+        _assign("X", _apply("BWNot", _sym("R"))),
+    ])
+    assert res.kind["R"] == TypeKind.INT
+
+
 def test_constants_do_not_seed_kind() -> None:
     """A literal `0x300000538` (a region-prefix-shaped number) does not
     force the lhs to `Ptr`; pointer kind only flows from structural use."""
