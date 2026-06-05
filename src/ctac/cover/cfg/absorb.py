@@ -75,8 +75,8 @@ def try_absorb(*,
     - `.verdict == 'sat'`: first-SAT-wins; caller should exit.
 
     Returns None if no cluster was close enough to attempt absorption,
-    or if the widened solve was unknown — in that case the
-    caller falls through to singleton+core."""
+    or if the widened solve was not definitive (unknown / timeout /
+    error) — in that case the caller falls through to singleton+core."""
     if not states:
         return None
     escape_set = frozenset(escape)
@@ -113,8 +113,9 @@ def try_absorb(*,
         widened_arts.smt2, budget_s=absorb_budget_s, z3_bin=z3_bin,
         extra_args=cluster_z3_args)
 
-    if verdict == 'unknown':
-        # Widening didn't close; fall through to singleton path.
+    if verdict not in ('sat', 'unsat'):
+        # unknown / timeout / error: widening didn't close; fall
+        # through to singleton path.
         return None
 
     # Definitive verdict — update the cluster in place.
