@@ -266,7 +266,7 @@ _RW_EPILOG = (
     "[bold]4.[/bold] (optional) [bold]R4a div purification[/bold] — replaces "
     "[cyan]X = Div(A, B)[/cyan] with [cyan]havoc X + euclidean bounds[/cyan] "
     "when [cyan]B[/cyan] has a non-constant positive range. Controlled by "
-    "[cyan]--purify-div[/cyan] (default on).\n\n"
+    "[cyan]--purify-div[/cyan] (default off).\n\n"
     "[bold]5.[/bold] Iterated [bold]DCE[/bold] to remove the residual dead defs.\n\n"
     "[bold]6.[/bold] (optional) [bold]Post-DCE naming phase[/bold]: "
     "[cyan]--purify-ite[/cyan] (default on), "
@@ -289,8 +289,8 @@ _RW_EPILOG = (
     "  [dim]# write round-trippable .tac[/dim]\n\n"
     "[cyan]ctac rw f.tac -o small.htac --plain[/cyan]"
     "  [dim]# write pretty-printed .htac[/dim]\n\n"
-    "[cyan]ctac rw f.tac --no-purify-div --plain[/cyan]"
-    "  [dim]# disable R4a[/dim]\n\n"
+    "[cyan]ctac rw f.tac --purify-div --plain[/cyan]"
+    "  [dim]# enable R4a div purification[/dim]\n\n"
     "[cyan]ctac rw f.tac --purify-assume --plain[/cyan]"
     "  [dim]# also purify assumes[/dim]"
 )
@@ -323,11 +323,11 @@ def rewrite_cmd(
         help="Max nested Ite levels the range inferrer will union (deeper -> unknown).",
     ),
     purify_div: bool = typer.Option(
-        True,
+        False,
         "--purify-div/--no-purify-div",
         help=(
             "Enable R4a (replace `X = Div(A, B)` with `havoc X; B*X <= A < B*(X+1)` "
-            "for non-constant positive-range B). Default on."
+            "for non-constant positive-range B). Default off."
         ),
     ),
     simplify_div_in_cmp: bool = typer.Option(

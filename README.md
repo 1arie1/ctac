@@ -145,7 +145,7 @@ Available analyses: `def-use`, `liveness`, `dce`, `use-before-def`,
 ctac rw f.tac --plain --report  # simplify + print per-rule hit counts
 ctac rw f.tac -o small.tac --plain  # write a round-trippable .tac
 ctac rw f.tac -o small.htac --plain  # write pretty-printed .htac
-ctac rw f.tac --no-purify-div --plain  # disable R4a; others still run
+ctac rw f.tac --purify-div --plain  # enable R4a div purification (off by default)
 
 ctac ua f.tac -o f_ua.tac --plain  # fold asserts into one __UA_ERROR block
 ctac ua f.tac -o f_ua.tac --plain --report  # + counts
@@ -158,8 +158,9 @@ ctac cfg-simplify f.tac -o out.tac --plain  # drop annotation-only fall-through 
 
 `rw` runs the iterated simplification pipeline (N1–N4 bit-op
 canonicalization, R1–R4 div rules, R6 ceil-div collapse, boolean/Ite
-cleanup, CSE, copy-prop). `--purify-div` / `--purify-ite` /
-`--purify-assert` / `--purify-assume` control post-DCE naming phases.
+cleanup, CSE, copy-prop). `--purify-div` (off by default) adds R4a
+div purification; `--purify-ite` / `--purify-assert` /
+`--purify-assume` control post-DCE naming phases.
 Soundness of every rule is documented by `ctac rw-valid`.
 
 `ua` is the prerequisite for `ctac smt` on multi-assert TAC: it

@@ -53,7 +53,7 @@ _RW_EQ_EPILOG = (
     "insert per-rehavoc-window [cyan]assert false[/cyan] probes that "
     "catch contradictory assumes. Pass [cyan]--strict[/cyan] to abort "
     "instead of admitting; if you do that, re-run [cyan]ctac rw[/cyan] "
-    "with [cyan]--no-purify-div[/cyan] and friends to get a "
+    "without [cyan]--purify-div[/cyan] and friends to get a "
     "rehavoc-free [cyan]rw.tac[/cyan], and lean on [cyan]ctac rw-valid"
     "[/cyan] for those rules' soundness.\n\n"
     "[bold green]Examples[/bold green]\n\n"

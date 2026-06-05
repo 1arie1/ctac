@@ -69,19 +69,19 @@ def test_rw_htac_output_written(tmp_path):
     assert " = " in text
 
 
-def test_rw_no_purify_div_disables_r4a():
-    """`--no-purify-div` turns off R4a while keeping the rest of the pipeline."""
+def test_rw_purify_div_enables_r4a():
+    """R4a is off by default; `--purify-div` turns it on."""
     runner = CliRunner()
     src = _require_target(TARGET_TAC)
-    enabled = runner.invoke(app, ["rw", str(src), "--plain", "--report"])
-    disabled = runner.invoke(app, ["rw", str(src), "--plain", "--report", "--no-purify-div"])
-    assert enabled.exit_code == 0 and disabled.exit_code == 0
-    # R4a appears only in the default run.
+    default = runner.invoke(app, ["rw", str(src), "--plain", "--report"])
+    enabled = runner.invoke(app, ["rw", str(src), "--plain", "--report", "--purify-div"])
+    assert default.exit_code == 0 and enabled.exit_code == 0
+    # R4a appears only in the opt-in run.
+    assert "R4a:" not in default.output
     assert "R4a:" in enabled.output or "t_div_" in enabled.output
-    assert "R4a:" not in disabled.output
     # Other rules still fire in both runs.
-    assert "N1:" in disabled.output
-    assert "R6:" in disabled.output
+    assert "N1:" in default.output
+    assert "R6:" in default.output
 
 
 def test_rw_no_purify_ite_disables_tb_naming():

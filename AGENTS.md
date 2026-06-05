@@ -222,8 +222,10 @@ Prompt template:
     - `-o <path>` — write round-trippable `.tac` or pretty-printed
       `.htac` (extension decides).
     - `--report` — per-rule hit counts.
-    - `--no-purify-div` / `--no-purify-ite` / `--no-purify-assert` /
-      `--no-purify-assume` — disable individual post-DCE naming phases.
+    - `--purify-div` — enable R4a div purification (default off).
+    - `--no-purify-ite` / `--no-purify-assert` — disable individual
+      post-DCE naming phases; `--purify-assume` enables the assume
+      phase (default off).
   - Soundness of every rewrite rule is documented by `ctac rw-valid`.
 
 - `ctac cfg-simplify <file> --plain`

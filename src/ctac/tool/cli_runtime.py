@@ -462,14 +462,14 @@ TYPICAL:
   ctac rw f.tac --plain --trace fires.jsonl        # per-fire JSONL to file
   ctac rw f.tac -o small.tac --plain               # write a round-trippable .tac
   ctac rw f.tac -o small.htac --plain              # write pretty-printed (.htac)
-  ctac rw f.tac --no-purify-div --plain            # disable R4a
+  ctac rw f.tac --purify-div --plain               # enable R4a
 
 PIPELINE: chain-recognition (R6) -> early CSE -> simplify_pipeline
 (R1-R4, N1-N4, Ite/Bool, CP) -> DCE -> optional purify (ITE_PURIFY,
 PURIFY_ASSERT, ...) -> late CSE -> CP cleanup -> DCE. CSE runs in its
 own phases (never alongside rules that mutate registered RHSes) so
 its per-iteration RHS index is a real snapshot. `--purify-div` adds
-R4a (default on); `--purify-ite` enables the post-DCE phase (default
+R4a (default off); `--purify-ite` enables the post-DCE phase (default
 on).
 
 INTROSPECTION: `--report` aggregates (which rules fired, how often,
@@ -732,7 +732,7 @@ TYPICAL PIPELINE (split):
 
 TRY A DIFFERENT PIPELINE (rewind + compare):
   ctac prj rewind mytac --plain                # HEAD -> base; old objects kept
-  ctac rw mytac --no-purify-div --plain        # different flags -> base.rw.2.tac
+  ctac rw mytac --purify-div --plain           # different flags -> base.rw.2.tac
   ctac bb-diff mytac/base.rw.tac mytac/base.rw.2.tac --plain
 Use `prj reset` instead when the old pipeline should be deleted —
 it returns the project to its init state without needing the
