@@ -10,7 +10,7 @@ A quick map of what `ctac` gives you beyond `grep`:
 | **Inspect** a TAC file | `stats`, `parse`, `pp`, `cfg`, `search` (alias: `grep`) |
 | **Compare** two builds | `op-diff`, `cfg-match`, `bb-diff` |
 | **Analyze** data-flow | `df` |
-| **Transform** TAC | `rw` (rewrites + DCE), `ua` (uniquify asserts) |
+| **Transform** TAC | `rw` (rewrites + DCE), `ua` (uniquify asserts), `strip` (remove client metadata) |
 | **Verify** | `run` (concrete interpreter), `smt` (SMT-LIB VC + z3) |
 | **Validate** the rewriter | `rw-valid` |
 
@@ -142,6 +142,8 @@ ctac rw f.tac --no-purify-div --plain  # disable R4a; others still run
 
 ctac ua f.tac -o f_ua.tac --plain  # fold asserts into one __UA_ERROR block
 ctac ua f.tac -o f_ua.tac --plain --report  # + counts
+
+ctac strip f.tac -o f_open.tac --plain --report  # remove client metadata
 ```
 
 `rw` runs the iterated simplification pipeline (N1–N4 bit-op
@@ -154,6 +156,12 @@ Soundness of every rule is documented by `ctac rw-valid`.
 emits `if (P) goto GOOD else goto __UA_ERROR` for each assert, with
 `assume P` opening the GOOD continuation — Floyd-Hoare style, no
 inversion.
+
+`strip` removes client-identifying metadata (spec paths, embedded
+source, function names, call-trace snippets) so a dump can be shared
+as an open benchmark, keeping the generic structural metadata solvers
+care about. Unknown keys are dropped by default and flagged in
+`--report`.
 
 ### Verify
 

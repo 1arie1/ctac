@@ -236,6 +236,25 @@ Prompt template:
     - `--report` — counts.
   - Single-assert input is a no-op (`was_noop: true`).
 
+- `ctac strip <file> --plain`
+  - Strip client-specific metadata (spec file paths, embedded source,
+    function/crate names, call-trace snippets, assert ids) so a TAC
+    dump can be published as an open benchmark. Default is
+    allowlist-keep: generic structural metadata survives
+    (`sbf.bytecode.address`, `tac.*` markers, `overflow.rewrite`,
+    `debug.sbf.external_call` intrinsics); unknown keys are dropped
+    (default-deny) and listed in `--report`. Assert messages become
+    sequential generic `"assert <n>"` strings; `LabelCmd` lines are
+    kept.
+  - Key flags:
+    - `-o <path>` — write `.tac` / `.htac` output.
+    - `--all` — maximal anonymity: empty Metas, drop every
+      `AnnotationCmd`, remove all `:N` meta suffixes.
+    - `--report` — per-key kept/dropped counts + unknown-key list.
+  - Audit before publishing:
+    `grep -iE 'specFile|filepath|mangledName|displayMessage' out.tac`
+    should be empty.
+
 - `ctac pin <file> --plain`
   - Specialize a TAC: drop blocks (with cleanup), bind variables to
     constants, enumerate splits as cases. Library-first; CLI is a

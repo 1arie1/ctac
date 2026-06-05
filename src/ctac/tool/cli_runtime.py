@@ -633,6 +633,29 @@ Z3 KNOBS: `--timeout` (seconds), `--seed`, `--tactic`,
 `--z3-args "<raw>"`. Use `--debug` to see z3 stdin/stdout and a
 replayable command line.
 """,
+    "strip": """ctac strip --agent
+
+Strip client-specific metadata from a TAC so it can be published as an
+open benchmark. Default policy: allowlist-keep — generic structural
+metadata survives (sbf.bytecode.address, tac.* markers,
+overflow.rewrite, debug.sbf.external_call intrinsics, string-form
+memcpy debug annotations); everything carrying paths, source text,
+function names, display messages, or assert ids is dropped. Unknown
+metadata keys are dropped too (default-deny) and listed in --report.
+Assert messages become sequential generic "assert <n>" strings.
+
+WHY BEAT MANUAL: client info hides in three places at once — the Metas
+JSON trailer (30k+ lines on real dumps), inline AnnotationCmd payloads,
+and AssertCmd message strings. Hand-editing misses the cross-references
+(:N meta suffixes must be removed exactly when their Metas entry dies).
+
+TYPICAL:
+  ctac strip f.tac -o f_open.tac --plain --report
+  ctac strip f.tac -o f_open.tac --plain --all     # maximal anonymity
+
+AUDIT BEFORE PUBLISHING:
+  grep -iE 'specFile|filepath|mangledName|displayMessage' f_open.tac
+""",
     "ua": """ctac ua --agent
 
 Uniquify assertions: fold every `AssertCmd` into a single `__UA_ERROR`
