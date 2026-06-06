@@ -256,8 +256,16 @@ def _match_neg_s64_zero_test(
     ):
         return None
 
-    # The chunk relation that ties the guard-true arm to y: the
-    # guard-arm symbol x must be the wide source y was extracted from.
+    # The chunk relation that ties the guard-true arm to y: either the
+    # guard arm IS y (the value being negated is already a low chunk;
+    # y = y mod 2^64 needs range to prove y < 2^64), or the guard-arm
+    # symbol x is the wide source y was extracted from.
+    if x_name == y_name:
+        rng = infer_expr_range(y, ctx)
+        if rng is None or rng[1] is None or rng[1] >= _TWO_64 or rng[0] < 0:
+            return None
+        assert isinstance(y, SymbolRef)
+        return y
     y_def = ctx.lookthrough(y)
     if not (
         isinstance(y_def, ApplyExpr)

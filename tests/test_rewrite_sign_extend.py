@@ -244,6 +244,55 @@ def test_neg_s64_zero_test_fires_inline_form():
     assert rhs.args[0] == ApplyExpr("Eq", (SymbolRef("Y"), ConstExpr("0x0")))
 
 
+def test_neg_s64_zero_test_fires_when_value_is_its_own_chunk():
+    """The TB96 shape: the negated value is already a low chunk
+    (x == y, no separate Mod); range proves y < 2^64."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+            "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+            "\t\tAssignExpCmd TBG Eq(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd TB Eq(Ite(TBG Y Apply(wrap_twos_complement_256:bif I)) 0x0)\n"
+            "\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64ZeroTest") == 1
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "Eq", (SymbolRef("Y"), ConstExpr("0x0"))
+    )
+
+
+def test_neg_s64_zero_test_own_chunk_requires_range():
+    """x == y but y not provably < 2^64 (bare bv256 havoc): no fire —
+    y = y mod 2^64 doesn't hold and the guard arm tests a different
+    value."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+            "\t\tAssignExpCmd TBG Eq(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd TB Eq(Ite(TBG Y Apply(wrap_twos_complement_256:bif I)) 0x0)\n"
+            "\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64ZeroTest", 0) == 0
+
+
 def test_neg_s64_zero_test_requires_chunk_relation():
     """Y extracted from a different wide source than the guard arm:
     the y == 2^63 case would test the wrong symbol — no fire."""
