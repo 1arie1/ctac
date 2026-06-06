@@ -289,3 +289,63 @@ def test_he_no_uses_bails():
         tac.program, (HAVOC_EQUATE_SUBST,), symbol_sorts=tac.symbol_sorts
     )
     assert res.hits_by_rule == {}
+
+
+def test_he_subst_blocked_when_equality_does_not_dominate_other_use():
+    """Condition 7 (the fluid-lopu leak): R's equality with X sits in
+    one branch; R's equality with W sits in the sibling branch. The
+    branch equality dominates neither sibling use, so substituting
+    R -> X would impose the b1-path constraint on b2's paths
+    (entangling X with W there). The rule must not fire."""
+    src = _wrap(
+        "\tBlock e Succ [b1, b2] {\n"
+        "\t\tAssignHavocCmd R\n"
+        "\t\tAssumeExpCmd Le(R 0x800000)\n"
+        "\t\tAssignHavocCmd c\n"
+        "\t\tAssignExpCmd X 0x5\n"
+        "\t\tAssignExpCmd W 0x7\n"
+        "\t\tJumpiCmd b1 b2 c\n"
+        "\t}\n"
+        "\tBlock b1 Succ [] {\n"
+        "\t\tAssumeExpCmd Eq(X R)\n"
+        "\t}\n"
+        "\tBlock b2 Succ [] {\n"
+        "\t\tAssumeExpCmd Eq(W R)\n"
+        "\t}",
+        syms="R:bv256\n\tX:bv256\n\tW:bv256\n\tc:bool",
+    )
+    tac = parse_string(src, path="<s>")
+    res = rewrite_program(
+        tac.program,
+        (HAVOC_EQUATE_SUBST, EQ_REFLEXIVE),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("HavocEquateSubst", 0) == 0
+    # Both branch equalities survive untouched.
+    conds = [str(c) for c in _assume_conds(res.program)]
+    assert any("R" in c and "X" in c for c in conds)
+    assert any("R" in c and "W" in c for c in conds)
+
+
+def test_he_subst_fires_when_equality_dominates_all_uses():
+    """Counterpart: the equality in a dominating block substitutes
+    into a dominated block's use."""
+    src = _wrap(
+        "\tBlock e Succ [b1] {\n"
+        "\t\tAssignHavocCmd R\n"
+        "\t\tAssignExpCmd X 0x5\n"
+        "\t\tAssumeExpCmd Eq(X R)\n"
+        "\t\tJumpCmd b1\n"
+        "\t}\n"
+        "\tBlock b1 Succ [] {\n"
+        "\t\tAssumeExpCmd Le(R 0x800000)\n"
+        "\t}",
+        syms="R:bv256\n\tX:bv256",
+    )
+    tac = parse_string(src, path="<s>")
+    res = rewrite_program(
+        tac.program,
+        (HAVOC_EQUATE_SUBST, EQ_REFLEXIVE),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("HavocEquateSubst", 0) >= 1

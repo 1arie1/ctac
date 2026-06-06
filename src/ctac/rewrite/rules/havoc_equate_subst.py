@@ -30,6 +30,13 @@ R is substitutable to X when **all** of:
    top-level or inside a top-level ``LAnd`` conjunct, with X a
    ``SymbolRef`` distinct from R.
 6. R and X share the same declared sort.
+7. The equality's site **dominates every other R-use site**. The
+   equality is a path-conditional fact: substituting R -> X at a use
+   the equality does not dominate imposes the equality's path
+   constraint on paths that never establish it (entangling X with
+   R's other partners there) — caught as a SAT rw-eq CHK on fluid
+   lopu, where the ``R161 == R123`` equate in one branch leaked into
+   a sibling branch's ``R161 == R2480``.
 
 When multiple equalities exist (R == X1 and R == X2), the first
 found in walk order wins; the remaining equality becomes
@@ -119,6 +126,20 @@ def _x_def_reaches_use(
     return x_def_block in ctx.dominators.get(use_block, frozenset())
 
 
+def _eq_site_dominates_use(
+    eq_block: str, eq_cmd_idx: int, use_block: str, use_cmd_idx: int, ctx: RewriteCtx
+) -> bool:
+    """The ``Eq(R, X)`` assume's position path-dominates a use.
+    Same-block uses are always fine — a block is straight-line, so
+    every command shares the block's paths and assume order is
+    irrelevant for path-soundness (X-def reachability is checked
+    separately by :func:`_x_def_reaches_use`). Cross-block uses need
+    the equality's block to dominate the use's block."""
+    if eq_block == use_block:
+        return True
+    return eq_block in ctx.dominators.get(use_block, frozenset())
+
+
 def _resolve_partner(canon_R: str, ctx: RewriteCtx) -> str | None:
     """Decide whether R can be substituted, and if so, return the
     canonical name of its replacement. ``None`` = not substitutable."""
@@ -162,6 +183,18 @@ def _resolve_partner(canon_R: str, ctx: RewriteCtx) -> str | None:
         ):
             # Substituting R -> X would put X out-of-scope at some
             # R-use site (use-before-def). Skip this candidate.
+            continue
+        # Condition 7: the equality is path-conditional — it must
+        # dominate every other R-use site, or the substitution leaks
+        # the equality's path constraint onto paths that never
+        # establish it.
+        if not all(
+            (u.block_id == use.block_id and u.cmd_index == use.cmd_index)
+            or _eq_site_dominates_use(
+                use.block_id, use.cmd_index, u.block_id, u.cmd_index, ctx
+            )
+            for u in R_uses
+        ):
             continue
         return x_canon
     return None
