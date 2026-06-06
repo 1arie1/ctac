@@ -150,19 +150,26 @@ def materialize_havoc_equate_bounds(
         return MaterializeEquateBoundsResult(program=program, hits=0)
 
     # For each pure-havoc symbol, collect AssumeExpCmd commands that
-    # constrain it (anywhere in the program). Constraint = any
+    # constrain it, keyed with their position. Constraint = any
     # AssumeExpCmd whose condition references the symbol but is NOT
-    # itself a top-level ``Eq(R, X)``.
-    constraints_by_sym: dict[str, list[TacExpr]] = {}
+    # itself a top-level ``Eq(R, X)``. Position matters: a constraint
+    # assume is path-conditional, so it may only be materialized at an
+    # Eq site it already dominates trivially — same block, earlier
+    # index. Materializing a downstream constraint upstream prunes
+    # executions that never reach the source assume (masking
+    # counterexamples) and may reference symbols with no def yet.
+    constraints_by_sym: dict[str, list[tuple[str, int, TacExpr]]] = {}
     for block in program.blocks:
-        for cmd in block.commands:
+        for cidx, cmd in enumerate(block.commands):
             if not isinstance(cmd, AssumeExpCmd):
                 continue
             if _is_top_level_eq_of_symrefs(cmd.condition) is not None:
                 continue
             for canon in _referenced_symbols(cmd.condition):
                 if canon in pure_havocs:
-                    constraints_by_sym.setdefault(canon, []).append(cmd.condition)
+                    constraints_by_sym.setdefault(canon, []).append(
+                        (block.id, cidx, cmd.condition)
+                    )
 
     if not constraints_by_sym:
         return MaterializeEquateBoundsResult(program=program, hits=0)
@@ -194,7 +201,11 @@ def materialize_havoc_equate_bounds(
                     continue
                 if symbol_sorts.get(src_canon) != symbol_sorts.get(tgt_canon):
                     continue
-                for src_cond in constraints_by_sym.get(src_canon, ()):
+                for src_block_id, src_idx, src_cond in constraints_by_sym.get(
+                    src_canon, ()
+                ):
+                    if src_block_id != block.id or src_idx >= idx:
+                        continue
                     materialized = _subst_symbol(src_cond, src_canon, tgt_canon)
                     if materialized in existing_assume_conds:
                         continue

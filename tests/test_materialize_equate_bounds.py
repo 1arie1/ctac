@@ -175,3 +175,64 @@ def _canon(cond):
         if isinstance(a, SymbolRef) and isinstance(b, ConstExpr):
             return (cond.op, a.name, b.value)
     return (None,)
+
+
+def _wrap_two_blocks(body_a: str, body_b: str, *, syms: str) -> str:
+    return f"""TACSymbolTable {{
+\tUserDefined {{
+\t}}
+\tBuiltinFunctions {{
+\t}}
+\tUninterpretedFunctions {{
+\t}}
+\t{syms}
+}}
+Program {{
+\tBlock a Succ [b] {{
+{body_a}
+\t}}
+\tBlock b Succ [] {{
+{body_b}
+\t}}
+}}
+Axioms {{
+}}
+Metas {{
+  "0": []
+}}
+"""
+
+
+def test_cross_block_constraint_not_materialized():
+    """A constraint assume in a LATER block must not be pulled up to an
+    Eq site in an earlier block: it is path-conditional, and its other
+    symbols (W here) may have no def at the Eq position."""
+    body_a = (
+        "\t\tAssignHavocCmd R\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssumeExpCmd Eq(R X)\n"
+    )
+    body_b = (
+        "\t\tAssignExpCmd W 0x5\n"
+        "\t\tAssumeExpCmd Ge(R W)\n"
+    )
+    tac = parse_string(
+        _wrap_two_blocks(body_a, body_b, syms="R:bv256\n\tX:bv256\n\tW:bv256"),
+        path="<s>",
+    )
+    res = materialize_havoc_equate_bounds(tac.program, symbol_sorts=tac.symbol_sorts)
+    assert res.hits == 0
+
+
+def test_same_block_constraint_after_eq_not_materialized():
+    """A constraint that appears AFTER the host Eq in the same block is
+    not yet in scope at the insertion point; it must not materialize."""
+    body = (
+        "\t\tAssignHavocCmd R\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssumeExpCmd Eq(R X)\n"
+        "\t\tAssumeExpCmd Le(R 0xff)\n"
+    )
+    tac = parse_string(_wrap(body, syms="R:bv256\n\tX:bv256"), path="<s>")
+    res = materialize_havoc_equate_bounds(tac.program, symbol_sorts=tac.symbol_sorts)
+    assert res.hits == 0
