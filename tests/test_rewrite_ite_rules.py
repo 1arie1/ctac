@@ -798,3 +798,75 @@ def test_cmp_range_fold_undecided_no_fire():
         tac.program, (CMP_RANGE_FOLD,), symbol_sorts=tac.symbol_sorts
     )
     assert res.hits_by_rule.get("CmpRangeFold", 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# XorBoolIntEq: 0/1-int XOR carry check is boolean equality
+# ---------------------------------------------------------------------------
+
+
+def test_xor_bool_int_eq_zero():
+    """assume BWXOr(Ite(p,1,0), Ite(q,1,0)) == 0 -> assume p == q."""
+    from ctac.rewrite.rules import XOR_BOOL_INT_EQ
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssignExpCmd P Ite(Lt(0x0 X) 0x1 0x0)\n"
+            "\t\tAssignExpCmd Q Ite(Lt(Y X) 0x1 0x0)\n"
+            "\t\tAssignExpCmd R BWXOr(P Q)\n"
+            "\t\tAssumeExpCmd Eq(R 0x0)",
+            syms="X:bv256\n\tY:bv256\n\tP:bv256\n\tQ:bv256\n\tR:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (XOR_BOOL_INT_EQ,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("XorBoolIntEq") == 1
+    cond = _assume_cond(res.program)
+    assert cond == ApplyExpr(
+        "Eq",
+        (
+            ApplyExpr("Lt", (ConstExpr("0x0"), SymbolRef("X"))),
+            ApplyExpr("Lt", (SymbolRef("Y"), SymbolRef("X"))),
+        ),
+    )
+
+
+def test_xor_bool_int_eq_one_dual():
+    """== 1 negates the equivalence."""
+    from ctac.rewrite.rules import XOR_BOOL_INT_EQ
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssumeExpCmd Eq(BWXOr(Ite(Lt(0x0 X) 0x1 0x0) Ite(Lt(Y X) 0x1 0x0)) 0x1)",
+            syms="X:bv256\n\tY:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (XOR_BOOL_INT_EQ,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("XorBoolIntEq") == 1
+    cond = _assume_cond(res.program)
+    assert isinstance(cond, ApplyExpr) and cond.op == "LNot"
+
+
+def test_xor_bool_int_eq_non_bool_operand_no_fire():
+    """One XOR operand isn't a 0/1-int bool: no fire."""
+    from ctac.rewrite.rules import XOR_BOOL_INT_EQ
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssumeExpCmd Eq(BWXOr(Ite(Lt(0x0 X) 0x1 0x0) Y) 0x0)",
+            syms="X:bv256\n\tY:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (XOR_BOOL_INT_EQ,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("XorBoolIntEq", 0) == 0

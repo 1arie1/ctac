@@ -25,7 +25,7 @@ from ctac.rewrite.rules.chunk_merge import CHUNK_MERGE, SHIFT_LEFT_TO_INT_MUL
 from ctac.rewrite.rules.ceildiv import R6_CEILDIV
 from ctac.rewrite.rules.bv_max_to_ite_validation import ADD_BV_MAX_TO_ITE_CASES
 from ctac.rewrite.rules.ceildiv_validation import R6_CASES
-from ctac.rewrite.rules.bool_fold import BOOL_CONST_FOLD
+from ctac.rewrite.rules.bool_fold import BOOL_CONST_FOLD, XOR_BOOL_INT_EQ
 from ctac.rewrite.rules.copyprop import CP_ALIAS
 from ctac.rewrite.rules.cse import CSE
 from ctac.rewrite.rules.havoc_equate_fold import HAVOC_EQUATE_FOLD
@@ -217,6 +217,9 @@ simplify_pipeline: tuple[Rule, ...] = (
     # that arrive with literal-bool guards and after substitutions
     # introduced by `ctac pin --bind`.
     BOOL_CONST_FOLD,
+    # The 0/1-int XOR carry-consistency check is boolean equality;
+    # folding it drops the bv256_xor UF axiom from the VC.
+    XOR_BOOL_INT_EQ,
     ITE_BOOL,
     # ``LAnd(Ge(X, c), Eq(IntSub(X, c), 0)) -> Eq(X, c)``. Recovers the
     # singleton-equality shape that ``ADD_BV_MAX_TO_ITE`` + ``EqIte`` +
@@ -426,6 +429,7 @@ all_rule_names: tuple[str, ...] = (
     ITE_SHARED_LEAF.name,
     ITE_ZERO_OR_SELF.name,
     BOOL_CONST_FOLD.name,
+    XOR_BOOL_INT_EQ.name,
     ITE_BOOL.name,
     AND_LIFT_EQ_DECREMENT.name,
     ITE_COND_FOLD.name,
@@ -528,6 +532,7 @@ __all__ = [
     "SUB_ITE_DIST_LEFT",
     "SUB_ITE_DIST_RIGHT",
     "WRAP_COMPARE_LIFT",
+    "XOR_BOOL_INT_EQ",
     "ValidationCase",
     "all_rule_names",
     "cse_pipeline",
