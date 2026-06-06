@@ -58,6 +58,23 @@ _TYPED_CONST = re.compile(
     r"^(?P<num>(?:-?[0-9]+|0[xX]-?[0-9a-fA-F_]+))\((?P<tag>[A-Za-z0-9_]+)\)$"
 )
 _SAFE_MATH_NARROW_BIF = re.compile(r"^safe_math_narrow_bv(?P<w>\d+):bif$")
+
+# ctac-introduced narrow signed reinterpretations (the Prover only
+# emits the 256 form): from_s<w>(b) = ite(b < 2^(w-1), b, b - 2^w),
+# total and linear; coincides with the i<w> decode on [0, 2^w).
+_FROM_S_NARROW_BIFS = {
+    "unwrap_twos_complement_64:bif": 64,
+    "unwrap_twos_complement_128:bif": 128,
+}
+
+
+def _from_s_define_fun(width: int) -> str:
+    half = 1 << (width - 1)
+    full = 1 << width
+    return (
+        f"(define-fun from_s{width} ((b Int)) Int"
+        f" (ite (< b {half}) b (- b {full})))"
+    )
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 _BV256_MOD = 1 << 256
@@ -567,6 +584,7 @@ class SeaVcEncoder(SmtEncoder):
         decls: list[SmtDeclaration] = []
         decl_seen: set[str] = set()
         uf_decl_lines: set[str] = set()
+        from_s_def_lines: set[str] = set()
         for s in ordered_symbols:
             nm = symbol_term[s]
             if nm in decl_seen:
@@ -841,6 +859,11 @@ class SeaVcEncoder(SmtEncoder):
                         if callee == "unwrap_twos_complement_256:bif" and len(expr.args) == 2:
                             arg, _ = emit_expr(expr.args[1], expected_sort="Int")
                             return f"(from_s256 {arg})", "Int"
+                        if callee in _FROM_S_NARROW_BIFS and len(expr.args) == 2:
+                            w = _FROM_S_NARROW_BIFS[callee]
+                            arg, _ = emit_expr(expr.args[1], expected_sort="Int")
+                            from_s_def_lines.add(_from_s_define_fun(w))
+                            return f"(from_s{w} {arg})", "Int"
                         uf = f"uf_{sanitize_ident(callee)}"
                         args = [emit_expr(a, expected_sort="Int")[0] for a in expr.args[1:]]
                         ret_sort = expected_sort or "Int"
@@ -1873,6 +1896,7 @@ class SeaVcEncoder(SmtEncoder):
             if name in {"BV256_MOD", "BV256_MAX"}:
                 continue
             out_lines.append(f"(define-fun {name} () Int {const_defs[name]})")
+        out_lines.extend(sorted(from_s_def_lines))
         out_lines.extend(sorted(uf_decl_lines))
 
         def emit_banner(title: str) -> None:

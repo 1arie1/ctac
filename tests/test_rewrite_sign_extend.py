@@ -1361,3 +1361,68 @@ def test_sign_ext_consumers_128():
     assert res.hits_by_rule.get("SignExtCmpLift") == 1
     rhs = _rhs_of(res, "TB")
     assert rhs == ApplyExpr("Le", (SymbolRef("Y"), ConstExpr("0xa")))
+
+
+# ---------------------------------------------------------------------------
+# from_s64 / from_s128 concept bifs (matcher acceptance)
+# ---------------------------------------------------------------------------
+
+
+def test_from_s_bif_zero_test_fires():
+    """Eq(Apply(unwrap_twos_complement_64:bif Y), 0): the bif IS the
+    from_s64 linear form by definition, so the consumer fires."""
+    from ctac.rewrite.rules import FROM_S64_ZERO_TEST
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+            "\t\tAssignExpCmd TB Eq(Apply(unwrap_twos_complement_64:bif Y) 0x0)\n"
+            "\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (FROM_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("FromS64ZeroTest") == 1
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "Eq", (SymbolRef("Y"), ConstExpr("0x0"))
+    )
+
+
+def test_gadget_with_from_s_bif_body_fires():
+    """The gadget shape with the from_s64 leg as the concept bif
+    instead of the expanded Ite: the zero test still collapses."""
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd I IntMul(0x-1(int) Apply(unwrap_twos_complement_64:bif Y))\n"
+        "\t\tAssignExpCmd TBG Eq(Y 0x8000000000000000)\n"
+        "\t\tAssignExpCmd RZ Ite(TBG X Apply(wrap_twos_complement_256:bif I))\n"
+        "\t\tAssignExpCmd TB Eq(RZ 0x0)\n"
+    )
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{body}\t}}\n", syms=_NEG_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64ZeroTest") == 1
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "Eq", (SymbolRef("Y"), ConstExpr("0x0"))
+    )
+
+
+def test_from_s_bif_pretty_names():
+    from ctac.builtins import pretty_builtin_name
+
+    assert pretty_builtin_name("unwrap_twos_complement_64:bif") == "from_s64"
+    assert (
+        pretty_builtin_name("unwrap_twos_complement_128:bif") == "from_s128"
+    )
+    assert (
+        pretty_builtin_name("unwrap_twos_complement_256:bif") == "from_s256"
+    )

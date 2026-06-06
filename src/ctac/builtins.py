@@ -12,10 +12,16 @@ class BuiltinFunction:
 
 
 # Keep this list small and explicit; expand as new builtins are supported.
+# The 64/128 unwrap variants are ctac-introduced concepts (the Prover
+# frontend only emits the 256 form): from_s<w>(b) is DEFINED as the
+# total linear form ``ite(b < 2^(w-1), b, b - 2^w)``, which coincides
+# with the i<w> decode on [0, 2^w).
 BUILTIN_FUNCTIONS: tuple[BuiltinFunction, ...] = (
     BuiltinFunction(key_prefix="safe_math_narrow_bv256", pretty_name="narrow"),
     BuiltinFunction(key_prefix="wrap_twos_complement_256", pretty_name="to_s256"),
     BuiltinFunction(key_prefix="unwrap_twos_complement_256", pretty_name="from_s256"),
+    BuiltinFunction(key_prefix="unwrap_twos_complement_64", pretty_name="from_s64"),
+    BuiltinFunction(key_prefix="unwrap_twos_complement_128", pretty_name="from_s128"),
 )
 
 

@@ -529,3 +529,32 @@ def test_tac_lowering_can_visit_blocks_in_topological_order() -> None:
 
     assert tuple(c.block for c in controls) == ("a", "b")
     assert text.index("(= X 1)") < text.index("(= Y 2)")
+
+
+def test_tac_lowering_supports_from_s_narrow_builtins() -> None:
+    tac = parse_string(
+        _wrap(
+            """
+\tBlock entry Succ [] {
+\t\tAssignExpCmd I Apply(unwrap_twos_complement_64:bif R)
+\t\tAssignExpCmd I2 Apply(unwrap_twos_complement_128:bif R)
+\t\tAssertCmd Eq(I I2)
+\t}
+""",
+            "\tR:bv256\n\tI:int\n\tI2:int",
+        )
+    )
+
+    vc, _controls = lower_tac_file(tac, vc=VCBuilder(VCConfig(check_sat=False)))
+    text = render_vc_script(vc.script())
+
+    assert (
+        "(define-fun from_s64 ((b Int)) Int"
+        " (ite (< b POW2_63) b (- b POW2_64)))"
+    ) in text
+    assert (
+        "(define-fun from_s128 ((b Int)) Int"
+        " (ite (< b POW2_127) b (- b POW2_128)))"
+    ) in text
+    assert "(assert (=> BLK_entry (= I (from_s64 R))))" in text
+    assert "(assert (=> BLK_entry (= I2 (from_s128 R))))" in text

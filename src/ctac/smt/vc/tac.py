@@ -331,6 +331,14 @@ class TacExprLowerer:
             if len(args) != 2:
                 raise VCLoweringError("unwrap_twos_complement_256:bif expects one arg")
             return self.vc.ops.bv256.unwrap_twos_complement(self.lower_int(args[1]))
+        if callee.name == "unwrap_twos_complement_64:bif":
+            if len(args) != 2:
+                raise VCLoweringError("unwrap_twos_complement_64:bif expects one arg")
+            return self.vc.ops.bv256.from_s_narrow(64, self.lower_int(args[1]))
+        if callee.name == "unwrap_twos_complement_128:bif":
+            if len(args) != 2:
+                raise VCLoweringError("unwrap_twos_complement_128:bif expects one arg")
+            return self.vc.ops.bv256.from_s_narrow(128, self.lower_int(args[1]))
         raise VCLoweringError(f"unsupported Apply callee {callee.name!r}")
 
     def lower_map(self, expr: TacExpr) -> MapTerm:

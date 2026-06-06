@@ -225,11 +225,31 @@ def _canon_sym(expr: TacExpr) -> str | None:
     return None
 
 
+_UNWRAP_BIF_WIDTHS = {
+    "unwrap_twos_complement_64:bif": 64,
+    "unwrap_twos_complement_128:bif": 128,
+    "unwrap_twos_complement_256:bif": 256,
+}
+
+
 def _match_from_s(
     e: TacExpr, ctx: RewriteCtx
 ) -> tuple[SymbolRef, _Width] | None:
     """The from_s<w> reinterpretation
-    ``Ite(Lt(y, 2^(w-1)), y, IntSub(y, 2^w))``; returns ``(y, w)``."""
+    ``Ite(Lt(y, 2^(w-1)), y, IntSub(y, 2^w))``, or the equivalent
+    concept bif ``Apply(unwrap_twos_complement_<w>:bif, y)`` (the
+    bif is DEFINED as that total linear form); returns ``(y, w)``."""
+    if (
+        isinstance(e, ApplyExpr)
+        and e.op == "Apply"
+        and len(e.args) == 2
+        and isinstance(e.args[0], SymbolRef)
+        and isinstance(e.args[1], SymbolRef)
+    ):
+        bits = _UNWRAP_BIF_WIDTHS.get(e.args[0].name)
+        if bits is not None:
+            return e.args[1], _WIDTH_BY_FULL[1 << bits]
+        return None
     if not (isinstance(e, ApplyExpr) and e.op == "Ite" and len(e.args) == 3):
         return None
     cond, then_arm, else_arm = e.args

@@ -388,3 +388,26 @@ def test_two_selects_converging_on_same_leaf_dedup():
     assert out.count("(assert (<= 0 (M0 I) BV256_MAX))") == 1
     assert "(assert (<= 0 (M1 I) BV256_MAX))" not in out
     assert "(assert (<= 0 (M2 I) BV256_MAX))" not in out
+
+
+def test_from_s_narrow_bifs_lower_and_define_on_demand():
+    """The ctac-introduced ``unwrap_twos_complement_64/128`` concept
+    bifs lower to ``(from_s64 e)`` / ``(from_s128 e)`` with their
+    define-funs emitted only when used."""
+    src = _wrap(
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd R0\n"
+        "\t\tAssumeExpCmd Le(R0 0xff)\n"
+        "\t\tAssignExpCmd I0 Apply(unwrap_twos_complement_64:bif R0)\n"
+        "\t\tAssertCmd false \"boom\"\n"
+        "\t}",
+        "R0:bv256\n\tI0:int",
+    )
+    out = _render(src)
+    assert (
+        f"(define-fun from_s64 ((b Int)) Int"
+        f" (ite (< b {1 << 63}) b (- b {1 << 64})))"
+    ) in out
+    assert "(from_s64 R0)" in out
+    # The 128 sibling was not used: no define-fun for it.
+    assert "from_s128" not in out

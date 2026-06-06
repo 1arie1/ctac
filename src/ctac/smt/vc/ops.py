@@ -62,6 +62,8 @@ class _SmtName:
     BV256_OR = "int.bv256_or"
     TO_S256 = "to_s256"
     FROM_S256 = "from_s256"
+    FROM_S64 = "from_s64"
+    FROM_S128 = "from_s128"
     BV256_IS_NEG = "bv256.is_neg"
     BV256_SLT = "bv256.slt"
     BV256_SLE = "bv256.sle"
@@ -663,6 +665,29 @@ class Bv256Ops:
             app(_SmtName.ITE, [lt(b, half), b, sub(b, self.vc.bv256_mod())], Int),
         )
         return app(_SmtName.FROM_S256, [x], Int)
+
+    def from_s_narrow(self, width: int, x: Term) -> Term:
+        """``from_s<w>(b) = ite(b < 2^(w-1), b, b - 2^w)`` -- the
+        ctac-introduced narrow signed reinterpretation (w in
+        {64, 128}); total linear form, coincides with the i<w>
+        decode on [0, 2^w)."""
+        name = {64: _SmtName.FROM_S64, 128: _SmtName.FROM_S128}[width]
+        b = term("b", Int)
+        self.vc.define_fun(
+            name,
+            (("b", Int),),
+            Int,
+            app(
+                _SmtName.ITE,
+                [
+                    lt(b, self.vc.int_lit(1 << (width - 1))),
+                    b,
+                    sub(b, self.vc.int_lit(1 << width)),
+                ],
+                Int,
+            ),
+        )
+        return app(name, [x], Int)
 
     # ----- Signed comparisons -----
     #
