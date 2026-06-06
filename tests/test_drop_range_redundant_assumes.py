@@ -136,3 +136,20 @@ def test_idempotent():
         once.program, symbol_sorts=tac.symbol_sorts
     )
     assert twice.hits == 0
+
+
+def test_drops_literal_true_assume():
+    """``assume true`` (left behind by condition folding) drops;
+    ``assume false`` is load-bearing and stays."""
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssumeExpCmd true\n"
+        "\t\tAssumeExpCmd false\n"
+        "\t\tAssertCmd false\n"
+    )
+    tac = parse_string(_wrap(body, syms="X:bv256"), path="<s>")
+    res = drop_range_redundant_assumes(
+        tac.program, symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits == 1
+    assert _assume_count(res.program) == 1

@@ -406,6 +406,17 @@ def test_eq_reflexive_folds_same_const():
     assert _assume_cond(res.program) == ConstExpr("true")
 
 
+def test_eq_reflexive_folds_meta_suffixed_pair():
+    """``Eq(R0:20, R0)`` names the same symbol twice (the ``:N`` is a
+    meta reference, not a different variable) -> ``true``."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(R0:20 R0)"), path="<s>"
+    )
+    res = rewrite_program(tac.program, (EQ_REFLEXIVE,))
+    assert res.hits_by_rule == {"EqReflexive": 1}
+    assert _assume_cond(res.program) == ConstExpr("true")
+
+
 # ---------------------------------------------------------------------------
 # IntMulEqZero: Eq(IntMul(X, K), 0) -> Eq(X, 0) when K != 0 (Int-domain only)
 # ---------------------------------------------------------------------------
@@ -600,6 +611,26 @@ def test_arith_const_fold_one_symbolic_no_fold():
     )
     res = rewrite_program(tac.program, (ARITH_CONST_FOLD,))
     assert "ArithConstFold" not in res.hits_by_rule
+
+
+def test_arith_const_fold_relational_true():
+    """``Gt(10^4, 0)`` — the frontend's divisor guard — folds to true."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Gt(0x2710 0x0(int))"), path="<s>"
+    )
+    res = rewrite_program(tac.program, (ARITH_CONST_FOLD,))
+    assert res.hits_by_rule.get("ArithConstFold", 0) >= 1
+    assert _assume_cond(res.program) == ConstExpr("true")
+
+
+def test_arith_const_fold_relational_false():
+    """``Lt(0x5, 0x3)`` folds to false (kept as an assume — load-bearing)."""
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Lt(0x5 0x3)"), path="<s>"
+    )
+    res = rewrite_program(tac.program, (ARITH_CONST_FOLD,))
+    assert res.hits_by_rule.get("ArithConstFold", 0) >= 1
+    assert _assume_cond(res.program) == ConstExpr("false")
 
 
 # ---------------------------------------------------------------------------

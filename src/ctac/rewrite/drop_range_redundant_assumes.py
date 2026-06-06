@@ -108,7 +108,9 @@ def drop_range_redundant_assumes(
     symbol_sorts: dict[str, str] | None = None,
 ) -> DropRangeRedundantAssumesResult:
     """Walk every ``AssumeExpCmd``; drop those whose condition is
-    a range-tautological comparison against a constant."""
+    a literal ``true`` (the degenerate tautology, typically left by
+    ``EqReflexive`` / ``ArithConstFold`` folding the condition) or a
+    range-tautological comparison against a constant."""
     ctx = RewriteCtx(program, symbol_sorts=symbol_sorts or {})
 
     drops: dict[str, set[int]] = {}
@@ -116,6 +118,11 @@ def drop_range_redundant_assumes(
     for block in program.blocks:
         for idx, cmd in enumerate(block.commands):
             if not isinstance(cmd, AssumeExpCmd):
+                continue
+            cond = cmd.condition
+            if isinstance(cond, ConstExpr) and cond.value.strip() == "true":
+                drops.setdefault(block.id, set()).add(idx)
+                hits += 1
                 continue
             classified = _classify_cmp(cmd.condition)
             if classified is None:

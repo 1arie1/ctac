@@ -44,16 +44,18 @@ def _is_ite(e: TacExpr) -> bool:
 
 
 def _rewrite_eq_reflexive(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
-    """``Eq(e, e)`` -> ``true`` for any structurally-equal pair.
+    """``Eq(e, e)`` -> ``true`` for any pair equal modulo DSA meta
+    suffixes (``Eq(R1211:20, R1211)`` names the same symbol twice).
 
     Specifically clears the ``Eq(X, X)`` shape that
     ``HAVOC_EQUATE_SUBST`` synthesizes when its substitution turns
-    an `Eq(R, X)` equality assume into `Eq(X, X)`. UCE then removes
-    the resulting ``assume true``."""
+    an `Eq(R, X)` equality assume into `Eq(X, X)`. The
+    range-redundant-assume pass then drops the resulting
+    ``assume true``."""
     if not (isinstance(expr, ApplyExpr) and expr.op == "Eq" and len(expr.args) == 2):
         return None
     a, b = expr.args
-    if a == b:
+    if eq_modulo_meta(a, b):
         return _TRUE
     return None
 
@@ -279,7 +281,9 @@ _BV256_MOD = 1 << 256
 def _rewrite_arith_const_fold(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
     """Fold binary arithmetic / bitwise ops over two :class:`ConstExpr`
     operands. Covers Int and bv variants of Add/Sub/Mul/Div/Mod plus
-    BWAnd. Result preserves the operand's type tag via
+    BWAnd, and the unsigned order comparisons Lt/Le/Gt/Ge (folding to
+    bool literals, e.g. the frontend's ``assume Gt(10^4, 0)`` divisor
+    guard). Result preserves the operand's type tag via
     :func:`as_int_const` (for Int ops) or :func:`reformat_const` (for
     bv ops).
 
@@ -287,6 +291,10 @@ def _rewrite_arith_const_fold(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None
     semantics: Int ops are non-modular; bv ops wrap mod 2^256;
     Div/Mod abstain when the divisor is zero (the source code's
     behavior on Div-by-zero is the existing rule output, not a fold).
+    Lt/Le/Gt/Ge order both bv and Int constants by their integer
+    magnitude (bv values are non-negative). The signed Slt/Sle/Sgt/Sge
+    forms are deliberately not folded here — they reinterpret the bv
+    pattern and have no observed const-const occurrences.
     """
     if not (isinstance(expr, ApplyExpr) and len(expr.args) == 2):
         return None
@@ -320,6 +328,14 @@ def _rewrite_arith_const_fold(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None
         return reformat_const(a, va % vb)
     if op == "BWAnd":
         return reformat_const(a, va & vb)
+    if op == "Lt":
+        return _TRUE if va < vb else _FALSE
+    if op == "Le":
+        return _TRUE if va <= vb else _FALSE
+    if op == "Gt":
+        return _TRUE if va > vb else _FALSE
+    if op == "Ge":
+        return _TRUE if va >= vb else _FALSE
     return None
 
 
