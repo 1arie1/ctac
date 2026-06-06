@@ -179,6 +179,36 @@ def _canon_sym(expr: TacExpr) -> str | None:
     return None
 
 
+def _match_from_s64(e: TacExpr, ctx: RewriteCtx) -> SymbolRef | None:
+    """The from_s64 reinterpretation
+    ``Ite(Lt(y, 2^63), y, IntSub(y, 2^64))``; returns ``y``."""
+    if not (isinstance(e, ApplyExpr) and e.op == "Ite" and len(e.args) == 3):
+        return None
+    cond, then_arm, else_arm = e.args
+    y_name = _canon_sym(then_arm)
+    if y_name is None:
+        return None
+    cond_in = ctx.lookthrough(cond)
+    if not (
+        isinstance(cond_in, ApplyExpr)
+        and cond_in.op == "Lt"
+        and len(cond_in.args) == 2
+        and _canon_sym(cond_in.args[0]) == y_name
+        and const_to_int(cond_in.args[1]) == _TWO_63
+    ):
+        return None
+    if not (
+        isinstance(else_arm, ApplyExpr)
+        and else_arm.op == "IntSub"
+        and len(else_arm.args) == 2
+        and _canon_sym(else_arm.args[0]) == y_name
+        and const_to_int(else_arm.args[1]) == _TWO_64
+    ):
+        return None
+    assert isinstance(then_arm, SymbolRef)
+    return then_arm
+
+
 def _match_gadget_shape(
     host: TacExpr, ctx: RewriteCtx
 ) -> tuple[SymbolRef, TacExpr] | None:
@@ -226,32 +256,8 @@ def _match_gadget_shape(
     else:
         return None
 
-    f_in = ctx.lookthrough(f)
-    if not (
-        isinstance(f_in, ApplyExpr)
-        and f_in.op == "Ite"
-        and len(f_in.args) == 3
-    ):
-        return None
-    cond, then_arm, else_arm = f_in.args
-    cond_in = ctx.lookthrough(cond)
-    if not (
-        isinstance(cond_in, ApplyExpr)
-        and cond_in.op == "Lt"
-        and len(cond_in.args) == 2
-        and _canon_sym(cond_in.args[0]) == y_name
-        and const_to_int(cond_in.args[1]) == _TWO_63
-    ):
-        return None
-    if _canon_sym(then_arm) != y_name:
-        return None
-    if not (
-        isinstance(else_arm, ApplyExpr)
-        and else_arm.op == "IntSub"
-        and len(else_arm.args) == 2
-        and _canon_sym(else_arm.args[0]) == y_name
-        and const_to_int(else_arm.args[1]) == _TWO_64
-    ):
+    f_y = _match_from_s64(ctx.lookthrough(f), ctx)
+    if f_y is None or canonical_symbol(f_y.name) != y_name:
         return None
 
     assert isinstance(y, SymbolRef)
@@ -752,5 +758,38 @@ SIGNED_CMP_NEG_ONE = Rule(
     description=(
         "Normalize signed comparisons against -1 (0xff..ff) to the "
         "zero threshold: x <=s -1 -> x <s 0, x >s -1 -> 0 <=s x."
+    ),
+)
+
+
+# FROM_S64_ZERO_TEST: the bare from_s64 zero test, without the wrap
+# round trip -- ``Eq(Ite(Lt(y, 2^63), y, IntSub(y, 2^64)), 0)``.
+# from_s64 maps y to y (then arm) or y - 2^64 (else arm); the result
+# is 0 iff y == 0 or y == 2^64, and the range gate y < 2^64 excludes
+# the latter. The no-overflow assumes of the i128 negation carry
+# several of these deep inside their Ite trees.
+
+
+def _rewrite_from_s64_zero_test(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    e = _eq_other_side(expr, 0)
+    if e is None:
+        return None
+    y = _match_from_s64(ctx.lookthrough(e), ctx)
+    if y is None:
+        return None
+    rng = infer_expr_range(y, ctx)
+    if rng is None or rng[1] is None or rng[1] >= _TWO_64 or rng[0] < 0:
+        return None
+    return ApplyExpr("Eq", (y, ConstExpr("0x0")))
+
+
+FROM_S64_ZERO_TEST = Rule(
+    name="FromS64ZeroTest",
+    fn=_rewrite_from_s64_zero_test,
+    description=(
+        "Eq(from_s64(y), 0) -> Eq(y, 0) when range proves y < 2^64 "
+        "(from_s64 hits zero only at y == 0 or the excluded y == 2^64)."
     ),
 )

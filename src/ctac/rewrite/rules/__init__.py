@@ -54,6 +54,7 @@ from ctac.rewrite.rules.range_fold import RANGE_FOLD
 from ctac.rewrite.rules.sar_to_shr import SAR_TO_SHR_NONNEG
 from ctac.rewrite.rules.select_over_store import SELECT_OVER_STORE
 from ctac.rewrite.rules.sign_extend import (
+    FROM_S64_ZERO_TEST,
     NEG_S64_DOUBLE,
     NEG_S64_LOW_CHUNK,
     NEG_S64_SIGN_TEST,
@@ -291,6 +292,9 @@ simplify_pipeline: tuple[Rule, ...] = (
     # from_s64 arriving as unwrap(SignExtend(7, y)) is already in
     # the Ite form this matcher recognizes.
     NEG_S64_ZERO_TEST,
+    # The bare from_s64 zero test (no wrap round trip), living deep
+    # inside the i128 negation's no-overflow assumes.
+    FROM_S64_ZERO_TEST,
     # The other negation-gadget consumers: Mod(gadget, 2^64) (the
     # negated low chunk -- both arms agree, no x gate) and the signed
     # zero-threshold tests (gated on range(x) < 2^255 for the
@@ -444,6 +448,7 @@ all_rule_names: tuple[str, ...] = (
     SELECT_OVER_STORE.name,
     SIGN_EXTEND_UNWRAP.name,
     NEG_S64_ZERO_TEST.name,
+    FROM_S64_ZERO_TEST.name,
     NEG_S64_LOW_CHUNK.name,
     NEG_S64_SIGN_TEST.name,
     NEG_S64_DOUBLE.name,
@@ -479,6 +484,7 @@ __all__ = [
     "EQ_CONST_FOLD",
     "EQ_ITE_DIST",
     "EQ_REFLEXIVE",
+    "FROM_S64_ZERO_TEST",
     "HAVOC_EQUATE_FOLD",
     "HAVOC_EQUATE_SUBST",
     "INT_MUL_EQ_ZERO",

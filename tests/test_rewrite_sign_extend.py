@@ -868,3 +868,72 @@ def test_signed_cmp_neg_one_unlocks_sign_test():
     assert res.hits_by_rule.get("NegS64SignTest") == 1
     rhs = _rhs_of(res, "TB")
     assert isinstance(rhs, ApplyExpr) and rhs.op == "LAnd"
+
+
+# ---------------------------------------------------------------------------
+# FROM_S64_ZERO_TEST
+# ---------------------------------------------------------------------------
+
+
+def test_from_s64_zero_test_fires():
+    """Eq(from_s64(Y), 0) with Y a chunk -> Eq(Y, 0)."""
+    from ctac.rewrite.rules import FROM_S64_ZERO_TEST
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+            "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd TB Eq(Ite(TBC Y IntSub(Y 0x10000000000000000(int))) 0x0)\n"
+            "\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (FROM_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("FromS64ZeroTest") == 1
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "Eq", (SymbolRef("Y"), ConstExpr("0x0"))
+    )
+
+
+def test_from_s64_zero_test_requires_chunk_range():
+    """Y unbounded bv256: y == 2^64 would also zero the else arm,
+    the gate holds the rewrite back."""
+    from ctac.rewrite.rules import FROM_S64_ZERO_TEST
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd TB Eq(Ite(TBC Y IntSub(Y 0x10000000000000000(int))) 0x0)\n"
+            "\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (FROM_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("FromS64ZeroTest", 0) == 0
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+def test_from_s64_zero_test_lemma_via_z3():
+    """For y in [0, 2^64): from_s64(y) == 0 iff y == 0."""
+    two_63 = 1 << 63
+    two_64 = 1 << 64
+    script = f"""(set-logic QF_NIA)
+(declare-const y Int)
+(define-fun f () Int (ite (< y {two_63}) y (- y {two_64})))
+(assert (and (<= 0 y) (< y {two_64})))
+(assert (not (= (= f 0) (= y 0))))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=script, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip() == "unsat", proc.stdout
