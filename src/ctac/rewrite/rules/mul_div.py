@@ -56,6 +56,7 @@ from ctac.ast.nodes import ApplyExpr, ConstExpr, TacExpr
 from ctac.analysis.symbols import canonical_symbol
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
+from ctac.rewrite.range_infer import infer_expr_range
 from ctac.rewrite.rules.common import as_int_const, const_to_int, log2_if_pow2
 
 
@@ -237,4 +238,158 @@ MUL_DIV_TO_MULDIV = Rule(
     name="MulDiv",
     fn=_rewrite_mul_div_to_muldiv,
     description="IntDiv(IntMul(a, b), c) -> IntMulDiv(a, b, c).",
+)
+
+
+_TWO_64 = 1 << 64
+
+
+def _peel_int_bool(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    """Unwrap the SBF 0/1-int bool convention: ``Ite(c, 1, 0)`` (after
+    lookthrough) returns ``c``; a bare boolean expression returns
+    itself. Returns None for anything else."""
+    inner = ctx.lookthrough(expr)
+    if (
+        isinstance(inner, ApplyExpr)
+        and inner.op == "Ite"
+        and len(inner.args) == 3
+        and const_to_int(inner.args[1]) == 1
+        and const_to_int(inner.args[2]) == 0
+    ):
+        return inner.args[0]
+    if isinstance(inner, ApplyExpr) and inner.op in {"Lt", "Le", "Gt", "Ge"}:
+        return inner
+    return None
+
+
+def _match_lt(expr: TacExpr, ctx: RewriteCtx) -> tuple[TacExpr, TacExpr] | None:
+    inner = ctx.lookthrough(expr)
+    if isinstance(inner, ApplyExpr) and inner.op == "Lt" and len(inner.args) == 2:
+        return inner.args[0], inner.args[1]
+    if isinstance(inner, ApplyExpr) and inner.op == "Gt" and len(inner.args) == 2:
+        return inner.args[1], inner.args[0]
+    return None
+
+
+def _in_range(expr: TacExpr, lo: int, hi: int, ctx: RewriteCtx) -> bool:
+    rng = infer_expr_range(expr, ctx)
+    if rng is None or rng[0] is None or rng[1] is None:
+        return False
+    return rng[0] >= lo and rng[1] <= hi
+
+
+def _chunk_source(h: TacExpr, lo: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    """When ``h`` / ``l`` are the 2^64 chunk extracts of one wide value
+    ``R`` (``Div(R, 2^64)`` / ``Mod(R, 2^64)`` in bv or int form, same
+    canonical R), the reassembled pair IS ``R`` — return it."""
+    h_in = ctx.lookthrough(h) if not isinstance(h, ApplyExpr) else h
+    l_in = ctx.lookthrough(lo) if not isinstance(lo, ApplyExpr) else lo
+    if not (
+        isinstance(h_in, ApplyExpr)
+        and h_in.op in {"Div", "IntDiv"}
+        and len(h_in.args) == 2
+        and const_to_int(h_in.args[1]) == _TWO_64
+    ):
+        return None
+    if not (
+        isinstance(l_in, ApplyExpr)
+        and l_in.op in {"Mod", "IntMod"}
+        and len(l_in.args) == 2
+        and const_to_int(l_in.args[1]) == _TWO_64
+    ):
+        return None
+    if l_in.args[0] != h_in.args[0]:
+        return None
+    return h_in.args[0]
+
+
+def _wide_term(h: TacExpr, lo: TacExpr, ctx: RewriteCtx) -> TacExpr:
+    src = _chunk_source(h, lo, ctx)
+    if src is not None:
+        return src
+    return ApplyExpr(
+        "IntAdd",
+        (ApplyExpr("IntMul", (h, ConstExpr(f"{hex(_TWO_64)}(int)"))), lo),
+    )
+
+
+def _rewrite_chunked_u128_lt(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    """The chunked-u128 lexicographic compare ladder:
+
+        Ite(Eq(H, H'), lo_lt, hi_lt)
+
+    where (after lookthrough and 0/1-int peeling) ``lo_lt`` compares
+    ``L < L'`` and ``hi_lt`` compares ``H < H'`` over the same pair as
+    the Eq — i.e. ``(H, L) <lex (H', L')``. Rewrites to the positional
+    compare ``Lt(H*2^64 + L, H'*2^64 + L')``; when a side's chunks are
+    the extracts of one wide value R, the side collapses to R itself.
+
+    Gate: lexicographic == positional only when the low parts are
+    inside the radix — ``L, L' in [0, 2^64)`` and ``H, H' >= 0``, all
+    via dominating range facts. The arms keep the SBF 0/1-int
+    convention when the input had it, so downstream Eq(_, 0) tests
+    fold as before.
+    """
+    if not (isinstance(expr, ApplyExpr) and expr.op == "Ite" and len(expr.args) == 3):
+        return None
+    cond, then_e, else_e = expr.args
+    cond_in = ctx.lookthrough(cond)
+    if not (
+        isinstance(cond_in, ApplyExpr)
+        and cond_in.op == "Eq"
+        and len(cond_in.args) == 2
+    ):
+        return None
+    eq_a, eq_b = cond_in.args
+
+    then_b = _peel_int_bool(then_e, ctx)
+    else_b = _peel_int_bool(else_e, ctx)
+    if then_b is None or else_b is None:
+        return None
+    # Arms wrapped in the 0/1 convention iff the input was.
+    int_convention = not (
+        isinstance(ctx.lookthrough(then_e), ApplyExpr)
+        and ctx.lookthrough(then_e).op in {"Lt", "Le", "Gt", "Ge"}
+    )
+
+    lo_pair = _match_lt(then_b, ctx)
+    hi_pair = _match_lt(else_b, ctx)
+    if lo_pair is None or hi_pair is None:
+        return None
+    h_l, h_r = hi_pair
+    # The Eq must test the same hi pair (either orientation).
+    if not (
+        (eq_a == h_l and eq_b == h_r) or (eq_a == h_r and eq_b == h_l)
+    ):
+        return None
+    l_l, l_r = lo_pair
+
+    int_max = (1 << 256) - 1
+    if not (
+        _in_range(l_l, 0, _TWO_64 - 1, ctx)
+        and _in_range(l_r, 0, _TWO_64 - 1, ctx)
+        and _in_range(h_l, 0, int_max, ctx)
+        and _in_range(h_r, 0, int_max, ctx)
+    ):
+        return None
+
+    wide = ApplyExpr(
+        "Lt", (_wide_term(h_l, l_l, ctx), _wide_term(h_r, l_r, ctx))
+    )
+    if int_convention:
+        return ApplyExpr(
+            "Ite", (wide, ConstExpr("0x1"), ConstExpr("0x0"))
+        )
+    return wide
+
+
+CHUNKED_U128_LT = Rule(
+    name="ChunkedU128Lt",
+    fn=_rewrite_chunked_u128_lt,
+    description=(
+        "Lift the chunked-u128 lexicographic compare ladder "
+        "Ite(Eq(H,H'), L<L', H<H') to the positional "
+        "Lt(H*2^64+L, H'*2^64+L'); chunk-extract sides collapse to "
+        "their wide source. Gated on L, L' in [0, 2^64)."
+    ),
 )

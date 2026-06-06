@@ -35,7 +35,7 @@ from ctac.rewrite.rules.mod_over_ite import MOD_OVER_ITE
 from ctac.rewrite.rules.muldiv_to_full_product_div import (
     MULDIV_TO_FULL_PRODUCT_DIV,
 )
-from ctac.rewrite.rules.mul_div import CHUNKED_MUL_BY_2N, MUL_DIV_TO_MULDIV
+from ctac.rewrite.rules.mul_div import CHUNKED_MUL_BY_2N, MUL_DIV_TO_MULDIV, CHUNKED_U128_LT
 from ctac.rewrite.rules.div import (
     R1_BITFIELD_STRIP,
     R2_DIV_FUSE,
@@ -197,6 +197,10 @@ simplify_pipeline: tuple[Rule, ...] = (
     # Prune nested Ites that re-test the outer's exact condition
     # (saturating-sub lowerings emit them); unconditionally sound.
     ITE_SAME_COND_NESTED,
+    # Lift the chunked-u128 lexicographic compare ladder to a single
+    # positional compare; chunk-extract sides collapse to their wide
+    # source. Range-gated (lo parts must be inside the radix).
+    CHUNKED_U128_LT,
     # Bool-const fold: `Ite(true, X, _) -> X`, `Ite(false, _, Y) -> Y`,
     # plus LNot/LAnd/LOr/Eq over Bool ConstExpr operands. Universally
     # sound; cheap (top-level pattern match). Useful both for inputs
@@ -361,6 +365,7 @@ all_rule_names: tuple[str, ...] = (
     R4A_DIV_PURIFY.name,
     R6_CEILDIV.name,
     CHUNKED_MUL_BY_2N.name,
+    CHUNKED_U128_LT.name,
     MUL_DIV_TO_MULDIV.name,
     HAVOC_EQUATE_SUBST.name,
     HAVOC_EQUATE_FOLD.name,
@@ -421,6 +426,7 @@ __all__ = [
     "INT_MUL_DIV_CEIL",
     "CHUNK_MERGE",
     "CHUNKED_MUL_BY_2N",
+    "CHUNKED_U128_LT",
     "CP_ALIAS",
     "CSE",
     "DE_MORGAN",
