@@ -899,6 +899,37 @@ class SeaVcEncoder(SmtEncoder):
                         a1, a2 = a2, a1
                     fn = "bv256.slt" if op in {"Slt", "Sgt"} else "bv256.sle"
                     return f"({fn} {a1} {a2})", "Bool"
+                if op == "SignExtend":
+                    # ``SignExtend(b, x)``: byte index ``b`` selects the
+                    # sign bit at ``8*(b+1)-1`` (EVM/SBF convention; the
+                    # semantics ``rewrite/rules/sign_extend.py`` keys
+                    # on). As bv256-as-Int with ``w = 8*(b+1)`` and
+                    # ``lo = x mod 2^w``: ``lo`` when the sign bit is
+                    # clear, else ``lo + (2^256 - 2^w)`` (the high bits
+                    # filled with ones).
+                    if len(expr.args) != 2:
+                        raise SmtEncodingError(
+                            "SignExtend expects (byte_index, value)"
+                        )
+                    if not isinstance(expr.args[0], ConstExpr):
+                        raise SmtEncodingError(
+                            "SignExtend byte index must be a constant: "
+                            f"{_render_expr_short(expr)}"
+                        )
+                    b_val = _parse_const(expr.args[0].value)
+                    if not 0 <= b_val <= 31:
+                        raise SmtEncodingError(
+                            "SignExtend byte index must be in [0, 31]: "
+                            f"{_render_expr_short(expr)}"
+                        )
+                    w = 8 * (b_val + 1)
+                    x_term, _ = emit_expr(expr.args[1], expected_sort="Int")
+                    lo = f"(mod {x_term} {1 << w})"
+                    return (
+                        f"(ite (< {lo} {1 << (w - 1)}) {lo} "
+                        f"(+ {lo} (- BV256_MOD {1 << w})))",
+                        "Int",
+                    )
                 if op in {"Add", "Sub"}:
                     # bv256-wrap arithmetic. Single-wrap ITE form (default,
                     # ``bv_add_sub_axiom == "no-mod"``) is sound because both

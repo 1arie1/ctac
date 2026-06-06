@@ -811,3 +811,60 @@ def test_sea_vc_signed_compare_sat_when_assert_fails() -> None:
         input=rendered, capture_output=True, text=True, timeout=30,
     )
     assert proc.stdout.strip().splitlines()[0] == "sat", proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# SignExtend: byte index b selects the sign bit at 8*(b+1)-1; as
+# bv256-as-Int the low w bits are kept and the high bits fill with
+# ones when the sign bit is set. Appears in orig-side commands of
+# rw-eq merged programs (the rewriter normally rewrites it away via
+# SIGN_EXTEND_UNWRAP, so plain pipeline output never carries it).
+
+TAC_SIGN_EXTEND = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t\tunwrap_twos_complement_256:JSON{"#class":"vc.data.TACBuiltInFunction.UnwrapTwosComplement","tag":{"#class":"tac.Tag.Bit256"}}
+\t}
+\tUninterpretedFunctions {
+\t}
+\tr:bv256
+\ts:int
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignExpCmd r 0xffffffffffffffff
+\t\tAssignExpCmd s Apply(unwrap_twos_complement_256:bif SignExtend(0x7 r))
+\t\tAssignExpCmd ok Eq(s 0x-1(int))
+\t\tAssertCmd ok "sign-extended u64 max reads as -1"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_sea_vc_sign_extend_emission() -> None:
+    tac = parse_string(TAC_SIGN_EXTEND, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    # w = 64: keep low 64 bits, fill high bits when bit 63 is set.
+    assert f"(mod r {1 << 64})" in rendered
+    assert f"(< (mod r {1 << 64}) {1 << 63})" in rendered
+    assert f"(- BV256_MOD {1 << 64})" in rendered
+
+
+@pytest.mark.skipif(not _z3_available(), reason="z3 not on PATH")
+def test_sea_vc_sign_extend_semantics_via_z3() -> None:
+    """0xffff...ffff (u64 max) sign-extended from byte index 7 and
+    unwrapped reads as -1: the assert holds, failure VC unsat."""
+    tac = parse_string(TAC_SIGN_EXTEND, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=rendered, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip().splitlines()[0] == "unsat", proc.stdout
