@@ -53,7 +53,7 @@ from ctac.rewrite.rules.purify_assume import PURIFY_ASSUME
 from ctac.rewrite.rules.range_fold import RANGE_FOLD
 from ctac.rewrite.rules.sar_to_shr import SAR_TO_SHR_NONNEG
 from ctac.rewrite.rules.select_over_store import SELECT_OVER_STORE
-from ctac.rewrite.rules.sign_extend import SIGN_EXTEND_UNWRAP
+from ctac.rewrite.rules.sign_extend import NEG_S64_ZERO_TEST, SIGN_EXTEND_UNWRAP
 from ctac.rewrite.rules.store_eq import STORE_EQ_NORM, normalize_store_eq
 from ctac.rewrite.rules.ite import (
     ADD_ITE_DIST,
@@ -272,6 +272,12 @@ simplify_pipeline: tuple[Rule, ...] = (
     # narrowed form; before RANGE_FOLD so the emitted Ite can collapse
     # when range pins the sign-bit condition.
     SIGN_EXTEND_UNWRAP,
+    # Collapse the saturating-sub "negated i64 is zero" round trip
+    # Eq(Ite(Eq(y, 2^63), x, wrap_256(-from_s64(y))), 0) -> Eq(y, 0)
+    # when y = Mod(x, 2^64). Runs after SIGN_EXTEND_UNWRAP so a
+    # from_s64 arriving as unwrap(SignExtend(7, y)) is already in
+    # the Ite form this matcher recognizes.
+    NEG_S64_ZERO_TEST,
     # ShiftRightArithmetical(x, k) -> ShiftRightLogical(x, k) when
     # range proves x's top bit is zero (the typical shape after
     # ``Mod(_, 2^64)``). The sea encoder lowers LSHR natively.
@@ -405,6 +411,7 @@ all_rule_names: tuple[str, ...] = (
     SAR_TO_SHR_NONNEG.name,
     SELECT_OVER_STORE.name,
     SIGN_EXTEND_UNWRAP.name,
+    NEG_S64_ZERO_TEST.name,
     CSE.name,
     CP_ALIAS.name,
     ITE_PURIFY.name,
@@ -454,6 +461,7 @@ __all__ = [
     "N2_LOW_MASK",
     "N3_HIGH_MASK",
     "N4_SHR_CONST",
+    "NEG_S64_ZERO_TEST",
     "PURIFY_ASSERT",
     "PURIFY_ASSUME",
     "R1_BITFIELD_STRIP",

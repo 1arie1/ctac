@@ -8,7 +8,7 @@ via bv Mod / Div by 2^64, and dominating range assumes.
 
 from __future__ import annotations
 
-from ctac.ast.nodes import ApplyExpr, AssignExpCmd, ConstExpr
+from ctac.ast.nodes import ApplyExpr, AssignExpCmd
 from ctac.parse import parse_string
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.rules import CHUNKED_U128_LT

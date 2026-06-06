@@ -1,11 +1,20 @@
-"""Tests for ``SIGN_EXTEND_UNWRAP``."""
+"""Tests for ``SIGN_EXTEND_UNWRAP`` and ``NEG_S64_ZERO_TEST``."""
 
 from __future__ import annotations
 
-from ctac.ast.nodes import ApplyExpr, SymbolRef
+import shutil
+import subprocess
+
+import pytest
+
+from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef
 from ctac.parse import parse_string
 from ctac.rewrite.framework import rewrite_program
-from ctac.rewrite.rules import SIGN_EXTEND_UNWRAP, default_pipeline
+from ctac.rewrite.rules import (
+    NEG_S64_ZERO_TEST,
+    SIGN_EXTEND_UNWRAP,
+    default_pipeline,
+)
 
 
 def _wrap(body: str, *, syms: str) -> str:
@@ -165,3 +174,141 @@ def test_rule_in_default_pipeline_eliminates_signextend():
             rhs = getattr(cmd, "rhs", None) or getattr(cmd, "predicate", None)
             if rhs is not None:
                 assert not _has_op(rhs, "SignExtend"), f"SignExtend remains in {cmd!r}"
+
+
+# ---------------------------------------------------------------------------
+# NEG_S64_ZERO_TEST
+# ---------------------------------------------------------------------------
+
+_NEG_SYMS = "X:bv256\n\tY:bv256\n\tTBC:bool\n\tI:int\n\tTBG:bool\n\tRZ:bv256\n\tTB:bool"
+
+
+def _rhs_of(res, lhs):
+    for b in res.program.blocks:
+        for cmd in b.commands:
+            if getattr(cmd, "lhs", None) == lhs:
+                return cmd.rhs
+    raise AssertionError(f"no def of {lhs!r}")
+
+
+def test_neg_s64_zero_test_fires_symbol_form():
+    """The lopu 207_1 shape: every component behind a named symbol
+    (post purify-ite). Collapses the zero-test to Eq(Y, 0)."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+            "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+            "\t\tAssignExpCmd TBG Eq(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd RZ Ite(TBG X Apply(wrap_twos_complement_256:bif I))\n"
+            "\t\tAssignExpCmd TB Eq(RZ 0x0)\n"
+            "\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64ZeroTest") == 1
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "Eq", (SymbolRef("Y"), ConstExpr("0x0"))
+    )
+
+
+def test_neg_s64_zero_test_fires_inline_form():
+    """The lopu 201_1 shape: Eq nested inside LAnd, from_s64 inline,
+    guard Eq const-first."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignHavocCmd RZ\n"
+            "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+            "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(Lt(Y 0x8000000000000000) Y IntSub(Y 0x10000000000000000(int))))\n"
+            "\t\tAssignExpCmd TB LAnd(Eq(Ite(Eq(0x8000000000000000 Y) X Apply(wrap_twos_complement_256:bif I)) 0x0) Lt(RZ 0x5))\n"
+            "\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64ZeroTest") == 1
+    rhs = _rhs_of(res, "TB")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "LAnd"
+    assert rhs.args[0] == ApplyExpr("Eq", (SymbolRef("Y"), ConstExpr("0x0")))
+
+
+def test_neg_s64_zero_test_requires_chunk_relation():
+    """Y extracted from a different wide source than the guard arm:
+    the y == 2^63 case would test the wrong symbol — no fire."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignHavocCmd RZ\n"
+            "\t\tAssignExpCmd Y Mod(RZ 0x10000000000000000)\n"
+            "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+            "\t\tAssignExpCmd TBG Eq(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd TB Eq(Ite(TBG X Apply(wrap_twos_complement_256:bif I)) 0x0)\n"
+            "\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64ZeroTest", 0) == 0
+
+
+def test_neg_s64_zero_test_requires_neg_one_factor():
+    """IntMul by -2 is not the negation idiom the rule certifies —
+    no fire."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+            "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd I IntMul(0x-2(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+            "\t\tAssignExpCmd TBG Eq(Y 0x8000000000000000)\n"
+            "\t\tAssignExpCmd TB Eq(Ite(TBG X Apply(wrap_twos_complement_256:bif I)) 0x0)\n"
+            "\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64ZeroTest", 0) == 0
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+def test_neg_s64_zero_test_lemma_via_z3():
+    """The closed-form lemma behind the rule: for x in [0, 2^256) and
+    y = x mod 2^64, the round-tripped zero test equals Eq(y, 0)."""
+    two_63 = 1 << 63
+    two_64 = 1 << 64
+    two_256 = 1 << 256
+    script = f"""(set-logic QF_NIA)
+(declare-const x Int)
+(define-fun y () Int (mod x {two_64}))
+(define-fun f () Int (ite (< y {two_63}) y (- y {two_64})))
+(define-fun w () Int (mod (- 0 f) {two_256}))
+(define-fun lhs () Int (ite (= y {two_63}) x w))
+(assert (and (<= 0 x) (< x {two_256})))
+(assert (not (= (= lhs 0) (= y 0))))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=script, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip() == "unsat", proc.stdout
