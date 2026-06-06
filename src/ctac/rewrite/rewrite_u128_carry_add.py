@@ -32,8 +32,13 @@ The ``narrow`` is sound only when the inner int expression is
 provably in ``[0, 2^256-1]``; the rewrite checks this via
 ``infer_expr_range`` and bails when the bound can't be derived.
 
-``R_sum`` and (if separately named) ``R_carry`` are dropped — DCE
-clears them once ``R_low`` / ``R_hi`` route through ``H<N>``.
+``R_sum`` and (if separately named) ``R_carry`` are left in place —
+deleting defs is DCE's job, not a recognizer's. The chunk
+intermediates can have consumers beyond this chain (e.g. a
+previously purified ``Ite(TB, ...)`` overflow check elsewhere in
+the block); an eager drop orphans such a use (use-before-def),
+while a kept def stays well-formed and DCE clears it exactly when
+it is actually dead.
 
 Why a rewrite (not a materialized assume): the goal is that
 downstream sees ONLY the lift / op / split shape, so the next
@@ -44,8 +49,9 @@ round-trips, leaving only the lifted wide-int operations.
 
 rw-eq verification (per the per-cmd walker):
 
-* LHS ``R_sum`` vs RHS (no counterpart) — rule 9b lhs-only-DCE.
-* LHS ``R_carry`` vs RHS (no counterpart) — rule 9b.
+* LHS / RHS ``R_sum`` paired identical — no CHK (DCE may later turn
+  these into rule 9b lhs-only-DCE; both shapes discharge).
+* LHS / RHS ``R_carry`` paired identical — same.
 * RHS ``H<N>`` (fresh name) — rule 3 rhs-only-fresh, no CHK.
 * RHS ``assume Le(H<N>, derived_hi)`` — rule 4 rhs-only-assume.
   CHK = ``Le(narrow(<int sum>), derived_hi)``. Discharges via the
@@ -237,16 +243,11 @@ def _int_const(value: int) -> ConstExpr:
 
 @dataclass(frozen=True)
 class _ChainSite:
-    """One matched carry-add chain ready to be rewritten.
-
-    ``carry_idx`` is ``None`` when the carry condition was inline in
-    the R_hi Ite rather than named via a separate SymbolRef def.
-    """
+    """One matched carry-add chain ready to be rewritten."""
 
     block_id: str
     sum_idx: int  # cmd_index of ``R_sum = narrow(IntAdd(R_lo, R_b))``
     low_idx: int  # cmd_index of ``R_low = Mod(R_sum, 2^64)``
-    carry_idx: int | None  # cmd_index of ``R_carry = Lt(...)`` if named
     hi_idx: int  # cmd_index of ``R_hi = narrow(Ite(...))``
     r_low_name: str
     r_hi_name: str
@@ -284,7 +285,6 @@ def rewrite_u128_carry_add(
             # pre-ITE_PURIFY canonical shape that this pass actually
             # runs against). Resolve both forms to ``R_sum``.
             r_sum: TacExpr | None = None
-            carry_idx: int | None = None
             if isinstance(carry_expr, SymbolRef):
                 carry_def = ctx.definition(carry_expr.name)
                 if carry_def is None:
@@ -304,19 +304,11 @@ def rewrite_u128_carry_add(
                 continue
             r_lo, r_b = sum_args
 
-            # Locate the sibling ``R_low = Mod(R_sum, 2^64)`` and (if
-            # the carry was a named SymbolRef) its def position by cmd
-            # index in this block. ``carry_idx`` stays None when the
-            # carry is inline — there's no separate carry assignment
-            # to drop.
+            # Locate the sibling ``R_low = Mod(R_sum, 2^64)`` and the
+            # ``R_sum`` def position by cmd index in this block.
             low_idx: int | None = None
             sum_idx: int | None = None
             r_low_name: str | None = None
-            carry_sym_canon: str | None = (
-                canonical_symbol(carry_expr.name)
-                if isinstance(carry_expr, SymbolRef)
-                else None
-            )
             for sib_idx, sib in enumerate(block.commands):
                 if not isinstance(sib, AssignExpCmd):
                     continue
@@ -328,11 +320,6 @@ def rewrite_u128_carry_add(
                             break
                         low_idx = sib_idx
                         r_low_name = sib.lhs
-                if (
-                    carry_sym_canon is not None
-                    and canonical_symbol(sib.lhs) == carry_sym_canon
-                ):
-                    carry_idx = sib_idx
                 if canonical_symbol(sib.lhs) == r_sum_canon:
                     sum_idx = sib_idx
             if low_idx is None or sum_idx is None or r_low_name is None:
@@ -350,7 +337,6 @@ def rewrite_u128_carry_add(
                     block_id=block.id,
                     sum_idx=sum_idx,
                     low_idx=low_idx,
-                    carry_idx=carry_idx,
                     hi_idx=idx,
                     r_low_name=r_low_name,
                     r_hi_name=cmd.lhs,
@@ -383,7 +369,6 @@ def rewrite_u128_carry_add(
             new_blocks.append(block)
             continue
         block_sites = sorted(block_sites, key=lambda s: s.sum_idx)
-        drops: set[int] = set()
         replacements: dict[int, AssignExpCmd] = {}
         inserts_before: dict[int, list[TacCmd]] = {}
         for site in block_sites:
@@ -502,9 +487,6 @@ def rewrite_u128_carry_add(
                     ),
                 )
             )
-            drops.add(site.sum_idx)
-            if site.carry_idx is not None:
-                drops.add(site.carry_idx)
             replacements[site.low_idx] = new_low_cmd
             replacements[site.hi_idx] = new_hi_cmd
             pre_h_cmds: list[TacCmd] = []
@@ -520,8 +502,6 @@ def rewrite_u128_carry_add(
         for idx, cmd in enumerate(block.commands):
             for q in inserts_before.get(idx, ()):
                 new_cmds.append(q)
-            if idx in drops:
-                continue
             if idx in replacements:
                 new_cmds.append(replacements[idx])
             else:

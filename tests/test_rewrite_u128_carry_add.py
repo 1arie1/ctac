@@ -111,8 +111,8 @@ def test_inline_carry_chain_rewritten():
     assert sort == "bv256"
     assert h_name.startswith("H")
     cmds = _named_assigns(res.program)
-    # Rsum dropped.
-    assert "Rsum" not in cmds
+    # Rsum kept (now dead — DCE's job to clear, not the recognizer's).
+    assert "Rsum" in cmds
     # H<N> = narrow(int_sum).
     h_rhs = cmds[h_name].rhs
     assert isinstance(h_rhs, ApplyExpr) and h_rhs.op == "Apply"
@@ -131,14 +131,45 @@ def test_inline_carry_chain_rewritten():
     assert rhi_rhs.args[0] == SymbolRef(h_name)
 
 
-def test_named_carry_chain_drops_carry_def():
-    """When the carry is named via a SymbolRef def, the def is dropped."""
+def test_named_carry_chain_keeps_defs_for_dce():
+    """When the carry is named via a SymbolRef def, the def (and Rsum)
+    stay in place: the carry bool can have consumers beyond this chain
+    (e.g. a purified ``Ite(TB, ...)`` overflow check), and an eager
+    drop orphans them. Deletion is DCE's job."""
     tac = parse_string(_wrap(_body_named_carry(), syms=_SYMS), path="<s>")
     res = rewrite_u128_carry_add(tac.program, symbol_sorts=tac.symbol_sorts)
     assert res.hits == 1
     cmds = _named_assigns(res.program)
-    assert "Carry" not in cmds  # dropped along with Rsum
-    assert "Rsum" not in cmds
+    assert "Carry" in cmds
+    assert "Rsum" in cmds
+
+
+def _body_named_carry_with_external_use() -> str:
+    """Named carry with a SECOND consumer (an Ite condition elsewhere)
+    — the kvault case2 shape that orphaned TB17 under the old eager
+    drop."""
+    return _body_named_carry().replace(
+        "\t\tAssertCmd Le(Rhi 0xffffffffffffffff)\n",
+        "\t\tAssignExpCmd Bovf Ite(Carry Eq(Rhi 0x0) Lt(Rhi 0x2))\n"
+        "\t\tAssertCmd Le(Rhi 0xffffffffffffffff)\n",
+    )
+
+
+def test_named_carry_external_consumer_no_use_before_def():
+    """End-to-end well-formedness: with an external ``Ite(Carry, ...)``
+    consumer, the rewritten program must have no use-before-def."""
+    from ctac.analysis.passes import analyze_use_before_def
+
+    tac = parse_string(
+        _wrap(
+            _body_named_carry_with_external_use(),
+            syms=_SYMS + "\n\tBovf:bool",
+        ),
+        path="<s>",
+    )
+    res = rewrite_u128_carry_add(tac.program, symbol_sorts=tac.symbol_sorts)
+    assert res.hits == 1
+    assert analyze_use_before_def(res.program).issues == ()
 
 
 def test_range_gate_blocks_overlarge_base():
