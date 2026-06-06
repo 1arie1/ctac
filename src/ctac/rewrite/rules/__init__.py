@@ -381,6 +381,7 @@ all_rule_names: tuple[str, ...] = (
     SUB_ITE_DIST_RIGHT.name,
     ADD_SUB_ZERO_FOLD.name,
     ITE_SAME.name,
+    ITE_SAME_COND_NESTED.name,
     ITE_SHARED_LEAF.name,
     ITE_ZERO_OR_SELF.name,
     BOOL_CONST_FOLD.name,
