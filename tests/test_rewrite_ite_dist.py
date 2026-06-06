@@ -206,10 +206,12 @@ def test_compose_add_and_sub_on_r727_skeleton():
     assert isinstance(rhs2, ApplyExpr) and rhs2.op == "Ite"
 
 
-def test_add_ite_dist_skips_when_other_side_compound():
-    # Gate: Add(narrow(Mul(X, Y)), Ite(c, 1, 0)) — non-Ite operand is a
-    # compound ApplyExpr, distributing duplicates it for no payoff. The
-    # canonical kvault pathology before the gate was added.
+def test_add_ite_dist_fires_on_compound_with_const_arms():
+    # Const-arm exception to the atomicity gate:
+    # Add(compound, Ite(c, 1, 0)) DOES distribute — the carry idiom.
+    # Ite(c, X + 1, X + 0) is the shape the u128 carry-add matcher
+    # keys on, and older Prover builds inline the hi-div into X
+    # instead of naming it (the stbc BWAnd-twin stall).
     tac = parse_string(
         _wrap(
             "\tBlock e Succ [] {\n"
@@ -219,6 +221,31 @@ def test_add_ite_dist_skips_when_other_side_compound():
             "\t\tAssignExpCmd R IntAdd(IntMul(A Y) Ite(c 0x1(int) 0x0(int)))\n"
             "\t}",
             syms="A:bv256\n\tY:bv256\n\tR:bv256\n\tc:bool",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (ADD_ITE_DIST,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _rhs(res.program, "R")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+
+
+def test_add_ite_dist_skips_when_compound_and_symbolic_arms():
+    # The atomicity gate still holds when the Ite arms are symbolic:
+    # distributing would duplicate the compound operand into both arms
+    # with no const-fold payoff.
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd A\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssignHavocCmd U\n"
+            "\t\tAssignHavocCmd V\n"
+            "\t\tAssignHavocCmd c\n"
+            "\t\tAssignExpCmd R IntAdd(IntMul(A Y) Ite(c U V))\n"
+            "\t}",
+            syms="A:bv256\n\tY:bv256\n\tU:bv256\n\tV:bv256\n\tR:bv256\n\tc:bool",
         ),
         path="<s>",
     )

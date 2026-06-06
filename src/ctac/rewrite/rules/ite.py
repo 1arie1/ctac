@@ -150,32 +150,45 @@ def _rewrite_add_ite_distribute(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | Non
     bv, and mixed semantics — the Ite selects an operand and the outer
     op commutes with branch selection.
 
-    Cost-gated: fires only when the non-Ite operand is atomic after
-    peeling ``safe_math_narrow`` (a ``SymbolRef`` or ``ConstExpr``).
-    Distributing across a compound operand duplicates it inside both
-    Ite arms and rarely enables a downstream fold; the encoder handles
-    ``Op(compound, Ite)`` directly without the duplication.
+    Cost-gated: fires when the non-Ite operand is atomic after peeling
+    ``safe_math_narrow`` (a ``SymbolRef`` or ``ConstExpr``) — OR when
+    both Ite arms are constants. Distributing across a compound
+    operand duplicates it inside both arms and rarely enables a
+    downstream fold, EXCEPT for the const-arm carry idiom
+    ``IntAdd(X, Ite(c, 1, 0))``: there ``Ite(c, X + 1, X + 0)`` folds
+    the else-arm back to ``X`` and is exactly the distributed shape
+    the u128 carry-add matcher keys on (older Prover builds inline
+    the hi-div into ``X`` instead of naming it, so the atomicity gate
+    alone starves the lift cascade).
     """
     if not (isinstance(expr, ApplyExpr) and expr.op in _ADD_OPS and len(expr.args) == 2):
         return None
+
+    def _const_arms(ite: ApplyExpr) -> bool:
+        return isinstance(ite.args[1], ConstExpr) and isinstance(
+            ite.args[2], ConstExpr
+        )
+
     op = expr.op
     a, b = expr.args
     a_lt = ctx.peel_narrow(a)
-    if _is_ite(a_lt) and _is_atomic_after_narrow(b, ctx):
+    if _is_ite(a_lt):
         assert isinstance(a_lt, ApplyExpr)
-        cond, then, els = a_lt.args
-        return ApplyExpr(
-            "Ite",
-            (cond, ApplyExpr(op, (then, b)), ApplyExpr(op, (els, b))),
-        )
+        if _is_atomic_after_narrow(b, ctx) or _const_arms(a_lt):
+            cond, then, els = a_lt.args
+            return ApplyExpr(
+                "Ite",
+                (cond, ApplyExpr(op, (then, b)), ApplyExpr(op, (els, b))),
+            )
     b_lt = ctx.peel_narrow(b)
-    if _is_ite(b_lt) and _is_atomic_after_narrow(a, ctx):
+    if _is_ite(b_lt):
         assert isinstance(b_lt, ApplyExpr)
-        cond, then, els = b_lt.args
-        return ApplyExpr(
-            "Ite",
-            (cond, ApplyExpr(op, (a, then)), ApplyExpr(op, (a, els))),
-        )
+        if _is_atomic_after_narrow(a, ctx) or _const_arms(b_lt):
+            cond, then, els = b_lt.args
+            return ApplyExpr(
+                "Ite",
+                (cond, ApplyExpr(op, (a, then)), ApplyExpr(op, (a, els))),
+            )
     return None
 
 
