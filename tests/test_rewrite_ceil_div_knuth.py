@@ -73,3 +73,39 @@ def test_non_positive_divisor_abstains() -> None:
         tac.program, (CEIL_DIV_KNUTH,), symbol_sorts=tac.symbol_sorts
     )
     assert "CeilDivKnuth" not in res.hits_by_rule
+
+
+def test_narrow_wrapped_host_fires() -> None:
+    """unpurify_div's shape: the div sits under a safe_math_narrow
+    wrapper at the RHS top (``R = narrow((tmp - 1) /int W)``). The
+    rule matches through it and keeps the wrapper on emission."""
+    from ctac.ast.nodes import ApplyExpr
+
+    bv64max = "0xffffffffffffffff"
+    body = (
+        f"\t\tAssignHavocCmd V\n"
+        f"\t\tAssumeExpCmd Le(V {bv64max})\n"
+        f"\t\tAssignHavocCmd W\n"
+        f"\t\tAssumeExpCmd LAnd(Ge(W 0x1) Le(W {bv64max}))\n"
+        f"\t\tAssignExpCmd H0 Apply(safe_math_narrow_bv256:bif IntAdd(V W))\n"
+        f"\t\tAssignExpCmd H2 IntSub(H0 0x1(int))\n"
+        f"\t\tAssignExpCmd H3 Apply(safe_math_narrow_bv256:bif H2)\n"
+        f"\t\tAssignExpCmd I Apply(safe_math_narrow_bv256:bif IntDiv(H3 W))\n"
+        f"\t\tAssertCmd Le(I W)\n"
+    )
+    syms = "V:bv256\n\tW:bv256\n\tH0:bv256\n\tH2:int\n\tH3:bv256\n\tI:bv256"
+    tac = parse_string(_wrap(body, syms=syms), path="<s>")
+    res = rewrite_program(
+        tac.program, (CEIL_DIV_KNUTH,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("CeilDivKnuth", 0) == 1, res.hits_by_rule
+    rhs = next(
+        c.rhs
+        for b in res.program.blocks
+        for c in b.commands
+        if getattr(c, "lhs", None) == "I"
+    )
+    # Wrapper preserved: narrow(IntCeilDiv(V, W)).
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Apply"
+    inner = rhs.args[1]
+    assert isinstance(inner, ApplyExpr) and inner.op == "IntCeilDiv"

@@ -86,17 +86,26 @@ def _peel_narrow(expr: TacExpr) -> TacExpr:
 def _rewrite_ceil_div_knuth(
     expr: TacExpr, ctx: RewriteCtx
 ) -> TacExpr | None:
-    # Fire only at the top-level RHS of an AssignExpCmd.
+    # Fire only at the top-level RHS of an AssignExpCmd. The div is
+    # either the whole RHS or sits under a safe_math_narrow wrapper
+    # (unpurify_div emits ``R = narrow((tmp /int W))``); the wrapper
+    # is preserved on emission.
     host = ctx.current_cmd()
     if not (ctx.at_cmd_top() and isinstance(host, AssignExpCmd)):
         return None
+    wrapper: ApplyExpr | None = None
+    div = expr
+    if _is_safe_narrow_apply(expr):
+        assert isinstance(expr, ApplyExpr)
+        wrapper = expr
+        div = expr.args[1]
     if not (
-        isinstance(expr, ApplyExpr)
-        and expr.op in DIV_OPS
-        and len(expr.args) == 2
+        isinstance(div, ApplyExpr)
+        and div.op in DIV_OPS
+        and len(div.args) == 2
     ):
         return None
-    h2_ref, w_ref = expr.args
+    h2_ref, w_ref = div.args
 
     # h2_ref -> IntSub(H0, 1)
     h2_def = ctx.lookthrough(h2_ref)
@@ -144,7 +153,10 @@ def _rewrite_ceil_div_knuth(
     ):
         return None
 
-    return ApplyExpr("IntCeilDiv", (v_ref, w_ref))
+    lifted = ApplyExpr("IntCeilDiv", (v_ref, w_ref))
+    if wrapper is not None:
+        return ApplyExpr("Apply", (wrapper.args[0], lifted))
+    return lifted
 
 
 CEIL_DIV_KNUTH = Rule(
