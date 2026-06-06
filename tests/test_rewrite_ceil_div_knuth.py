@@ -109,3 +109,51 @@ def test_narrow_wrapped_host_fires() -> None:
     assert isinstance(rhs, ApplyExpr) and rhs.op == "Apply"
     inner = rhs.args[1]
     assert isinstance(inner, ApplyExpr) and inner.op == "IntCeilDiv"
+
+
+def test_narrow_annotation_settles_no_wrap() -> None:
+    """The lopu 222_1 shape: W is only known positive (its branch
+    bounds don't dominate), so interval inference can't bound V + W
+    -- but the safe_math_narrow on the sum is the Prover's no-wrap
+    annotation and settles the precondition by fiat."""
+    body = (
+        "\t\tAssignHavocCmd V\n"
+        "\t\tAssumeExpCmd Le(V 0xffffffffffffffffffffff9b789bf000)\n"
+        "\t\tAssignHavocCmd W\n"
+        "\t\tAssumeExpCmd Gt(W 0x0)\n"
+        "\t\tAssignExpCmd T0 IntAdd(V W)\n"
+        "\t\tAssignExpCmd T1 Apply(safe_math_narrow_bv256:bif T0)\n"
+        "\t\tAssignExpCmd T2 IntSub(T1 0x1)\n"
+        "\t\tAssignExpCmd T3 Apply(safe_math_narrow_bv256:bif T2)\n"
+        "\t\tAssignExpCmd I Apply(safe_math_narrow_bv256:bif IntDiv(T3 W))\n"
+        "\t\tAssertCmd Le(I W)\n"
+    )
+    syms = (
+        "V:bv256\n\tW:bv256\n\tT0:int\n\tT1:bv256\n\tT2:int\n"
+        "\tT3:bv256\n\tI:bv256"
+    )
+    tac = parse_string(_wrap(body, syms=syms), path="<s>")
+    res = rewrite_program(
+        tac.program, (CEIL_DIV_KNUTH,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("CeilDivKnuth", 0) == 1, res.hits_by_rule
+
+
+def test_no_narrow_and_unbounded_sum_abstains() -> None:
+    """No narrow on the sum and no provable bound: the rule must not
+    fire -- the floor-ceil identity needs the true int sum."""
+    body = (
+        "\t\tAssignHavocCmd V\n"
+        "\t\tAssignHavocCmd W\n"
+        "\t\tAssumeExpCmd Gt(W 0x0)\n"
+        "\t\tAssignExpCmd H0 IntAdd(V W)\n"
+        "\t\tAssignExpCmd H2 IntSub(H0 0x1(int))\n"
+        "\t\tAssignExpCmd I IntDiv(H2 W)\n"
+        "\t\tAssertCmd Le(I W)\n"
+    )
+    syms = "V:int\n\tW:bv256\n\tH0:int\n\tH2:int\n\tI:int"
+    tac = parse_string(_wrap(body, syms=syms), path="<s>")
+    res = rewrite_program(
+        tac.program, (CEIL_DIV_KNUTH,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("CeilDivKnuth", 0) == 0, res.hits_by_rule

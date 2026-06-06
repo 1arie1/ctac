@@ -33,9 +33,11 @@ Preconditions:
 
   * ``W`` is positive (range ``[1, ...]``) — otherwise the
     floor-ceil identity doesn't hold.
-  * ``narrow(IntAdd(V, W))`` is provably no-wrap (interval
-    inference shows ``V + W <= 2^256 - 1``) — otherwise H0 is
-    not the int sum and the identity fails.
+  * ``V + W`` fits bv256 — otherwise H0 is not the int sum and
+    the identity fails. A ``safe_math_narrow`` on the sum settles
+    this by fiat (the Prover's range-checked type annotation is
+    assume-like; its fact holds without re-proof); otherwise
+    interval inference must show ``V + W <= 2^256 - 1``.
 
 rw-eq's per-cmd CHK on the rewritten ``I``'s def verifies the
 equivalence under the program's actual assume context.
@@ -81,6 +83,24 @@ def _peel_narrow(expr: TacExpr) -> TacExpr:
         assert isinstance(expr, ApplyExpr)
         return expr.args[1]
     return expr
+
+
+def _narrow_guarded(ref: TacExpr, ctx: RewriteCtx) -> bool:
+    """True iff a ``safe_math_narrow`` apply sits on ``ref``'s static
+    def chain (``ctx.lookthrough`` peels narrows silently, so the
+    chain must be walked manually to observe one)."""
+    e = ref
+    seen: set[str] = set()
+    while True:
+        if _is_safe_narrow_apply(e):
+            return True
+        if isinstance(e, SymbolRef) and e.name not in seen:
+            seen.add(e.name)
+            d = ctx.definition(e.name)
+            if d is not None:
+                e = d
+                continue
+        return False
 
 
 def _rewrite_ceil_div_knuth(
@@ -140,18 +160,23 @@ def _rewrite_ceil_div_knuth(
     if w_range is None or w_range[0] is None or w_range[0] < 1:
         return None
 
-    # V + W must fit bv256 (narrow is no-op). Use a synthetic IntAdd
-    # to query range inference; the rule's structural match guarantees
-    # the actual H0 def is the same IntAdd.
-    sum_range = infer_expr_range(h0_inner, ctx)
-    if (
-        sum_range is None
-        or sum_range[0] is None
-        or sum_range[0] < 0
-        or sum_range[1] is None
-        or sum_range[1] > _BV256_MAX
-    ):
-        return None
+    # V + W must fit bv256 (narrow is no-op). A safe_math_narrow on
+    # the sum settles this by fiat: the narrow is the Prover's
+    # range-checked type annotation -- assume-like, its fact holds
+    # without re-proof (and the encoder asserts the matching bv256
+    # domain constraint, so downstream CHKs see it too). Without a
+    # narrow guard, fall back to proving the bound via interval
+    # inference.
+    if not _narrow_guarded(h0_ref, ctx):
+        sum_range = infer_expr_range(h0_inner, ctx)
+        if (
+            sum_range is None
+            or sum_range[0] is None
+            or sum_range[0] < 0
+            or sum_range[1] is None
+            or sum_range[1] > _BV256_MAX
+        ):
+            return None
 
     lifted = ApplyExpr("IntCeilDiv", (v_ref, w_ref))
     if wrapper is not None:
@@ -164,8 +189,9 @@ CEIL_DIV_KNUTH = Rule(
     fn=_rewrite_ceil_div_knuth,
     description=(
         "IntDiv(IntSub(narrow(IntAdd(V, W)), 1), W) -> IntCeilDiv(V, W) "
-        "under W >= 1 and narrow-no-wrap. Lifts the post-u128 "
-        "(V + W - 1) / W idiom to the IntCeilDiv concept."
+        "under W >= 1; the narrow annotation (or interval inference) "
+        "settles no-wrap. Lifts the (V + W - 1) / W idiom to the "
+        "IntCeilDiv concept."
     ),
 )
 
