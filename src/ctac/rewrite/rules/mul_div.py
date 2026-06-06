@@ -395,21 +395,52 @@ CHUNKED_U128_LT = Rule(
 )
 
 
-# MULDIV_CONST_CANCEL: ``IntMulDiv(A, B, K)`` where ``B`` (or ``A``)
-# resolves -- through equates and narrow annotations -- to a product
-# ``IntMul(C, X)`` with constant ``C`` divisible by the constant
-# divisor ``K``::
+# MULDIV_CONST_CANCEL: ``IntMulDiv(A, B, K)`` where the combined
+# constant factor of ``A`` and ``B`` is divisible by the constant
+# divisor ``K``. Each argument contributes (const, sym): a constant
+# argument is (c, None); an argument resolving -- through equates and
+# narrow annotations -- to ``IntMul(c, X)`` is (c, X); anything else
+# is (1, arg). With total = cA * cB and K | total::
 #
-#     I1722 = 10^17 *int R412
-#     R1723 = narrow(I1722);  assume R1723 == R416
-#     R1746 = narrow(muldiv(10^4, R416, 10^17))
-#       -> narrow(IntMul(IntMul(10^4, 1), R412)) -> narrow(10^4 * R412)
+#     IntMulDiv(A, B, K) -> (total/K) * symA * symB
 #
-# Soundness: A*(C*X) = K * (A*(C/K)*X) exactly when K | C, and the
-# floor of an exact quotient is the quotient regardless of operand
-# signs -- no range gates needed. Each fire removes one nonlinear
-# division term from the VC; the equate hop is verified per use by
-# rw-eq's rule-2 CHK (the equate and the product def are in scope).
+# The frontend's unit-scaling chains produce these in cascades::
+#
+#     R1699 = narrow(10^13 *int R148)        ; itself a prior cancel
+#     assume R1699 == R412
+#     muldiv(10^4, R412, 10^17) -> R148      ; 10^4 * 10^13 = 10^17
+#
+# Soundness: A*B = total * symA * symB = K * (total/K) * symA * symB
+# exactly when K | total, and the floor of an exact quotient is the
+# quotient regardless of operand signs -- no range gates needed.
+# Each fire removes one nonlinear division term from the VC; equate
+# hops are verified per use by rw-eq's rule-2 CHK.
+
+
+def _const_sym_factor(
+    e: TacExpr, ctx: RewriteCtx
+) -> tuple[int, TacExpr | None, ConstExpr | None]:
+    """Split an IntMulDiv argument into (const factor, symbolic
+    factor, a ConstExpr usable as a formatting template)."""
+    c = const_to_int(e)
+    if c is not None and c > 0:
+        assert isinstance(e, ConstExpr)
+        return c, None, e
+    inner = ctx.lookthrough(e, through_equates=True)
+    if (
+        isinstance(inner, ApplyExpr)
+        and inner.op == "IntMul"
+        and len(inner.args) == 2
+    ):
+        for c_expr, x in (
+            (inner.args[0], inner.args[1]),
+            (inner.args[1], inner.args[0]),
+        ):
+            cv = const_to_int(c_expr)
+            if cv is not None and cv > 0:
+                assert isinstance(c_expr, ConstExpr)
+                return cv, x, c_expr
+    return 1, e, None
 
 
 def _rewrite_muldiv_const_cancel(
@@ -423,41 +454,33 @@ def _rewrite_muldiv_const_cancel(
         return None
     a, b, k_expr = expr.args
     k = const_to_int(k_expr)
-    if k is None or k <= 0:
+    if k is None or k <= 1:
         return None
-    for prod_arg, other in ((b, a), (a, b)):
-        inner = ctx.lookthrough(prod_arg, through_equates=True)
-        if not (
-            isinstance(inner, ApplyExpr)
-            and inner.op == "IntMul"
-            and len(inner.args) == 2
-        ):
-            continue
-        for c_expr, x in ((inner.args[0], inner.args[1]),
-                          (inner.args[1], inner.args[0])):
-            c = const_to_int(c_expr)
-            if c is None or c <= 0 or c % k != 0:
-                continue
-            q = c // k
-            if q == 1:
-                return ApplyExpr("IntMul", (other, x))
-            assert isinstance(c_expr, ConstExpr)
-            return ApplyExpr(
-                "IntMul",
-                (
-                    ApplyExpr("IntMul", (other, as_int_const(c_expr, q))),
-                    x,
-                ),
-            )
-    return None
+    a_c, a_sym, a_tmpl = _const_sym_factor(a, ctx)
+    b_c, b_sym, b_tmpl = _const_sym_factor(b, ctx)
+    total = a_c * b_c
+    if total % k != 0:
+        return None
+    q = total // k
+    template = a_tmpl or b_tmpl
+    assert template is not None  # total % k == 0 with k > 1 needs a const
+    syms = [sym for sym in (a_sym, b_sym) if sym is not None]
+    result: TacExpr = as_int_const(template, q)
+    if q == 1 and syms:
+        result = syms[0]
+        syms = syms[1:]
+    for sym in syms:
+        result = ApplyExpr("IntMul", (result, sym))
+    return result
 
 
 MULDIV_CONST_CANCEL = Rule(
     name="MulDivConstCancel",
     fn=_rewrite_muldiv_const_cancel,
     description=(
-        "IntMulDiv(A, C*X, K) -> A*(C/K)*X when const K divides const "
-        "C (exact division; equate- and narrow-aware on the product "
-        "argument). Removes a nonlinear division term."
+        "IntMulDiv(A, B, K) -> (cA*cB/K) * symA * symB when const K "
+        "divides the combined constant factor of the arguments "
+        "(equate- and narrow-aware). Exact division; removes a "
+        "nonlinear division term."
     ),
 )

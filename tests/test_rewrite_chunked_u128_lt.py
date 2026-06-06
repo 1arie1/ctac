@@ -213,3 +213,36 @@ def test_muldiv_const_cancel_non_divisor_no_fire():
         tac.program, (MULDIV_CONST_CANCEL,), symbol_sorts=tac.symbol_sorts
     )
     assert res.hits_by_rule.get("MulDivConstCancel", 0) == 0
+
+
+def test_muldiv_const_cancel_combined_factors():
+    """The cascade shape: muldiv(10^4, E, 10^17) with E == narrow(
+    10^13 * X) -- neither const alone is divisible, but 10^4 * 10^13
+    = 10^17 cancels the divisor exactly: result is bare X."""
+    from ctac.parse import parse_string as _ps
+    from ctac.rewrite.rules import MULDIV_CONST_CANCEL
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssumeExpCmd Le(X 0xffff)\n"
+        "\t\tAssignExpCmd I IntMul(0x9184e72a000(int) X)\n"  # 10^13
+        "\t\tAssignExpCmd P Apply(safe_math_narrow_bv256:bif I)\n"
+        "\t\tAssignHavocCmd E\n"
+        "\t\tAssumeExpCmd Eq(P E)\n"
+        "\t\tAssignExpCmd R Apply(safe_math_narrow_bv256:bif "
+        "IntMulDiv(0x2710(int) E 0x16345785d8a0000(int)))\n"  # 10^4, 10^17
+    )
+    syms = "X:bv256\n\tI:int\n\tP:bv256\n\tE:bv256\n\tR:bv256"
+    tac = _ps(
+        _wrap("\t\tplaceholder", syms=syms).replace(
+            "\tBlock e Succ [] {\n\t\tplaceholder\n\t}",
+            f"\tBlock e Succ [] {{\n{body}\t}}",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (MULDIV_CONST_CANCEL,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("MulDivConstCancel") == 1
+    rhs = _rhs(res.program, "R")
+    # q == 1, single sym: narrow(X) directly.
+    assert str(rhs.args[1]) == "SymbolRef(name='X')"
