@@ -22,6 +22,9 @@ branch wins; rule 10 is the abort sink.
 8   eos rhs                      ``L is None``                          R verbatim                               R
 7   terminator                   both at JumpCmd / JumpiCmd             one terminator (after equiv check)       both
 6   rehavoc window               ``L: X = e``, ``R: havoc X``           shadow window (see §rule 6)              both*
+6b  dehavoc window               ``L: havoc X``, ``R: X = e``           lhs constraint window + shadow def +
+                                 (def reachable through a benign       uniqueness ``CHK = Eq(X, shadow)``
+                                 rhs window)                           (see ``_consume_dehavoc_window``)        both*
 1   identical (non-assert)       ``cmd_equiv(L, R)`` and not Assert     L verbatim                               both
 2   same-lhs assignment          both AssignExp, ``L.lhs == R.lhs``     ``CHK = Eq(L.rhs, R.rhs); assert CHK; L``  both
 5a  paired assumes               both AssumeExp                         ``CHK = Eq(L.cond, R.cond); assert CHK;
@@ -142,6 +145,7 @@ from dataclasses import replace
 
 from ctac.ast.nodes import (
     AnnotationCmd,
+    ApplyExpr,
     AssertCmd,
     AssignExpCmd,
     AssignHavocCmd,
@@ -155,7 +159,9 @@ from ctac.ast.nodes import (
     TacExpr,
 )
 from ctac.analysis.defuse import extract_def_use
+from ctac.analysis.expr_walk import iter_expr_symbols
 from ctac.analysis.passes import analyze_dsa
+from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.subst import subst_symbol
 from ctac.graph.cfg import Cfg
 from ctac.ir.models import TacBlock, TacProgram
@@ -577,6 +583,11 @@ class _WalkerState:
     ) -> None:
         self.lhs_defined = lhs_defined
         self.rhs_defined = rhs_defined
+        # Canonical view for symbol-level checks against expression
+        # uses (iter_expr_symbols canonicalizes; def-side names are raw).
+        self.rhs_defined_canon = frozenset(
+            canonical_symbol(n) for n in rhs_defined
+        )
         self.strict = strict
         self.check_feasibility = check_feasibility
         self.rule_hits: Counter[str] = Counter()
@@ -927,6 +938,35 @@ def _walk_block(
             state.hit("6_rehavoc")
             continue
 
+        # Rule 6b: dehavoc window — lhs `havoc X`, rhs reaches `X = e`
+        # through a benign window. unpurify_div's shape: the orig
+        # carries a frontend-purified division (havoc + Euclidean
+        # bounds via temp chains); the rewriter recovered the def and
+        # dropped the temps. Mirror of rule 6.
+        if isinstance(L, AssignHavocCmd):
+            def_idx = _scan_dehavoc_def(
+                rhs_cmds, ri, L.lhs, state.lhs_defined
+            )
+            if def_idx is not None:
+                if state.strict:
+                    raise EquivContractError(
+                        f"block {orig_block.id}: rule-6b dehavoc of "
+                        f"{L.lhs} hit under --strict"
+                    )
+                li, ri = _consume_dehavoc_window(
+                    output=output,
+                    lhs_havoc=L,
+                    lhs_block_id=orig_block.id,
+                    lhs_cmds=lhs_cmds,
+                    li_after_havoc=li + 1,
+                    rhs_cmds=rhs_cmds,
+                    ri=ri,
+                    def_idx=def_idx,
+                    state=state,
+                )
+                state.hit("6b_dehavoc")
+                continue
+
         # Rule 1: identical command on both sides.
         # AssertCmds are excluded — they must always go through rule
         # 5b so the orig's predicate gets emitted as an `assume` in
@@ -973,8 +1013,98 @@ def _walk_block(
             state.hit("2_assignment_diff")
             continue
 
+        # Rule 4c: lhs assume over a dead lhs island — EVERY symbol in
+        # its condition is one the rw side doesn't define at all (e.g.
+        # a summary-output havoc slot whose every use the equate-aware
+        # lift redirected to the value register; DCE then removed the
+        # slot and its bound on the rw side). Such an assume has no rw
+        # twin in any form, so it is neither a droppable fact (rule
+        # 4b's CHK would wrongly demand a constraint on a havoc be
+        # *valid*) nor pairable (rule 5a would mis-pair it against an
+        # unrelated rw assume and skew the whole stream). Emit
+        # verbatim: the merged program keeps orig's constraint in
+        # force for every downstream obligation.
+        #
+        # The gate is ALL-dead deliberately: an assume mixing dead and
+        # live symbols (e.g. an equate whose value side CP renamed —
+        # lhs ``R137 == R472`` vs rw ``R137 == R469``) still has a
+        # positional rw twin, and 5a's CHK over the pair discharges
+        # from the lhs def chain. Consuming those here skews the
+        # streams and mis-pairs everything after.
+        #
+        # Caveat mirrors rule 6: if the island's constraints are
+        # jointly infeasible, orig pruned paths that rw keeps — not
+        # detected by default (--check-feasibility territory).
+        if isinstance(L, AssumeExpCmd):
+            l_syms = list(iter_expr_symbols(L.condition))
+            has_dead = any(
+                sym not in state.rhs_defined_canon for sym in l_syms
+            )
+            if (
+                l_syms
+                and has_dead
+                and not _assume_ahead(rhs_cmds, ri, L.condition)
+            ):
+                output.append(L)
+                li += 1
+                state.hit("4c_lhs_dead_island_assume")
+                continue
+
         # Rule 5a: both AssumeExpCmd.
         if isinstance(L, AssumeExpCmd) and isinstance(R, AssumeExpCmd):
+            # Tautology absorption: CP on the rw side propagates a
+            # slot-equate into itself (``assume X == V`` becomes
+            # ``assume V == V``) after renaming X's uses to V. The
+            # renames are verified per use site by rule 2 (each CHK
+            # discharges via the equate, emitted as an assume below);
+            # the equate-site CHK itself would wrongly demand the
+            # equate be implied *before* it is assumed. Emit L's
+            # constraint, skip the CHK.
+            if (
+                isinstance(R.condition, ApplyExpr)
+                and R.condition.op == "Eq"
+                and len(R.condition.args) == 2
+                and R.condition.args[0] == R.condition.args[1]
+            ):
+                output.append(L)
+                li += 1
+                ri += 1
+                state.hit("5a_tautology_absorb")
+                continue
+            # Alignment lookahead: the rewriter inserts assumes the
+            # orig doesn't have (e.g. materialize_havoc_equate_bounds'
+            # duplicated bounds) and positional pairing would skew at
+            # each insertion, mis-pairing every assume after it. If
+            # L's EXACT condition appears a little further down the
+            # rhs assume run, the current R is such an insertion:
+            # consume it rule-4 style (rhs-only CHK) and let the
+            # streams re-meet. Symmetric check for lhs-side extras.
+            if L.condition != R.condition:
+                if _assume_ahead(rhs_cmds, ri + 1, L.condition):
+                    output.extend(
+                        _emit_eq_assert_for_assume(
+                            state,
+                            R.condition,
+                            block_id=orig_block.id,
+                            cmd_index=li,
+                        )
+                    )
+                    ri += 1
+                    state.hit("4_rhs_assume")
+                    continue
+                if _assume_ahead(lhs_cmds, li + 1, R.condition):
+                    output.extend(
+                        _emit_eq_assert_for_assume(
+                            state,
+                            L.condition,
+                            block_id=orig_block.id,
+                            cmd_index=li,
+                            kind="lhs-only-assume",
+                        )
+                    )
+                    li += 1
+                    state.hit("4b_lhs_assume")
+                    continue
             output.extend(
                 _emit_eq_assert(
                     state,
@@ -1161,6 +1291,243 @@ def _emit_eq_assert_for_assume(
             )
         ),
     ]
+
+
+def _assume_ahead(
+    cmds: list[TacCmd], i: int, condition: TacExpr, k: int = 8
+) -> bool:
+    """True iff an ``AssumeExpCmd`` with exactly ``condition`` appears
+    within the next ``k`` assumes of ``cmds[i:]``, scanning only the
+    current assume run (noise skipped; any other command kind closes
+    the scan). The 5a alignment lookahead."""
+    seen = 0
+    j = i
+    while j < len(cmds) and seen < k:
+        c = cmds[j]
+        if isinstance(c, _NOISE_TYPES):
+            j += 1
+            continue
+        if isinstance(c, AssumeExpCmd):
+            if c.condition == condition:
+                return True
+            seen += 1
+            j += 1
+            continue
+        break
+    return False
+
+
+def _scan_dehavoc_def(
+    rhs_cmds: list[TacCmd],
+    ri: int,
+    x: str,
+    lhs_defined: frozenset[str],
+) -> int | None:
+    """Index of the rhs ``X = e`` def reachable from ``ri`` through a
+    benign window (noise, assumes, rhs-fresh assignments), or ``None``.
+
+    A non-benign command (paired def, havoc, assert, terminator)
+    closes the scan without a match — the dehavoc rule then declines
+    and dispatch falls through to the ordinary rules.
+    """
+    j = ri
+    while j < len(rhs_cmds):
+        cmd = rhs_cmds[j]
+        if isinstance(cmd, _NOISE_TYPES):
+            j += 1
+            continue
+        if isinstance(cmd, AssignExpCmd) and cmd.lhs == x:
+            return j
+        if isinstance(cmd, AssumeExpCmd):
+            j += 1
+            continue
+        if isinstance(cmd, AssignExpCmd):
+            # Fresh temps AND kept intermediates (e.g. unpurify's
+            # retained A-binding chain, present on both sides) are
+            # benign — the consumer pairs the shared ones in-window.
+            j += 1
+            continue
+        return None
+    return None
+
+
+def _consume_dehavoc_window(
+    *,
+    output: list[TacCmd],
+    lhs_havoc: AssignHavocCmd,
+    lhs_block_id: str,
+    lhs_cmds: list[TacCmd],
+    li_after_havoc: int,
+    rhs_cmds: list[TacCmd],
+    ri: int,
+    def_idx: int,
+    state: _WalkerState,
+) -> tuple[int, int]:
+    """Rule 6b — the mirror of rule 6: lhs ``havoc X`` (plus a
+    constraint window), rhs ``X = e`` (unpurify_div's recovery of a
+    frontend-purified division). Returns the new ``(li, ri)``.
+
+    Emission order is what makes the CHK provable:
+
+    1. lhs's ``havoc X`` — X keeps the orig's def.
+    2. lhs constraint window verbatim: the dropped temp assignments
+       and the assumes that pin X (the Euclidean bounds).
+    3. rhs window: rw-only assumes become rule-4-style CHKs (e.g.
+       unpurify's ``assume Gt(B, 0)`` — provable *now*, after the lhs
+       bounds are in scope); rhs-fresh assignments pass through.
+    4. ``shadow = e`` under a fresh ``X__rw_eq<n>``, then
+       ``CHK = Eq(X, shadow)`` — the uniqueness obligation: under the
+       lhs constraints, X is pinned to exactly the recovered value.
+       Discharging it also certifies the rw value lies in the orig's
+       admitted set, so both inclusion directions ride one CHK.
+
+    Same caveat as rule 6: if the lhs constraints are jointly
+    infeasible the CHK holds vacuously while the rw path stays alive;
+    ``check_feasibility`` inserts the probe that detects it.
+    """
+    output.append(lhs_havoc)
+    x = lhs_havoc.lhs
+
+    # (2)+(3) interleaved sub-walk up to the rhs def. lhs constraint
+    # cmds (assumes pinning X, dropped temps) emit verbatim; shared
+    # intermediates (e.g. unpurify's kept A-binding chain) pair
+    # rule-1/2 style; rhs-only assumes are QUEUED — their rule-4 CHKs
+    # are only provable once the lhs constraints are in scope.
+    li = li_after_havoc
+    queued_rhs_assumes: list[tuple[TacExpr, int]] = []
+    while ri < def_idx:
+        R = rhs_cmds[ri]
+        if isinstance(R, _NOISE_TYPES):
+            ri += 1
+            continue
+        L: TacCmd | None = None
+        while li < len(lhs_cmds):
+            cand = lhs_cmds[li]
+            if isinstance(cand, _NOISE_TYPES):
+                output.append(cand)
+                li += 1
+                continue
+            L = cand
+            break
+        if (
+            L is not None
+            and isinstance(L, AssignExpCmd)
+            and isinstance(R, AssignExpCmd)
+            and L.lhs == R.lhs
+        ):
+            if not _cmd_equiv(L, R):
+                output.extend(
+                    _emit_eq_assert(
+                        state,
+                        L.rhs,
+                        R.rhs,
+                        block_id=lhs_block_id,
+                        cmd_index=li,
+                        kind="assignment",
+                    )
+                )
+            output.append(L)
+            li += 1
+            ri += 1
+            continue
+        if isinstance(R, AssumeExpCmd):
+            queued_rhs_assumes.append((R.condition, ri))
+            ri += 1
+            continue
+        if isinstance(R, AssignExpCmd) and R.lhs not in state.lhs_defined:
+            output.append(R)
+            ri += 1
+            continue
+        # R is a shared assignment whose lhs twin isn't current —
+        # consume lhs constraint cmds until the twin surfaces.
+        if L is not None and isinstance(L, AssumeExpCmd):
+            output.append(L)
+            li += 1
+            continue
+        if (
+            L is not None
+            and isinstance(L, AssignExpCmd)
+            and L.lhs not in state.rhs_defined
+        ):
+            output.append(L)
+            li += 1
+            continue
+        raise EquivContractError(
+            f"block {lhs_block_id}: dehavoc window for {x} cannot "
+            f"align lhs/rhs (lhs: {_safe_unparse(L) if L else '<eos>'}, "
+            f"rhs: {_safe_unparse(R)})"
+        )
+
+    # lhs constraint tail: the Euclidean assumes (and their dropped
+    # temps) extend past the slot where the rhs def landed; consume
+    # them into the window so they stay assumes (constraints on X) —
+    # outside the window rule 4b would wrongly demand they be implied.
+    while li < len(lhs_cmds):
+        cmd = lhs_cmds[li]
+        if isinstance(cmd, _NOISE_TYPES):
+            output.append(cmd)
+            li += 1
+            continue
+        if isinstance(cmd, AssumeExpCmd):
+            output.append(cmd)
+            li += 1
+            continue
+        if isinstance(cmd, AssignExpCmd) and cmd.lhs not in state.rhs_defined:
+            output.append(cmd)
+            li += 1
+            continue
+        break
+
+    # Queued rhs assumes: provable now that the lhs constraints are
+    # in scope (e.g. unpurify's ``assume Gt(B, 0)`` follows from the
+    # Euclidean bounds).
+    for cond, at in queued_rhs_assumes:
+        output.extend(
+            _emit_eq_assert_for_assume(
+                state,
+                cond,
+                block_id=lhs_block_id,
+                cmd_index=at,
+                kind="dehavoc-assume",
+            )
+        )
+
+    # (4) shadow def + uniqueness CHK.
+    rhs_def = rhs_cmds[def_idx]
+    assert isinstance(rhs_def, AssignExpCmd)
+    sort = _guess_sort(x)
+    shadow = state.fresh_shadow(x, sort)
+    state.record_rehavoc(
+        RehavocSite(
+            block_id=lhs_block_id,
+            cmd_index=def_idx,
+            var_name=x,
+            shadow_name=shadow,
+        )
+    )
+    output.append(
+        canonicalize_cmd(AssignExpCmd(raw="", lhs=shadow, rhs=rhs_def.rhs))
+    )
+    if state.check_feasibility:
+        output.extend(
+            _emit_feasibility_assert(
+                state,
+                block_id=lhs_block_id,
+                cmd_index=def_idx,
+                kind="dehavoc",
+            )
+        )
+    output.extend(
+        _emit_eq_assert(
+            state,
+            SymbolRef(x),
+            SymbolRef(shadow),
+            block_id=lhs_block_id,
+            cmd_index=def_idx,
+            kind="dehavoc",
+        )
+    )
+    return li, def_idx + 1
 
 
 def _consume_rehavoc_window(
