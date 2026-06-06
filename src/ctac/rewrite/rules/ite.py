@@ -690,17 +690,111 @@ def _eval_cmp_from_range(
     return None
 
 
+def _shallow_operand_range(
+    e: TacExpr, ctx: RewriteCtx
+) -> tuple[int | None, int | None] | None:
+    """Interval for ``e`` from shallow evidence only: constants,
+    dominating range assumes on the symbol itself, and the declared
+    sort width. Deliberately does NOT walk definition chains — a fold
+    justified by def-chain interval math makes the rw-eq CHK re-derive
+    that math in z3 (a potentially nonlinear lemma), while assumes and
+    sort bounds are facts the CHK's context already asserts."""
+    if isinstance(e, ConstExpr):
+        v = const_to_int(e)
+        return None if v is None else (v, v)
+    if not isinstance(e, SymbolRef):
+        return None
+    lo, hi = ctx.range(e.name) or (None, None)
+    width = _sort_bit_width(ctx.symbol_sort(e.name))
+    if width is not None:
+        lo = 0 if lo is None else max(lo, 0)
+        sort_hi = (1 << width) - 1
+        hi = sort_hi if hi is None else min(hi, sort_hi)
+    if lo is None and hi is None:
+        return None
+    return lo, hi
+
+
+def _sort_bit_width(sort: str | None) -> int | None:
+    if sort is not None and sort.startswith("bv"):
+        try:
+            return int(sort[2:])
+        except ValueError:
+            return None
+    return None
+
+
 def _rewrite_cmp_range_fold(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     """Fold a comparison anywhere in an expression to ``true``/``false``
-    when range inference decides it (e.g. ``Ge(X, 0)`` on a bv-typed
-    ``X``, whose sort alone pins the lower bound). The Ite-cond-only
-    ``ITE_COND_FOLD`` below shares the evaluator; this rule reaches the
-    comparisons living inside ``LAnd``/``LOr``/assign RHS positions."""
-    truth = _eval_cmp_from_range(expr, ctx)
+    when shallow range evidence decides it (e.g. ``Ge(X, 0)`` on a
+    bv-typed ``X``, whose sort alone pins the lower bound). Reaches the
+    comparisons living inside ``LAnd``/``LOr``/assign RHS positions
+    that the Ite-cond-only ``ITE_COND_FOLD`` below can't."""
+    if (
+        not isinstance(expr, ApplyExpr)
+        or expr.op not in _CMP_OPS
+        or len(expr.args) != 2
+    ):
+        return None
+    a_r = _shallow_operand_range(expr.args[0], ctx)
+    b_r = _shallow_operand_range(expr.args[1], ctx)
+    if a_r is None or b_r is None:
+        return None
+    truth = _decide_cmp(expr.op, a_r, b_r)
     if truth is True:
         return _TRUE
     if truth is False:
         return _FALSE
+    return None
+
+
+def _decide_cmp(
+    op: str,
+    a_r: tuple[int | None, int | None],
+    b_r: tuple[int | None, int | None],
+) -> bool | None:
+    a_lo, a_hi = a_r
+    b_lo, b_hi = b_r
+
+    def ge(x: int | None, y: int | None) -> bool:
+        return x is not None and y is not None and x >= y
+
+    def gt(x: int | None, y: int | None) -> bool:
+        return x is not None and y is not None and x > y
+
+    if op == "Ge":
+        if ge(a_lo, b_hi):
+            return True
+        if gt(b_lo, a_hi):
+            return False
+    elif op == "Gt":
+        if gt(a_lo, b_hi):
+            return True
+        if ge(b_lo, a_hi):
+            return False
+    elif op == "Le":
+        if ge(b_lo, a_hi):
+            return True
+        if gt(a_lo, b_hi):
+            return False
+    elif op == "Lt":
+        if gt(b_lo, a_hi):
+            return True
+        if ge(a_lo, b_hi):
+            return False
+    elif op == "Eq":
+        if (
+            a_lo is not None
+            and a_lo == a_hi == b_lo == b_hi
+        ):
+            return True
+        if gt(b_lo, a_hi) or gt(a_lo, b_hi):
+            return False
+    elif op == "Ne":
+        if gt(b_lo, a_hi) or gt(a_lo, b_hi):
+            return True
+        if a_lo is not None and a_lo == a_hi == b_lo == b_hi:
+            return False
     return None
 
 
