@@ -344,7 +344,10 @@ def _expr_is_bool_like(expr: TacExpr) -> bool:
         return expr.value.strip() in {"true", "false"}
     if isinstance(expr, ApplyExpr):
         op = expr.op
-        if op in {"Not", "LNot", "LAnd", "LOr", "Eq", "Ne", "Neq", "Lt", "Le", "Gt", "Ge"}:
+        if op in {
+            "Not", "LNot", "LAnd", "LOr", "Eq", "Ne", "Neq",
+            "Lt", "Le", "Gt", "Ge", "Slt", "Sle", "Sgt", "Sge",
+        }:
             return True
         if op == "Ite" and len(expr.args) == 3:
             # TAC inputs are assumed well-typed, so if either branch is Bool-like
@@ -885,6 +888,17 @@ class SeaVcEncoder(SmtEncoder):
                     a2, _ = emit_expr(expr.args[1], expected_sort="Int")
                     smt = {"Lt": "<", "Le": "<=", "Gt": ">", "Ge": ">="}[op]
                     return f"({smt} {a1} {a2})", "Bool"
+                if op in {"Slt", "Sle", "Sgt", "Sge"}:
+                    # Signed comparison over bv256-as-Int: same
+                    # case-split define-funs the ``sea`` encoder emits
+                    # (empirically cheaper than ``from_s256(x) <op>
+                    # from_s256(y)``, which inlines to a 4-way Ite).
+                    a1, _ = emit_expr(expr.args[0], expected_sort="Int")
+                    a2, _ = emit_expr(expr.args[1], expected_sort="Int")
+                    if op in {"Sgt", "Sge"}:
+                        a1, a2 = a2, a1
+                    fn = "bv256.slt" if op in {"Slt", "Sgt"} else "bv256.sle"
+                    return f"({fn} {a1} {a2})", "Bool"
                 if op in {"Add", "Sub"}:
                     # bv256-wrap arithmetic. Single-wrap ITE form (default,
                     # ``bv_add_sub_axiom == "no-mod"``) is sound because both
@@ -1813,6 +1827,16 @@ class SeaVcEncoder(SmtEncoder):
             # half, ``b - 2^256`` for the high half (sign-extended).
             "(define-fun to_s256 ((s Int)) Int (mod s BV256_MOD))",
             "(define-fun from_s256 ((b Int)) Int (ite (< b BV256_HALF) b (- b BV256_MOD)))",
+            # Signed comparisons (same shape as the ``sea`` encoder):
+            # top-bit-set means negative; cross-sign decides, same-sign
+            # falls through to the raw Int compare.
+            "(define-fun bv256.is_neg ((x Int)) Bool (>= x BV256_HALF))",
+            "(define-fun bv256.slt ((x Int) (y Int)) Bool"
+            " (or (and (bv256.is_neg x) (not (bv256.is_neg y)))"
+            " (and (= (bv256.is_neg x) (bv256.is_neg y)) (< x y))))",
+            "(define-fun bv256.sle ((x Int) (y Int)) Bool"
+            " (or (and (bv256.is_neg x) (not (bv256.is_neg y)))"
+            " (and (= (bv256.is_neg x) (bv256.is_neg y)) (<= x y))))",
         ]
         for name in _order_constant_defs(const_defs, predefined={"BV256_MOD", "BV256_MAX"}):
             if name in {"BV256_MOD", "BV256_MAX"}:

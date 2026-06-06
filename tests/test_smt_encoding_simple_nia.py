@@ -742,3 +742,72 @@ Metas {
         render_smt_script(build_vc(tac, encoding="sea_vc"))
 
 
+
+
+# ---------------------------------------------------------------------------
+# Signed comparisons (Slt/Sle/Sgt/Sge): two's-complement over bv256-as-Int,
+# lowered to the same bv256.slt / bv256.sle define-funs the sea encoder
+# emits. BV256_MAX reads as signed -1.
+
+TAC_SIGNED_CMP_HOLDS = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tr:bv256
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignExpCmd r 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+\t\tAssignExpCmd ok LAnd(Slt(r 0x0) Sge(0x0 r))
+\t\tAssertCmd ok "minus one is signed-negative"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+TAC_SIGNED_CMP_FAILS = TAC_SIGNED_CMP_HOLDS.replace(
+    "LAnd(Slt(r 0x0) Sge(0x0 r))", "Slt(0x0 r)"
+)
+
+
+def test_sea_vc_signed_compare_emission() -> None:
+    tac = parse_string(TAC_SIGNED_CMP_HOLDS, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    assert "(define-fun bv256.is_neg ((x Int)) Bool (>= x BV256_HALF))" in rendered
+    assert "(define-fun bv256.slt ((x Int) (y Int)) Bool" in rendered
+    assert "(bv256.slt r 0)" in rendered
+    # Sge(a, b) lowers as bv256.sle(b, a).
+    assert "(bv256.sle r 0)" in rendered
+
+
+@pytest.mark.skipif(not _z3_available(), reason="z3 not on PATH")
+def test_sea_vc_signed_compare_unsat_when_assert_holds() -> None:
+    """BV256_MAX is signed -1: Slt(r, 0) && Sge(0, r) is true, the
+    assert holds, the failure VC is unsat."""
+    tac = parse_string(TAC_SIGNED_CMP_HOLDS, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=rendered, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip().splitlines()[0] == "unsat", proc.stdout
+
+
+@pytest.mark.skipif(not _z3_available(), reason="z3 not on PATH")
+def test_sea_vc_signed_compare_sat_when_assert_fails() -> None:
+    """Slt(0, r) with r = signed -1 is false: assert fails, sat."""
+    tac = parse_string(TAC_SIGNED_CMP_FAILS, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=rendered, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip().splitlines()[0] == "sat", proc.stdout
