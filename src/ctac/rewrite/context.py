@@ -114,6 +114,21 @@ class _RelationFact:
     relation: SymbolRelationConstraint
 
 
+@dataclass(frozen=True)
+class _EquateFact:
+    """A havoc-slot binding ``assume Eq(slot, value)`` (either arg order).
+
+    The frontend's summary-output protocol pre-allocates result slots
+    as entry-block havocs and binds each at its call site with an
+    equality assume. The slot is pure naming; ``value_name`` carries
+    the def structure recognizers want to chase.
+    """
+
+    block_id: str
+    cmd_index: int
+    value_name: str
+
+
 @dataclass
 class RewriteCtx:
     """Per-program view of def-use, DSA, dominance and range facts."""
@@ -145,6 +160,7 @@ class RewriteCtx:
     static_defs: dict[str, TacExpr] = field(init=False)
     assumes_by_symbol: dict[str, list[_AssumeFact]] = field(init=False)
     relations_by_pair: dict[tuple[str, str], list[_RelationFact]] = field(init=False)
+    equates_by_slot: dict[str, list[_EquateFact]] = field(init=False)
     dominators: dict[str, frozenset[str]] = field(init=False)
     successors_by_block: dict[str, tuple[str, ...]] = field(init=False)
     entry_block_id: str | None = field(init=False)
@@ -199,12 +215,39 @@ class RewriteCtx:
                 static_defs[sym] = cmd.rhs
         self.static_defs = static_defs
 
+        # Pure havoc slots: DSA-static symbols whose single def is a
+        # havoc. These are the frontend's pre-allocated summary-output
+        # slots; an ``assume Eq(slot, value)`` later binds them.
+        pure_havoc_slots: set[str] = set()
+        for sym in self.static_symbols:
+            if sym in static_defs:
+                continue
+            defs = self.du.definitions_by_symbol[sym]
+            if len(defs) != 1:
+                continue
+            blk = by_id.get(defs[0].block_id)
+            if blk is not None and isinstance(
+                blk.commands[defs[0].cmd_index], AssignHavocCmd
+            ):
+                pure_havoc_slots.add(sym)
+
         assumes: dict[str, list[_AssumeFact]] = defaultdict(list)
         relations: dict[tuple[str, str], list[_RelationFact]] = defaultdict(list)
+        equates: dict[str, list[_EquateFact]] = defaultdict(list)
         for block in self.program.blocks:
             for idx, cmd in enumerate(block.commands):
                 if not isinstance(cmd, AssumeExpCmd):
                     continue
+                eq_fact = self._match_slot_equate(
+                    cmd.condition, pure_havoc_slots
+                )
+                if eq_fact is not None:
+                    slot, value = eq_fact
+                    equates[slot].append(
+                        _EquateFact(
+                            block_id=block.id, cmd_index=idx, value_name=value
+                        )
+                    )
                 interval = match_symbol_interval_constraint(
                     cmd.condition, strip_var_suffixes=_STRIP_SUFFIXES,
                 )
@@ -231,6 +274,7 @@ class RewriteCtx:
                     relations[(rel.right, rel.left)].append(mirror)
         self.assumes_by_symbol = assumes
         self.relations_by_pair = relations
+        self.equates_by_slot = equates
         self.dominators = _compute_dominators(self.program)
         self.successors_by_block = {
             b.id: tuple(b.successors) for b in self.program.blocks
@@ -344,12 +388,21 @@ class RewriteCtx:
             rhs.append(cmd.rhs)
         return tuple(rhs)
 
-    def lookthrough(self, expr: TacExpr) -> TacExpr:
+    def lookthrough(
+        self, expr: TacExpr, *, through_equates: bool = False
+    ) -> TacExpr:
         """Transitively peel away static defs and ``safe_math_narrow`` wrappers.
 
         Keeps unwrapping until neither applies, so a rule calling ``lookthrough``
         once on a ``SymbolRef`` whose definition is ``narrow(IntDiv(...))`` sees
         the ``IntDiv`` directly.
+
+        With ``through_equates=True`` the walk also hops havoc slots to
+        their bound value via :meth:`resolve_equate` (dominance-gated),
+        so a rule can match def structure across the frontend's
+        summary-output equates. Opt-in per rule: every fire that uses
+        a chased fact is still verified individually by rw-eq's rule-2
+        CHK, which discharges via the in-scope equate + value def.
 
         Use for *matching* — when a rule wants to see through aliases to
         recognize a structural pattern. For *emission* use :meth:`peel_narrow`
@@ -366,6 +419,11 @@ class RewriteCtx:
                 if d is not None:
                     expr = d
                     continue
+                if through_equates:
+                    target = self.resolve_equate(expr.name)
+                    if target is not None:
+                        expr = SymbolRef(target)
+                        continue
             if _is_safe_narrow_apply(expr):
                 assert isinstance(expr, ApplyExpr)
                 expr = expr.args[1]
@@ -418,6 +476,60 @@ class RewriteCtx:
         if lo is None and hi is None:
             return None
         return (lo, hi)
+
+    def _match_slot_equate(
+        self, cond: TacExpr, pure_havoc_slots: set[str]
+    ) -> tuple[str, str] | None:
+        """Match ``Eq(slot, value)`` (either arg order) where exactly one
+        side is a pure havoc slot. Returns ``(slot, value)`` canonical
+        names, or ``None``.
+
+        Both-slots equates are skipped: the chase direction would be
+        ambiguous and slot-to-slot chains could cycle. Sort mismatch
+        (when both sorts are declared) also disqualifies — same gate
+        ``materialize_havoc_equate_bounds`` uses.
+        """
+        if not (
+            isinstance(cond, ApplyExpr)
+            and cond.op == "Eq"
+            and len(cond.args) == 2
+            and isinstance(cond.args[0], SymbolRef)
+            and isinstance(cond.args[1], SymbolRef)
+        ):
+            return None
+        a = canonical_symbol(cond.args[0].name, strip_var_suffixes=_STRIP_SUFFIXES)
+        b = canonical_symbol(cond.args[1].name, strip_var_suffixes=_STRIP_SUFFIXES)
+        a_slot = a in pure_havoc_slots
+        b_slot = b in pure_havoc_slots
+        if a_slot == b_slot:
+            return None
+        slot, value = (a, b) if a_slot else (b, a)
+        sort_s = self.symbol_sorts.get(slot)
+        sort_v = self.symbol_sorts.get(value)
+        if sort_s is not None and sort_v is not None and sort_s != sort_v:
+            return None
+        return slot, value
+
+    def resolve_equate(self, var_name: str) -> str | None:
+        """The value symbol a havoc slot is bound to — if some
+        ``assume Eq(slot, value)`` dominates the current position.
+
+        One hop; returns ``None`` when ``var_name`` is not a slot, no
+        equate exists, or none dominates. Dominance is what makes the
+        hop sound at the query point: paths reaching here have passed
+        the equality, so the slot and the value are interchangeable
+        in any fact derived at this position (and the value's own def
+        dominates the equate, hence also this position).
+        """
+        if self._cur_block is None:
+            return None
+        sym = canonical_symbol(var_name, strip_var_suffixes=_STRIP_SUFFIXES)
+        for fact in self.equates_by_slot.get(sym, ()):
+            if self._position_dominates(
+                fact.block_id, fact.cmd_index, self._cur_block, self._cur_cmd
+            ):
+                return fact.value_name
+        return None
 
     def _fact_dominates(
         self,

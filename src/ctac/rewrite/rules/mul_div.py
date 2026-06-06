@@ -211,7 +211,12 @@ def _rewrite_mul_div_to_muldiv(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None
     if not (isinstance(expr, ApplyExpr) and expr.op in _INT_DIV_OPS and len(expr.args) == 2):
         return None
     num, c = expr.args
-    num_inner = ctx.lookthrough(num)
+    # through_equates: the frontend's summary-output protocol parks
+    # the product in a value register and binds a havoc slot to it
+    # (``assume Eq(slot, value)``); the dividend then names the slot.
+    # The dominance-gated hop lets the matcher see the product; each
+    # fire's rule-2 CHK discharges via the in-scope equate + value def.
+    num_inner = ctx.lookthrough(num, through_equates=True)
     if not (isinstance(num_inner, ApplyExpr) and num_inner.op in _INT_MUL_OPS and len(num_inner.args) == 2):
         return None
     a, b = num_inner.args
