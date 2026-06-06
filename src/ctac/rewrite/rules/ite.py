@@ -84,11 +84,24 @@ def _eq_leaf_will_fold(leaf: TacExpr, other: TacExpr) -> bool:
     ``EqFold``. Used as the cost gate for ``EQ_ITE_DIST``: distribution
     only pays off when at least one resulting branch fold-collapses,
     otherwise we just duplicate the Ite tree (and ``other``) for no win.
+
+    An ``Ite`` leaf whose arms both fold counts too: distribution into
+    it produces another ``EQ_ITE_DIST`` candidate that collapses on
+    the next pass (the 0/1-int ladder ``Eq(Ite(c, Ite(d, 1, 0),
+    Ite(e, 1, 0)), 0)``).
     """
     if leaf == other:
         return True  # EqReflexive
     if isinstance(leaf, ConstExpr) and isinstance(other, ConstExpr):
         return True  # EqFold
+    if (
+        isinstance(leaf, ApplyExpr)
+        and leaf.op == "Ite"
+        and len(leaf.args) == 3
+    ):
+        return _eq_leaf_will_fold(leaf.args[1], other) and _eq_leaf_will_fold(
+            leaf.args[2], other
+        )
     return False
 
 

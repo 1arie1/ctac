@@ -870,3 +870,32 @@ def test_xor_bool_int_eq_non_bool_operand_no_fire():
         tac.program, (XOR_BOOL_INT_EQ,), symbol_sorts=tac.symbol_sorts
     )
     assert res.hits_by_rule.get("XorBoolIntEq", 0) == 0
+
+
+def test_eq_ite_dist_recursive_will_fold():
+    """The nested 0/1-int ladder ``Eq(Ite(c, Ite(d,1,0), Ite(e,1,0)),
+    0)`` distributes (the Ite leaves' arms all fold) and collapses to
+    a pure bool Ite (no int-domain residue)."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssumeExpCmd Eq(Ite(B0 Ite(B1 0x1 0x0) Ite(B2 0x1 0x0)) 0x0)",
+            syms="B0:bool\n\tB1:bool\n\tB2:bool",
+        ),
+        path="<s>",
+    )
+    from ctac.rewrite.rules import BOOL_CONST_FOLD, ITE_BOOL
+    res = rewrite_program(
+        tac.program,
+        (EQ_ITE_DIST, EQ_CONST_FOLD, BOOL_CONST_FOLD, ITE_BOOL),
+    )
+    assert res.hits_by_rule.get("EqIte", 0) >= 2
+    # The int-domain ladder is gone: a pure bool Ite over the
+    # negated conditions remains.
+    assert _assume_cond(res.program) == ApplyExpr(
+        "Ite",
+        (
+            SymbolRef("B0"),
+            ApplyExpr("LNot", (SymbolRef("B1"),)),
+            ApplyExpr("LNot", (SymbolRef("B2"),)),
+        ),
+    )
