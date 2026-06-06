@@ -61,6 +61,8 @@ from ctac.rewrite.rules.select_over_store import SELECT_OVER_STORE
 from ctac.rewrite.rules.sign_extend import (
     FROM_S64_ZERO_TEST,
     NEG_S64_DOUBLE,
+    SIGN_EXT_CMP_LIFT,
+    SIGN_EXT_SIGN_TEST,
     NEG_S64_LOW_CHUNK,
     NEG_S64_SIGN_TEST,
     NEG_S64_ZERO_TEST,
@@ -323,8 +325,13 @@ simplify_pipeline: tuple[Rule, ...] = (
     SIGNED_CMP_NEG_ONE,
     # The abs lowering's double negation: gadget-of-gadget collapses
     # to the 64->256 sign extension of the chunk (i64::MIN edge
-    # unextended).
+    # unextended). The carry composition covers the high-limb
+    # un-borrow.
     NEG_S64_DOUBLE,
+    # Consumers of the sign-extension shape: signed zero tests and
+    # unsigned const compares lift to predicates on the chunk.
+    SIGN_EXT_SIGN_TEST,
+    SIGN_EXT_CMP_LIFT,
     # Lift Cmp(wrap_256(v), c) to an Int-domain predicate on v, gated
     # on range(v) within (c - 2^256, 2^256). Runs with the s64-family
     # rules so the re-encoded i64 comparisons (to_s256(I) < 10) lose
@@ -472,6 +479,8 @@ all_rule_names: tuple[str, ...] = (
     NEG_S64_LOW_CHUNK.name,
     NEG_S64_SIGN_TEST.name,
     NEG_S64_DOUBLE.name,
+    SIGN_EXT_SIGN_TEST.name,
+    SIGN_EXT_CMP_LIFT.name,
     SIGNED_CMP_NEG_ONE.name,
     WRAP_COMPARE_LIFT.name,
     CSE.name,
@@ -544,6 +553,8 @@ __all__ = [
     "SELECT_OVER_STORE",
     "SHIFT_LEFT_TO_INT_MUL",
     "SIGNED_CMP_NEG_ONE",
+    "SIGN_EXT_CMP_LIFT",
+    "SIGN_EXT_SIGN_TEST",
     "SIGN_EXTEND_UNWRAP",
     "STORE_EQ_NORM",
     "SUB_BV_TO_INT",

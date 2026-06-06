@@ -9,9 +9,12 @@ import pytest
 
 from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef
 from ctac.parse import parse_string
+from ctac.rewrite.rules.common import const_to_int
 from ctac.rewrite.framework import rewrite_program
 from ctac.rewrite.rules import (
     NEG_S64_DOUBLE,
+    SIGN_EXT_CMP_LIFT,
+    SIGN_EXT_SIGN_TEST,
     NEG_S64_LOW_CHUNK,
     NEG_S64_SIGN_TEST,
     NEG_S64_ZERO_TEST,
@@ -937,3 +940,223 @@ def test_from_s64_zero_test_lemma_via_z3():
         input=script, capture_output=True, text=True, timeout=30,
     )
     assert proc.stdout.strip() == "unsat", proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# NEG_S64_DOUBLE carry composition (the high-limb un-borrow)
+# ---------------------------------------------------------------------------
+
+_CARRY_SYMS = (
+    "X1:bv256\n\tY1:bv256\n\tTBC:bool\n\tI1:int\n\tTBG:bool\n\tN1:bv256\n"
+    "\tG:bool\n\tX2:bv256\n\tY2:bv256\n\tTBC2:bool\n\tI2:int\n"
+    "\tTBG2:bool\n\tR:bv256"
+)
+
+_CARRY_BODY = (
+    "\t\tAssignHavocCmd X1\n"
+    "\t\tAssumeExpCmd Le(X1 0xffffffffffffffff)\n"
+    "\t\tAssignExpCmd Y1 Mod(X1 0x10000000000000000)\n"
+    "\t\tAssignExpCmd TBC Lt(Y1 0x8000000000000000)\n"
+    "\t\tAssignExpCmd I1 IntMul(0x-1(int) Ite(TBC Y1 IntSub(Y1 0x10000000000000000(int))))\n"
+    "\t\tAssignExpCmd TBG Eq(Y1 0x8000000000000000)\n"
+    "\t\tAssignExpCmd N1 Ite(TBG X1 Apply(wrap_twos_complement_256:bif I1))\n"
+    "\t\tAssignHavocCmd G\n"
+    "\t\tAssignExpCmd X2 Ite(G N1 Add(N1 0x1))\n"
+    "\t\tAssignExpCmd Y2 Mod(X2 0x10000000000000000)\n"
+    "\t\tAssignExpCmd TBC2 Lt(Y2 0x8000000000000000)\n"
+    "\t\tAssignExpCmd I2 IntMul(0x-1(int) Ite(TBC2 Y2 IntSub(Y2 0x10000000000000000(int))))\n"
+    "\t\tAssignExpCmd TBG2 Eq(Y2 0x8000000000000000)\n"
+    "\t\tAssignExpCmd R Ite(TBG2 X2 Apply(wrap_twos_complement_256:bif I2))\n"
+)
+
+
+def test_neg_s64_double_carry_composition():
+    """The high-limb shape: outer gadget over x' = Ite(g, n1, n1+1)
+    with n1 the inner gadget. Value = sign extension of
+    z = (-y') mod 2^64."""
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{_CARRY_BODY}\t}}\n", syms=_CARRY_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_DOUBLE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64Double") == 1
+    rhs = _rhs_of(res, "R")
+    # Nested y'-form: Ite(Eq(Y2, 0), 0, Ite(Ge(Y2, 2^63),
+    # Sub(2^64, Y2), Add(Sub, C))).
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+    cond, zero, bands = rhs.args
+    assert isinstance(cond, ApplyExpr) and cond.op == "Eq"
+    assert const_to_int(zero) == 0
+    assert isinstance(bands, ApplyExpr) and bands.op == "Ite"
+    assert "Y2" in str(bands)
+
+
+def test_neg_s64_double_carry_wrong_const_no_fire():
+    """Carry of 2 is not the un-borrow composition: no fire."""
+    body = _CARRY_BODY.replace("Add(N1 0x1)", "Add(N1 0x2)")
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{body}\t}}\n", syms=_CARRY_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_DOUBLE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64Double", 0) == 0
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+def test_neg_s64_double_carry_lemma_via_z3():
+    """Full-domain lemma for the carry composition: x1 in [0, 2^64),
+    carry g in {0, 1} -- the doubled gadget with un-borrow equals the
+    sign extension of z = (-y2) mod 2^64."""
+    two_63 = 1 << 63
+    two_64 = 1 << 64
+    two_256 = 1 << 256
+    sign_ext = two_256 - two_64
+    script = f"""(set-logic QF_NIA)
+(declare-const x1 Int)
+(declare-const g Int)
+(assert (and (<= 0 x1) (< x1 {two_64})))
+(assert (or (= g 0) (= g 1)))
+(define-fun y1 () Int (mod x1 {two_64}))
+(define-fun f1 () Int (ite (< y1 {two_63}) y1 (- y1 {two_64})))
+(define-fun n1 () Int (ite (= y1 {two_63}) x1 (mod (- 0 f1) {two_256})))
+(define-fun x2 () Int (mod (+ n1 g) {two_256}))
+(define-fun y2 () Int (mod x2 {two_64}))
+(define-fun f2 () Int (ite (< y2 {two_63}) y2 (- y2 {two_64})))
+(define-fun r () Int (ite (= y2 {two_63}) x2 (mod (- 0 f2) {two_256})))
+(define-fun z () Int (mod (- 0 y2) {two_64}))
+(assert (not (= r (ite (<= z {two_63}) z (+ z {sign_ext})))))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:20", "-in"],
+        input=script, capture_output=True, text=True, timeout=40,
+    )
+    assert proc.stdout.strip() == "unsat", proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# SIGN_EXT_SIGN_TEST / SIGN_EXT_CMP_LIFT
+# ---------------------------------------------------------------------------
+
+_SE_SYMS = _CARRY_SYMS + "\n\tTB:bool"
+_FEE_BOUND = "0x67d1c49674ffe"  # floor(2^64 / 10100)
+
+
+def _signext_consumer_tac(consumer: str):
+    return parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{_CARRY_BODY}{consumer}\t}}\n",
+            syms=_SE_SYMS,
+        ),
+        path="<s>",
+    )
+
+
+def test_sign_ext_sign_test_after_double():
+    """0 <s R over the carry-composed double: lifts to the chunk-band
+    predicate Eq(Y2, 0) || Ge(Y2, 2^63)."""
+    tac = _signext_consumer_tac("\t\tAssignExpCmd TB Sle(0x0 R)\n")
+    res = rewrite_program(
+        tac.program,
+        (NEG_S64_DOUBLE, SIGN_EXT_SIGN_TEST),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("NegS64Double") == 1
+    assert res.hits_by_rule.get("SignExtSignTest") == 1
+    rhs = _rhs_of(res, "TB")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "LOr"
+    assert rhs.args[0].op == "Eq" and rhs.args[1].op == "Ge"
+
+
+def test_sign_ext_cmp_lift_low_band():
+    """Le(signext(z), c) with c = floor(2^64/10100) < 2^63: the fee
+    no-overflow guard lifts to Le(z, c)."""
+    tac = _signext_consumer_tac(
+        f"\t\tAssignExpCmd TB Le(R {_FEE_BOUND})\n"
+    )
+    res = rewrite_program(
+        tac.program,
+        (NEG_S64_DOUBLE, SIGN_EXT_CMP_LIFT),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("SignExtCmpLift") == 1
+    rhs = _rhs_of(res, "TB")
+    # negchunk band form: Eq(Y2, 0) || Ge(Y2, 2^64 - c).
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "LOr"
+    ge = rhs.args[1]
+    assert isinstance(ge, ApplyExpr) and ge.op == "Ge"
+    assert const_to_int(ge.args[1]) == 2**64 - 2**64 // 10100
+
+
+def test_sign_ext_cmp_lift_mid_band():
+    """c = 2^64 + 1 (> 2^63, below the negative band): the cap
+    conjunct stays."""
+    tac = _signext_consumer_tac(
+        "\t\tAssignExpCmd TB Le(R 0x10000000000000001)\n"
+    )
+    res = rewrite_program(
+        tac.program,
+        (NEG_S64_DOUBLE, SIGN_EXT_CMP_LIFT),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("SignExtCmpLift") == 1
+    rhs = _rhs_of(res, "TB")
+    # Mid band over the negchunk form: Eq(Y2, 0) || Ge(Y2, 2^63).
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "LOr"
+    assert const_to_int(rhs.args[1].args[1]) == 1 << 63
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+def test_sign_ext_consumers_lemma_via_z3():
+    """Both emit forms, all consumer bands: for z in [0, 2^64) the
+    plain form's predicates over z, and for y in [0, 2^64) the
+    negchunk form's band predicates over y."""
+    two_63 = 1 << 63
+    two_64 = 1 << 64
+    two_255 = 1 << 255
+    sign_ext = (1 << 256) - two_64
+    c_low = 2**64 // 10100
+    c_mid = two_64 + 1
+    two_64_minus_c_low = two_64 - c_low
+    script = f"""(set-logic QF_NIA)
+(declare-const z Int)
+(declare-const y Int)
+(assert (and (<= 0 z) (< z {two_64})))
+(assert (and (<= 0 y) (< y {two_64})))
+(define-fun v () Int (ite (<= z {two_63}) z (+ z {sign_ext})))
+(define-fun w () Int
+  (ite (= y 0) 0
+    (ite (>= y {two_63}) (- {two_64} y) (+ (- {two_64} y) {sign_ext}))))
+(assert (not (and
+  (= (>= v {two_255}) (> z {two_63}))
+  (= (<= v {c_low}) (<= z {c_low}))
+  (= (<= v {c_mid}) (and (<= z {two_63}) (<= z {c_mid})))
+  (= (>= v {c_mid}) (> z {two_63}))
+  (= (>= w {two_255}) (and (< 0 y) (< y {two_63})))
+  (= (<= w {c_low}) (or (= y 0) (>= y {two_64_minus_c_low})))
+  (= (<= w {c_mid}) (or (= y 0) (>= y {two_63})))
+  (= (= w 5) (= y {two_64 - 5})))))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=script, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip() == "unsat", proc.stdout
+
+
+def test_neg_s64_sign_test_strictly_positive():
+    """0 <s gadget (the strict orientation): positive iff y >= 2^63."""
+    tac = _gadget_tac(
+        "\t\tAssignExpCmd TB Slt(0x0 RZ)\n", body=_GADGET_BODY_BOUNDED
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_SIGN_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64SignTest") == 1
+    rhs = _rhs_of(res, "TB")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ge"
