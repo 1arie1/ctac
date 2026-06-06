@@ -11,6 +11,8 @@ from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef
 from ctac.parse import parse_string
 from ctac.rewrite.framework import rewrite_program
 from ctac.rewrite.rules import (
+    NEG_S64_LOW_CHUNK,
+    NEG_S64_SIGN_TEST,
     NEG_S64_ZERO_TEST,
     SIGN_EXTEND_UNWRAP,
     WRAP_COMPARE_LIFT,
@@ -538,3 +540,131 @@ def test_wrap_compare_lift_no_distribution_without_liftable_arm():
         tac.program, (WRAP_COMPARE_LIFT,), symbol_sorts=tac.symbol_sorts
     )
     assert res.hits_by_rule.get("WrapCompareLift", 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# NEG_S64_LOW_CHUNK / NEG_S64_SIGN_TEST
+# ---------------------------------------------------------------------------
+
+_GADGET_BODY = (
+    "\t\tAssignHavocCmd X\n"
+    "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+    "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+    "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+    "\t\tAssignExpCmd TBG Eq(Y 0x8000000000000000)\n"
+    "\t\tAssignExpCmd RZ Ite(TBG X Apply(wrap_twos_complement_256:bif I))\n"
+)
+
+
+def _gadget_tac(consumer: str, *, body: str = _GADGET_BODY):
+    return parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{body}{consumer}\t}}\n",
+            syms=_NEG_SYMS + "\n\tR2:bv256",
+        ),
+        path="<s>",
+    )
+
+
+def test_neg_s64_low_chunk_fires():
+    """Mod(gadget, 2^64) -> Ite(Eq(Y, 0), 0, Sub(2^64, Y)). The wide
+    source X is unbounded here -- no x gate is needed."""
+    tac = _gadget_tac("\t\tAssignExpCmd R2 Mod(RZ 0x10000000000000000)\n")
+    res = rewrite_program(
+        tac.program, (NEG_S64_LOW_CHUNK,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64LowChunk") == 1
+    rhs = _rhs_of(res, "R2")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+    cond, zero, sub = rhs.args
+    assert cond == ApplyExpr("Eq", (SymbolRef("Y"), ConstExpr("0x0")))
+    assert zero == ConstExpr("0x0")
+    assert isinstance(sub, ApplyExpr) and sub.op == "Sub"
+    assert sub.args[1] == SymbolRef("Y")
+
+
+def test_neg_s64_low_chunk_other_modulus_no_fire():
+    """Mod by a different constant: not the chunk extract."""
+    tac = _gadget_tac("\t\tAssignExpCmd R2 Mod(RZ 0x100000000)\n")
+    res = rewrite_program(
+        tac.program, (NEG_S64_LOW_CHUNK,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64LowChunk", 0) == 0
+
+
+_GADGET_BODY_BOUNDED = (
+    "\t\tAssignHavocCmd X\n"
+    "\t\tAssumeExpCmd Le(X 0x10000000000000000)\n"
+    "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+    "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+    "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+    "\t\tAssignExpCmd TBG Eq(Y 0x8000000000000000)\n"
+    "\t\tAssignExpCmd RZ Ite(TBG X Apply(wrap_twos_complement_256:bif I))\n"
+)
+
+
+def test_neg_s64_sign_test_slt_fires_with_bounded_source():
+    """Slt(gadget, 0) -> 0 < Y && Y < 2^63, gated on range(X) < 2^255
+    (here X <= 2^64 by assume)."""
+    tac = _gadget_tac(
+        "\t\tAssignExpCmd TB Slt(RZ 0x0)\n", body=_GADGET_BODY_BOUNDED
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_SIGN_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64SignTest") == 1
+    rhs = _rhs_of(res, "TB")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "LAnd"
+    low, high = rhs.args
+    assert low == ApplyExpr("Lt", (ConstExpr("0x0"), SymbolRef("Y")))
+    assert isinstance(high, ApplyExpr) and high.op == "Lt"
+
+
+def test_neg_s64_sign_test_sle_dual():
+    """Sle(0, gadget) -> Y == 0 || Y >= 2^63."""
+    tac = _gadget_tac(
+        "\t\tAssignExpCmd TB Sle(0x0 RZ)\n", body=_GADGET_BODY_BOUNDED
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_SIGN_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64SignTest") == 1
+    rhs = _rhs_of(res, "TB")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "LOr"
+
+
+def test_neg_s64_sign_test_unbounded_source_no_fire():
+    """X unbounded bv256: the edge arm could be signed-negative, the
+    gate holds the rewrite back."""
+    tac = _gadget_tac("\t\tAssignExpCmd TB Slt(RZ 0x0)\n")
+    res = rewrite_program(
+        tac.program, (NEG_S64_SIGN_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64SignTest", 0) == 0
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+def test_neg_s64_consumers_lemma_via_z3():
+    """Closed-form lemmas for the low-chunk and sign-test rewrites
+    over the full gadget, x in [0, 2^255), y = x mod 2^64."""
+    two_63 = 1 << 63
+    two_64 = 1 << 64
+    two_255 = 1 << 255
+    two_256 = 1 << 256
+    script = f"""(set-logic QF_NIA)
+(declare-const x Int)
+(define-fun y () Int (mod x {two_64}))
+(define-fun f () Int (ite (< y {two_63}) y (- y {two_64})))
+(define-fun w () Int (mod (- 0 f) {two_256}))
+(define-fun n () Int (ite (= y {two_63}) x w))
+(assert (and (<= 0 x) (< x {two_255})))
+(assert (not (and
+  (= (mod n {two_64}) (ite (= y 0) 0 (- {two_64} y)))
+  (= (>= n {two_255}) (and (< 0 y) (< y {two_63}))))))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=script, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip() == "unsat", proc.stdout

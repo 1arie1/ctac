@@ -54,6 +54,8 @@ from ctac.rewrite.rules.range_fold import RANGE_FOLD
 from ctac.rewrite.rules.sar_to_shr import SAR_TO_SHR_NONNEG
 from ctac.rewrite.rules.select_over_store import SELECT_OVER_STORE
 from ctac.rewrite.rules.sign_extend import (
+    NEG_S64_LOW_CHUNK,
+    NEG_S64_SIGN_TEST,
     NEG_S64_ZERO_TEST,
     SIGN_EXTEND_UNWRAP,
     WRAP_COMPARE_LIFT,
@@ -282,6 +284,12 @@ simplify_pipeline: tuple[Rule, ...] = (
     # from_s64 arriving as unwrap(SignExtend(7, y)) is already in
     # the Ite form this matcher recognizes.
     NEG_S64_ZERO_TEST,
+    # The other negation-gadget consumers: Mod(gadget, 2^64) (the
+    # negated low chunk -- both arms agree, no x gate) and the signed
+    # zero-threshold tests (gated on range(x) < 2^255 for the
+    # pass-through edge arm).
+    NEG_S64_LOW_CHUNK,
+    NEG_S64_SIGN_TEST,
     # Lift Cmp(wrap_256(v), c) to an Int-domain predicate on v, gated
     # on range(v) within (c - 2^256, 2^256). Runs with the s64-family
     # rules so the re-encoded i64 comparisons (to_s256(I) < 10) lose
@@ -421,6 +429,8 @@ all_rule_names: tuple[str, ...] = (
     SELECT_OVER_STORE.name,
     SIGN_EXTEND_UNWRAP.name,
     NEG_S64_ZERO_TEST.name,
+    NEG_S64_LOW_CHUNK.name,
+    NEG_S64_SIGN_TEST.name,
     WRAP_COMPARE_LIFT.name,
     CSE.name,
     CP_ALIAS.name,
@@ -471,6 +481,8 @@ __all__ = [
     "N2_LOW_MASK",
     "N3_HIGH_MASK",
     "N4_SHR_CONST",
+    "NEG_S64_LOW_CHUNK",
+    "NEG_S64_SIGN_TEST",
     "NEG_S64_ZERO_TEST",
     "PURIFY_ASSERT",
     "PURIFY_ASSUME",

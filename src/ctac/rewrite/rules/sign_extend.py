@@ -179,15 +179,14 @@ def _canon_sym(expr: TacExpr) -> str | None:
     return None
 
 
-def _match_neg_s64_zero_test(
-    expr: TacExpr, ctx: RewriteCtx
-) -> SymbolRef | None:
-    """Return the chunk symbol ``y`` when ``expr`` is the negated-s64
-    zero test over ``y = Mod(x, 2^64)``."""
-    e = _eq_other_side(expr, 0)
-    if e is None:
-        return None
-    host = ctx.lookthrough(e)
+def _match_neg_s64_gadget(
+    host: TacExpr, ctx: RewriteCtx
+) -> tuple[SymbolRef, TacExpr] | None:
+    """Match the bare negation gadget
+    ``Ite(Eq(y, 2^63), x, wrap_256(IntMul(-1, from_s64(y))))`` with
+    the chunk relation tying ``x`` to ``y`` (either ``x == y`` with
+    range proving ``y < 2^64``, or ``y``'s def is ``Mod(x, 2^64)``).
+    Returns ``(y, x)``."""
     if not (
         isinstance(host, ApplyExpr)
         and host.op == "Ite"
@@ -265,7 +264,7 @@ def _match_neg_s64_zero_test(
         if rng is None or rng[1] is None or rng[1] >= _TWO_64 or rng[0] < 0:
             return None
         assert isinstance(y, SymbolRef)
-        return y
+        return y, x
     y_def = ctx.lookthrough(y)
     if not (
         isinstance(y_def, ApplyExpr)
@@ -276,15 +275,19 @@ def _match_neg_s64_zero_test(
     ):
         return None
     assert isinstance(y, SymbolRef)
-    return y
+    return y, x
 
 
 def _rewrite_neg_s64_zero_test(
     expr: TacExpr, ctx: RewriteCtx
 ) -> TacExpr | None:
-    y = _match_neg_s64_zero_test(expr, ctx)
-    if y is None:
+    e = _eq_other_side(expr, 0)
+    if e is None:
         return None
+    match = _match_neg_s64_gadget(ctx.lookthrough(e), ctx)
+    if match is None:
+        return None
+    y, _x = match
     return ApplyExpr("Eq", (y, ConstExpr("0x0")))
 
 
@@ -439,5 +442,118 @@ WRAP_COMPARE_LIFT = Rule(
         "(with a sign guard when range allows v < 0), gated on "
         "range(v) within (c - 2^256, 2^256). Removes the mod-2^256 "
         "opacity from comparisons of re-encoded signed values."
+    ),
+)
+
+
+# NEG_S64_LOW_CHUNK / NEG_S64_SIGN_TEST: the remaining consumers of
+# the negation gadget n = Ite(Eq(y, 2^63), x, wrap_256(-from_s64(y))).
+#
+# Low chunk -- ``Mod(n, 2^64)``. Both gadget arms agree on the value
+# ``(2^64 - y) mod 2^64`` (the wrapped two's-complement negation of
+# the chunk):
+#
+# - edge arm (y == 2^63): x mod 2^64 = y = 2^63 = 2^64 - 2^63;
+# - else arm: wrap(-from_s64(y)) mod 2^64 = (-y) mod 2^64, because
+#   2^64 divides 2^256 and from_s64(y) is congruent to y mod 2^64.
+#
+# Emitted as ``Ite(Eq(y, 0), 0, Sub(2^64, y))`` -- linear arms, no
+# sign-domain residue. No range gate on x is needed (everything
+# passes through mod 2^64).
+#
+# Sign test -- ``Slt(n, 0)`` (bv256 signed-negative, i.e. n >= 2^255):
+#
+# - edge arm: n = x, and the gate range(x) < 2^255 forces false;
+# - else arm: wrap(v) >= 2^255 with v = -from_s64(y) in (-2^63, 2^63]
+#   holds iff v < 0 iff from_s64(y) > 0 iff 0 < y < 2^63.
+#
+# So ``Slt(n, 0) <=> 0 < y && y < 2^63`` and the non-negative dual
+# ``Sle(0, n) <=> y == 0 || y >= 2^63``. Gate: range(x) < 2^255 (the
+# edge arm passes x through verbatim; without the bound, x's sign bit
+# could be set while the predicate on y says "non-negative").
+
+_TWO_255 = 1 << 255
+_TWO_63_CONST = ConstExpr("0x8000000000000000")
+_TWO_64_CONST = ConstExpr("0x10000000000000000")
+
+
+def _rewrite_neg_s64_low_chunk(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op == "Mod"
+        and len(expr.args) == 2
+        and const_to_int(expr.args[1]) == _TWO_64
+    ):
+        return None
+    match = _match_neg_s64_gadget(ctx.lookthrough(expr.args[0]), ctx)
+    if match is None:
+        return None
+    y, _x = match
+    return ApplyExpr(
+        "Ite",
+        (
+            ApplyExpr("Eq", (y, ConstExpr("0x0"))),
+            ConstExpr("0x0"),
+            ApplyExpr("Sub", (_TWO_64_CONST, y)),
+        ),
+    )
+
+
+def _rewrite_neg_s64_sign_test(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    if not (isinstance(expr, ApplyExpr) and len(expr.args) == 2):
+        return None
+    # Normalize the four zero-threshold orientations to "n negative?".
+    a, b = expr.args
+    if expr.op in ("Slt", "Sge") and const_to_int(b) == 0:
+        n, negative_form = a, expr.op == "Slt"
+    elif expr.op in ("Sgt", "Sle") and const_to_int(a) == 0:
+        n, negative_form = b, expr.op == "Sgt"
+    else:
+        return None
+    match = _match_neg_s64_gadget(ctx.lookthrough(n), ctx)
+    if match is None:
+        return None
+    y, x = match
+    rng = infer_expr_range(x, ctx)
+    if rng is None or rng[1] is None or rng[1] >= _TWO_255 or rng[0] < 0:
+        return None
+    if negative_form:
+        return ApplyExpr(
+            "LAnd",
+            (
+                ApplyExpr("Lt", (ConstExpr("0x0"), y)),
+                ApplyExpr("Lt", (y, _TWO_63_CONST)),
+            ),
+        )
+    return ApplyExpr(
+        "LOr",
+        (
+            ApplyExpr("Eq", (y, ConstExpr("0x0"))),
+            ApplyExpr("Ge", (y, _TWO_63_CONST)),
+        ),
+    )
+
+
+NEG_S64_LOW_CHUNK = Rule(
+    name="NegS64LowChunk",
+    fn=_rewrite_neg_s64_low_chunk,
+    description=(
+        "Mod(neg_s64_gadget(x), 2^64) -> Ite(Eq(y, 0), 0, "
+        "Sub(2^64, y)): both gadget arms agree on the wrapped "
+        "two's-complement negation of the chunk."
+    ),
+)
+
+NEG_S64_SIGN_TEST = Rule(
+    name="NegS64SignTest",
+    fn=_rewrite_neg_s64_sign_test,
+    description=(
+        "Slt(neg_s64_gadget(x), 0) -> 0 < y && y < 2^63 (and the "
+        "Sle/Sgt/Sge duals), gated on range(x) < 2^255 for the "
+        "pass-through edge arm."
     ),
 )
