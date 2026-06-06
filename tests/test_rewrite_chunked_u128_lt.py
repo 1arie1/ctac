@@ -153,3 +153,63 @@ def test_unrelated_pair_in_else_no_fire():
         tac.program, (CHUNKED_U128_LT,), symbol_sorts=tac.symbol_sorts
     )
     assert res.hits_by_rule.get("ChunkedU128Lt", 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# MulDivConstCancel
+# ---------------------------------------------------------------------------
+
+
+def _muldiv_tac(divisor_hex: str):
+    """The lopu 67_1 shape: product behind narrow + havoc equate."""
+    from ctac.parse import parse_string as _ps
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssumeExpCmd Le(X 0xffff)\n"
+        "\t\tAssignExpCmd I IntMul(0x16345785d8a0000(int) X)\n"
+        "\t\tAssignExpCmd P Apply(safe_math_narrow_bv256:bif I)\n"
+        "\t\tAssignHavocCmd E\n"
+        "\t\tAssumeExpCmd Eq(P E)\n"
+        f"\t\tAssignExpCmd R Apply(safe_math_narrow_bv256:bif IntMulDiv(0x2710(int) E {divisor_hex}))\n"
+    )
+    syms = "X:bv256\n\tI:int\n\tP:bv256\n\tE:bv256\n\tR:bv256"
+    return _ps(_wrap("\t\tBlock-ignored", syms=syms).replace(
+        "\tBlock e Succ [] {\n\t\tBlock-ignored\n\t}",
+        f"\tBlock e Succ [] {{\n{body}\t}}",
+    ), path="<s>")
+
+
+def test_muldiv_const_cancel_exact():
+    """muldiv(10^4, E, 10^17) with E == narrow(10^17 * X) -> 10^4 * X.
+    (0x16345785d8a0000 = 10^17.)"""
+    from ctac.rewrite.rules import MULDIV_CONST_CANCEL
+    tac = _muldiv_tac("0x16345785d8a0000(int)")
+    res = rewrite_program(
+        tac.program, (MULDIV_CONST_CANCEL,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("MulDivConstCancel") == 1
+    rhs = _rhs(res.program, "R")
+    inner = rhs.args[1]
+    assert isinstance(inner, ApplyExpr) and inner.op == "IntMul"
+    # q == 1: bare IntMul(10^4, X).
+    assert str(inner.args[1]) == "SymbolRef(name='X')"
+
+
+def test_muldiv_const_cancel_divisible():
+    """Divisor 10^8 divides the 10^17 factor: q = 10^9 folds in."""
+    from ctac.rewrite.rules import MULDIV_CONST_CANCEL
+    tac = _muldiv_tac("0x5f5e100(int)")  # 10^8
+    res = rewrite_program(
+        tac.program, (MULDIV_CONST_CANCEL,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("MulDivConstCancel") == 1
+
+
+def test_muldiv_const_cancel_non_divisor_no_fire():
+    """Divisor 3 does not divide 10^17: no fire (the floor matters)."""
+    from ctac.rewrite.rules import MULDIV_CONST_CANCEL
+    tac = _muldiv_tac("0x3(int)")
+    res = rewrite_program(
+        tac.program, (MULDIV_CONST_CANCEL,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("MulDivConstCancel", 0) == 0

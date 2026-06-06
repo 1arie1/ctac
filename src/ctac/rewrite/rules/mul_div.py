@@ -393,3 +393,71 @@ CHUNKED_U128_LT = Rule(
         "their wide source. Gated on L, L' in [0, 2^64)."
     ),
 )
+
+
+# MULDIV_CONST_CANCEL: ``IntMulDiv(A, B, K)`` where ``B`` (or ``A``)
+# resolves -- through equates and narrow annotations -- to a product
+# ``IntMul(C, X)`` with constant ``C`` divisible by the constant
+# divisor ``K``::
+#
+#     I1722 = 10^17 *int R412
+#     R1723 = narrow(I1722);  assume R1723 == R416
+#     R1746 = narrow(muldiv(10^4, R416, 10^17))
+#       -> narrow(IntMul(IntMul(10^4, 1), R412)) -> narrow(10^4 * R412)
+#
+# Soundness: A*(C*X) = K * (A*(C/K)*X) exactly when K | C, and the
+# floor of an exact quotient is the quotient regardless of operand
+# signs -- no range gates needed. Each fire removes one nonlinear
+# division term from the VC; the equate hop is verified per use by
+# rw-eq's rule-2 CHK (the equate and the product def are in scope).
+
+
+def _rewrite_muldiv_const_cancel(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op == "IntMulDiv"
+        and len(expr.args) == 3
+    ):
+        return None
+    a, b, k_expr = expr.args
+    k = const_to_int(k_expr)
+    if k is None or k <= 0:
+        return None
+    for prod_arg, other in ((b, a), (a, b)):
+        inner = ctx.lookthrough(prod_arg, through_equates=True)
+        if not (
+            isinstance(inner, ApplyExpr)
+            and inner.op == "IntMul"
+            and len(inner.args) == 2
+        ):
+            continue
+        for c_expr, x in ((inner.args[0], inner.args[1]),
+                          (inner.args[1], inner.args[0])):
+            c = const_to_int(c_expr)
+            if c is None or c <= 0 or c % k != 0:
+                continue
+            q = c // k
+            if q == 1:
+                return ApplyExpr("IntMul", (other, x))
+            assert isinstance(c_expr, ConstExpr)
+            return ApplyExpr(
+                "IntMul",
+                (
+                    ApplyExpr("IntMul", (other, as_int_const(c_expr, q))),
+                    x,
+                ),
+            )
+    return None
+
+
+MULDIV_CONST_CANCEL = Rule(
+    name="MulDivConstCancel",
+    fn=_rewrite_muldiv_const_cancel,
+    description=(
+        "IntMulDiv(A, C*X, K) -> A*(C/K)*X when const K divides const "
+        "C (exact division; equate- and narrow-aware on the product "
+        "argument). Removes a nonlinear division term."
+    ),
+)

@@ -35,7 +35,12 @@ from ctac.rewrite.rules.mod_over_ite import MOD_OVER_ITE
 from ctac.rewrite.rules.muldiv_to_full_product_div import (
     MULDIV_TO_FULL_PRODUCT_DIV,
 )
-from ctac.rewrite.rules.mul_div import CHUNKED_MUL_BY_2N, MUL_DIV_TO_MULDIV, CHUNKED_U128_LT
+from ctac.rewrite.rules.mul_div import (
+    CHUNKED_MUL_BY_2N,
+    CHUNKED_U128_LT,
+    MUL_DIV_TO_MULDIV,
+    MULDIV_CONST_CANCEL,
+)
 from ctac.rewrite.rules.div import (
     R1_BITFIELD_STRIP,
     R2_DIV_FUSE,
@@ -148,6 +153,11 @@ simplify_pipeline: tuple[Rule, ...] = (
     # axiomatizes IntMulDiv with Euclidean bounds; this rule lifts
     # the syntactic composition into the axiomatized concept.
     MUL_DIV_TO_MULDIV,
+    # Cancel the divisor against a constant factor of the product
+    # argument (equate- and narrow-aware): IntMulDiv(A, C*X, K) ->
+    # A*(C/K)*X when K | C. Runs right after the concept lift so the
+    # IntMulDiv shape is in scope.
+    MULDIV_CONST_CANCEL,
     # Eliminate "dummy" havoc'd vars whose only role is to mediate
     # an equality assume. Substitutes R -> X across all R-using
     # assumes; the post-substitution `Eq(X, X)` collapses via
@@ -415,6 +425,7 @@ all_rule_names: tuple[str, ...] = (
     CHUNKED_MUL_BY_2N.name,
     CHUNKED_U128_LT.name,
     MUL_DIV_TO_MULDIV.name,
+    MULDIV_CONST_CANCEL.name,
     HAVOC_EQUATE_SUBST.name,
     HAVOC_EQUATE_FOLD.name,
     EQ_REFLEXIVE.name,
@@ -507,6 +518,7 @@ __all__ = [
     "LAND_EQ_CONST_PRUNE",
     "MOD_IDENTITY_CP",
     "MOD_OVER_ITE",
+    "MULDIV_CONST_CANCEL",
     "MULDIV_TO_FULL_PRODUCT_DIV",
     "MUL_BV_TO_INT",
     "MUL_DIV_TO_MULDIV",
