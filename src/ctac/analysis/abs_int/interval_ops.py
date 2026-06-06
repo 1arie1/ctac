@@ -158,6 +158,20 @@ def mul_nonneg(a: Interval, b: Interval) -> Interval | None:
     return Interval(lo, hi)
 
 
+def mul_by_const(a: Interval, k: int) -> Interval:
+    """Scale an interval by a constant of either sign (a monotone
+    linear map: negative `k` flips the endpoints). Covers the signed
+    case ``mul_nonneg`` declines, e.g. ``IntMul(-1, f)`` from the
+    SBF signed-negation lowering."""
+    if k == 0:
+        return Interval(0, 0)
+    lo = None if a.lo is None else a.lo * k
+    hi = None if a.hi is None else a.hi * k
+    if k < 0:
+        lo, hi = hi, lo
+    return Interval(lo, hi)
+
+
 def floor_div_by_pos_const(a: Interval, k: int) -> Interval | None:
     """`floor(a / k)` for positive constant `k`, non-negative numerator."""
     if k <= 0 or not a.is_nonneg():

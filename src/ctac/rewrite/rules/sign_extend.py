@@ -290,3 +290,146 @@ NEG_S64_ZERO_TEST = Rule(
         "round trip preserves zero-ness exactly."
     ),
 )
+
+
+# WRAP_COMPARE_LIFT: an order comparison or equality between a
+# ``wrap_256`` application and a constant lifts to an Int-domain
+# predicate on the wrap's argument::
+#
+#     Cmp(wrap_256(v), c)   with   range(v) = [lo, hi]
+#
+# wrap_256(v) = v mod 2^256 (Euclidean). Under the gates
+#
+#     hi < 2^256        and        lo > c - 2^256
+#
+# the wrap has exactly two regimes on range(v): identity for v >= 0,
+# and v + 2^256 (a value > c, since v > c - 2^256) for v < 0. Hence:
+#
+#     Eq(wrap(v), c)  <=>  Eq(v, c)            (negative regime: wrap(v)
+#                                               lands in (c, 2^256), != c)
+#     Lt(wrap(v), c)  <=>  0 <= v && v < c
+#     Le(wrap(v), c)  <=>  0 <= v && v <= c
+#     Gt(wrap(v), c)  <=>  v > c || v < 0
+#     Ge(wrap(v), c)  <=>  v >= c || v < 0
+#
+# When ``lo >= 0`` the sign guard is dropped (wrap is the identity).
+# The typical source is the SBF signed-arithmetic lowering comparing a
+# re-encoded i64 against a small constant (``to_s256(I) < 10``); the
+# lift removes the mod-2^256 opacity so LIA sees the linear argument.
+#
+# In practice the wrap usually sits inside an Ite arm (the neg_s64
+# gadget guard), so the rule also distributes the comparison over an
+# Ite operand — ``Cmp(Ite(g, a, b), c) <=> Ite(g, Cmp(a, c),
+# Cmp(b, c))``, sound for any total predicate — gated on at least one
+# arm (recursively) lifting, so distribution never duplicates a
+# comparison without paying for itself.
+
+_TWO_256 = 1 << 256
+_INT_ZERO = ConstExpr("0x0(int)")
+_CMP_FLIP = {"Lt": "Gt", "Le": "Ge", "Gt": "Lt", "Ge": "Le", "Eq": "Eq"}
+
+
+def _match_wrap_apply(expr: TacExpr) -> TacExpr | None:
+    if (
+        isinstance(expr, ApplyExpr)
+        and expr.op == "Apply"
+        and len(expr.args) == 2
+        and isinstance(expr.args[0], SymbolRef)
+        and expr.args[0].name == _WRAP_NAME
+    ):
+        return expr.args[1]
+    return None
+
+
+def _lift_direct(
+    op: str, v: TacExpr, c: int, c_expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    """The core lift of ``Cmp(wrap(v), c)``; None when range gates fail."""
+    rng = infer_expr_range(v, ctx)
+    if rng is None or rng[0] is None or rng[1] is None:
+        return None
+    lo, hi = rng
+    if hi >= _TWO_256 or lo <= c - _TWO_256:
+        return None
+    nonneg = lo >= 0
+    if op == "Eq":
+        return ApplyExpr("Eq", (v, c_expr))
+    if op in ("Lt", "Le"):
+        cmp = ApplyExpr(op, (v, c_expr))
+        if nonneg:
+            return cmp
+        return ApplyExpr("LAnd", (ApplyExpr("Le", (_INT_ZERO, v)), cmp))
+    # Gt / Ge: every negative v wraps above c (v > c - 2^256).
+    cmp = ApplyExpr(op, (v, c_expr))
+    if nonneg:
+        return cmp
+    return ApplyExpr("LOr", (cmp, ApplyExpr("Lt", (v, _INT_ZERO))))
+
+
+def _lift_operand(
+    op: str, operand: TacExpr, c: int, c_expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    """Lift ``Cmp(operand, c)``: directly when ``operand`` is (or
+    looks through to) a wrap application, or by distributing over an
+    Ite operand when at least one arm lifts. None when nothing lifts
+    (the caller keeps the original comparison)."""
+    seen = ctx.lookthrough(operand)
+    v = _match_wrap_apply(seen)
+    if v is not None:
+        return _lift_direct(op, v, c, c_expr, ctx)
+    if not (
+        isinstance(seen, ApplyExpr) and seen.op == "Ite" and len(seen.args) == 3
+    ):
+        return None
+    guard, then_arm, else_arm = seen.args
+    lifted_then = _lift_operand(op, then_arm, c, c_expr, ctx)
+    lifted_else = _lift_operand(op, else_arm, c, c_expr, ctx)
+    if lifted_then is None and lifted_else is None:
+        return None
+    return ApplyExpr(
+        "Ite",
+        (
+            guard,
+            lifted_then
+            if lifted_then is not None
+            else ApplyExpr(op, (then_arm, c_expr)),
+            lifted_else
+            if lifted_else is not None
+            else ApplyExpr(op, (else_arm, c_expr)),
+        ),
+    )
+
+
+def _rewrite_wrap_compare_lift(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op in _CMP_FLIP
+        and len(expr.args) == 2
+    ):
+        return None
+    a, b = expr.args
+    # Normalize to Cmp(operand, c) with the constant on the right.
+    op = expr.op
+    operand, c_expr = a, b
+    c = const_to_int(c_expr)
+    if c is None or isinstance(a, ConstExpr):
+        c = const_to_int(a)
+        operand, c_expr = b, a
+        op = _CMP_FLIP[op]
+    if c is None or c < 0 or c >= _TWO_256:
+        return None
+    return _lift_operand(op, operand, c, c_expr, ctx)
+
+
+WRAP_COMPARE_LIFT = Rule(
+    name="WrapCompareLift",
+    fn=_rewrite_wrap_compare_lift,
+    description=(
+        "Lift Cmp(wrap_256(v), c) to an Int-domain predicate on v "
+        "(with a sign guard when range allows v < 0), gated on "
+        "range(v) within (c - 2^256, 2^256). Removes the mod-2^256 "
+        "opacity from comparisons of re-encoded signed values."
+    ),
+)

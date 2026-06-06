@@ -213,7 +213,18 @@ def _eval_apply(
         return result
     if op == "IntMul" and len(args) == 2:
         result = iv.mul_nonneg(recurse(args[0]), recurse(args[1]))
-        return result if result is not None else iv.TOP
+        if result is not None:
+            return result
+        # Signed fallback: scale by a constant operand of either sign.
+        for ci, oi in ((0, 1), (1, 0)):
+            k = (
+                const_to_int(args[ci])
+                if isinstance(args[ci], ConstExpr)
+                else None
+            )
+            if k is not None:
+                return iv.mul_by_const(recurse(args[oi]), k)
+        return iv.TOP
     if op == "IntDiv" and len(args) == 2:
         k = const_to_int(args[1]) if isinstance(args[1], ConstExpr) else None
         if k is not None and k > 0:

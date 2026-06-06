@@ -13,6 +13,7 @@ from ctac.rewrite.framework import rewrite_program
 from ctac.rewrite.rules import (
     NEG_S64_ZERO_TEST,
     SIGN_EXTEND_UNWRAP,
+    WRAP_COMPARE_LIFT,
     default_pipeline,
 )
 
@@ -312,3 +313,179 @@ def test_neg_s64_zero_test_lemma_via_z3():
         input=script, capture_output=True, text=True, timeout=30,
     )
     assert proc.stdout.strip() == "unsat", proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# WRAP_COMPARE_LIFT
+# ---------------------------------------------------------------------------
+
+_WRAP_SYMS = "X:bv256\n\tY:bv256\n\tI:int\n\tTB:bool"
+
+
+def test_wrap_compare_lift_lt_with_sign_guard():
+    """The B2595 shape: Lt(wrap_256(-from_s64(y)), 10) lifts to
+    0 <= v && v < 10 (v may be negative, so the guard stays)."""
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(Lt(Y 0x8000000000000000) Y IntSub(Y 0x10000000000000000(int))))\n"
+        "\t\tAssignExpCmd TB Lt(Apply(wrap_twos_complement_256:bif I) 0xa)\n"
+    )
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{body}\t}}\n", syms=_WRAP_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (WRAP_COMPARE_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("WrapCompareLift") == 1
+    tb = next(
+        c.rhs for b in res.program.blocks for c in b.commands
+        if getattr(c, "lhs", None) == "TB"
+    )
+    assert isinstance(tb, ApplyExpr) and tb.op == "LAnd"
+    guard, cmp = tb.args
+    assert isinstance(guard, ApplyExpr) and guard.op == "Le"
+    assert isinstance(cmp, ApplyExpr) and cmp.op == "Lt"
+    assert cmp.args[0] == SymbolRef("I")
+
+
+def test_wrap_compare_lift_nonneg_drops_guard():
+    """range(v) >= 0: wrap is the identity, bare comparison emitted."""
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd TB Lt(Apply(wrap_twos_complement_256:bif Y) 0xa)\n"
+    )
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{body}\t}}\n", syms=_WRAP_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (WRAP_COMPARE_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("WrapCompareLift") == 1
+    tb = next(
+        c.rhs for b in res.program.blocks for c in b.commands
+        if getattr(c, "lhs", None) == "TB"
+    )
+    assert tb == ApplyExpr("Lt", (SymbolRef("Y"), ConstExpr("0xa")))
+
+
+def test_wrap_compare_lift_eq_flipped_orientation():
+    """Eq(c, wrap(v)) matches via the flip path."""
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(Lt(Y 0x8000000000000000) Y IntSub(Y 0x10000000000000000(int))))\n"
+        "\t\tAssignExpCmd TB Eq(0x0 Apply(wrap_twos_complement_256:bif I))\n"
+    )
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{body}\t}}\n", syms=_WRAP_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (WRAP_COMPARE_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("WrapCompareLift") == 1
+    tb = next(
+        c.rhs for b in res.program.blocks for c in b.commands
+        if getattr(c, "lhs", None) == "TB"
+    )
+    assert tb == ApplyExpr("Eq", (SymbolRef("I"), ConstExpr("0x0")))
+
+
+def test_wrap_compare_lift_no_fire_without_range():
+    """Unbounded int argument: the wrap can alias across the modulus,
+    the gate holds the rewrite back."""
+    body = (
+        "\t\tAssignHavocCmd I\n"
+        "\t\tAssignExpCmd TB Lt(Apply(wrap_twos_complement_256:bif I) 0xa)\n"
+    )
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{body}\t}}\n", syms=_WRAP_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (WRAP_COMPARE_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("WrapCompareLift", 0) == 0
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+def test_wrap_compare_lift_lemma_via_z3():
+    """Closed-form lemma: for v in (c - 2^256, 2^256), each lifted
+    predicate equals its wrap form. Checked for Lt, Le, Gt, Ge, Eq."""
+    two_256 = 1 << 256
+    c = 10
+    script = f"""(set-logic QF_NIA)
+(declare-const v Int)
+(define-fun w () Int (mod v {two_256}))
+(assert (and (> v (- {c} {two_256})) (< v {two_256})))
+(assert (not (and
+  (= (= w {c}) (= v {c}))
+  (= (< w {c}) (and (<= 0 v) (< v {c})))
+  (= (<= w {c}) (and (<= 0 v) (<= v {c})))
+  (= (> w {c}) (or (> v {c}) (< v 0)))
+  (= (>= w {c}) (or (>= v {c}) (< v 0))))))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=script, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip() == "unsat", proc.stdout
+
+
+def test_wrap_compare_lift_distributes_over_ite():
+    """The B2595 shape: the wrap sits in an Ite arm. The comparison
+    distributes (gated on the arm lifting) and the wrap arm lifts."""
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignHavocCmd G\n"
+        "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(Lt(Y 0x8000000000000000) Y IntSub(Y 0x10000000000000000(int))))\n"
+        "\t\tAssignExpCmd TB Lt(Ite(G Apply(wrap_twos_complement_256:bif I) X) 0xa)\n"
+    )
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{body}\t}}\n",
+            syms=_WRAP_SYMS + "\n\tG:bool",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (WRAP_COMPARE_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("WrapCompareLift") == 1
+    tb = next(
+        c.rhs for b in res.program.blocks for c in b.commands
+        if getattr(c, "lhs", None) == "TB"
+    )
+    assert isinstance(tb, ApplyExpr) and tb.op == "Ite"
+    then_arm, else_arm = tb.args[1], tb.args[2]
+    # Wrap arm lifted to the guarded Int predicate.
+    assert isinstance(then_arm, ApplyExpr) and then_arm.op == "LAnd"
+    # Non-wrap arm keeps the plain comparison.
+    assert else_arm == ApplyExpr("Lt", (SymbolRef("X"), ConstExpr("0xa")))
+
+
+def test_wrap_compare_lift_no_distribution_without_liftable_arm():
+    """Neither Ite arm lifts: no distribution (cost gate)."""
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignHavocCmd Y\n"
+        "\t\tAssignHavocCmd G\n"
+        "\t\tAssignExpCmd TB Lt(Ite(G X Y) 0xa)\n"
+    )
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{body}\t}}\n",
+            syms=_WRAP_SYMS + "\n\tG:bool",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (WRAP_COMPARE_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("WrapCompareLift", 0) == 0

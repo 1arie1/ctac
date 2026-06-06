@@ -53,7 +53,11 @@ from ctac.rewrite.rules.purify_assume import PURIFY_ASSUME
 from ctac.rewrite.rules.range_fold import RANGE_FOLD
 from ctac.rewrite.rules.sar_to_shr import SAR_TO_SHR_NONNEG
 from ctac.rewrite.rules.select_over_store import SELECT_OVER_STORE
-from ctac.rewrite.rules.sign_extend import NEG_S64_ZERO_TEST, SIGN_EXTEND_UNWRAP
+from ctac.rewrite.rules.sign_extend import (
+    NEG_S64_ZERO_TEST,
+    SIGN_EXTEND_UNWRAP,
+    WRAP_COMPARE_LIFT,
+)
 from ctac.rewrite.rules.store_eq import STORE_EQ_NORM, normalize_store_eq
 from ctac.rewrite.rules.ite import (
     ADD_ITE_DIST,
@@ -278,6 +282,11 @@ simplify_pipeline: tuple[Rule, ...] = (
     # from_s64 arriving as unwrap(SignExtend(7, y)) is already in
     # the Ite form this matcher recognizes.
     NEG_S64_ZERO_TEST,
+    # Lift Cmp(wrap_256(v), c) to an Int-domain predicate on v, gated
+    # on range(v) within (c - 2^256, 2^256). Runs with the s64-family
+    # rules so the re-encoded i64 comparisons (to_s256(I) < 10) lose
+    # the mod-2^256 opacity before ITE/bool folding.
+    WRAP_COMPARE_LIFT,
     # ShiftRightArithmetical(x, k) -> ShiftRightLogical(x, k) when
     # range proves x's top bit is zero (the typical shape after
     # ``Mod(_, 2^64)``). The sea encoder lowers LSHR natively.
@@ -412,6 +421,7 @@ all_rule_names: tuple[str, ...] = (
     SELECT_OVER_STORE.name,
     SIGN_EXTEND_UNWRAP.name,
     NEG_S64_ZERO_TEST.name,
+    WRAP_COMPARE_LIFT.name,
     CSE.name,
     CP_ALIAS.name,
     ITE_PURIFY.name,
@@ -479,6 +489,7 @@ __all__ = [
     "SUB_BV_TO_INT",
     "SUB_ITE_DIST_LEFT",
     "SUB_ITE_DIST_RIGHT",
+    "WRAP_COMPARE_LIFT",
     "ValidationCase",
     "all_rule_names",
     "cse_pipeline",
