@@ -761,13 +761,14 @@ def test_ite_different_cond_nested_untouched():
 
 
 def test_cmp_range_fold_bv_nonneg_conjunct():
-    """``(X >= 0) && (X < 2^64)`` on bv-typed X: the first conjunct is
-    vacuous (bv sort pins the lower bound) and folds away."""
+    """``(X >= 0) && (X < 2^64)`` on bv-typed X in a value position:
+    the first conjunct is vacuous (bv sort pins the lower bound) and
+    folds away."""
     tac = parse_string(
         _wrap(
             "\t\tAssignHavocCmd X\n"
-            "\t\tAssumeExpCmd LAnd(Ge(X 0x0) Lt(X 0x10000000000000000))",
-            syms="X:bv256",
+            "\t\tAssignExpCmd B LAnd(Ge(X 0x0) Lt(X 0x10000000000000000))",
+            syms="X:bv256\n\tB:bool",
         ),
         path="<s>",
     )
@@ -777,9 +778,30 @@ def test_cmp_range_fold_bv_nonneg_conjunct():
         symbol_sorts=tac.symbol_sorts,
     )
     assert res.hits_by_rule.get("CmpRangeFold", 0) >= 1
-    cond = _assume_cond(res.program)
+    rhs = next(
+        c.rhs for b in res.program.blocks for c in b.commands
+        if getattr(c, "lhs", None) == "B"
+    )
     # LAnd(true, Lt) absorbed to the bare Lt.
-    assert isinstance(cond, ApplyExpr) and cond.op == "Lt"
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Lt"
+
+
+def test_cmp_range_fold_exempts_assume_conditions():
+    """Inside an assume the fold abstains -- partial rewrites of
+    assume conditions break rw-eq's exact-condition alignment."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssumeExpCmd LAnd(Ge(X 0x0) Lt(X 0x10000000000000000))",
+            syms="X:bv256",
+        ),
+        path="<s>",
+    )
+    from ctac.rewrite.rules import CMP_RANGE_FOLD
+    res = rewrite_program(
+        tac.program, (CMP_RANGE_FOLD,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("CmpRangeFold", 0) == 0
 
 
 def test_cmp_range_fold_undecided_no_fire():

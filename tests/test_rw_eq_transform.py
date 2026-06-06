@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from ctac.ast.nodes import (
+    ApplyExpr,
     AssertCmd,
     AssignExpCmd,
     AssignHavocCmd,
@@ -480,3 +481,94 @@ def test_rule_10_successor_mismatch_raises():
     )
     with pytest.raises(EquivContractError):
         emit_equivalence_program(orig.program, rw.program)
+
+
+# --- Rule 5c: resolution pair ---
+
+def test_rule_5c_resolution_pair():
+    """orig has the polarity pair {(!B | P), (B | P)} (with unrelated
+    assumes between); rw has the resolvent P. Rule 5c pairs all three
+    and the CHK asserts Eq(LAnd(pair), P)."""
+    orig = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssignHavocCmd Z\n"
+            "\t\tAssignExpCmd B Eq(X 0x0)\n"
+            "\t\tAssumeExpCmd LOr(LNot(B) Eq(Y 0x5))\n"
+            "\t\tAssumeExpCmd Le(Z 0xff)\n"
+            "\t\tAssumeExpCmd LOr(B Eq(Y 0x5))\n"
+            "\t}",
+            syms="X:bv256\n\tY:bv256\n\tZ:bv256\n\tB:bool",
+        ),
+        path="<o>",
+    )
+    rw = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssignHavocCmd Z\n"
+            "\t\tAssignExpCmd B Eq(X 0x0)\n"
+            "\t\tAssumeExpCmd Eq(Y 0x5)\n"
+            "\t\tAssumeExpCmd Le(Z 0xff)\n"
+            "\t}",
+            syms="X:bv256\n\tY:bv256\n\tZ:bv256\n\tB:bool",
+        ),
+        path="<r>",
+    )
+    res = emit_equivalence_program(orig.program, rw.program)
+    assert res.rule_hits.get("5c_resolution_pair", 0) == 1
+    block = _block(res.program, "e")
+    # Both originals survive as assumes (constraints stay in force,
+    # the partner exactly once).
+    pair_conds = [
+        c.condition
+        for c in block.commands
+        if isinstance(c, AssumeExpCmd)
+        and isinstance(c.condition, ApplyExpr)
+        and c.condition.op == "LOr"
+    ]
+    assert len(pair_conds) == 2
+    # The CHK is Eq(LAnd(pair), P).
+    chk = next(
+        c.rhs
+        for c in block.commands
+        if isinstance(c, AssignExpCmd) and c.lhs.startswith("CHK")
+    )
+    assert isinstance(chk, ApplyExpr) and chk.op == "Eq"
+    assert isinstance(chk.args[0], ApplyExpr) and chk.args[0].op == "LAnd"
+
+
+def test_rule_5c_no_partner_falls_through_to_pair():
+    """rhs P meets lhs (A | P) but no partner exists: the 5a pair CHK
+    is emitted instead (and would be SAT -- the certificate catches
+    a bad resolution rather than admitting it)."""
+    orig = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssignExpCmd B Eq(X 0x0)\n"
+            "\t\tAssumeExpCmd LOr(LNot(B) Eq(Y 0x5))\n"
+            "\t}",
+            syms="X:bv256\n\tY:bv256\n\tB:bool",
+        ),
+        path="<o>",
+    )
+    rw = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssignExpCmd B Eq(X 0x0)\n"
+            "\t\tAssumeExpCmd Eq(Y 0x5)\n"
+            "\t}",
+            syms="X:bv256\n\tY:bv256\n\tB:bool",
+        ),
+        path="<r>",
+    )
+    res = emit_equivalence_program(orig.program, rw.program)
+    assert res.rule_hits.get("5c_resolution_pair", 0) == 0
+    assert res.rule_hits.get("5a_assume_pair", 0) == 1

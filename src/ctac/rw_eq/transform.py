@@ -27,6 +27,7 @@ branch wins; rule 10 is the abort sink.
                                  rhs window)                           (see ``_consume_dehavoc_window``)        both*
 1   identical (non-assert)       ``cmd_equiv(L, R)`` and not Assert     L verbatim                               both
 2   same-lhs assignment          both AssignExp, ``L.lhs == R.lhs``     ``CHK = Eq(L.rhs, R.rhs); assert CHK; L``  both
+5c  resolution pair              lhs (A|P),(A'|P); rhs P                ``CHK = Eq(LAnd(pair), P); assert CHK``
 5a  paired assumes               both AssumeExp                         ``CHK = Eq(L.cond, R.cond); assert CHK;
                                                                         assume L.cond [; assume R.cond if differ]``  both
 5b  paired asserts               both AssertCmd                         ``CHK = Eq(L.pred, R.pred); assert CHK;
@@ -165,6 +166,7 @@ from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.subst import subst_symbol
 from ctac.graph.cfg import Cfg
 from ctac.ir.models import TacBlock, TacProgram
+from ctac.rewrite.rules.common import eq_modulo_meta
 from ctac.rewrite.rules.store_eq import normalize_store_eq
 from ctac.rewrite.unparse import canonicalize_cmd, unparse_cmd
 from ctac.rw_eq.dest_emit import emit_dest_write, emit_in_dest_ite
@@ -836,6 +838,9 @@ def _walk_block(
     rhs_cmds = rw_block.commands
     li = 0
     ri = 0
+    # Indices of lhs assumes already consumed out of order (rule 5c
+    # pairs a resolution partner that sits a few assumes ahead).
+    lhs_skip: set[int] = set()
 
     def _peek(cmds: list[TacCmd], i: int) -> tuple[TacCmd | None, int]:
         # Skip noise.
@@ -852,20 +857,26 @@ def _walk_block(
     # noise separately *outside* the walker loop. Simpler implementation
     # uses a non-side-effecting peek and explicit advance.
 
-    def peek(cmds: list[TacCmd], i: int) -> tuple[TacCmd | None, int]:
-        while i < len(cmds) and isinstance(cmds[i], _NOISE_TYPES):
+    def peek(
+        cmds: list[TacCmd], i: int, skip: set[int] | None = None
+    ) -> tuple[TacCmd | None, int]:
+        while i < len(cmds) and (
+            isinstance(cmds[i], _NOISE_TYPES) or (skip and i in skip)
+        ):
             i += 1
         if i >= len(cmds):
             return None, i
         return cmds[i], i
 
     while True:
-        L, li_new = peek(lhs_cmds, li)
+        L, li_new = peek(lhs_cmds, li, lhs_skip)
         R, ri_new = peek(rhs_cmds, ri)
         # Echo skipped lhs noise into output (preserves comments and
         # snippet annotations from the orig program for inspection).
+        # Indices in lhs_skip were already emitted by rule 5c.
         for k in range(li, li_new):
-            output.append(lhs_cmds[k])
+            if k not in lhs_skip:
+                output.append(lhs_cmds[k])
         li = li_new
         # rhs noise is dropped silently (the orig already carries the
         # informational annotations; rhs's are likely the same or
@@ -1105,6 +1116,50 @@ def _walk_block(
                     li += 1
                     state.hit("4b_lhs_assume")
                     continue
+                # Rule 5c: resolution pair. dedup_assumes replaces the
+                # first of {(A | P), (A' | P)} with P and drops the
+                # second, so the rhs P meets lhs (A | P) here with the
+                # partner a few assumes ahead. The CHK carries the
+                # entire argument -- Eq(LAnd(pair), P) is what z3
+                # verifies, so the trigger needs no negation
+                # reasoning and a wrong pass shows up as a SAT CHK.
+                # Both originals are emitted (constraints stay in
+                # force); the partner index is skipped when the walk
+                # reaches it.
+                if (
+                    isinstance(L.condition, ApplyExpr)
+                    and L.condition.op == "LOr"
+                    and len(L.condition.args) == 2
+                    and any(
+                        eq_modulo_meta(arg, R.condition)
+                        for arg in L.condition.args
+                    )
+                ):
+                    partner = _resolution_partner_ahead(
+                        lhs_cmds, li + 1, R.condition, lhs_skip
+                    )
+                    if partner is not None:
+                        pi, L2 = partner
+                        output.extend(
+                            _emit_eq_assert(
+                                state,
+                                ApplyExpr(
+                                    "LAnd",
+                                    (L.condition, L2.condition),
+                                ),
+                                R.condition,
+                                block_id=orig_block.id,
+                                cmd_index=li,
+                                kind="assume",
+                            )
+                        )
+                        output.append(L)
+                        output.append(L2)
+                        lhs_skip.add(pi)
+                        li += 1
+                        ri += 1
+                        state.hit("5c_resolution_pair")
+                        continue
             output.extend(
                 _emit_eq_assert(
                     state,
@@ -1315,6 +1370,40 @@ def _assume_ahead(
             continue
         break
     return False
+
+
+def _resolution_partner_ahead(
+    cmds: list[TacCmd],
+    i: int,
+    payload: TacExpr,
+    skip: set[int],
+    k: int = 8,
+) -> tuple[int, AssumeExpCmd] | None:
+    """The resolution partner for rule 5c: an ``AssumeExpCmd`` within
+    the next ``k`` assumes whose condition is a 2-arg ``LOr`` with an
+    arm equal to ``payload`` modulo meta suffixes. Scans the current
+    assume run only (noise skipped; any other command closes it)."""
+    seen = 0
+    j = i
+    while j < len(cmds) and seen < k:
+        c = cmds[j]
+        if isinstance(c, _NOISE_TYPES) or j in skip:
+            j += 1
+            continue
+        if isinstance(c, AssumeExpCmd):
+            cond = c.condition
+            if (
+                isinstance(cond, ApplyExpr)
+                and cond.op == "LOr"
+                and len(cond.args) == 2
+                and any(eq_modulo_meta(arg, payload) for arg in cond.args)
+            ):
+                return j, c
+            seen += 1
+            j += 1
+            continue
+        break
+    return None
 
 
 def _scan_dehavoc_def(

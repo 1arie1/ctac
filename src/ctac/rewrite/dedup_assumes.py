@@ -100,8 +100,14 @@ def dedup_assumes(program: TacProgram) -> DedupAssumesResult:
         # Both maps record (index, symbols-read) per key; entries die
         # when any read symbol is redefined.
         seen: dict[TacExpr, tuple[int, frozenset[str]]] = {}
+        # (pivot-key, payload-key) -> (idx, symbols, original payload
+        # subexpression). The original (non-normalized) payload is what
+        # replaces the partner: rw-eq's resolution rule matches it
+        # against the surviving pair member's LOr arm modulo meta
+        # suffixes, which a normalized form would defeat.
         guarded: dict[
-            tuple[TacExpr, TacExpr], tuple[int, frozenset[str]]
+            tuple[TacExpr, TacExpr],
+            tuple[int, frozenset[str], TacExpr],
         ] = {}
         drops: set[int] = set()
         replacements: dict[int, TacExpr] = {}
@@ -122,20 +128,27 @@ def dedup_assumes(program: TacProgram) -> DedupAssumesResult:
                 duplicates += 1
                 continue
             seen[key] = (idx, syms)
+            cond = cmd.condition
             if (
                 isinstance(key, ApplyExpr)
                 and key.op == "LOr"
                 and len(key.args) == 2
+                and isinstance(cond, ApplyExpr)
+                and cond.op == "LOr"
+                and len(cond.args) == 2
             ):
                 a, b = key.args
-                for pivot, payload in ((a, b), (b, a)):
+                for (pivot, payload), orig_payload in (
+                    ((a, b), cond.args[1]),
+                    ((b, a), cond.args[0]),
+                ):
                     partner = guarded.get((_negation_key(pivot), payload))
                     if partner is not None and partner[0] not in drops:
-                        replacements[partner[0]] = payload
+                        replacements[partner[0]] = partner[2]
                         drops.add(idx)
                         resolved += 1
                         break
-                    guarded[(pivot, payload)] = (idx, syms)
+                    guarded[(pivot, payload)] = (idx, syms, orig_payload)
 
         if not drops and not replacements:
             new_blocks.append(block)
