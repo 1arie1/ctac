@@ -27,6 +27,7 @@ from dataclasses import replace
 from ctac.rewrite import rewrite_program
 from ctac.rewrite.framework import RewriteResult, RuleHit, TraceEntry, TraceSink
 from ctac.rewrite.trail import Substitution, Trail, resolve_substitutions
+from ctac.rewrite.dedup_assumes import dedup_assumes
 from ctac.rewrite.drop_range_redundant_assumes import (
     drop_range_redundant_assumes,
 )
@@ -82,6 +83,8 @@ def _print_report(
     h_nonzero_hits: int = 0,
     u128_decrement_hits: int = 0,
     range_redundant_assumes_dropped: int = 0,
+    assume_duplicates_dropped: int = 0,
+    assume_pairs_resolved: int = 0,
     hoist_path_invariant_hits: int = 0,
     lift_dynamic_ite_hits: int = 0,
     unpurified_div_count: int = 0,
@@ -123,6 +126,10 @@ def _print_report(
                 "  range_redundant_assumes_dropped: "
                 f"{range_redundant_assumes_dropped}"
             )
+        if assume_duplicates_dropped:
+            line(f"  assume_duplicates_dropped: {assume_duplicates_dropped}")
+        if assume_pairs_resolved:
+            line(f"  assume_pairs_resolved: {assume_pairs_resolved}")
         if hoist_path_invariant_hits:
             line(f"  hoist_path_invariant: {hoist_path_invariant_hits}")
         if materialize_hits:
@@ -164,6 +171,13 @@ def _print_report(
             "  range_redundant_assumes_dropped: "
             f"[bold]{range_redundant_assumes_dropped}[/bold]"
         )
+    if assume_duplicates_dropped:
+        line(
+            "  assume_duplicates_dropped: "
+            f"[bold]{assume_duplicates_dropped}[/bold]"
+        )
+    if assume_pairs_resolved:
+        line(f"  assume_pairs_resolved: [bold]{assume_pairs_resolved}[/bold]")
     if hoist_path_invariant_hits:
         line(
             "  hoist_path_invariant: "
@@ -708,6 +722,13 @@ def rewrite_cmd(
         )
         program = drop_redundant_res.program
         dropped_redundant_assumes = drop_redundant_res.hits
+        # Phase 1.96: same-block assume hygiene -- duplicates (verbatim,
+        # flipped-orientation, or meta-suffix variants) and resolution
+        # pairs ((!B | P) & (B | P) -> P).
+        dedup_res = dedup_assumes(program)
+        program = dedup_res.program
+        assume_duplicates_dropped = dedup_res.duplicates_dropped
+        assume_pairs_resolved = dedup_res.pairs_resolved
         while True:
             dce = eliminate_dead_assignments(program)
             total_removed += len(dce.removed)
@@ -949,6 +970,8 @@ def rewrite_cmd(
             h_nonzero_hits=h_nonzero_hits,
             u128_decrement_hits=u128_dec_hits,
             range_redundant_assumes_dropped=dropped_redundant_assumes,
+            assume_duplicates_dropped=assume_duplicates_dropped,
+            assume_pairs_resolved=assume_pairs_resolved,
             hoist_path_invariant_hits=hoist_hits,
             lift_dynamic_ite_hits=lift_hits,
             unpurified_div_count=unpurified_count,
