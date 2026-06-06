@@ -712,3 +712,45 @@ NEG_S64_DOUBLE = Rule(
         "i64::MIN pattern unextended."
     ),
 )
+
+
+# SIGNED_CMP_NEG_ONE: comparisons against the signed -1 pattern
+# (0xff..ff = 2^256 - 1) normalize to the zero threshold: in the
+# signed order -1 is the immediate predecessor of 0, so
+# ``x <=s -1  <=>  x <s 0`` and ``x >s -1  <=>  0 <=s x``.
+# Unconditional order reasoning; the payoff is that the zero-threshold
+# forms are what NEG_S64_SIGN_TEST matches.
+
+_SIGNED_MINUS_ONE = (1 << 256) - 1
+
+
+def _rewrite_signed_cmp_neg_one(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op in ("Slt", "Sle", "Sgt", "Sge")
+        and len(expr.args) == 2
+    ):
+        return None
+    a, b = expr.args
+    zero = ConstExpr("0x0")
+    if expr.op == "Sle" and const_to_int(b) == _SIGNED_MINUS_ONE:
+        return ApplyExpr("Slt", (a, zero))
+    if expr.op == "Sge" and const_to_int(a) == _SIGNED_MINUS_ONE:
+        return ApplyExpr("Slt", (b, zero))
+    if expr.op == "Sgt" and const_to_int(b) == _SIGNED_MINUS_ONE:
+        return ApplyExpr("Sle", (zero, a))
+    if expr.op == "Slt" and const_to_int(a) == _SIGNED_MINUS_ONE:
+        return ApplyExpr("Sle", (zero, b))
+    return None
+
+
+SIGNED_CMP_NEG_ONE = Rule(
+    name="SignedCmpNegOne",
+    fn=_rewrite_signed_cmp_neg_one,
+    description=(
+        "Normalize signed comparisons against -1 (0xff..ff) to the "
+        "zero threshold: x <=s -1 -> x <s 0, x >s -1 -> 0 <=s x."
+    ),
+)

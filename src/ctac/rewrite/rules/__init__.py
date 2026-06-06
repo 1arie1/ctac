@@ -59,6 +59,7 @@ from ctac.rewrite.rules.sign_extend import (
     NEG_S64_SIGN_TEST,
     NEG_S64_ZERO_TEST,
     SIGN_EXTEND_UNWRAP,
+    SIGNED_CMP_NEG_ONE,
     WRAP_COMPARE_LIFT,
 )
 from ctac.rewrite.rules.store_eq import STORE_EQ_NORM, normalize_store_eq
@@ -296,6 +297,9 @@ simplify_pipeline: tuple[Rule, ...] = (
     # pass-through edge arm).
     NEG_S64_LOW_CHUNK,
     NEG_S64_SIGN_TEST,
+    # Normalize signed compares against -1 to the zero threshold the
+    # sign-test rule matches (x <=s -1 -> x <s 0).
+    SIGNED_CMP_NEG_ONE,
     # The abs lowering's double negation: gadget-of-gadget collapses
     # to the 64->256 sign extension of the chunk (i64::MIN edge
     # unextended).
@@ -443,6 +447,7 @@ all_rule_names: tuple[str, ...] = (
     NEG_S64_LOW_CHUNK.name,
     NEG_S64_SIGN_TEST.name,
     NEG_S64_DOUBLE.name,
+    SIGNED_CMP_NEG_ONE.name,
     WRAP_COMPARE_LIFT.name,
     CSE.name,
     CP_ALIAS.name,
@@ -510,6 +515,7 @@ __all__ = [
     "SAR_TO_SHR_NONNEG",
     "SELECT_OVER_STORE",
     "SHIFT_LEFT_TO_INT_MUL",
+    "SIGNED_CMP_NEG_ONE",
     "SIGN_EXTEND_UNWRAP",
     "STORE_EQ_NORM",
     "SUB_BV_TO_INT",

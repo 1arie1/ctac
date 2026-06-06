@@ -816,3 +816,55 @@ def test_neg_s64_carry_and_double_lemma_via_z3():
         input=script, capture_output=True, text=True, timeout=30,
     )
     assert proc.stdout.strip() == "unsat", proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# SIGNED_CMP_NEG_ONE
+# ---------------------------------------------------------------------------
+
+_M1 = "0x" + "f" * 64
+
+
+def test_signed_cmp_neg_one_all_orientations():
+    """x <=s -1, -1 >=s x normalize to x <s 0; x >s -1, -1 <s x to
+    0 <=s x."""
+    from ctac.rewrite.rules import SIGNED_CMP_NEG_ONE
+    cases = [
+        (f"Sle(X {_M1})", "Slt"),
+        (f"Sge({_M1} X)", "Slt"),
+        (f"Sgt(X {_M1})", "Sle"),
+        (f"Slt({_M1} X)", "Sle"),
+    ]
+    for cond, want_op in cases:
+        tac = parse_string(
+            _wrap(
+                f"\tBlock e Succ [] {{\n\t\tAssignHavocCmd X\n"
+                f"\t\tAssignExpCmd TB {cond}\n\t}}\n",
+                syms="X:bv256\n\tTB:bool",
+            ),
+            path="<s>",
+        )
+        res = rewrite_program(
+            tac.program, (SIGNED_CMP_NEG_ONE,), symbol_sorts=tac.symbol_sorts
+        )
+        assert res.hits_by_rule.get("SignedCmpNegOne") == 1, cond
+        rhs = _rhs_of(res, "TB")
+        assert isinstance(rhs, ApplyExpr) and rhs.op == want_op, cond
+
+
+def test_signed_cmp_neg_one_unlocks_sign_test():
+    """Sle(gadget, -1) -> Slt(gadget, 0) -> the chunk-interval
+    predicate, end to end."""
+    from ctac.rewrite.rules import SIGNED_CMP_NEG_ONE
+    tac = _gadget_tac(
+        f"\t\tAssignExpCmd TB Sle(RZ {_M1})\n", body=_GADGET_BODY_BOUNDED
+    )
+    res = rewrite_program(
+        tac.program,
+        (SIGNED_CMP_NEG_ONE, NEG_S64_SIGN_TEST),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("SignedCmpNegOne") == 1
+    assert res.hits_by_rule.get("NegS64SignTest") == 1
+    rhs = _rhs_of(res, "TB")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "LAnd"
