@@ -54,6 +54,7 @@ from ctac.rewrite.rules.range_fold import RANGE_FOLD
 from ctac.rewrite.rules.sar_to_shr import SAR_TO_SHR_NONNEG
 from ctac.rewrite.rules.select_over_store import SELECT_OVER_STORE
 from ctac.rewrite.rules.sign_extend import (
+    NEG_S64_DOUBLE,
     NEG_S64_LOW_CHUNK,
     NEG_S64_SIGN_TEST,
     NEG_S64_ZERO_TEST,
@@ -290,6 +291,10 @@ simplify_pipeline: tuple[Rule, ...] = (
     # pass-through edge arm).
     NEG_S64_LOW_CHUNK,
     NEG_S64_SIGN_TEST,
+    # The abs lowering's double negation: gadget-of-gadget collapses
+    # to the 64->256 sign extension of the chunk (i64::MIN edge
+    # unextended).
+    NEG_S64_DOUBLE,
     # Lift Cmp(wrap_256(v), c) to an Int-domain predicate on v, gated
     # on range(v) within (c - 2^256, 2^256). Runs with the s64-family
     # rules so the re-encoded i64 comparisons (to_s256(I) < 10) lose
@@ -431,6 +436,7 @@ all_rule_names: tuple[str, ...] = (
     NEG_S64_ZERO_TEST.name,
     NEG_S64_LOW_CHUNK.name,
     NEG_S64_SIGN_TEST.name,
+    NEG_S64_DOUBLE.name,
     WRAP_COMPARE_LIFT.name,
     CSE.name,
     CP_ALIAS.name,
@@ -481,6 +487,7 @@ __all__ = [
     "N2_LOW_MASK",
     "N3_HIGH_MASK",
     "N4_SHR_CONST",
+    "NEG_S64_DOUBLE",
     "NEG_S64_LOW_CHUNK",
     "NEG_S64_SIGN_TEST",
     "NEG_S64_ZERO_TEST",

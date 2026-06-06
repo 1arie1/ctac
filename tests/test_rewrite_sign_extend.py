@@ -11,6 +11,7 @@ from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef
 from ctac.parse import parse_string
 from ctac.rewrite.framework import rewrite_program
 from ctac.rewrite.rules import (
+    NEG_S64_DOUBLE,
     NEG_S64_LOW_CHUNK,
     NEG_S64_SIGN_TEST,
     NEG_S64_ZERO_TEST,
@@ -661,6 +662,153 @@ def test_neg_s64_consumers_lemma_via_z3():
 (assert (not (and
   (= (mod n {two_64}) (ite (= y 0) 0 (- {two_64} y)))
   (= (>= n {two_255}) (and (< 0 y) (< y {two_63}))))))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=script, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip() == "unsat", proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# NEG_S64_LOW_CHUNK carry shapes + NEG_S64_DOUBLE
+# ---------------------------------------------------------------------------
+
+
+def test_neg_s64_low_chunk_carry_select():
+    """The R2599 shape: Mod(Ite(B0, n, n + 1), 2^64) with n the
+    gadget — both arms reduce, the Ite distributes."""
+    body = (
+        _GADGET_BODY
+        + "\t\tAssignHavocCmd G\n"
+        + "\t\tAssignExpCmd R3 Ite(G RZ Add(RZ 0x1))\n"
+        + "\t\tAssignExpCmd R2 Mod(R3 0x10000000000000000)\n"
+    )
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{body}\t}}\n",
+            syms=_NEG_SYMS + "\n\tR2:bv256\n\tR3:bv256\n\tG:bool",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_LOW_CHUNK,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64LowChunk") == 1
+    rhs = _rhs_of(res, "R2")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+    assert rhs.args[0] == SymbolRef("G")
+    plain, carry = rhs.args[1], rhs.args[2]
+    # Plain arm: Ite(Eq(Y, 0), 0, Sub(2^64, Y)).
+    assert isinstance(plain, ApplyExpr) and plain.op == "Ite"
+    assert plain.args[0] == ApplyExpr("Eq", (SymbolRef("Y"), ConstExpr("0x0")))
+    # Carry arm: Ite(Le(Y, 1), Sub(1, Y), Sub(2^64 + 1, Y)).
+    assert isinstance(carry, ApplyExpr) and carry.op == "Ite"
+    assert carry.args[0] == ApplyExpr("Le", (SymbolRef("Y"), ConstExpr("0x1")))
+
+
+def test_neg_s64_low_chunk_ite_one_arm_unreducible_no_fire():
+    """One Ite arm isn't gadget-built: cost gate, no distribution."""
+    body = (
+        _GADGET_BODY
+        + "\t\tAssignHavocCmd G\n"
+        + "\t\tAssignExpCmd R3 Ite(G RZ X)\n"
+        + "\t\tAssignExpCmd R2 Mod(R3 0x10000000000000000)\n"
+    )
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{body}\t}}\n",
+            syms=_NEG_SYMS + "\n\tR2:bv256\n\tR3:bv256\n\tG:bool",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_LOW_CHUNK,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64LowChunk", 0) == 0
+
+
+_DOUBLE_BODY = (
+    "\t\tAssignHavocCmd X\n"
+    "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+    "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+    "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+    "\t\tAssignExpCmd TBG Eq(Y 0x8000000000000000)\n"
+    "\t\tAssignExpCmd RZ Ite(TBG Y Apply(wrap_twos_complement_256:bif I))\n"
+    "\t\tAssignExpCmd Y2 Mod(RZ 0x10000000000000000)\n"
+    "\t\tAssignExpCmd TBC2 Lt(Y2 0x8000000000000000)\n"
+    "\t\tAssignExpCmd I2 IntMul(0x-1(int) Ite(TBC2 Y2 IntSub(Y2 0x10000000000000000(int))))\n"
+    "\t\tAssignExpCmd TBG2 Eq(Y2 0x8000000000000000)\n"
+    "\t\tAssignExpCmd R2 Ite(TBG2 RZ Apply(wrap_twos_complement_256:bif I2))\n"
+)
+
+_DOUBLE_SYMS = (
+    _NEG_SYMS + "\n\tY2:bv256\n\tTBC2:bool\n\tI2:int\n\tTBG2:bool\n\tR2:bv256"
+)
+
+
+def test_neg_s64_double_fires():
+    """Gadget-of-gadget (the abs low limb) collapses to the 64->256
+    sign extension Ite over the original chunk."""
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{_DOUBLE_BODY}\t}}\n", syms=_DOUBLE_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_DOUBLE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64Double") == 1
+    rhs = _rhs_of(res, "R2")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+    cond, ident, ext = rhs.args
+    assert isinstance(cond, ApplyExpr) and cond.op == "Le"
+    assert cond.args[0] == SymbolRef("Y")
+    assert ident == SymbolRef("Y")
+    assert isinstance(ext, ApplyExpr) and ext.op == "Add"
+
+
+def test_neg_s64_double_fires_after_low_chunk_rewrote_link():
+    """When NEG_S64_LOW_CHUNK already rewrote Y2's def to its Ite
+    emit shape, the alternate evidence path still ties the outer
+    gadget to Y."""
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{_DOUBLE_BODY}\t}}\n", syms=_DOUBLE_SYMS),
+        path="<s>",
+    )
+    pre = rewrite_program(
+        tac.program, (NEG_S64_LOW_CHUNK,), symbol_sorts=tac.symbol_sorts
+    )
+    assert pre.hits_by_rule.get("NegS64LowChunk") == 1  # Y2's def
+    res = rewrite_program(
+        pre.program, (NEG_S64_DOUBLE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64Double") == 1
+    rhs = _rhs_of(res, "R2")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+    assert rhs.args[1] == SymbolRef("Y")
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+def test_neg_s64_carry_and_double_lemma_via_z3():
+    """Closed-form lemmas: the carry chunk (c = 1) and the double
+    negation, over the full gadget with x in [0, 2^64) (the x == y
+    chunk-evidence regime both rules accept)."""
+    two_63 = 1 << 63
+    two_64 = 1 << 64
+    two_256 = 1 << 256
+    sign_ext = two_256 - two_64
+    script = f"""(set-logic QF_NIA)
+(declare-const L Int)
+(define-fun f () Int (ite (< L {two_63}) L (- L {two_64})))
+(define-fun n () Int (ite (= L {two_63}) L (mod (- 0 f) {two_256})))
+(define-fun yp () Int (mod n {two_64}))
+(define-fun f2 () Int (ite (< yp {two_63}) yp (- yp {two_64})))
+(define-fun n2 () Int (ite (= yp {two_63}) n (mod (- 0 f2) {two_256})))
+(assert (and (<= 0 L) (< L {two_64})))
+(assert (not (and
+  (= (mod (+ n 1) {two_64}) (ite (<= L 1) (- 1 L) (- {two_64 + 1} L)))
+  (= n2 (ite (<= L {two_63}) L (+ L {sign_ext}))))))
 (check-sat)
 """
     proc = subprocess.run(
