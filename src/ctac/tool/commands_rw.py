@@ -696,45 +696,75 @@ def rewrite_cmd(
         # only become applicable once those forms are in the program.
         # Running the same pipeline a second time lets the merges
         # fire to fixpoint without dedicated rerun machinery.
-        phase_simplify_post_u128 = rewrite_program(
-            program,
-            simplify_pipeline,
-            max_iterations=max_iterations,
-            ite_max_depth=ite_max_depth,
-            symbol_sorts=tac.symbol_sorts,
-            use_int_ceil_div=ceildiv_op,
-            use_interval_select=interval_select,
-            phase="simplify-post-u128",
-            trace_sink=trace_sink,
-        )
-        program = phase_simplify_post_u128.program
-        rw = _merge_phases(rw, phase_simplify_post_u128)
-        # Phase 1.95: drop range-redundant assumes. The carry-add lift
-        # materialized intermediate bounds (on the partial sum, on
-        # BASE) so H's bound was locally provable. After
-        # ``chunk-merge`` and ``muldiv-to-V-Div`` collapse the chunked
-        # encoding, those intermediates are no longer load-bearing —
-        # range inference can derive their bounds from the operand
-        # ranges in scope. Dropping the range-tautological assumes
-        # lets DCE clear the now-dead chunk defs (R_low, R_hi-ish).
-        drop_redundant_res = drop_range_redundant_assumes(
-            program, symbol_sorts=tac.symbol_sorts
-        )
-        program = drop_redundant_res.program
-        dropped_redundant_assumes = drop_redundant_res.hits
-        # Phase 1.96: same-block assume hygiene -- duplicates (verbatim,
-        # flipped-orientation, or meta-suffix variants) and resolution
-        # pairs ((!B | P) & (B | P) -> P).
-        dedup_res = dedup_assumes(program)
-        program = dedup_res.program
-        assume_duplicates_dropped = dedup_res.duplicates_dropped
-        assume_pairs_resolved = dedup_res.pairs_resolved
+        # Cascading-collapse loop (same pattern as cse-late below)
+        # over simplify + DCE + the assume-hygiene passes: a rewrite
+        # can orphan a def whose last pin is a range-redundant assume
+        # (MulDivConstCancel leaves the canceled numerator product
+        # behind, pinned by its image-bound assume), and only after
+        # the dropper removes the assume and DCE clears the def do
+        # use-shape-gated rules (HavocEquateSubst's all-uses-in-
+        # assumes condition) become applicable for the next layer.
+        # Loop until no pass makes progress.
+        dropped_redundant_assumes = 0
+        assume_duplicates_dropped = 0
+        assume_pairs_resolved = 0
         while True:
-            dce = eliminate_dead_assignments(program)
-            total_removed += len(dce.removed)
-            if not dce.removed:
+            round_progress = 0
+            phase_simplify_post_u128 = rewrite_program(
+                program,
+                simplify_pipeline,
+                max_iterations=max_iterations,
+                ite_max_depth=ite_max_depth,
+                symbol_sorts=tac.symbol_sorts,
+                use_int_ceil_div=ceildiv_op,
+                use_interval_select=interval_select,
+                phase="simplify-post-u128",
+                trace_sink=trace_sink,
+            )
+            program = phase_simplify_post_u128.program
+            rw = _merge_phases(rw, phase_simplify_post_u128)
+            # Re-entry is justified by REMOVALS only (bounded by
+            # program size, so the loop terminates): the use-shape
+            # gates unlock when commands disappear, not when rewrites
+            # fire. Simplify itself runs to its own fixpoint each
+            # round.
+            while True:
+                dce = eliminate_dead_assignments(program)
+                round_progress += len(dce.removed)
+                total_removed += len(dce.removed)
+                if not dce.removed:
+                    break
+                program = dce.program
+            # Phase 1.95: drop range-redundant assumes. The carry-add
+            # lift materialized intermediate bounds so H's bound was
+            # locally provable; after the chunk merges those assumes
+            # are reconstructible from operand ranges and only pin
+            # dead chunk defs.
+            drop_redundant_res = drop_range_redundant_assumes(
+                program, symbol_sorts=tac.symbol_sorts
+            )
+            program = drop_redundant_res.program
+            dropped_redundant_assumes += drop_redundant_res.hits
+            round_progress += drop_redundant_res.hits
+            # Phase 1.96: same-block assume hygiene -- duplicates
+            # (verbatim, flipped-orientation, or meta-suffix variants)
+            # and resolution pairs ((!B | P) & (B | P) -> P).
+            dedup_res = dedup_assumes(program)
+            program = dedup_res.program
+            assume_duplicates_dropped += dedup_res.duplicates_dropped
+            assume_pairs_resolved += dedup_res.pairs_resolved
+            round_progress += (
+                dedup_res.duplicates_dropped + dedup_res.pairs_resolved
+            )
+            while True:
+                dce = eliminate_dead_assignments(program)
+                round_progress += len(dce.removed)
+                total_removed += len(dce.removed)
+                if not dce.removed:
+                    break
+                program = dce.program
+            if not round_progress:
                 break
-            program = dce.program
         # Phase 1.97: hoist semantically-equivalent branch defs.
         # Recognizes patterns where a join's dynamic-defed symbol has two
         # branch defs that compute the same value under the branch
