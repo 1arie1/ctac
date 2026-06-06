@@ -68,6 +68,7 @@ from ctac.rewrite.rules.ite import (
     ITE_BOOL,
     ITE_COND_FOLD,
     ITE_SAME,
+    ITE_SAME_COND_NESTED,
     ITE_SHARED_LEAF,
     ITE_ZERO_OR_SELF,
     MUL_ZERO_ONE_FOLD,
@@ -193,6 +194,9 @@ simplify_pipeline: tuple[Rule, ...] = (
     # `R = IntMul(X, K)`.
     ITE_ZERO_OR_SELF,
     ITE_SHARED_LEAF,
+    # Prune nested Ites that re-test the outer's exact condition
+    # (saturating-sub lowerings emit them); unconditionally sound.
+    ITE_SAME_COND_NESTED,
     # Bool-const fold: `Ite(true, X, _) -> X`, `Ite(false, _, Y) -> Y`,
     # plus LNot/LAnd/LOr/Eq over Bool ConstExpr operands. Universally
     # sound; cheap (top-level pattern match). Useful both for inputs
@@ -430,6 +434,7 @@ __all__ = [
     "ITE_COND_FOLD",
     "ITE_PURIFY",
     "ITE_SAME",
+    "ITE_SAME_COND_NESTED",
     "ITE_SHARED_LEAF",
     "ITE_ZERO_OR_SELF",
     "MOD_IDENTITY_CP",

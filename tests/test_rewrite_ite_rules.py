@@ -645,3 +645,80 @@ def test_mul_zero_one_no_fold_on_const_two():
     )
     res = rewrite_program(tac.program, (MUL_ZERO_ONE_FOLD,))
     assert "MulZeroOne" not in res.hits_by_rule
+
+
+def _assign_rhs_of(prog, lhs):
+    from ctac.ast.nodes import AssignExpCmd
+
+    for b in prog.blocks:
+        for cmd in b.commands:
+            if isinstance(cmd, AssignExpCmd) and cmd.lhs == lhs:
+                return cmd.rhs
+    raise AssertionError(f"no AssignExpCmd for {lhs!r}")
+
+
+def test_ite_same_cond_nested_else_arm():
+    """Ite(c, X, Ite(c, Y, Z)) -> Ite(c, X, Z): the inner re-test of
+    c is reached only when c is false; its then-arm is dead. The SBF
+    saturating-sub shape `if TB { f } else { (if TB {0} else {1}) }`."""
+    from ctac.rewrite.rules import ITE_SAME_COND_NESTED
+
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd c\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd R Ite(c X Ite(c 0x0 0x1))",
+            syms="c:bool\n\tX:bv256\n\tR:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (ITE_SAME_COND_NESTED,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _assign_rhs_of(res.program, "R")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+    assert rhs.args[2] == ConstExpr("0x1")
+
+
+def test_ite_same_cond_nested_then_arm():
+    """Symmetric: Ite(c, Ite(c, X, Y), Z) -> Ite(c, X, Z)."""
+    from ctac.rewrite.rules import ITE_SAME_COND_NESTED
+
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd c\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssignHavocCmd Z\n"
+            "\t\tAssignExpCmd R Ite(c Ite(c 0x7 Y) Z)",
+            syms="c:bool\n\tY:bv256\n\tZ:bv256\n\tR:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (ITE_SAME_COND_NESTED,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _assign_rhs_of(res.program, "R")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+    assert rhs.args[1] == ConstExpr("0x7")
+
+
+def test_ite_different_cond_nested_untouched():
+    """Different inner condition: no fire."""
+    from ctac.rewrite.rules import ITE_SAME_COND_NESTED
+
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd c\n"
+            "\t\tAssignHavocCmd d\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd R Ite(c X Ite(d 0x0 0x1))",
+            syms="c:bool\n\td:bool\n\tX:bv256\n\tR:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (ITE_SAME_COND_NESTED,), symbol_sorts=tac.symbol_sorts
+    )
+    rhs = _assign_rhs_of(res.program, "R")
+    inner = rhs.args[2]
+    assert isinstance(inner, ApplyExpr) and inner.op == "Ite"

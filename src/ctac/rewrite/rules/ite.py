@@ -552,6 +552,38 @@ def _rewrite_ite_shared_leaf(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
     return None
 
 
+def _rewrite_ite_same_cond_nested(
+    expr: TacExpr, _ctx: RewriteCtx
+) -> TacExpr | None:
+    """Prune a nested Ite that re-tests the outer's exact condition.
+
+    * ``Ite(c, X, Ite(c, Y, Z))`` -> ``Ite(c, X, Z)`` — the inner is
+      reached only when ``c`` is false, so its then-arm is dead.
+    * ``Ite(c, Ite(c, X, Y), Z)`` -> ``Ite(c, X, Z)`` — symmetric.
+
+    Type-agnostic and unconditionally sound (propositional: the inner
+    test's outcome is fixed by the path that reaches it). Conditions
+    compare by exact expression equality. Motivating case: the SBF
+    saturating-sub lowering emits ``R = if TB { f } else { (if TB
+    { 0 } else { 1 }) }`` — the else-arm's re-test is constant 1.
+    """
+    if not _is_ite(expr):
+        return None
+    assert isinstance(expr, ApplyExpr)
+    cond, then, els = expr.args
+    if _is_ite(els):
+        assert isinstance(els, ApplyExpr)
+        c2, _then2, els2 = els.args
+        if c2 == cond:
+            return ApplyExpr("Ite", (cond, then, els2))
+    if _is_ite(then):
+        assert isinstance(then, ApplyExpr)
+        c2, then2, _els2 = then.args
+        if c2 == cond:
+            return ApplyExpr("Ite", (cond, then2, els))
+    return None
+
+
 def _rewrite_ite_bool(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
     """Collapse Ite whose branches include a ``true`` / ``false`` literal."""
     if not _is_ite(expr):
@@ -781,6 +813,14 @@ ITE_SAME = Rule(
     name="IteSame",
     fn=_rewrite_ite_same,
     description="Ite(c, X, X) -> X.",
+)
+ITE_SAME_COND_NESTED = Rule(
+    name="IteSameCondNested",
+    fn=_rewrite_ite_same_cond_nested,
+    description=(
+        "Prune a nested Ite re-testing the outer's condition: "
+        "Ite(c, X, Ite(c, Y, Z)) -> Ite(c, X, Z) and symmetric."
+    ),
 )
 ITE_SHARED_LEAF = Rule(
     name="IteSharedLeaf",
