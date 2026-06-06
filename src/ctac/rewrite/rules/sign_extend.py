@@ -52,6 +52,8 @@ analysis pins the condition (e.g., ``x < 2^(w-1)`` known).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 from ctac.rewrite.context import RewriteCtx
@@ -132,28 +134,72 @@ SIGN_EXTEND_UNWRAP = Rule(
 
 
 # NEG_S64_ZERO_TEST: the SBF saturating-sub lowering tests "is the
-# negated i64 value zero" through a full sign-domain round trip::
+# negated i<w> value zero" through a full sign-domain round trip
+# (w in {64, 128, 256}; the i64 instance shown)::
 #
 #     y = Mod(x, 2^64)
 #     f = Ite(Lt(y, 2^63), y, IntSub(y, 2^64))        # from_s64(y)
 #     Eq(Ite(Eq(y, 2^63), x, wrap_256(IntMul(-1, f))), 0)
 #
-# Given y = x mod 2^64, the whole test is equivalent to ``Eq(y, 0)``:
+# Given y = x mod 2^w, the whole test is equivalent to ``Eq(y, 0)``:
 #
-# - Guard false (y != 2^63): f = from_s64(y) lies in (-2^63, 2^63)
-#   and is a bijective image of y there, so f == 0 iff y == 0;
-#   negation preserves zero-ness, and wrap_256 of a value v with
-#   |v| < 2^63 < 2^256 is 0 iff v == 0. Arm == 0 iff y == 0.
-# - Guard true (y == 2^63): the arm tests x == 0, but x mod 2^64 ==
-#   2^63 != 0 forces x != 0 — the test is false, and so is y == 0.
+# - Guard false (y != 2^(w-1)): f = from_s<w>(y) lies in
+#   (-2^(w-1), 2^(w-1)) and is a bijective image of y there, so
+#   f == 0 iff y == 0; negation preserves zero-ness, and wrap_256 of
+#   a value v with |v| < 2^(w-1) <= 2^255 < 2^256 is 0 iff v == 0.
+#   Arm == 0 iff y == 0.
+# - Guard true (y == 2^(w-1)): the arm tests x == 0, but x mod 2^w ==
+#   2^(w-1) != 0 forces x != 0 — the test is false, and so is y == 0.
 #
-# The rewrite drops the from_s64 / wrap chain from the live cone,
+# The rewrite drops the from_s<w> / wrap chain from the live cone,
 # keeping the zero-test in the bv domain where downstream Ite/bool
 # rules and the LIA core can use it.
 
 _WRAP_NAME = "wrap_twos_complement_256:bif"
-_TWO_63 = 1 << 63
-_TWO_64 = 1 << 64
+
+
+@dataclass(frozen=True)
+class _Width:
+    """Constants of one signed-chunk width ``w``: the sign-bit
+    threshold ``2^(w-1)``, the modulus ``2^w``, and the w->256
+    sign-extension offset ``2^256 - 2^w`` (zero at w == 256)."""
+
+    bits: int
+    half: int
+    full: int
+    half_const: ConstExpr
+    full_const: ConstExpr
+    sign_ext_value: int
+    sign_ext_const: ConstExpr
+
+
+def _mk_width(bits: int) -> _Width:
+    half = 1 << (bits - 1)
+    full = 1 << bits
+    sign_ext_value = (1 << 256) - full
+    return _Width(
+        bits=bits,
+        half=half,
+        full=full,
+        half_const=ConstExpr(f"0x{half:x}"),
+        full_const=ConstExpr(f"0x{full:x}"),
+        sign_ext_value=sign_ext_value,
+        sign_ext_const=ConstExpr(f"0x{sign_ext_value:x}"),
+    )
+
+
+# Common SBF/EVM signed widths only -- no arbitrary-width machinery.
+# Halves (2^63, 2^127, 2^255) and fulls (2^64, 2^128, 2^256) are
+# pairwise disjoint, so width detection from a constant is
+# unambiguous.
+_WIDTHS = tuple(_mk_width(b) for b in (64, 128, 256))
+_WIDTH_BY_HALF = {w.half: w for w in _WIDTHS}
+_WIDTH_BY_FULL = {w.full: w for w in _WIDTHS}
+# The sign-extension emit family (NEG_S64_DOUBLE's output and its
+# consumers) excludes w == 256: the offset degenerates to 0 and the
+# ``z <= 2^(w-1)`` arm is no longer all-positive in bv256, breaking
+# the band derivations.
+_SIGN_EXT_WIDTHS = tuple(w for w in _WIDTHS if w.bits < 256)
 
 
 def _eq_other_side(expr: TacExpr, value: int) -> TacExpr | None:
@@ -179,14 +225,26 @@ def _canon_sym(expr: TacExpr) -> str | None:
     return None
 
 
-def _match_from_s64(e: TacExpr, ctx: RewriteCtx) -> SymbolRef | None:
-    """The from_s64 reinterpretation
-    ``Ite(Lt(y, 2^63), y, IntSub(y, 2^64))``; returns ``y``."""
+def _match_from_s(
+    e: TacExpr, ctx: RewriteCtx
+) -> tuple[SymbolRef, _Width] | None:
+    """The from_s<w> reinterpretation
+    ``Ite(Lt(y, 2^(w-1)), y, IntSub(y, 2^w))``; returns ``(y, w)``."""
     if not (isinstance(e, ApplyExpr) and e.op == "Ite" and len(e.args) == 3):
         return None
     cond, then_arm, else_arm = e.args
     y_name = _canon_sym(then_arm)
     if y_name is None:
+        return None
+    if not (
+        isinstance(else_arm, ApplyExpr)
+        and else_arm.op == "IntSub"
+        and len(else_arm.args) == 2
+        and _canon_sym(else_arm.args[0]) == y_name
+    ):
+        return None
+    width = _WIDTH_BY_FULL.get(const_to_int(else_arm.args[1]))
+    if width is None:
         return None
     cond_in = ctx.lookthrough(cond)
     if not (
@@ -194,28 +252,42 @@ def _match_from_s64(e: TacExpr, ctx: RewriteCtx) -> SymbolRef | None:
         and cond_in.op == "Lt"
         and len(cond_in.args) == 2
         and _canon_sym(cond_in.args[0]) == y_name
-        and const_to_int(cond_in.args[1]) == _TWO_63
-    ):
-        return None
-    if not (
-        isinstance(else_arm, ApplyExpr)
-        and else_arm.op == "IntSub"
-        and len(else_arm.args) == 2
-        and _canon_sym(else_arm.args[0]) == y_name
-        and const_to_int(else_arm.args[1]) == _TWO_64
+        and const_to_int(cond_in.args[1]) == width.half
     ):
         return None
     assert isinstance(then_arm, SymbolRef)
-    return then_arm
+    return then_arm, width
+
+
+def _eq_half_other_side(
+    expr: TacExpr,
+) -> tuple[TacExpr, _Width] | None:
+    """``Eq(a, b)`` with one side the sign-bit threshold ``2^(w-1)``
+    of a supported width (either orientation): return the other side
+    and the width."""
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op == "Eq"
+        and len(expr.args) == 2
+    ):
+        return None
+    a, b = expr.args
+    width = _WIDTH_BY_HALF.get(const_to_int(b))
+    if width is not None:
+        return a, width
+    width = _WIDTH_BY_HALF.get(const_to_int(a))
+    if width is not None:
+        return b, width
+    return None
 
 
 def _match_gadget_shape(
     host: TacExpr, ctx: RewriteCtx
-) -> tuple[SymbolRef, TacExpr] | None:
+) -> tuple[SymbolRef, TacExpr, _Width] | None:
     """Structural match of the negation gadget
-    ``Ite(Eq(y, 2^63), x, wrap_256(IntMul(-1, from_s64(y))))``,
+    ``Ite(Eq(y, 2^(w-1)), x, wrap_256(IntMul(-1, from_s<w>(y))))``,
     WITHOUT the chunk relation tying ``x`` to ``y`` (callers add
-    their own evidence). Returns ``(y, x)``."""
+    their own evidence). Returns ``(y, x, w)``."""
     if not (
         isinstance(host, ApplyExpr)
         and host.op == "Ite"
@@ -227,9 +299,10 @@ def _match_gadget_shape(
     if x_name is None:
         return None
 
-    y = _eq_other_side(ctx.lookthrough(g), _TWO_63)
-    if y is None:
+    edge = _eq_half_other_side(ctx.lookthrough(g))
+    if edge is None:
         return None
+    y, width = edge
     y_name = _canon_sym(y)
     if y_name is None:
         return None
@@ -256,25 +329,33 @@ def _match_gadget_shape(
     else:
         return None
 
-    f_y = _match_from_s64(ctx.lookthrough(f), ctx)
-    if f_y is None or canonical_symbol(f_y.name) != y_name:
+    f_match = _match_from_s(ctx.lookthrough(f), ctx)
+    if f_match is None:
+        return None
+    f_y, f_width = f_match
+    if canonical_symbol(f_y.name) != y_name or f_width is not width:
         return None
 
     assert isinstance(y, SymbolRef)
-    return y, x
+    return y, x, width
 
 
-def _chunk_evidence(y: SymbolRef, x: TacExpr, ctx: RewriteCtx) -> bool:
-    """Evidence for the chunk relation ``y = x mod 2^64``: either the
+def _chunk_evidence(
+    y: SymbolRef, x: TacExpr, ctx: RewriteCtx, width: _Width
+) -> bool:
+    """Evidence for the chunk relation ``y = x mod 2^w``: either the
     guard arm IS y (the value being negated is already a low chunk;
-    y = y mod 2^64 needs range to prove y < 2^64), or the guard-arm
+    y = y mod 2^w needs range to prove y < 2^w), or the guard-arm
     symbol x is the wide source y was extracted from."""
     x_name = _canon_sym(x)
     y_name = canonical_symbol(y.name)
     if x_name == y_name:
         rng = infer_expr_range(y, ctx)
         return not (
-            rng is None or rng[1] is None or rng[1] >= _TWO_64 or rng[0] < 0
+            rng is None
+            or rng[1] is None
+            or rng[1] >= width.full
+            or rng[0] < 0
         )
     y_def = ctx.lookthrough(y)
     return (
@@ -282,21 +363,21 @@ def _chunk_evidence(y: SymbolRef, x: TacExpr, ctx: RewriteCtx) -> bool:
         and y_def.op in {"Mod", "IntMod"}
         and len(y_def.args) == 2
         and _canon_sym(y_def.args[0]) == x_name
-        and const_to_int(y_def.args[1]) == _TWO_64
+        and const_to_int(y_def.args[1]) == width.full
     )
 
 
-def _match_neg_s64_gadget(
+def _match_neg_gadget(
     host: TacExpr, ctx: RewriteCtx
-) -> tuple[SymbolRef, TacExpr] | None:
-    """Shape plus chunk evidence. Returns ``(y, x)``."""
+) -> tuple[SymbolRef, TacExpr, _Width] | None:
+    """Shape plus chunk evidence. Returns ``(y, x, w)``."""
     match = _match_gadget_shape(host, ctx)
     if match is None:
         return None
-    y, x = match
-    if not _chunk_evidence(y, x, ctx):
+    y, x, width = match
+    if not _chunk_evidence(y, x, ctx, width):
         return None
-    return y, x
+    return y, x, width
 
 
 def _rewrite_neg_s64_zero_test(
@@ -305,10 +386,10 @@ def _rewrite_neg_s64_zero_test(
     e = _eq_other_side(expr, 0)
     if e is None:
         return None
-    match = _match_neg_s64_gadget(ctx.lookthrough(e), ctx)
+    match = _match_neg_gadget(ctx.lookthrough(e), ctx)
     if match is None:
         return None
-    y, _x = match
+    y, _x, _width = match
     return ApplyExpr("Eq", (y, ConstExpr("0x0")))
 
 
@@ -316,10 +397,11 @@ NEG_S64_ZERO_TEST = Rule(
     name="NegS64ZeroTest",
     fn=_rewrite_neg_s64_zero_test,
     description=(
-        "Collapse Eq(Ite(Eq(y, 2^63), x, wrap_256(IntMul(-1, "
-        "from_s64(y)))), 0) to Eq(y, 0) when y = Mod(x, 2^64). The "
-        "saturating-sub 'negated i64 is zero' test; the sign-domain "
-        "round trip preserves zero-ness exactly."
+        "Collapse Eq(Ite(Eq(y, 2^(w-1)), x, wrap_256(IntMul(-1, "
+        "from_s<w>(y)))), 0) to Eq(y, 0) when y = Mod(x, 2^w), "
+        "w in {64, 128, 256}. The saturating-sub 'negated i<w> is "
+        "zero' test; the sign-domain round trip preserves zero-ness "
+        "exactly."
     ),
 )
 
@@ -468,55 +550,59 @@ WRAP_COMPARE_LIFT = Rule(
 
 
 # NEG_S64_LOW_CHUNK / NEG_S64_SIGN_TEST: the remaining consumers of
-# the negation gadget n = Ite(Eq(y, 2^63), x, wrap_256(-from_s64(y))).
+# the width-w negation gadget
+# n = Ite(Eq(y, 2^(w-1)), x, wrap_256(-from_s<w>(y))).
 #
-# Low chunk -- ``Mod(n, 2^64)``. Both gadget arms agree on the value
-# ``(2^64 - y) mod 2^64`` (the wrapped two's-complement negation of
+# Low chunk -- ``Mod(n, 2^w)``. Both gadget arms agree on the value
+# ``(2^w - y) mod 2^w`` (the wrapped two's-complement negation of
 # the chunk):
 #
-# - edge arm (y == 2^63): x mod 2^64 = y = 2^63 = 2^64 - 2^63;
-# - else arm: wrap(-from_s64(y)) mod 2^64 = (-y) mod 2^64, because
-#   2^64 divides 2^256 and from_s64(y) is congruent to y mod 2^64.
+# - edge arm (y == 2^(w-1)): x mod 2^w = y = 2^(w-1) = 2^w - 2^(w-1);
+# - else arm: wrap(-from_s<w>(y)) mod 2^w = (-y) mod 2^w, because
+#   2^w divides 2^256 and from_s<w>(y) is congruent to y mod 2^w.
 #
-# Emitted as ``Ite(Eq(y, 0), 0, Sub(2^64, y))`` -- linear arms, no
+# Emitted as ``Ite(Eq(y, 0), 0, Sub(2^w, y))`` -- linear arms, no
 # sign-domain residue. No range gate on x is needed (everything
-# passes through mod 2^64).
+# passes through mod 2^w).
 #
 # Sign test -- ``Slt(n, 0)`` (bv256 signed-negative, i.e. n >= 2^255):
 #
 # - edge arm: n = x, and the gate range(x) < 2^255 forces false;
-# - else arm: wrap(v) >= 2^255 with v = -from_s64(y) in (-2^63, 2^63]
-#   holds iff v < 0 iff from_s64(y) > 0 iff 0 < y < 2^63.
+# - else arm: wrap(v) >= 2^255 with v = -from_s<w>(y) in
+#   (-2^(w-1), 2^(w-1)) holds iff v < 0 iff from_s<w>(y) > 0 iff
+#   0 < y < 2^(w-1)  (for v >= 0, v < 2^(w-1) <= 2^255; for v < 0,
+#   wrap(v) = 2^256 + v > 2^256 - 2^(w-1) >= 2^255 -- both bounds
+#   hold at every supported width including 256).
 #
-# So ``Slt(n, 0) <=> 0 < y && y < 2^63`` and the non-negative dual
-# ``Sle(0, n) <=> y == 0 || y >= 2^63``. Gate: range(x) < 2^255 (the
-# edge arm passes x through verbatim; without the bound, x's sign bit
-# could be set while the predicate on y says "non-negative").
+# So ``Slt(n, 0) <=> 0 < y && y < 2^(w-1)`` and the non-negative dual
+# ``Sle(0, n) <=> y == 0 || y >= 2^(w-1)``. Gate: range(x) < 2^255
+# (the edge arm passes x through verbatim; without the bound, x's
+# sign bit could be set while the predicate on y says "non-negative").
 
 _TWO_255 = 1 << 255
-_TWO_63_CONST = ConstExpr("0x8000000000000000")
-_TWO_64_CONST = ConstExpr("0x10000000000000000")
 
 
-def _chunk_expr_of(e: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
-    """The 2^64-chunk of ``e`` in closed form, when ``e`` is built
-    from the negation gadget: the gadget itself (chunk is
-    ``(-y) mod 2^64``), a bv ``Add`` of the gadget and a constant
-    carry ``c`` in (0, 2^64) (chunk is ``(c - y) mod 2^64`` — Add
-    wraps mod 2^256 and 2^64 divides 2^256), or an ``Ite`` whose
+def _chunk_expr_of(
+    e: TacExpr, ctx: RewriteCtx, width: _Width
+) -> TacExpr | None:
+    """The 2^w-chunk of ``e`` in closed form, when ``e`` is built
+    from the width-w negation gadget: the gadget itself (chunk is
+    ``(-y) mod 2^w``), a bv ``Add`` of the gadget and a constant
+    carry ``c`` in (0, 2^w) (chunk is ``(c - y) mod 2^w`` — Add
+    wraps mod 2^256 and 2^w divides 2^256), or an ``Ite`` whose
     arms both reduce (the carry-select shape ``Ite(B0, n, n + 1)``).
     None when the shape isn't covered — the caller abstains."""
     e_in = ctx.lookthrough(e)
-    match = _match_neg_s64_gadget(e_in, ctx)
-    if match is not None:
-        y, _x = match
-        # (-y) mod 2^64 = Ite(y == 0, 0, 2^64 - y).
+    match = _match_neg_gadget(e_in, ctx)
+    if match is not None and match[2] is width:
+        y, _x, _w = match
+        # (-y) mod 2^w = Ite(y == 0, 0, 2^w - y).
         return ApplyExpr(
             "Ite",
             (
                 ApplyExpr("Eq", (y, ConstExpr("0x0"))),
                 ConstExpr("0x0"),
-                ApplyExpr("Sub", (_TWO_64_CONST, y)),
+                ApplyExpr("Sub", (width.full_const, y)),
             ),
         )
     if isinstance(e_in, ApplyExpr) and e_in.op == "Add" and len(e_in.args) == 2:
@@ -524,17 +610,17 @@ def _chunk_expr_of(e: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
         c = const_to_int(b)
         if c is None:
             c, a = const_to_int(a), b
-        if c is None or c <= 0 or c >= _TWO_64:
+        if c is None or c <= 0 or c >= width.full:
             return None
-        match = _match_neg_s64_gadget(ctx.lookthrough(a), ctx)
-        if match is None:
+        match = _match_neg_gadget(ctx.lookthrough(a), ctx)
+        if match is None or match[2] is not width:
             return None
-        y, _x = match
-        # (c - y) mod 2^64 = Ite(y <= c, c - y, 2^64 + c - y);
-        # neither Sub wraps (y <= c on the left, y < 2^64 <= 2^64 + c
+        y, _x, _w = match
+        # (c - y) mod 2^w = Ite(y <= c, c - y, 2^w + c - y);
+        # neither Sub wraps (y <= c on the left, y < 2^w <= 2^w + c
         # on the right).
         c_const = ConstExpr(f"0x{c:x}")
-        high_const = ConstExpr(f"0x{_TWO_64 + c:x}")
+        high_const = ConstExpr(f"0x{width.full + c:x}")
         return ApplyExpr(
             "Ite",
             (
@@ -545,10 +631,10 @@ def _chunk_expr_of(e: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
         )
     if isinstance(e_in, ApplyExpr) and e_in.op == "Ite" and len(e_in.args) == 3:
         guard, then_arm, else_arm = e_in.args
-        then_chunk = _chunk_expr_of(then_arm, ctx)
+        then_chunk = _chunk_expr_of(then_arm, ctx, width)
         if then_chunk is None:
             return None
-        else_chunk = _chunk_expr_of(else_arm, ctx)
+        else_chunk = _chunk_expr_of(else_arm, ctx, width)
         if else_chunk is None:
             return None
         return ApplyExpr("Ite", (guard, then_chunk, else_chunk))
@@ -562,10 +648,12 @@ def _rewrite_neg_s64_low_chunk(
         isinstance(expr, ApplyExpr)
         and expr.op == "Mod"
         and len(expr.args) == 2
-        and const_to_int(expr.args[1]) == _TWO_64
     ):
         return None
-    return _chunk_expr_of(expr.args[0], ctx)
+    width = _WIDTH_BY_FULL.get(const_to_int(expr.args[1]))
+    if width is None:
+        return None
+    return _chunk_expr_of(expr.args[0], ctx, width)
 
 
 def _rewrite_neg_s64_sign_test(
@@ -590,23 +678,23 @@ def _rewrite_neg_s64_sign_test(
         return None
     if rel is None:
         return None
-    match = _match_neg_s64_gadget(ctx.lookthrough(n), ctx)
+    match = _match_neg_gadget(ctx.lookthrough(n), ctx)
     if match is None:
         return None
-    y, x = match
+    y, x, width = match
     rng = infer_expr_range(x, ctx)
     if rng is None or rng[1] is None or rng[1] >= _TWO_255 or rng[0] < 0:
         return None
-    # The gadget value is negative iff 0 < y < 2^63, zero iff y == 0
-    # (the zero-test lemma), positive iff y >= 2^63 (the edge arm
-    # passes x = y under the range gate).
+    # The gadget value is negative iff 0 < y < 2^(w-1), zero iff
+    # y == 0 (the zero-test lemma), positive iff y >= 2^(w-1) (the
+    # edge arm passes x = y under the range gate).
     zero = ConstExpr("0x0")
     if rel == "lt":
         return ApplyExpr(
             "LAnd",
             (
                 ApplyExpr("Lt", (zero, y)),
-                ApplyExpr("Lt", (y, _TWO_63_CONST)),
+                ApplyExpr("Lt", (y, width.half_const)),
             ),
         )
     if rel == "ge":
@@ -614,21 +702,22 @@ def _rewrite_neg_s64_sign_test(
             "LOr",
             (
                 ApplyExpr("Eq", (y, zero)),
-                ApplyExpr("Ge", (y, _TWO_63_CONST)),
+                ApplyExpr("Ge", (y, width.half_const)),
             ),
         )
     if rel == "gt":
-        return ApplyExpr("Ge", (y, _TWO_63_CONST))
-    return ApplyExpr("Lt", (y, _TWO_63_CONST))
+        return ApplyExpr("Ge", (y, width.half_const))
+    return ApplyExpr("Lt", (y, width.half_const))
 
 
 NEG_S64_LOW_CHUNK = Rule(
     name="NegS64LowChunk",
     fn=_rewrite_neg_s64_low_chunk,
     description=(
-        "Mod(neg_s64_gadget(x), 2^64) -> Ite(Eq(y, 0), 0, "
-        "Sub(2^64, y)): both gadget arms agree on the wrapped "
-        "two's-complement negation of the chunk."
+        "Mod(neg_gadget(x), 2^w) -> Ite(Eq(y, 0), 0, "
+        "Sub(2^w, y)): both gadget arms agree on the wrapped "
+        "two's-complement negation of the chunk (w in "
+        "{64, 128, 256})."
     ),
 )
 
@@ -636,7 +725,7 @@ NEG_S64_SIGN_TEST = Rule(
     name="NegS64SignTest",
     fn=_rewrite_neg_s64_sign_test,
     description=(
-        "Slt(neg_s64_gadget(x), 0) -> 0 < y && y < 2^63 (and the "
+        "Slt(neg_gadget(x), 0) -> 0 < y && y < 2^(w-1) (and the "
         "Sle/Sgt/Sge duals), gated on range(x) < 2^255 for the "
         "pass-through edge arm."
     ),
@@ -645,52 +734,52 @@ NEG_S64_SIGN_TEST = Rule(
 
 # NEG_S64_DOUBLE: the negation gadget applied to its own output --
 # the abs lowering negates the already-negated low limb to recover
-# the magnitude. With L the original chunk and y' = (-L) mod 2^64
-# the negated one, the outer gadget value is, case by case:
+# the magnitude. With L the original chunk and y' = (-L) mod 2^w
+# the negated one, the outer gadget value is, case by case (h =
+# 2^(w-1), f = 2^w):
 #
-# - L == 0:            y' = 0,  wrap(-from_s64(0)) = 0 = L
-# - L in (0, 2^63):    y' = 2^64 - L in (2^63, 2^64),
-#                      from_s64(y') = -L, wrap(L) = L
-# - L == 2^63:         y' = 2^63, edge arm passes x' = inner edge
-#                      value = L (gated below)
-# - L in (2^63, 2^64): y' = 2^64 - L in (0, 2^63),
-#                      wrap(L - 2^64) = 2^256 + L - 2^64
+# - L == 0:        y' = 0,  wrap(-from_s<w>(0)) = 0 = L
+# - L in (0, h):   y' = f - L in (h, f),
+#                  from_s<w>(y') = -L, wrap(L) = L
+# - L == h:        y' = h, edge arm passes x' = inner edge
+#                  value = L (gated below)
+# - L in (h, f):   y' = f - L in (0, h),
+#                  wrap(L - f) = 2^256 + L - f
 #
-# i.e. the 64->256-bit sign extension of L, except the i64::MIN
-# pattern (L = 2^63) stays unextended:
+# i.e. the w->256-bit sign extension of L, except the iw::MIN
+# pattern (L = 2^(w-1)) stays unextended:
 #
-#     Ite(Le(L, 2^63), L, Add(L, 2^256 - 2^64))
+#     Ite(Le(L, 2^(w-1)), L, Add(L, 2^256 - 2^w))
 #
 # Two evidence forms tie the outer chunk y' to the inner gadget:
-# the standard chunk relation (y' def still Mod(x', 2^64)), or y'
+# the standard chunk relation (y' def still Mod(x', 2^w)), or y'
 # def already rewritten by NEG_S64_LOW_CHUNK to its emit shape
-# Ite(Eq(L, 0), 0, Sub(2^64, L)) over the same L. The edge arm
+# Ite(Eq(L, 0), 0, Sub(2^w, L)) over the same L. The edge arm
 # additionally needs the inner pass-through x to BE the chunk
-# (x == L, or range < 2^64 which pins x = L given x mod 2^64 = L).
+# (x == L, or range < 2^w which pins x = L given x mod 2^w = L).
+# Inner and outer gadgets must agree on the width.
 #
 # Carry composition (the high-limb un-borrow): the outer gadget's
 # input is x' = n1 + c with n1 the inner gadget and c a 0/1 carry
 # (conditional ``Ite(g, n1, n1 + 1)`` or unconditional ``n1 + 1``).
-# Then y' = (c - y2) mod 2^64 and the value is the sign extension of
-# z = (-y') mod 2^64 = (y2 - c) mod 2^64, uniformly:
+# Then y' = (c - y2) mod 2^w and the value is the sign extension of
+# z = (-y') mod 2^w = (y2 - c) mod 2^w, uniformly:
 #
-# - off-edge: wrap(-from_s64(y')) is the s256 encoding of -from_s64
-#   of the negated chunk -- the same bijection argument as the plain
-#   case, with z in place of L.
-# - outer edge (y' == 2^63), carry branch: y2 = 2^63 + 1, the inner
-#   gadget is off ITS edge, n1 = wrap(-from_s64(2^63+1)) = 2^63 - 1,
-#   x' = 2^63 = z exactly (no inner gate needed on this branch).
-# - outer edge, no-carry branch: y2 = 2^63, inner at its edge,
-#   x' = x_inner -- pinned to 2^63 by the inner edge gate.
-
-_SIGN_EXT_CONST = ConstExpr(f"0x{(1 << 256) - (1 << 64):x}")
+# - off-edge: wrap(-from_s<w>(y')) is the s256 encoding of
+#   -from_s<w> of the negated chunk -- the same bijection argument
+#   as the plain case, with z in place of L.
+# - outer edge (y' == h), carry branch: y2 = h + 1, the inner
+#   gadget is off ITS edge, n1 = wrap(-from_s<w>(h+1)) = h - 1,
+#   x' = h = z exactly (no inner gate needed on this branch).
+# - outer edge, no-carry branch: y2 = h, inner at its edge,
+#   x' = x_inner -- pinned to h by the inner edge gate.
 
 
 def _match_low_chunk_shape(
-    e: TacExpr, ctx: RewriteCtx
+    e: TacExpr, ctx: RewriteCtx, width: _Width
 ) -> SymbolRef | None:
     """NEG_S64_LOW_CHUNK's emit shape ``Ite(Eq(y, 0), 0,
-    Sub(2^64, y))``; returns ``y``."""
+    Sub(2^w, y))`` at the given width; returns ``y``."""
     if not (isinstance(e, ApplyExpr) and e.op == "Ite" and len(e.args) == 3):
         return None
     g, t, el = e.args
@@ -703,7 +792,7 @@ def _match_low_chunk_shape(
         isinstance(el, ApplyExpr)
         and el.op == "Sub"
         and len(el.args) == 2
-        and const_to_int(el.args[0]) == _TWO_64
+        and const_to_int(el.args[0]) == width.full
         and _canon_sym(el.args[1]) == canonical_symbol(y.name)
     ):
         return None
@@ -711,28 +800,28 @@ def _match_low_chunk_shape(
 
 
 def _inner_edge_gate(
-    x_inner: TacExpr, y2_name: str, ctx: RewriteCtx
+    x_inner: TacExpr, y2_name: str, ctx: RewriteCtx, width: _Width
 ) -> bool:
     """The inner gadget's pass-through arm must BE the chunk at the
-    edge: x == y2, or range(x) <= 2^64. The bound may include 2^64
-    itself -- the edge condition x mod 2^64 == 2^63 rules it out, so
-    any x <= 2^64 with that chunk is exactly 2^63 (the carry sum
-    R2549 + 1 reaches 2^64, which the strict bound rejected)."""
+    edge: x == y2, or range(x) <= 2^w. The bound may include 2^w
+    itself -- the edge condition x mod 2^w == 2^(w-1) rules it out,
+    so any x <= 2^w with that chunk is exactly 2^(w-1) (the carry
+    sum R2549 + 1 reaches 2^w, which the strict bound rejected)."""
     if _canon_sym(x_inner) == y2_name:
         return True
     rng = infer_expr_range(x_inner, ctx)
     return not (
-        rng is None or rng[1] is None or rng[1] > _TWO_64 or rng[0] < 0
+        rng is None or rng[1] is None or rng[1] > width.full or rng[0] < 0
     )
 
 
 def _match_carry_of_gadget(
     e: TacExpr, ctx: RewriteCtx
-) -> tuple[TacExpr | None, SymbolRef, TacExpr] | None:
+) -> tuple[TacExpr | None, SymbolRef, TacExpr, _Width] | None:
     """The carry composition over the inner gadget:
     ``Ite(g, n1, Add(n1, 1))`` (conditional un-borrow) or
     ``Add(n1, 1)`` (unconditional), with ``n1`` the inner negation
-    gadget. Returns ``(g_or_None, y2, x_inner)``."""
+    gadget. Returns ``(g_or_None, y2, x_inner, w)``."""
     g: TacExpr | None = None
     n1: TacExpr | None = None
     if isinstance(e, ApplyExpr) and e.op == "Ite" and len(e.args) == 3:
@@ -760,18 +849,18 @@ def _match_carry_of_gadget(
             return None
     else:
         return None
-    inner = _match_neg_s64_gadget(ctx.lookthrough(n1), ctx)
+    inner = _match_neg_gadget(ctx.lookthrough(n1), ctx)
     if inner is None:
         return None
-    y2, x_inner = inner
-    return g, y2, x_inner
+    y2, x_inner, width = inner
+    return g, y2, x_inner, width
 
 
 def _match_carry_chunk_shape(
-    e: TacExpr, ctx: RewriteCtx, y2_name: str
+    e: TacExpr, ctx: RewriteCtx, y2_name: str, width: _Width
 ) -> bool:
     """NEG_S64_LOW_CHUNK's carry emit ``Ite(Le(y2, 1), Sub(1, y2),
-    Sub(2^64 + 1, y2))`` over the given chunk."""
+    Sub(2^w + 1, y2))`` over the given chunk."""
     if not (isinstance(e, ApplyExpr) and e.op == "Ite" and len(e.args) == 3):
         return False
     g, t, el = e.args
@@ -796,80 +885,86 @@ def _match_carry_chunk_shape(
         isinstance(el, ApplyExpr)
         and el.op == "Sub"
         and len(el.args) == 2
-        and const_to_int(el.args[0]) == _TWO_64 + 1
+        and const_to_int(el.args[0]) == width.full + 1
         and _canon_sym(el.args[1]) == y2_name
     )
 
 
 def _match_carry_chunk_emit(
-    e: TacExpr, ctx: RewriteCtx, y2_name: str, g: TacExpr | None
+    e: TacExpr,
+    ctx: RewriteCtx,
+    y2_name: str,
+    g: TacExpr | None,
+    width: _Width,
 ) -> bool:
     """The chunk-expression emit matching the carry composition: for a
     conditional carry, ``Ite(g', plain_chunk(y2), carry_chunk(y2))``
     with ``g'`` the same condition; for an unconditional one, the
     carry-chunk shape alone."""
     if g is None:
-        return _match_carry_chunk_shape(e, ctx, y2_name)
+        return _match_carry_chunk_shape(e, ctx, y2_name, width)
     if not (isinstance(e, ApplyExpr) and e.op == "Ite" and len(e.args) == 3):
         return False
     g2, t, el = e.args
     if not eq_modulo_meta(g2, g):
         return False
-    lc = _match_low_chunk_shape(t, ctx)
+    lc = _match_low_chunk_shape(t, ctx, width)
     if lc is None or canonical_symbol(lc.name) != y2_name:
         return False
-    return _match_carry_chunk_shape(el, ctx, y2_name)
+    return _match_carry_chunk_shape(el, ctx, y2_name, width)
 
 
 def _rewrite_neg_s64_double(
     expr: TacExpr, ctx: RewriteCtx
 ) -> TacExpr | None:
     shape = _match_gadget_shape(expr, ctx)
-    if shape is None:
+    if shape is None or shape[2].bits >= 256:
         return None
-    y_outer, x_outer = shape
+    y_outer, x_outer, width = shape
     x_lt = ctx.lookthrough(x_outer)
-    inner = _match_neg_s64_gadget(x_lt, ctx)
-    if inner is not None:
-        y2, x_inner = inner
+    inner = _match_neg_gadget(x_lt, ctx)
+    if inner is not None and inner[2] is width:
+        y2, x_inner, _w = inner
         y2_name = canonical_symbol(y2.name)
-        if not _chunk_evidence(y_outer, x_outer, ctx):
-            lc = _match_low_chunk_shape(ctx.lookthrough(y_outer), ctx)
+        if not _chunk_evidence(y_outer, x_outer, ctx, width):
+            lc = _match_low_chunk_shape(
+                ctx.lookthrough(y_outer), ctx, width
+            )
             if lc is None or canonical_symbol(lc.name) != y2_name:
                 return None
-        if not _inner_edge_gate(x_inner, y2_name, ctx):
+        if not _inner_edge_gate(x_inner, y2_name, ctx, width):
             return None
         return ApplyExpr(
             "Ite",
             (
-                ApplyExpr("Le", (y2, _TWO_63_CONST)),
+                ApplyExpr("Le", (y2, width.half_const)),
                 y2,
-                ApplyExpr("Add", (y2, _SIGN_EXT_CONST)),
+                ApplyExpr("Add", (y2, width.sign_ext_const)),
             ),
         )
     # Carry composition (the high-limb un-borrow): x' = n1 + carry
     # with n1 the inner gadget. The value is the sign extension of
-    # z = (-y') mod 2^64, uniformly across both carry polarities --
+    # z = (-y') mod 2^w, uniformly across both carry polarities --
     # the inner structure makes the outer edge arm land on exactly
     # z (per-branch case analysis in the module comment below; the
     # z3-gated lemma checks the whole domain).
     decomp = _match_carry_of_gadget(x_lt, ctx)
-    if decomp is None:
+    if decomp is None or decomp[3] is not width:
         return None
-    g, y2, x_inner = decomp
+    g, y2, x_inner, _w = decomp
     y2_name = canonical_symbol(y2.name)
-    if not _inner_edge_gate(x_inner, y2_name, ctx):
+    if not _inner_edge_gate(x_inner, y2_name, ctx, width):
         return None
-    if not _chunk_evidence(y_outer, x_outer, ctx):
+    if not _chunk_evidence(y_outer, x_outer, ctx, width):
         if not _match_carry_chunk_emit(
-            ctx.lookthrough(y_outer), ctx, y2_name, g
+            ctx.lookthrough(y_outer), ctx, y2_name, g, width
         ):
             return None
-    # signext((-y') mod 2^64), nested on y' directly so the Ite/Add
-    # distribution rules leave it alone: y' == 0 -> 0; y' >= 2^63 ->
-    # z = 2^64 - y' (the positive band, z <= 2^63); else the negative
-    # band z + (2^256 - 2^64).
-    sub = ApplyExpr("Sub", (_TWO_64_CONST, y_outer))
+    # signext((-y') mod 2^w), nested on y' directly so the Ite/Add
+    # distribution rules leave it alone: y' == 0 -> 0; y' >= 2^(w-1)
+    # -> z = 2^w - y' (the positive band, z <= 2^(w-1)); else the
+    # negative band z + (2^256 - 2^w).
+    sub = ApplyExpr("Sub", (width.full_const, y_outer))
     return ApplyExpr(
         "Ite",
         (
@@ -878,9 +973,9 @@ def _rewrite_neg_s64_double(
             ApplyExpr(
                 "Ite",
                 (
-                    ApplyExpr("Ge", (y_outer, _TWO_63_CONST)),
+                    ApplyExpr("Ge", (y_outer, width.half_const)),
                     sub,
-                    ApplyExpr("Add", (sub, _SIGN_EXT_CONST)),
+                    ApplyExpr("Add", (sub, width.sign_ext_const)),
                 ),
             ),
         ),
@@ -891,10 +986,10 @@ NEG_S64_DOUBLE = Rule(
     name="NegS64Double",
     fn=_rewrite_neg_s64_double,
     description=(
-        "neg_s64_gadget(neg_s64_gadget(L)) -> Ite(Le(L, 2^63), L, "
-        "Add(L, 2^256 - 2^64)): the abs lowering's double negation "
-        "is the 64->256 sign extension of the chunk, with the "
-        "i64::MIN pattern unextended."
+        "neg_gadget(neg_gadget(L)) -> Ite(Le(L, 2^(w-1)), L, "
+        "Add(L, 2^256 - 2^w)): the abs lowering's double negation "
+        "is the w->256 sign extension of the chunk (w in {64, 128}), "
+        "with the iw::MIN pattern unextended."
     ),
 )
 
@@ -941,10 +1036,10 @@ SIGNED_CMP_NEG_ONE = Rule(
 )
 
 
-# FROM_S64_ZERO_TEST: the bare from_s64 zero test, without the wrap
-# round trip -- ``Eq(Ite(Lt(y, 2^63), y, IntSub(y, 2^64)), 0)``.
-# from_s64 maps y to y (then arm) or y - 2^64 (else arm); the result
-# is 0 iff y == 0 or y == 2^64, and the range gate y < 2^64 excludes
+# FROM_S64_ZERO_TEST: the bare from_s<w> zero test, without the wrap
+# round trip -- ``Eq(Ite(Lt(y, 2^(w-1)), y, IntSub(y, 2^w)), 0)``.
+# from_s<w> maps y to y (then arm) or y - 2^w (else arm); the result
+# is 0 iff y == 0 or y == 2^w, and the range gate y < 2^w excludes
 # the latter. The no-overflow assumes of the i128 negation carry
 # several of these deep inside their Ite trees.
 
@@ -955,11 +1050,12 @@ def _rewrite_from_s64_zero_test(
     e = _eq_other_side(expr, 0)
     if e is None:
         return None
-    y = _match_from_s64(ctx.lookthrough(e), ctx)
-    if y is None:
+    match = _match_from_s(ctx.lookthrough(e), ctx)
+    if match is None:
         return None
+    y, width = match
     rng = infer_expr_range(y, ctx)
-    if rng is None or rng[1] is None or rng[1] >= _TWO_64 or rng[0] < 0:
+    if rng is None or rng[1] is None or rng[1] >= width.full or rng[0] < 0:
         return None
     return ApplyExpr("Eq", (y, ConstExpr("0x0")))
 
@@ -968,48 +1064,47 @@ FROM_S64_ZERO_TEST = Rule(
     name="FromS64ZeroTest",
     fn=_rewrite_from_s64_zero_test,
     description=(
-        "Eq(from_s64(y), 0) -> Eq(y, 0) when range proves y < 2^64 "
-        "(from_s64 hits zero only at y == 0 or the excluded y == 2^64)."
+        "Eq(from_s<w>(y), 0) -> Eq(y, 0) when range proves y < 2^w "
+        "(from_s<w> hits zero only at y == 0 or the excluded y == 2^w)."
     ),
 )
 
 
 # SIGN_EXT_SIGN_TEST / SIGN_EXT_CMP_LIFT: consumers of the
-# NEG_S64_DOUBLE output shape
+# NEG_S64_DOUBLE output shape (w in {64, 128}; the 64-bit instance
+# shown)
 #
 #     signext(z) = Ite(Le(z, 2^63), z, Add(z, 2^256 - 2^64))
 #
 # with z ranged in [0, 2^64) (a chunk symbol, or the (-y') chunk Ite
 # whose arms are 0 and Sub(2^64, y') under the y' != 0 guard).
 #
-# Sign test: the then arm is <= 2^63 < 2^255; the else arm is
-# >= 2^256 - 2^64 + 2^63 (no Add wrap given z < 2^64), so
-# ``signext(z) <s 0  <=>  Gt(z, 2^63)`` and the dual for ``0 <=s``.
+# Sign test: the then arm is <= 2^(w-1) < 2^255; the else arm is
+# >= 2^256 - 2^w + 2^(w-1) (no Add wrap given z < 2^w), so
+# ``signext(z) <s 0  <=>  Gt(z, 2^(w-1))`` and the dual for ``0 <=s``.
 #
-# Unsigned compare against a constant c <= 2^256 - 2^64 + 2^63: the
-# else arm exceeds c, so ``Lt(signext(z), c) <=> Le(z, 2^63) &&
-# Lt(z, c)`` (bare ``Lt(z, c)`` when c <= 2^63), with the Le/Gt/Ge
-# and Eq (c <= 2^63 only) variants accordingly.
-
-_SIGN_EXT_VALUE = (1 << 256) - (1 << 64)
-_SIGN_EXT_CMP_MAX = _SIGN_EXT_VALUE + (1 << 63)
+# Unsigned compare against a constant c <= 2^256 - 2^w + 2^(w-1):
+# the else arm exceeds c, so ``Lt(signext(z), c) <=> Le(z, 2^(w-1))
+# && Lt(z, c)`` (bare ``Lt(z, c)`` when c <= 2^(w-1)), with the
+# Le/Gt/Ge and Eq (c <= 2^(w-1) only) variants accordingly.
 
 
 def _match_sign_ext(
     e: TacExpr, ctx: RewriteCtx
-) -> tuple[str, TacExpr] | None:
+) -> tuple[str, TacExpr, _Width] | None:
     """Match either NEG_S64_DOUBLE emit form; the descriptor drives
     the consumer rewrites:
 
-    - ``("sym", z)`` -- the plain form ``Ite(Le(z, 2^63), z,
-      Add(z, 2^256 - 2^64))`` with the value equal to signext(z).
-    - ``("negchunk", y)`` -- the carry form nested on the chunk:
-      ``Ite(Eq(y, 0), 0, Ite(Ge(y, 2^63), 2^64 - y,
-      Add(2^64 - y, 2^256 - 2^64)))`` with the value equal to
-      signext((-y) mod 2^64).
+    - ``("sym", z, w)`` -- the plain form ``Ite(Le(z, 2^(w-1)), z,
+      Add(z, 2^256 - 2^w))`` with the value equal to signext(z).
+    - ``("negchunk", y, w)`` -- the carry form nested on the chunk:
+      ``Ite(Eq(y, 0), 0, Ite(Ge(y, 2^(w-1)), 2^w - y,
+      Add(2^w - y, 2^256 - 2^w)))`` with the value equal to
+      signext((-y) mod 2^w).
 
-    Both gated on the parameter's range within [0, 2^64), so the
-    negative band has no Add wrap.
+    Both gated on the parameter's range within [0, 2^w), so the
+    negative band has no Add wrap. Widths below 256 only (the
+    offset degenerates at 256).
     """
     if not (isinstance(e, ApplyExpr) and e.op == "Ite" and len(e.args) == 3):
         return None
@@ -1020,17 +1115,21 @@ def _match_sign_ext(
         isinstance(cond_in, ApplyExpr)
         and cond_in.op == "Le"
         and len(cond_in.args) == 2
-        and const_to_int(cond_in.args[1]) == _TWO_63
         and eq_modulo_meta(t, cond_in.args[0])
         and isinstance(el, ApplyExpr)
         and el.op == "Add"
         and len(el.args) == 2
         and eq_modulo_meta(el.args[0], cond_in.args[0])
-        and const_to_int(el.args[1]) == _SIGN_EXT_VALUE
     ):
-        z = cond_in.args[0]
-        if _ranged_chunk(z, ctx):
-            return "sym", z
+        width = _WIDTH_BY_HALF.get(const_to_int(cond_in.args[1]))
+        if (
+            width is not None
+            and width.bits < 256
+            and const_to_int(el.args[1]) == width.sign_ext_value
+        ):
+            z = cond_in.args[0]
+            if _ranged_chunk(z, ctx, width):
+                return "sym", z, width
         return None
     # Carry form.
     y = _eq_other_side(cond_in, 0)
@@ -1043,35 +1142,40 @@ def _match_sign_ext(
     ):
         g2, pos, neg = el.args
         g2_in = ctx.lookthrough(g2)
+        if not (
+            isinstance(g2_in, ApplyExpr)
+            and g2_in.op == "Ge"
+            and len(g2_in.args) == 2
+            and eq_modulo_meta(g2_in.args[0], y)
+        ):
+            return None
+        width = _WIDTH_BY_HALF.get(const_to_int(g2_in.args[1]))
+        if width is None or width.bits >= 256:
+            return None
         sub_ok = (
             isinstance(pos, ApplyExpr)
             and pos.op == "Sub"
             and len(pos.args) == 2
-            and const_to_int(pos.args[0]) == _TWO_64
+            and const_to_int(pos.args[0]) == width.full
             and eq_modulo_meta(pos.args[1], y)
         )
         if (
             sub_ok
-            and isinstance(g2_in, ApplyExpr)
-            and g2_in.op == "Ge"
-            and len(g2_in.args) == 2
-            and eq_modulo_meta(g2_in.args[0], y)
-            and const_to_int(g2_in.args[1]) == _TWO_63
             and isinstance(neg, ApplyExpr)
             and neg.op == "Add"
             and len(neg.args) == 2
             and eq_modulo_meta(neg.args[0], pos)
-            and const_to_int(neg.args[1]) == _SIGN_EXT_VALUE
-            and _ranged_chunk(y, ctx)
+            and const_to_int(neg.args[1]) == width.sign_ext_value
+            and _ranged_chunk(y, ctx, width)
         ):
-            return "negchunk", y
+            return "negchunk", y, width
     return None
 
 
-def _ranged_chunk(z: TacExpr, ctx: RewriteCtx) -> bool:
-    """z in [0, 2^64): by interval inference, or structurally as a
+def _ranged_chunk(z: TacExpr, ctx: RewriteCtx, width: _Width) -> bool:
+    """z in [0, 2^w): by interval inference, or structurally as a
     member of the chunk-expression emit family -- each arm of those
-    Ites is in [0, 2^64) under its own guard (the carry arm
+    Ites is in [0, 2^w) under its own guard (the carry arm
     ``Sub(1, y2)`` wraps for unguarded interval eval, but the
     ``Le(y2, 1)`` guard pins it to {0, 1})."""
     rng = infer_expr_range(z, ctx)
@@ -1080,19 +1184,19 @@ def _ranged_chunk(z: TacExpr, ctx: RewriteCtx) -> bool:
         or rng[0] is None
         or rng[0] < 0
         or rng[1] is None
-        or rng[1] >= _TWO_64
+        or rng[1] >= width.full
     ):
         return True
-    return _is_chunk_emit(ctx.lookthrough(z), ctx)
+    return _is_chunk_emit(ctx.lookthrough(z), ctx, width)
 
 
-def _is_chunk_emit(e: TacExpr, ctx: RewriteCtx) -> bool:
-    if _match_low_chunk_shape(e, ctx) is not None:
+def _is_chunk_emit(e: TacExpr, ctx: RewriteCtx, width: _Width) -> bool:
+    if _match_low_chunk_shape(e, ctx, width) is not None:
         return True
     if isinstance(e, ApplyExpr) and e.op == "Ite" and len(e.args) == 3:
         g, t, el = e.args
         g_in = ctx.lookthrough(g)
-        # The carry shape Ite(Le(y2, 1), Sub(1, y2), Sub(2^64+1, y2)).
+        # The carry shape Ite(Le(y2, 1), Sub(1, y2), Sub(2^w+1, y2)).
         if (
             isinstance(g_in, ApplyExpr)
             and g_in.op == "Le"
@@ -1101,11 +1205,13 @@ def _is_chunk_emit(e: TacExpr, ctx: RewriteCtx) -> bool:
         ):
             y2_name = _canon_sym(g_in.args[0])
             if y2_name is not None and _match_carry_chunk_shape(
-                e, ctx, y2_name
+                e, ctx, y2_name, width
             ):
                 return True
         # A guard selecting between chunk emits.
-        return _is_chunk_emit(t, ctx) and _is_chunk_emit(el, ctx)
+        return _is_chunk_emit(t, ctx, width) and _is_chunk_emit(
+            el, ctx, width
+        )
     return False
 
 
@@ -1134,50 +1240,51 @@ def _rewrite_sign_ext_sign_test(
     match = _match_sign_ext(ctx.lookthrough(e), ctx)
     if match is None:
         return None
-    kind, w = match
+    kind, arg, width = match
+    half = width.half_const
     zero = ConstExpr("0x0")
     if kind == "sym":
-        # v = signext(z): negative <=> z > 2^63; zero <=> z == 0.
+        # v = signext(z): negative <=> z > 2^(w-1); zero <=> z == 0.
         if rel == "lt":
-            return ApplyExpr("Gt", (w, _TWO_63_CONST))
+            return ApplyExpr("Gt", (arg, half))
         if rel == "ge":
-            return ApplyExpr("Le", (w, _TWO_63_CONST))
+            return ApplyExpr("Le", (arg, half))
         if rel == "gt":
             return ApplyExpr(
                 "LAnd",
                 (
-                    ApplyExpr("Lt", (zero, w)),
-                    ApplyExpr("Le", (w, _TWO_63_CONST)),
+                    ApplyExpr("Lt", (zero, arg)),
+                    ApplyExpr("Le", (arg, half)),
                 ),
             )
         return ApplyExpr(
             "LOr",
             (
-                ApplyExpr("Eq", (w, zero)),
-                ApplyExpr("Gt", (w, _TWO_63_CONST)),
+                ApplyExpr("Eq", (arg, zero)),
+                ApplyExpr("Gt", (arg, half)),
             ),
         )
-    # negchunk: v = signext((-y) mod 2^64): negative <=> 0 < y < 2^63;
-    # zero <=> y == 0; positive <=> y >= 2^63.
+    # negchunk: v = signext((-y) mod 2^w): negative <=>
+    # 0 < y < 2^(w-1); zero <=> y == 0; positive <=> y >= 2^(w-1).
     if rel == "lt":
         return ApplyExpr(
             "LAnd",
             (
-                ApplyExpr("Lt", (zero, w)),
-                ApplyExpr("Lt", (w, _TWO_63_CONST)),
+                ApplyExpr("Lt", (zero, arg)),
+                ApplyExpr("Lt", (arg, half)),
             ),
         )
     if rel == "ge":
         return ApplyExpr(
             "LOr",
             (
-                ApplyExpr("Eq", (w, zero)),
-                ApplyExpr("Ge", (w, _TWO_63_CONST)),
+                ApplyExpr("Eq", (arg, zero)),
+                ApplyExpr("Ge", (arg, half)),
             ),
         )
     if rel == "gt":
-        return ApplyExpr("Ge", (w, _TWO_63_CONST))
-    return ApplyExpr("Lt", (w, _TWO_63_CONST))
+        return ApplyExpr("Ge", (arg, half))
+    return ApplyExpr("Lt", (arg, half))
 
 
 _SIGN_EXT_CMP_FLIP = {"Lt": "Gt", "Le": "Ge", "Gt": "Lt", "Ge": "Le", "Eq": "Eq"}
@@ -1200,53 +1307,57 @@ def _rewrite_sign_ext_cmp_lift(
         c = const_to_int(a)
         e, c_expr = b, a
         op = _SIGN_EXT_CMP_FLIP[op]
-    if c is None or c < 0 or c > _SIGN_EXT_CMP_MAX:
+    if c is None or c < 0:
         return None
     match = _match_sign_ext(ctx.lookthrough(e), ctx)
     if match is None:
         return None
-    kind, w = match
+    kind, arg, width = match
+    if c > width.sign_ext_value + width.half:
+        return None
     if kind == "sym":
-        return _cmp_lift_sym(op, w, c, c_expr)
-    return _cmp_lift_negchunk(op, w, c, c_expr)
+        return _cmp_lift_sym(op, arg, c, c_expr, width)
+    return _cmp_lift_negchunk(op, arg, c, c_expr, width)
 
 
 def _cmp_lift_sym(
-    op: str, z: TacExpr, c: int, c_expr: TacExpr
+    op: str, z: TacExpr, c: int, c_expr: TacExpr, width: _Width
 ) -> TacExpr | None:
-    le_cap = ApplyExpr("Le", (z, _TWO_63_CONST))
+    le_cap = ApplyExpr("Le", (z, width.half_const))
     if op in ("Lt", "Le"):
         cmp = ApplyExpr(op, (z, c_expr))
-        if c <= _TWO_63:
+        if c <= width.half:
             return cmp
         return ApplyExpr("LAnd", (le_cap, cmp))
     if op in ("Gt", "Ge"):
-        # c <= 2^63: the negative band (z > 2^63) already exceeds c,
-        # and there z > c / z >= c holds too -- the bare predicate
-        # covers both bands. c > 2^63: only the negative band.
-        if c <= _TWO_63:
+        # c <= 2^(w-1): the negative band (z > 2^(w-1)) already
+        # exceeds c, and there z > c / z >= c holds too -- the bare
+        # predicate covers both bands. c > 2^(w-1): only the
+        # negative band.
+        if c <= width.half:
             return ApplyExpr(op, (z, c_expr))
-        return ApplyExpr("Gt", (z, _TWO_63_CONST))
-    if c <= _TWO_63:
+        return ApplyExpr("Gt", (z, width.half_const))
+    if c <= width.half:
         return ApplyExpr("Eq", (z, c_expr))
     return None
 
 
 def _cmp_lift_negchunk(
-    op: str, y: TacExpr, c: int, c_expr: TacExpr
+    op: str, y: TacExpr, c: int, c_expr: TacExpr, width: _Width
 ) -> TacExpr | None:
-    """Value = signext((-y) mod 2^64): 0 at y == 0; 2^64 - y (the
-    positive band, <= 2^63) for y >= 2^63; huge (negative band) for
-    0 < y < 2^63. Comparisons against c become band predicates."""
+    """Value = signext((-y) mod 2^w): 0 at y == 0; 2^w - y (the
+    positive band, <= 2^(w-1)) for y >= 2^(w-1); huge (negative
+    band) for 0 < y < 2^(w-1). Comparisons against c become band
+    predicates."""
     is_zero = ApplyExpr("Eq", (y, ConstExpr("0x0")))
-    pos_band = ApplyExpr("Ge", (y, _TWO_63_CONST))
+    pos_band = ApplyExpr("Ge", (y, width.half_const))
     if op in ("Lt", "Le"):
-        if c <= _TWO_63:
+        if c <= width.half:
             if op == "Lt" and c == 0:
                 return None  # nothing is < 0
             # value <= c <=> y == 0, or positive band with
-            # 2^64 - y <= c i.e. y >= 2^64 - c (>= 2^63 implied).
-            bound = _TWO_64 - c
+            # 2^w - y <= c i.e. y >= 2^w - c (>= 2^(w-1) implied).
+            bound = width.full - c
             inner_op = "Ge" if op == "Le" else "Gt"
             return ApplyExpr(
                 "LOr",
@@ -1257,14 +1368,14 @@ def _cmp_lift_negchunk(
                     ),
                 ),
             )
-        # Mid band: every positive-band value (<= 2^63) passes,
+        # Mid band: every positive-band value (<= 2^(w-1)) passes,
         # the negative band fails.
         return ApplyExpr("LOr", (is_zero, pos_band))
     if op in ("Gt", "Ge"):
-        if c <= _TWO_63:
+        if c <= width.half:
             # Negative band always passes; positive band needs
-            # 2^64 - y >= c i.e. y <= 2^64 - c; y == 0 gives 0.
-            bound = _TWO_64 - c
+            # 2^w - y >= c i.e. y <= 2^w - c; y == 0 gives 0.
+            bound = width.full - c
             inner_op = "Le" if op == "Ge" else "Lt"
             in_band = ApplyExpr(
                 "LAnd",
@@ -1277,7 +1388,7 @@ def _cmp_lift_negchunk(
                 "LAnd",
                 (
                     ApplyExpr("Lt", (ConstExpr("0x0"), y)),
-                    ApplyExpr("Lt", (y, _TWO_63_CONST)),
+                    ApplyExpr("Lt", (y, width.half_const)),
                 ),
             )
             if c == 0:
@@ -1291,14 +1402,14 @@ def _cmp_lift_negchunk(
             "LAnd",
             (
                 ApplyExpr("Lt", (ConstExpr("0x0"), y)),
-                ApplyExpr("Lt", (y, _TWO_63_CONST)),
+                ApplyExpr("Lt", (y, width.half_const)),
             ),
         )
     # Eq.
     if c == 0:
         return is_zero
-    if c <= _TWO_63:
-        return ApplyExpr("Eq", (y, ConstExpr(f"0x{_TWO_64 - c:x}")))
+    if c <= width.half:
+        return ApplyExpr("Eq", (y, ConstExpr(f"0x{width.full - c:x}")))
     return None
 
 
@@ -1306,9 +1417,9 @@ SIGN_EXT_SIGN_TEST = Rule(
     name="SignExtSignTest",
     fn=_rewrite_sign_ext_sign_test,
     description=(
-        "Slt(signext(z), 0) -> Gt(z, 2^63) (and the Sle/Sgt/Sge "
+        "Slt(signext(z), 0) -> Gt(z, 2^(w-1)) (and the Sle/Sgt/Sge "
         "duals) over the NEG_S64_DOUBLE output shape, gated on "
-        "z in [0, 2^64)."
+        "z in [0, 2^w)."
     ),
 )
 

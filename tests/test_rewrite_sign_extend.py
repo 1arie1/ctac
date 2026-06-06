@@ -347,18 +347,20 @@ def test_neg_s64_zero_test_requires_neg_one_factor():
 
 
 @pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
-def test_neg_s64_zero_test_lemma_via_z3():
-    """The closed-form lemma behind the rule: for x in [0, 2^256) and
-    y = x mod 2^64, the round-tripped zero test equals Eq(y, 0)."""
-    two_63 = 1 << 63
-    two_64 = 1 << 64
+@pytest.mark.parametrize("w", [64, 128, 256])
+def test_neg_s64_zero_test_lemma_via_z3(w):
+    """The closed-form lemma behind the rule, at every supported
+    width: for x in [0, 2^256) and y = x mod 2^w, the round-tripped
+    zero test equals Eq(y, 0)."""
+    two_h = 1 << (w - 1)
+    two_w = 1 << w
     two_256 = 1 << 256
     script = f"""(set-logic QF_NIA)
 (declare-const x Int)
-(define-fun y () Int (mod x {two_64}))
-(define-fun f () Int (ite (< y {two_63}) y (- y {two_64})))
+(define-fun y () Int (mod x {two_w}))
+(define-fun f () Int (ite (< y {two_h}) y (- y {two_w})))
 (define-fun w () Int (mod (- 0 f) {two_256}))
-(define-fun lhs () Int (ite (= y {two_63}) x w))
+(define-fun lhs () Int (ite (= y {two_h}) x w))
 (assert (and (<= 0 x) (< x {two_256})))
 (assert (not (= (= lhs 0) (= y 0))))
 (check-sat)
@@ -648,23 +650,25 @@ def test_neg_s64_sign_test_unbounded_source_no_fire():
 
 
 @pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
-def test_neg_s64_consumers_lemma_via_z3():
+@pytest.mark.parametrize("w", [64, 128, 256])
+def test_neg_s64_consumers_lemma_via_z3(w):
     """Closed-form lemmas for the low-chunk and sign-test rewrites
-    over the full gadget, x in [0, 2^255), y = x mod 2^64."""
-    two_63 = 1 << 63
-    two_64 = 1 << 64
+    over the full gadget at every supported width, x in [0, 2^255),
+    y = x mod 2^w."""
+    two_h = 1 << (w - 1)
+    two_w = 1 << w
     two_255 = 1 << 255
     two_256 = 1 << 256
     script = f"""(set-logic QF_NIA)
 (declare-const x Int)
-(define-fun y () Int (mod x {two_64}))
-(define-fun f () Int (ite (< y {two_63}) y (- y {two_64})))
+(define-fun y () Int (mod x {two_w}))
+(define-fun f () Int (ite (< y {two_h}) y (- y {two_w})))
 (define-fun w () Int (mod (- 0 f) {two_256}))
-(define-fun n () Int (ite (= y {two_63}) x w))
+(define-fun n () Int (ite (= y {two_h}) x w))
 (assert (and (<= 0 x) (< x {two_255})))
 (assert (not (and
-  (= (mod n {two_64}) (ite (= y 0) 0 (- {two_64} y)))
-  (= (>= n {two_255}) (and (< 0 y) (< y {two_63}))))))
+  (= (mod n {two_w}) (ite (= y 0) 0 (- {two_w} y)))
+  (= (>= n {two_255}) (and (< 0 y) (< y {two_h}))))))
 (check-sat)
 """
     proc = subprocess.run(
@@ -793,25 +797,26 @@ def test_neg_s64_double_fires_after_low_chunk_rewrote_link():
 
 
 @pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
-def test_neg_s64_carry_and_double_lemma_via_z3():
+@pytest.mark.parametrize("w", [64, 128])
+def test_neg_s64_carry_and_double_lemma_via_z3(w):
     """Closed-form lemmas: the carry chunk (c = 1) and the double
-    negation, over the full gadget with x in [0, 2^64) (the x == y
+    negation, over the full gadget with x in [0, 2^w) (the x == y
     chunk-evidence regime both rules accept)."""
-    two_63 = 1 << 63
-    two_64 = 1 << 64
+    two_h = 1 << (w - 1)
+    two_w = 1 << w
     two_256 = 1 << 256
-    sign_ext = two_256 - two_64
+    sign_ext = two_256 - two_w
     script = f"""(set-logic QF_NIA)
 (declare-const L Int)
-(define-fun f () Int (ite (< L {two_63}) L (- L {two_64})))
-(define-fun n () Int (ite (= L {two_63}) L (mod (- 0 f) {two_256})))
-(define-fun yp () Int (mod n {two_64}))
-(define-fun f2 () Int (ite (< yp {two_63}) yp (- yp {two_64})))
-(define-fun n2 () Int (ite (= yp {two_63}) n (mod (- 0 f2) {two_256})))
-(assert (and (<= 0 L) (< L {two_64})))
+(define-fun f () Int (ite (< L {two_h}) L (- L {two_w})))
+(define-fun n () Int (ite (= L {two_h}) L (mod (- 0 f) {two_256})))
+(define-fun yp () Int (mod n {two_w}))
+(define-fun f2 () Int (ite (< yp {two_h}) yp (- yp {two_w})))
+(define-fun n2 () Int (ite (= yp {two_h}) n (mod (- 0 f2) {two_256})))
+(assert (and (<= 0 L) (< L {two_w})))
 (assert (not (and
-  (= (mod (+ n 1) {two_64}) (ite (<= L 1) (- 1 L) (- {two_64 + 1} L)))
-  (= n2 (ite (<= L {two_63}) L (+ L {sign_ext}))))))
+  (= (mod (+ n 1) {two_w}) (ite (<= L 1) (- 1 L) (- {two_w + 1} L)))
+  (= n2 (ite (<= L {two_h}) L (+ L {sign_ext}))))))
 (check-sat)
 """
     proc = subprocess.run(
@@ -924,14 +929,15 @@ def test_from_s64_zero_test_requires_chunk_range():
 
 
 @pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
-def test_from_s64_zero_test_lemma_via_z3():
-    """For y in [0, 2^64): from_s64(y) == 0 iff y == 0."""
-    two_63 = 1 << 63
-    two_64 = 1 << 64
+@pytest.mark.parametrize("w", [64, 128, 256])
+def test_from_s64_zero_test_lemma_via_z3(w):
+    """For y in [0, 2^w): from_s<w>(y) == 0 iff y == 0."""
+    two_h = 1 << (w - 1)
+    two_w = 1 << w
     script = f"""(set-logic QF_NIA)
 (declare-const y Int)
-(define-fun f () Int (ite (< y {two_63}) y (- y {two_64})))
-(assert (and (<= 0 y) (< y {two_64})))
+(define-fun f () Int (ite (< y {two_h}) y (- y {two_w})))
+(assert (and (<= 0 y) (< y {two_w})))
 (assert (not (= (= f 0) (= y 0))))
 (check-sat)
 """
@@ -1007,28 +1013,29 @@ def test_neg_s64_double_carry_wrong_const_no_fire():
 
 
 @pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
-def test_neg_s64_double_carry_lemma_via_z3():
-    """Full-domain lemma for the carry composition: x1 in [0, 2^64),
+@pytest.mark.parametrize("w", [64, 128])
+def test_neg_s64_double_carry_lemma_via_z3(w):
+    """Full-domain lemma for the carry composition: x1 in [0, 2^w),
     carry g in {0, 1} -- the doubled gadget with un-borrow equals the
-    sign extension of z = (-y2) mod 2^64."""
-    two_63 = 1 << 63
-    two_64 = 1 << 64
+    sign extension of z = (-y2) mod 2^w."""
+    two_h = 1 << (w - 1)
+    two_w = 1 << w
     two_256 = 1 << 256
-    sign_ext = two_256 - two_64
+    sign_ext = two_256 - two_w
     script = f"""(set-logic QF_NIA)
 (declare-const x1 Int)
 (declare-const g Int)
-(assert (and (<= 0 x1) (< x1 {two_64})))
+(assert (and (<= 0 x1) (< x1 {two_w})))
 (assert (or (= g 0) (= g 1)))
-(define-fun y1 () Int (mod x1 {two_64}))
-(define-fun f1 () Int (ite (< y1 {two_63}) y1 (- y1 {two_64})))
-(define-fun n1 () Int (ite (= y1 {two_63}) x1 (mod (- 0 f1) {two_256})))
+(define-fun y1 () Int (mod x1 {two_w}))
+(define-fun f1 () Int (ite (< y1 {two_h}) y1 (- y1 {two_w})))
+(define-fun n1 () Int (ite (= y1 {two_h}) x1 (mod (- 0 f1) {two_256})))
 (define-fun x2 () Int (mod (+ n1 g) {two_256}))
-(define-fun y2 () Int (mod x2 {two_64}))
-(define-fun f2 () Int (ite (< y2 {two_63}) y2 (- y2 {two_64})))
-(define-fun r () Int (ite (= y2 {two_63}) x2 (mod (- 0 f2) {two_256})))
-(define-fun z () Int (mod (- 0 y2) {two_64}))
-(assert (not (= r (ite (<= z {two_63}) z (+ z {sign_ext})))))
+(define-fun y2 () Int (mod x2 {two_w}))
+(define-fun f2 () Int (ite (< y2 {two_h}) y2 (- y2 {two_w})))
+(define-fun r () Int (ite (= y2 {two_h}) x2 (mod (- 0 f2) {two_256})))
+(define-fun z () Int (mod (- 0 y2) {two_w}))
+(assert (not (= r (ite (<= z {two_h}) z (+ z {sign_ext})))))
 (check-sat)
 """
     proc = subprocess.run(
@@ -1111,35 +1118,36 @@ def test_sign_ext_cmp_lift_mid_band():
 
 
 @pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
-def test_sign_ext_consumers_lemma_via_z3():
-    """Both emit forms, all consumer bands: for z in [0, 2^64) the
-    plain form's predicates over z, and for y in [0, 2^64) the
+@pytest.mark.parametrize("w", [64, 128])
+def test_sign_ext_consumers_lemma_via_z3(w):
+    """Both emit forms, all consumer bands: for z in [0, 2^w) the
+    plain form's predicates over z, and for y in [0, 2^w) the
     negchunk form's band predicates over y."""
-    two_63 = 1 << 63
-    two_64 = 1 << 64
+    two_h = 1 << (w - 1)
+    two_w = 1 << w
     two_255 = 1 << 255
-    sign_ext = (1 << 256) - two_64
-    c_low = 2**64 // 10100
-    c_mid = two_64 + 1
-    two_64_minus_c_low = two_64 - c_low
+    sign_ext = (1 << 256) - two_w
+    c_low = two_w // 10100
+    c_mid = two_w + 1
+    two_w_minus_c_low = two_w - c_low
     script = f"""(set-logic QF_NIA)
 (declare-const z Int)
 (declare-const y Int)
-(assert (and (<= 0 z) (< z {two_64})))
-(assert (and (<= 0 y) (< y {two_64})))
-(define-fun v () Int (ite (<= z {two_63}) z (+ z {sign_ext})))
+(assert (and (<= 0 z) (< z {two_w})))
+(assert (and (<= 0 y) (< y {two_w})))
+(define-fun v () Int (ite (<= z {two_h}) z (+ z {sign_ext})))
 (define-fun w () Int
   (ite (= y 0) 0
-    (ite (>= y {two_63}) (- {two_64} y) (+ (- {two_64} y) {sign_ext}))))
+    (ite (>= y {two_h}) (- {two_w} y) (+ (- {two_w} y) {sign_ext}))))
 (assert (not (and
-  (= (>= v {two_255}) (> z {two_63}))
+  (= (>= v {two_255}) (> z {two_h}))
   (= (<= v {c_low}) (<= z {c_low}))
-  (= (<= v {c_mid}) (and (<= z {two_63}) (<= z {c_mid})))
-  (= (>= v {c_mid}) (> z {two_63}))
-  (= (>= w {two_255}) (and (< 0 y) (< y {two_63})))
-  (= (<= w {c_low}) (or (= y 0) (>= y {two_64_minus_c_low})))
-  (= (<= w {c_mid}) (or (= y 0) (>= y {two_63})))
-  (= (= w 5) (= y {two_64 - 5})))))
+  (= (<= v {c_mid}) (and (<= z {two_h}) (<= z {c_mid})))
+  (= (>= v {c_mid}) (> z {two_h}))
+  (= (>= w {two_255}) (and (< 0 y) (< y {two_h})))
+  (= (<= w {c_low}) (or (= y 0) (>= y {two_w_minus_c_low})))
+  (= (<= w {c_mid}) (or (= y 0) (>= y {two_h})))
+  (= (= w 5) (= y {two_w - 5})))))
 (check-sat)
 """
     proc = subprocess.run(
@@ -1160,3 +1168,196 @@ def test_neg_s64_sign_test_strictly_positive():
     assert res.hits_by_rule.get("NegS64SignTest") == 1
     rhs = _rhs_of(res, "TB")
     assert isinstance(rhs, ApplyExpr) and rhs.op == "Ge"
+
+
+# ---------------------------------------------------------------------------
+# Width-128 instantiation (the gadget family is width-generic)
+# ---------------------------------------------------------------------------
+
+_H128 = f"0x{1 << 127:x}"
+_F128 = f"0x{1 << 128:x}"
+
+_GADGET_BODY_128 = (
+    "\t\tAssignHavocCmd X\n"
+    f"\t\tAssignExpCmd Y Mod(X {_F128})\n"
+    f"\t\tAssignExpCmd TBC Lt(Y {_H128})\n"
+    f"\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y {_F128}(int))))\n"
+    f"\t\tAssignExpCmd TBG Eq(Y {_H128})\n"
+    "\t\tAssignExpCmd RZ Ite(TBG X Apply(wrap_twos_complement_256:bif I))\n"
+)
+
+_GADGET_BODY_128_BOUNDED = _GADGET_BODY_128.replace(
+    "\t\tAssignExpCmd Y", f"\t\tAssumeExpCmd Le(X {_F128})\n\t\tAssignExpCmd Y", 1
+)
+
+
+def test_neg_s128_zero_test_fires():
+    """The block-236_1 family: the i128 negation's zero test collapses
+    to Eq(Y, 0) exactly like the 64-bit instance."""
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{_GADGET_BODY_128}"
+            "\t\tAssignExpCmd TB Eq(RZ 0x0)\n\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64ZeroTest") == 1
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "Eq", (SymbolRef("Y"), ConstExpr("0x0"))
+    )
+
+
+def test_neg_s128_low_chunk_fires():
+    """Mod(gadget128, 2^128) -> Ite(Eq(Y, 0), 0, Sub(2^128, Y))."""
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{_GADGET_BODY_128}"
+            f"\t\tAssignExpCmd R2 Mod(RZ {_F128})\n\t}}\n",
+            syms=_NEG_SYMS + "\n\tR2:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_LOW_CHUNK,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64LowChunk") == 1
+    rhs = _rhs_of(res, "R2")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+    sub = rhs.args[2]
+    assert isinstance(sub, ApplyExpr) and sub.op == "Sub"
+    assert const_to_int(sub.args[0]) == 1 << 128
+
+
+def test_neg_s128_cross_width_chunk_no_fire():
+    """Mod(gadget128, 2^64) reads the LOW LIMB of the 128-bit value --
+    not the same-width chunk identity. The rule must abstain (limb
+    fusion is a separate, future composition)."""
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{_GADGET_BODY_128}"
+            "\t\tAssignExpCmd R2 Mod(RZ 0x10000000000000000)\n\t}\n",
+            syms=_NEG_SYMS + "\n\tR2:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_LOW_CHUNK,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64LowChunk", 0) == 0
+
+
+def test_neg_s128_cross_width_gadget_no_fire():
+    """A 2^127 edge guard over a from_s64 body is not a gadget at
+    either width: the width consistency check must reject it."""
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        f"\t\tAssignExpCmd Y Mod(X {_F128})\n"
+        "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+        "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+        f"\t\tAssignExpCmd TBG Eq(Y {_H128})\n"
+        "\t\tAssignExpCmd RZ Ite(TBG X Apply(wrap_twos_complement_256:bif I))\n"
+    )
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{body}"
+            "\t\tAssignExpCmd TB Eq(RZ 0x0)\n\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_ZERO_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64ZeroTest", 0) == 0
+
+
+def test_neg_s128_sign_test_fires():
+    """Slt(gadget128, 0) -> 0 < Y && Y < 2^127, same 2^255 gate on
+    the pass-through arm."""
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{_GADGET_BODY_128_BOUNDED}"
+            "\t\tAssignExpCmd TB Slt(RZ 0x0)\n\t}\n",
+            syms=_NEG_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_SIGN_TEST,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64SignTest") == 1
+    rhs = _rhs_of(res, "TB")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "LAnd"
+    assert const_to_int(rhs.args[1].args[1]) == 1 << 127
+
+
+_DOUBLE_BODY_128 = (
+    "\t\tAssignHavocCmd X\n"
+    f"\t\tAssignExpCmd Y Mod(X {_F128})\n"
+    f"\t\tAssignExpCmd TBC Lt(Y {_H128})\n"
+    f"\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y {_F128}(int))))\n"
+    f"\t\tAssignExpCmd TBG Eq(Y {_H128})\n"
+    "\t\tAssignExpCmd RZ Ite(TBG Y Apply(wrap_twos_complement_256:bif I))\n"
+    f"\t\tAssignExpCmd Y2 Mod(RZ {_F128})\n"
+    f"\t\tAssignExpCmd TBC2 Lt(Y2 {_H128})\n"
+    f"\t\tAssignExpCmd I2 IntMul(0x-1(int) Ite(TBC2 Y2 IntSub(Y2 {_F128}(int))))\n"
+    f"\t\tAssignExpCmd TBG2 Eq(Y2 {_H128})\n"
+    "\t\tAssignExpCmd R2 Ite(TBG2 RZ Apply(wrap_twos_complement_256:bif I2))\n"
+)
+
+
+def test_neg_s128_double_fires():
+    """Gadget-of-gadget at 128 collapses to the 128->256 sign
+    extension Ite with offset 2^256 - 2^128."""
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{_DOUBLE_BODY_128}\t}}\n",
+            syms=_DOUBLE_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_DOUBLE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64Double") == 1
+    rhs = _rhs_of(res, "R2")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+    cond, ident, ext = rhs.args
+    assert const_to_int(cond.args[1]) == 1 << 127
+    assert ident == SymbolRef("Y")
+    assert isinstance(ext, ApplyExpr) and ext.op == "Add"
+    assert const_to_int(ext.args[1]) == (1 << 256) - (1 << 128)
+
+
+def test_sign_ext_consumers_128():
+    """The sign-ext consumers track the 128 width: sign test bands at
+    2^127, low-band cmp lifts to the bare predicate on the chunk."""
+    base = _wrap(
+        f"\tBlock e Succ [] {{\n{_DOUBLE_BODY_128}"
+        "\t\tAssignExpCmd TB Slt(R2 0x0)\n\t}\n",
+        syms=_DOUBLE_SYMS + "\n\tTB:bool",
+    )
+    tac = parse_string(base, path="<s>")
+    res = rewrite_program(
+        tac.program,
+        (NEG_S64_DOUBLE, SIGN_EXT_SIGN_TEST),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("SignExtSignTest") == 1
+    rhs = _rhs_of(res, "TB")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Gt"
+    assert const_to_int(rhs.args[1]) == 1 << 127
+
+    tac = parse_string(base.replace("Slt(R2 0x0)", "Le(R2 0xa)"), path="<s>")
+    res = rewrite_program(
+        tac.program,
+        (NEG_S64_DOUBLE, SIGN_EXT_CMP_LIFT),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("SignExtCmpLift") == 1
+    rhs = _rhs_of(res, "TB")
+    assert rhs == ApplyExpr("Le", (SymbolRef("Y"), ConstExpr("0xa")))
