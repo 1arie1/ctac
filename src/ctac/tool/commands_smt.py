@@ -14,6 +14,7 @@ from ctac.analysis.symbols import canonical_symbol
 from ctac.parse import ParseError, parse_path
 from ctac.smt.encoding.path_skeleton import sanitize_ident
 from ctac.smt.runner import parse_z3_args, run_z3_solver
+from ctac.solver.z3 import resolve_z3_bin
 from ctac.smt import available_encodings, build_vc, render_smt_script
 from ctac.smt.z3_model import parse_z3_sat_output, z3_model_to_tac_model_text
 from ctac.tool.cli_runtime import (
@@ -100,9 +101,12 @@ def smt_cmd(
         help="Run Z3 on the generated SMT-LIB instance (--solve is an alias to disambiguate from `ctac run`).",
     ),
     z3_path: Annotated[
-        str,
-        typer.Option("--z3-path", help="Path to z3 executable (default: z3)."),
-    ] = "z3",
+        Optional[str],
+        typer.Option(
+            "--z3-path",
+            help="Path to z3 executable (else CTAC_Z3 env or $PATH).",
+        ),
+    ] = None,
     z3_args: Annotated[
         str,
         typer.Option("--z3-args", help="Extra options passed to z3 as a shell-like string."),
@@ -373,6 +377,15 @@ def smt_cmd(
     run_text = smt_text
     want_model = not unsat_core
     extra_args = parse_z3_args(z3_args)
+    # Same binary resolution as `ctac z3`: --z3-path, CTAC_Z3, $PATH.
+    # The venv ships its own (often older) z3; silently solving with
+    # it while the user pinned CTAC_Z3 makes verdicts and timings
+    # incomparable across the 4.16/4.17 perf cliff.
+    try:
+        resolved_z3 = str(resolve_z3_bin(z3_path))
+    except FileNotFoundError as e:
+        c.print(f"input error: {e}" if plain else f"[red]input error:[/red] {e}")
+        raise typer.Exit(1) from e
     replay_script_path: Path | None = None
     if debug:
         fd, tmp_name = tempfile.mkstemp(prefix="ctac-smt-z3-", suffix=".smt2")
@@ -384,7 +397,7 @@ def smt_cmd(
         if plain:
             z3_res = run_z3_solver(
                 smt_text=run_text,
-                z3_path=z3_path,
+                z3_path=resolved_z3,
                 timeout_seconds=timeout,
                 seed=seed,
                 tactic=tactic,
@@ -405,7 +418,7 @@ def smt_cmd(
 
                 z3_res = run_z3_solver(
                     smt_text=run_text,
-                    z3_path=z3_path,
+                    z3_path=resolved_z3,
                     timeout_seconds=timeout,
                     seed=seed,
                     tactic=tactic,
