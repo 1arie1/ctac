@@ -81,6 +81,7 @@ from ctac.rewrite.rules.ite import (
     ITE_SAME_COND_NESTED,
     ITE_SHARED_LEAF,
     ITE_ZERO_OR_SELF,
+    LAND_EQ_CONST_PRUNE,
     MUL_ZERO_ONE_FOLD,
     SUB_ITE_DIST_LEFT,
     SUB_ITE_DIST_RIGHT,
@@ -233,6 +234,9 @@ simplify_pipeline: tuple[Rule, ...] = (
     # below, which always emits an Ite; COND_FOLD collapses it when the
     # operand's range makes the condition decidable.
     ITE_COND_FOLD,
+    # LAnd with a pinning Eq(x, c) conjunct decides sibling
+    # const-comparisons (!(x == 0) && (x == 1) -> x == 1).
+    LAND_EQ_CONST_PRUNE,
     # Same evaluator, any expression position: comparisons inside
     # LAnd/LOr/assign RHS fold to bool literals when range decides
     # them (the vacuous `X >= 0` conjunct on bv-typed X).
@@ -434,6 +438,7 @@ all_rule_names: tuple[str, ...] = (
     AND_LIFT_EQ_DECREMENT.name,
     ITE_COND_FOLD.name,
     CMP_RANGE_FOLD.name,
+    LAND_EQ_CONST_PRUNE.name,
     BOOL_ABSORB.name,
     DE_MORGAN.name,
     MUL_BV_TO_INT.name,
@@ -499,6 +504,7 @@ __all__ = [
     "ITE_SAME_COND_NESTED",
     "ITE_SHARED_LEAF",
     "ITE_ZERO_OR_SELF",
+    "LAND_EQ_CONST_PRUNE",
     "MOD_IDENTITY_CP",
     "MOD_OVER_ITE",
     "MULDIV_TO_FULL_PRODUCT_DIV",

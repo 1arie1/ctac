@@ -899,3 +899,84 @@ def test_eq_ite_dist_recursive_will_fold():
             ApplyExpr("LNot", (SymbolRef("B2"),)),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# LAndEqConstPrune
+# ---------------------------------------------------------------------------
+
+
+def test_land_eq_const_prune_subsumed_conjunct():
+    """``!(X == 0) && (X == 1)`` -> ``X == 1``."""
+    from ctac.rewrite.rules import LAND_EQ_CONST_PRUNE
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssumeExpCmd LAnd(LNot(Eq(X 0x0)) Eq(X 0x1))",
+            syms="X:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (LAND_EQ_CONST_PRUNE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("LAndEqConstPrune") == 1
+    assert _assume_cond(res.program) == ApplyExpr(
+        "Eq", (SymbolRef("X"), ConstExpr("0x1"))
+    )
+
+
+def test_land_eq_const_prune_contradiction():
+    """``(X == 0) && (X == 1)`` -> ``false``."""
+    from ctac.rewrite.rules import LAND_EQ_CONST_PRUNE
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssumeExpCmd LAnd(Eq(X 0x0) Eq(X 0x1))",
+            syms="X:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (LAND_EQ_CONST_PRUNE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("LAndEqConstPrune") == 1
+    assert _assume_cond(res.program) == ConstExpr("false")
+
+
+def test_land_eq_const_prune_different_symbol_no_fire():
+    from ctac.rewrite.rules import LAND_EQ_CONST_PRUNE
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssumeExpCmd LAnd(LNot(Eq(Y 0x0)) Eq(X 0x1))",
+            syms="X:bv256\n\tY:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (LAND_EQ_CONST_PRUNE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("LAndEqConstPrune", 0) == 0
+
+
+def test_land_eq_const_prune_range_conjunct():
+    """``(X <= 5) && (X == 3)`` -> ``X == 3`` (Le decided under the
+    pin)."""
+    from ctac.rewrite.rules import LAND_EQ_CONST_PRUNE
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssumeExpCmd LAnd(Le(X 0x5) Eq(X 0x3))",
+            syms="X:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (LAND_EQ_CONST_PRUNE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("LAndEqConstPrune") == 1
+    assert _assume_cond(res.program) == ApplyExpr(
+        "Eq", (SymbolRef("X"), ConstExpr("0x3"))
+    )

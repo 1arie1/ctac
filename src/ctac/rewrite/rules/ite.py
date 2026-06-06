@@ -15,6 +15,7 @@ the driver's fixed-point loop composes them.
 
 from __future__ import annotations
 
+from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
@@ -798,6 +799,84 @@ def _decide_cmp(
     return None
 
 
+def _rewrite_land_eq_const_prune(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    """``LAnd`` with an ``Eq(x, c)`` conjunct decides sibling
+    const-comparisons over the same ``x``: ``!(x == 0) && (x == 1)``
+    -> ``x == 1``; ``(x == 0) && (x == 1)`` -> ``false``. The anchor
+    equality pins x, so the sibling evaluates by constant compare —
+    a propositional fact, cheap for the rw-eq CHK."""
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op == "LAnd"
+        and len(expr.args) == 2
+    ):
+        return None
+    for i, j in ((0, 1), (1, 0)):
+        anchor, sibling = expr.args[i], expr.args[j]
+        pin = _match_eq_sym_const(anchor)
+        if pin is None:
+            continue
+        x_name, c = pin
+        truth = _decide_under_pin(sibling, x_name, c)
+        if truth is True:
+            return anchor
+        if truth is False:
+            return _FALSE
+    return None
+
+
+def _match_eq_sym_const(e: TacExpr) -> tuple[str, int] | None:
+    if not (isinstance(e, ApplyExpr) and e.op == "Eq" and len(e.args) == 2):
+        return None
+    a, b = e.args
+    if isinstance(a, SymbolRef):
+        v = const_to_int(b)
+        if v is not None:
+            return canonical_symbol(a.name), v
+    if isinstance(b, SymbolRef):
+        v = const_to_int(a)
+        if v is not None:
+            return canonical_symbol(b.name), v
+    return None
+
+
+def _decide_under_pin(e: TacExpr, x_name: str, c: int) -> bool | None:
+    """Truth of ``e`` given ``x == c``, for const-comparison shapes
+    over the same canonical ``x`` (optionally LNot-wrapped)."""
+    neg = False
+    if isinstance(e, ApplyExpr) and e.op == "LNot" and len(e.args) == 1:
+        neg = True
+        e = e.args[0]
+    if not (
+        isinstance(e, ApplyExpr) and e.op in _CMP_OPS and len(e.args) == 2
+    ):
+        return None
+    a, b = e.args
+    if (
+        isinstance(a, SymbolRef)
+        and canonical_symbol(a.name) == x_name
+    ):
+        k = const_to_int(b)
+        if k is None:
+            return None
+        truth = _decide_cmp(e.op, (c, c), (k, k))
+    elif (
+        isinstance(b, SymbolRef)
+        and canonical_symbol(b.name) == x_name
+    ):
+        k = const_to_int(a)
+        if k is None:
+            return None
+        truth = _decide_cmp(e.op, (k, k), (c, c))
+    else:
+        return None
+    if truth is None:
+        return None
+    return truth != neg
+
+
 def _rewrite_ite_cond_fold(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     """``Ite(cond, then, else)`` -> ``then`` if range analysis proves ``cond``
     is always true, ``else`` if always false."""
@@ -972,6 +1051,14 @@ ITE_BOOL = Rule(
     name="IteBool",
     fn=_rewrite_ite_bool,
     description="Collapse Ite with true/false literal branches into bool ops.",
+)
+LAND_EQ_CONST_PRUNE = Rule(
+    name="LAndEqConstPrune",
+    fn=_rewrite_land_eq_const_prune,
+    description=(
+        "LAnd with an Eq(x, c) conjunct decides sibling "
+        "const-comparisons over the same x by constant compare."
+    ),
 )
 CMP_RANGE_FOLD = Rule(
     name="CmpRangeFold",
