@@ -61,6 +61,12 @@ def parse_expr(s: str) -> TacExpr:
         return ConstExpr(s)
     if s.startswith("("):
         raise ValueError("top-level expression should not start with '(' in TAC dumps")
+    # ``JSON{...}`` annotation payloads (the second arg of the EVM-side
+    # ``AnnotationExp(e, JSON{...})`` wrapper) are opaque metadata
+    # literals, not symbol references — as a SymbolRef they'd surface
+    # as phantom undefined symbols in use-before-def / def-use.
+    if s.startswith("JSON{"):
+        return ConstExpr(s)
     if "(" not in s:
         tok = s.split()[0] if s.split() else s
         if _is_const_token(tok) and len(s.split()) <= 1:

@@ -25,10 +25,17 @@ def iter_expr_symbols(expr: TacExpr, *, strip_var_suffixes: bool = True) -> Iter
         return
     if isinstance(expr, ApplyExpr):
         # TAC `Apply(fn, ...)` encodes function application where the first arg is function symbol.
-        # Known builtins are not dataflow variables and should be excluded from use-def.
+        # Function symbols are not dataflow variables and are excluded
+        # from use-def: any `:bif`-suffixed head is a builtin by the
+        # dump format itself (e.g. the EVM-side `to_skey:bif` /
+        # `skey_basic:bif`), known to ctac's registry or not.
         if expr.op == "Apply" and expr.args and isinstance(expr.args[0], SymbolRef):
             fn_sym = canonical_symbol(expr.args[0].name, strip_var_suffixes=strip_var_suffixes)
-            start = 1 if is_known_builtin_function_symbol(fn_sym) else 0
+            is_fn = (
+                is_known_builtin_function_symbol(fn_sym)
+                or expr.args[0].name.endswith(":bif")
+            )
+            start = 1 if is_fn else 0
             for arg in expr.args[start:]:
                 yield from iter_expr_symbols(arg, strip_var_suffixes=strip_var_suffixes)
             return
