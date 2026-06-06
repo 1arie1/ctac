@@ -753,3 +753,48 @@ def test_ite_different_cond_nested_untouched():
     rhs = _assign_rhs_of(res.program, "R")
     inner = rhs.args[2]
     assert isinstance(inner, ApplyExpr) and inner.op == "Ite"
+
+
+# ---------------------------------------------------------------------------
+# CmpRangeFold: range-decided comparisons fold anywhere
+# ---------------------------------------------------------------------------
+
+
+def test_cmp_range_fold_bv_nonneg_conjunct():
+    """``(X >= 0) && (X < 2^64)`` on bv-typed X: the first conjunct is
+    vacuous (bv sort pins the lower bound) and folds away."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssumeExpCmd LAnd(Ge(X 0x0) Lt(X 0x10000000000000000))",
+            syms="X:bv256",
+        ),
+        path="<s>",
+    )
+    from ctac.rewrite.rules import BOOL_ABSORB, CMP_RANGE_FOLD
+    res = rewrite_program(
+        tac.program, (CMP_RANGE_FOLD, BOOL_ABSORB),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("CmpRangeFold", 0) >= 1
+    cond = _assume_cond(res.program)
+    # LAnd(true, Lt) absorbed to the bare Lt.
+    assert isinstance(cond, ApplyExpr) and cond.op == "Lt"
+
+
+def test_cmp_range_fold_undecided_no_fire():
+    """X u64-bounded vs Lt(X, 2^32): undecided, no fold."""
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssumeExpCmd Le(X 0xffffffffffffffff)\n"
+            "\t\tAssumeExpCmd Lt(X 0x100000000)",
+            syms="X:bv256",
+        ),
+        path="<s>",
+    )
+    from ctac.rewrite.rules import CMP_RANGE_FOLD
+    res = rewrite_program(
+        tac.program, (CMP_RANGE_FOLD,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("CmpRangeFold", 0) == 0

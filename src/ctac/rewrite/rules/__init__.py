@@ -67,6 +67,7 @@ from ctac.rewrite.rules.ite import (
     ADD_SUB_ZERO_FOLD,
     ARITH_CONST_FOLD,
     BOOL_ABSORB,
+    CMP_RANGE_FOLD,
     DE_MORGAN,
     EQ_CONST_FOLD,
     EQ_ITE_DIST,
@@ -227,6 +228,10 @@ simplify_pipeline: tuple[Rule, ...] = (
     # below, which always emits an Ite; COND_FOLD collapses it when the
     # operand's range makes the condition decidable.
     ITE_COND_FOLD,
+    # Same evaluator, any expression position: comparisons inside
+    # LAnd/LOr/assign RHS fold to bool literals when range decides
+    # them (the vacuous `X >= 0` conjunct on bv-typed X).
+    CMP_RANGE_FOLD,
     BOOL_ABSORB,
     DE_MORGAN,
     # Range-safe narrowing: Mul/Add -> IntMul/IntAdd when interval
@@ -416,6 +421,7 @@ all_rule_names: tuple[str, ...] = (
     ITE_BOOL.name,
     AND_LIFT_EQ_DECREMENT.name,
     ITE_COND_FOLD.name,
+    CMP_RANGE_FOLD.name,
     BOOL_ABSORB.name,
     DE_MORGAN.name,
     MUL_BV_TO_INT.name,
@@ -461,6 +467,7 @@ __all__ = [
     "CHUNK_MERGE",
     "CHUNKED_MUL_BY_2N",
     "CHUNKED_U128_LT",
+    "CMP_RANGE_FOLD",
     "CP_ALIAS",
     "CSE",
     "DE_MORGAN",

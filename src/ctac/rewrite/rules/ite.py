@@ -677,6 +677,20 @@ def _eval_cmp_from_range(
     return None
 
 
+def _rewrite_cmp_range_fold(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
+    """Fold a comparison anywhere in an expression to ``true``/``false``
+    when range inference decides it (e.g. ``Ge(X, 0)`` on a bv-typed
+    ``X``, whose sort alone pins the lower bound). The Ite-cond-only
+    ``ITE_COND_FOLD`` below shares the evaluator; this rule reaches the
+    comparisons living inside ``LAnd``/``LOr``/assign RHS positions."""
+    truth = _eval_cmp_from_range(expr, ctx)
+    if truth is True:
+        return _TRUE
+    if truth is False:
+        return _FALSE
+    return None
+
+
 def _rewrite_ite_cond_fold(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     """``Ite(cond, then, else)`` -> ``then`` if range analysis proves ``cond``
     is always true, ``else`` if always false."""
@@ -851,6 +865,14 @@ ITE_BOOL = Rule(
     name="IteBool",
     fn=_rewrite_ite_bool,
     description="Collapse Ite with true/false literal branches into bool ops.",
+)
+CMP_RANGE_FOLD = Rule(
+    name="CmpRangeFold",
+    fn=_rewrite_cmp_range_fold,
+    description=(
+        "Fold any comparison that range inference decides "
+        "unambiguously to a bool literal, in any expression position."
+    ),
 )
 ITE_COND_FOLD = Rule(
     name="IteCondFold",
