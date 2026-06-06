@@ -1348,10 +1348,37 @@ def _emit_eq_assert_for_assume(
     ]
 
 
+def _flatten_land(e: TacExpr) -> list[TacExpr]:
+    if isinstance(e, ApplyExpr) and e.op == "LAnd":
+        out: list[TacExpr] = []
+        for a in e.args:
+            out.extend(_flatten_land(a))
+        return out
+    return [e]
+
+
+def _cond_matches(target: TacExpr, cand: TacExpr) -> bool:
+    """``cand`` counts as ``target`` for alignment: exact equality, or
+    ``cand``'s conjuncts are a (modulo-meta) subset of ``target``'s.
+    The subset case covers the rewriter folding a range-decided
+    conjunct out of an assume (``LAnd(Ge, Le)`` surviving as ``Ge``):
+    the residue is still the same assume for stream-alignment
+    purposes, and whatever CHK the realignment emits carries the
+    actual proof obligation."""
+    if cand == target:
+        return True
+    t = _flatten_land(target)
+    if len(t) <= 1:
+        return False
+    c = _flatten_land(cand)
+    return all(any(eq_modulo_meta(ci, ti) for ti in t) for ci in c)
+
+
 def _assume_ahead(
     cmds: list[TacCmd], i: int, condition: TacExpr, k: int = 8
 ) -> bool:
-    """True iff an ``AssumeExpCmd`` with exactly ``condition`` appears
+    """True iff an ``AssumeExpCmd`` matching ``condition`` (exactly or
+    as a conjunct-subset residue, see :func:`_cond_matches`) appears
     within the next ``k`` assumes of ``cmds[i:]``, scanning only the
     current assume run (noise skipped; any other command kind closes
     the scan). The 5a alignment lookahead."""
@@ -1363,7 +1390,7 @@ def _assume_ahead(
             j += 1
             continue
         if isinstance(c, AssumeExpCmd):
-            if c.condition == condition:
+            if _cond_matches(condition, c.condition):
                 return True
             seen += 1
             j += 1

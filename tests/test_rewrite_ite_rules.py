@@ -786,9 +786,9 @@ def test_cmp_range_fold_bv_nonneg_conjunct():
     assert isinstance(rhs, ApplyExpr) and rhs.op == "Lt"
 
 
-def test_cmp_range_fold_exempts_assume_conditions():
-    """Inside an assume the fold abstains -- partial rewrites of
-    assume conditions break rw-eq's exact-condition alignment."""
+def test_cmp_range_fold_fires_in_assume_conditions():
+    """Folds inside assume conditions too (rw-eq's conjunct-subset
+    lookahead keeps the streams aligned across the partial rewrite)."""
     tac = parse_string(
         _wrap(
             "\t\tAssignHavocCmd X\n"
@@ -801,7 +801,7 @@ def test_cmp_range_fold_exempts_assume_conditions():
     res = rewrite_program(
         tac.program, (CMP_RANGE_FOLD,), symbol_sorts=tac.symbol_sorts
     )
-    assert res.hits_by_rule.get("CmpRangeFold", 0) == 0
+    assert res.hits_by_rule.get("CmpRangeFold", 0) >= 1
 
 
 def test_cmp_range_fold_undecided_no_fire():

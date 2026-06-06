@@ -572,3 +572,52 @@ def test_rule_5c_no_partner_falls_through_to_pair():
     res = emit_equivalence_program(orig.program, rw.program)
     assert res.rule_hits.get("5c_resolution_pair", 0) == 0
     assert res.rule_hits.get("5a_assume_pair", 0) == 1
+
+
+# --- Conjunct-subset alignment lookahead ---
+
+def test_alignment_survives_partially_folded_assume():
+    """rw folded a conjunct out of an assume (LAnd(Ge, Le) -> Ge) and
+    substituted a neighboring assume's form; the conjunct-subset
+    lookahead still realigns the streams instead of mis-pairing."""
+    orig = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignHavocCmd W\n"
+            "\t\tAssumeExpCmd Eq(W 0x1)\n"
+            "\t\tAssumeExpCmd LAnd(Ge(X 0x78) Le(X 0x800000))\n"
+            "\t}",
+            syms="X:bv256\n\tW:bv256",
+        ),
+        path="<o>",
+    )
+    rw = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssumeExpCmd LNot(Eq(X 0x0))\n"
+            "\t\tAssumeExpCmd Ge(X 0x78)\n"
+            "\t}",
+            syms="X:bv256\n\tW:bv256",
+        ),
+        path="<r>",
+    )
+    res = emit_equivalence_program(orig.program, rw.program)
+    # The rhs-inserted LNot consumes via rule 4 (the lhs LAnd's
+    # residue Ge is visible ahead on the rhs); the LAnd then pairs
+    # with the residue via 5a. No mis-pair of LAnd-vs-LNot.
+    assert res.rule_hits.get("4_rhs_assume", 0) >= 1
+    block = _block(res.program, "e")
+    chks = [
+        c.rhs
+        for c in block.commands
+        if isinstance(c, AssignExpCmd) and c.lhs.startswith("CHK")
+    ]
+    for chk in chks:
+        if isinstance(chk, ApplyExpr) and chk.op == "Eq":
+            lhs_c, rhs_c = chk.args
+            # No iff CHK between an LAnd range fact and an unrelated
+            # LNot -- that's the mis-pair this lookahead prevents.
+            ops = {getattr(lhs_c, "op", None), getattr(rhs_c, "op", None)}
+            assert ops != {"LAnd", "LNot"}, chk

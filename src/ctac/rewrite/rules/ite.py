@@ -16,7 +16,7 @@ the driver's fixed-point loop composes them.
 from __future__ import annotations
 
 from ctac.analysis.symbols import canonical_symbol
-from ctac.ast.nodes import ApplyExpr, AssumeExpCmd, ConstExpr, SymbolRef, TacExpr
+from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
 from ctac.rewrite.range_infer import infer_expr_range
@@ -732,13 +732,10 @@ def _rewrite_cmp_range_fold(expr: TacExpr, ctx: RewriteCtx) -> TacExpr | None:
     comparisons living inside ``LAnd``/``LOr``/assign RHS positions
     that the Ite-cond-only ``ITE_COND_FOLD`` below can't.
 
-    Assume conditions are exempt: partially folding an assume (e.g.
-    dropping a redundant conjunct) changes its syntactic shape and
-    breaks rw-eq's exact-condition alignment lookahead, mis-pairing
-    neighboring assumes downstream. The redundant conjunct in an
-    assume is harmless; the rule's value is in value positions."""
-    if isinstance(ctx.current_cmd(), AssumeExpCmd):
-        return None
+    Assume conditions are folded too (dropping a decided conjunct is
+    load-bearing for the UNSAT-side solver search); rw-eq's alignment
+    lookahead matches the partially-folded residue against the
+    original via conjunct-subset comparison."""
     if (
         not isinstance(expr, ApplyExpr)
         or expr.op not in _CMP_OPS
