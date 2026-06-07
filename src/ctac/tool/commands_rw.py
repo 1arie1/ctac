@@ -51,7 +51,7 @@ from ctac.rewrite.rules import (
     chain_recognition_pipeline,
     cse_pipeline,
     div_purify_pipeline,
-    final_div_in_cmp_pipeline,
+    post_r4_fold_pipeline,
     simplify_pipeline,
 )
 from ctac.tool.cli_runtime import (
@@ -353,6 +353,9 @@ def rewrite_cmd(
             "other simplification and concept-recognition has settled, "
             "since the output destroys the syntactic Div that ceil-div "
             "reconstruction and IntCeilDiv lifting rely on for matching. "
+            "A fold-only closure (range/bool folds + assume hygiene + DCE) "
+            "runs alongside so R4's windows settle against dominating "
+            "assumes in the same invocation. "
             "Default on (SMT-side benefit assumed); pass --no-simplify-div-in-cmp "
             "when iterating on Div-shape rewrites."
         ),
@@ -943,32 +946,59 @@ def rewrite_cmd(
             mres = materialize_assumes(program, symbol_sorts=tac.symbol_sorts)
             program = mres.program
             materialize_hits = mres.hits
-        # Phase 5 (gated, VERY LAST): R4 simplify-Div-in-cmp. SMT-shaping
-        # rewrite that destroys the syntactic Div, so every preceding
-        # phase that wants to match the Div (ceil-div recognizers,
-        # IntCeilDiv lifting, downstream rewrites a user composes on top)
-        # has already settled. DCE re-runs to clear newly-dead Div defs
-        # whose only uses were the Cmp(Div, C) sites R4 just rewrote.
+        # Phase 5 (gated, VERY LAST): R4 simplify-Div-in-cmp + fold
+        # closure. R4 is an SMT-shaping rewrite that destroys the
+        # syntactic Div, so every preceding phase that wants to match
+        # the Div (ceil-div recognizers, IntCeilDiv lifting, downstream
+        # rewrites a user composes on top) has already settled. The
+        # fold-only companions (see ``post_r4_fold_pipeline``) then
+        # close R4's windows against dominating assumes so the output
+        # is a fixpoint of the fold subsystem — without them, chains
+        # like ``R4 window -> CmpRangeFold -> LOr prune`` could only
+        # complete on a second ``ctac rw`` invocation. Joint
+        # convergence with DCE and the assume-hygiene passes, same
+        # re-entry contract as the simplify-post-u128 loop above:
+        # REMOVALS only (folds reach their own fixpoint inside
+        # ``rewrite_program`` each round; removals are bounded by
+        # program size, so the loop terminates).
         if simplify_div_in_cmp:
-            phase_div_cmp = rewrite_program(
-                program,
-                final_div_in_cmp_pipeline,
-                max_iterations=max_iterations,
-                ite_max_depth=ite_max_depth,
-                symbol_sorts=tac.symbol_sorts,
-                use_int_ceil_div=ceildiv_op,
-                use_interval_select=interval_select,
-                phase="final-div-in-cmp",
-                trace_sink=trace_sink,
-            )
-            program = phase_div_cmp.program
-            rw = _merge_phases(rw, phase_div_cmp)
             while True:
-                dce = eliminate_dead_assignments(program)
-                total_removed += len(dce.removed)
-                if not dce.removed:
+                round_progress = 0
+                phase_div_cmp = rewrite_program(
+                    program,
+                    post_r4_fold_pipeline,
+                    max_iterations=max_iterations,
+                    ite_max_depth=ite_max_depth,
+                    symbol_sorts=tac.symbol_sorts,
+                    use_int_ceil_div=ceildiv_op,
+                    use_interval_select=interval_select,
+                    phase="final-fold",
+                    trace_sink=trace_sink,
+                )
+                program = phase_div_cmp.program
+                rw = _merge_phases(rw, phase_div_cmp)
+                while True:
+                    dce = eliminate_dead_assignments(program)
+                    round_progress += len(dce.removed)
+                    total_removed += len(dce.removed)
+                    if not dce.removed:
+                        break
+                    program = dce.program
+                drop_redundant_res = drop_range_redundant_assumes(
+                    program, symbol_sorts=tac.symbol_sorts
+                )
+                program = drop_redundant_res.program
+                dropped_redundant_assumes += drop_redundant_res.hits
+                round_progress += drop_redundant_res.hits
+                dedup_res = dedup_assumes(program)
+                program = dedup_res.program
+                assume_duplicates_dropped += dedup_res.duplicates_dropped
+                assume_pairs_resolved += dedup_res.pairs_resolved
+                round_progress += (
+                    dedup_res.duplicates_dropped + dedup_res.pairs_resolved
+                )
+                if not round_progress:
                     break
-                program = dce.program
         final_program = program
         after_count = _command_count(final_program)
 

@@ -407,6 +407,39 @@ final_div_in_cmp_pipeline: tuple[Rule, ...] = (
     ADD_SUB_ZERO_FOLD,
 )
 
+# Post-R4 fold closure. R4's window emits (LAnd bounds on X, const
+# arithmetic from the C / C+1 instantiations) used to be terminal
+# output: the assume-aware and boolean folds never ran again, so a
+# second ``ctac rw`` invocation kept finding work (CmpRangeFold
+# against the dominating assume on X, knock-on LAnd/LOr pruning) and
+# chains like ``Eq(Sub(c, y), 0) -> Eq(y, c) -> R4 window ->
+# CmpRangeFold -> LOr prune`` could never complete in one run. The
+# CLI drives this pipeline (in place of ``final_div_in_cmp_pipeline``)
+# to joint convergence with DCE and the assume-hygiene passes.
+#
+# Membership contract — FOLD-ONLY: every rule either decides a
+# subterm from a constant / a dominating assume / the sort, or
+# shrinks structure. No distribution rules (inner-node distributions
+# beat outer-node consumers — the EqIte race), no band / concept
+# emitters (recognizers whose evidence R4 + DCE may have destroyed),
+# no substitution rules (nothing in the last phase moves facts
+# across program points). This keeps rw-eq CHKs in rule-1/2
+# territory and the race surface flat.
+post_r4_fold_pipeline: tuple[Rule, ...] = final_div_in_cmp_pipeline + (
+    EQ_SUB_ZERO,
+    EQ_REFLEXIVE,
+    EQ_CONST_FOLD,
+    # Shallow evidence only (dominating assumes + sort width) — the
+    # deep ITE_COND_FOLD variant stays out; def-chain interval math
+    # would push nonlinear re-derivation into the rw-eq CHKs.
+    CMP_RANGE_FOLD,
+    LAND_EQ_CONST_PRUNE,
+    BOOL_CONST_FOLD,
+    BOOL_ABSORB,
+    ITE_SAME,
+    ITE_BOOL,
+)
+
 # Div-purification by fresh-quotient introduction (``R4A``). Lives
 # in its own phase, gated by ``--purify-div``; runs after simplify
 # reaches fixpoint so the cancellation rules (R2/R3) see the natural
@@ -590,6 +623,7 @@ __all__ = [
     "div_purify_pipeline",
     "final_div_in_cmp_pipeline",
     "normalize_store_eq",
+    "post_r4_fold_pipeline",
     "purify_pipeline",
     "simplify_pipeline",
     "validation_cases",

@@ -262,3 +262,75 @@ def test_rw_no_ceildiv_op_uses_legacy_havoc(tmp_path):
     # Legacy emission has a havoc on R_ceil + IntMul(R_den, R_ceil) bound.
     assert "AssignHavocCmd R_ceil" in text
     assert "IntMul(R_den" in text
+
+
+_FOLD_CHAIN_TAC = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tX:bv256\n\tQ:bv256\n\tB:bool\n\tP:bool
+}
+Program {
+\tBlock e Succ [] {
+\t\tAssignHavocCmd X
+\t\tAssumeExpCmd Le(X 0xffffffffffffffffffffffffffffffff)
+\t\tAssignHavocCmd P
+\t\tAssignExpCmd Q Div(X 0x10000000000000000)
+\t\tAssignExpCmd B LOr(Eq(IntSub(0x10000000000000000 Q) 0x0) P)
+\t\tAssumeExpCmd B
+\t\tAssertCmd false
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_rw_post_r4_fold_chain_completes_in_one_run(tmp_path):
+    """The infeasible-disjunct chain (EqSubZero -> R4 window ->
+    CmpRangeFold vs the dominating assume -> LOr prune) completes in
+    a single ``ctac rw`` invocation: ``(2^64 -int Q) == 0`` with
+    ``Q = X / 2^64`` and ``assume X <= 2^128-1`` requires
+    ``X >= 2^128`` — false — so the disjunct drops and ``B = P``.
+    Before the post-R4 fold loop, the window emitted by the final
+    phase was terminal output and the prune needed a second run."""
+    runner = CliRunner()
+    src = tmp_path / "chain.tac"
+    src.write_text(_FOLD_CHAIN_TAC)
+    out = tmp_path / "chain.rw.htac"
+    result = runner.invoke(app, ["rw", str(src), "-o", str(out), "--plain"])
+    assert result.exit_code == 0, result.output
+    text = out.read_text()
+    assert "B = P" in text
+    # The Div def and the window arithmetic are gone with the disjunct.
+    assert "Q" not in text
+
+
+def test_rw_post_r4_fold_output_is_fold_fixpoint(tmp_path):
+    """A second ``ctac rw`` run on the fold-loop's output finds no
+    FOLD work (the not-a-fixpoint gap was R4's terminal emit feeding
+    CmpRangeFold/bool folds only on re-run). Substitution-rule
+    residue (CP aliasing the collapsed ``B = P`` through the assume)
+    is outside the fold-only contract and acceptable."""
+    runner = CliRunner()
+    src = tmp_path / "chain.tac"
+    src.write_text(_FOLD_CHAIN_TAC)
+    first = tmp_path / "first.tac"
+    result = runner.invoke(app, ["rw", str(src), "-o", str(first), "--plain"])
+    assert result.exit_code == 0, result.output
+    rerun = runner.invoke(
+        app, ["rw", str(first), "--plain", "--report"]
+    )
+    assert rerun.exit_code == 0, rerun.output
+    fold_rules = (
+        "R4:", "CmpRangeFold:", "BOOL_FOLD:", "BoolAbsorb:",
+        "EqSubZero:", "EqFold:", "EqReflexive:", "LAndEqConstPrune:",
+    )
+    for name in fold_rules:
+        assert name not in rerun.output, rerun.output
