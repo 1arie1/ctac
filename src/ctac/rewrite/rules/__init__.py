@@ -83,6 +83,7 @@ from ctac.rewrite.rules.ite import (
     EQ_CONST_FOLD,
     EQ_ITE_DIST,
     EQ_REFLEXIVE,
+    EQ_SUB_ZERO,
     INT_MUL_EQ_ZERO,
     ITE_BOOL,
     ITE_COND_FOLD,
@@ -193,6 +194,12 @@ simplify_pipeline: tuple[Rule, ...] = (
     # Strip nonzero-const multipliers from Eq(_, 0) so downstream
     # ITE folds can see the underlying zero-test.
     INT_MUL_EQ_ZERO,
+    # Normalize the difference-vs-zero shape into a direct equality
+    # (Eq(Sub(a, b), 0) -> Eq(a, b)) so R4's Div lookthrough and
+    # CmpRangeFold key on Eq(a, b) directly. Pre-empts the old
+    # AND_LIFT_EQ_DECREMENT inner pattern; that rule now matches the
+    # normalized LAnd(Ge(X, c), Eq(X, c)) form.
+    EQ_SUB_ZERO,
     EQ_ITE_DIST,
     # Distribute Add/Sub over Ite operands so per-branch simplification
     # (constant folding, range-driven narrowing) can fire independently.
@@ -445,6 +452,7 @@ all_rule_names: tuple[str, ...] = (
     HAVOC_EQUATE_FOLD.name,
     EQ_REFLEXIVE.name,
     EQ_CONST_FOLD.name,
+    EQ_SUB_ZERO.name,
     ARITH_CONST_FOLD.name,
     MOD_OVER_ITE.name,
     MUL_ZERO_ONE_FOLD.name,
@@ -523,6 +531,7 @@ __all__ = [
     "EQ_CONST_FOLD",
     "EQ_ITE_DIST",
     "EQ_REFLEXIVE",
+    "EQ_SUB_ZERO",
     "FROM_S64_ZERO_TEST",
     "HAVOC_EQUATE_FOLD",
     "HAVOC_EQUATE_SUBST",

@@ -1002,3 +1002,70 @@ def test_land_eq_const_prune_range_conjunct():
     assert _assume_cond(res.program) == ApplyExpr(
         "Eq", (SymbolRef("X"), ConstExpr("0x3"))
     )
+
+
+def test_eq_sub_zero_int_sub():
+    from ctac.rewrite.rules import EQ_SUB_ZERO
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(IntSub(R0 R1) 0x0)"), path="<s>"
+    )
+    res = rewrite_program(tac.program, (EQ_SUB_ZERO,))
+    assert res.hits_by_rule == {"EqSubZero": 1}
+    assert _assume_cond(res.program) == ApplyExpr(
+        "Eq", (SymbolRef("R0"), SymbolRef("R1"))
+    )
+
+
+def test_eq_sub_zero_bv_sub_flipped():
+    """Zero on the left, wrapping bv ``Sub`` inside."""
+    from ctac.rewrite.rules import EQ_SUB_ZERO
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(0x0 Sub(R0 R1))"), path="<s>"
+    )
+    res = rewrite_program(tac.program, (EQ_SUB_ZERO,))
+    assert res.hits_by_rule == {"EqSubZero": 1}
+    assert _assume_cond(res.program) == ApplyExpr(
+        "Eq", (SymbolRef("R0"), SymbolRef("R1"))
+    )
+
+
+def test_eq_sub_zero_abstains_on_nonzero_const():
+    from ctac.rewrite.rules import EQ_SUB_ZERO
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd Eq(IntSub(R0 R1) 0x1)"), path="<s>"
+    )
+    res = rewrite_program(tac.program, (EQ_SUB_ZERO,))
+    assert res.hits_by_rule.get("EqSubZero", 0) == 0
+
+
+def test_and_lift_eq_normalized_compound_host():
+    """``LAnd(Ge(X, c), Eq(X, c)) -> Eq(X, c)`` with compound ``X``
+    (the plain-symbol case is LAndEqConstPrune's)."""
+    from ctac.rewrite.rules import AND_LIFT_EQ_DECREMENT
+    tac = parse_string(
+        _wrap(
+            "\t\tAssumeExpCmd LAnd(Ge(IntAdd(R0 R1) 0x1) Eq(IntAdd(R0 R1) 0x1))"
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (AND_LIFT_EQ_DECREMENT,))
+    assert res.hits_by_rule == {"AndLiftEq": 1}
+    assert _assume_cond(res.program) == ApplyExpr(
+        "Eq", (ApplyExpr("IntAdd", (SymbolRef("R0"), SymbolRef("R1"))), ConstExpr("0x1"))
+    )
+
+
+def test_and_lift_eq_composes_with_eq_sub_zero():
+    """The decrement shape: EqSubZero normalizes the inner conjunct,
+    AndLiftEq collapses the conjunction."""
+    from ctac.rewrite.rules import AND_LIFT_EQ_DECREMENT, EQ_SUB_ZERO
+    tac = parse_string(
+        _wrap("\t\tAssumeExpCmd LAnd(Ge(R0 0x1) Eq(IntSub(R0 0x1) 0x0))"),
+        path="<s>",
+    )
+    res = rewrite_program(tac.program, (EQ_SUB_ZERO, AND_LIFT_EQ_DECREMENT))
+    assert res.hits_by_rule.get("EqSubZero") == 1
+    assert res.hits_by_rule.get("AndLiftEq") == 1
+    assert _assume_cond(res.program) == ApplyExpr(
+        "Eq", (SymbolRef("R0"), ConstExpr("0x1"))
+    )

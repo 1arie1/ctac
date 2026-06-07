@@ -80,6 +80,36 @@ def _rewrite_eq_const_fold(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
     return _TRUE if va == vb else _FALSE
 
 
+def _rewrite_eq_sub_zero(expr: TacExpr, _ctx: RewriteCtx) -> TacExpr | None:
+    """``Eq(Sub(a, b), 0)`` -> ``Eq(a, b)`` (either ``Eq`` operand
+    order), for both ``IntSub`` and the wrapping bv ``Sub``.
+
+    ``IntSub`` is linear over Int: ``a - b == 0`` iff ``a == b``. For
+    bv256 ``Sub``, ``(a - b) mod 2^256 == 0`` iff ``a ≡ b (mod
+    2^256)``, and bv256-domain operands make the congruence an
+    equality — the same wrap-bijection argument as ModDivPin.
+
+    Normalizes the difference-vs-zero shape into a direct equality so
+    R4's Div lookthrough and CmpRangeFold see ``Eq(a, b)`` (the
+    ``(2^64 -int H) == 0`` disjuncts on the lopu class)."""
+    if not (isinstance(expr, ApplyExpr) and expr.op == "Eq" and len(expr.args) == 2):
+        return None
+    a, b = expr.args
+    if const_to_int(a) == 0:
+        sub = b
+    elif const_to_int(b) == 0:
+        sub = a
+    else:
+        return None
+    if not (
+        isinstance(sub, ApplyExpr)
+        and sub.op in ("Sub", "IntSub")
+        and len(sub.args) == 2
+    ):
+        return None
+    return ApplyExpr("Eq", sub.args)
+
+
 def _eq_leaf_will_fold(leaf: TacExpr, other: TacExpr) -> bool:
     """True iff ``Eq(leaf, other)`` will collapse via ``EqReflexive`` or
     ``EqFold``. Used as the cost gate for ``EQ_ITE_DIST``: distribution
@@ -961,6 +991,14 @@ EQ_CONST_FOLD = Rule(
     name="EqFold",
     fn=_rewrite_eq_const_fold,
     description="Eq(const, const) -> true|false.",
+)
+EQ_SUB_ZERO = Rule(
+    name="EqSubZero",
+    fn=_rewrite_eq_sub_zero,
+    description=(
+        "Eq(Sub(a, b), 0) -> Eq(a, b) for IntSub (linear) and bv Sub "
+        "(wrap bijection on bv256-domain operands)."
+    ),
 )
 EQ_REFLEXIVE = Rule(
     name="EqReflexive",
