@@ -426,6 +426,136 @@ NEG_S64_ZERO_TEST = Rule(
 )
 
 
+# Gadget-plus-one consumers. The i128 helper's increment-then-test
+# idiom applies the bv Add(_, 1) to a gadget value before comparing:
+#
+#     Eq(Add(gadget(x, y), 1), 0)    and    Le(Add(gadget(x, y), 1), c)
+#
+# With chunk evidence y = x mod 2^w, the +1 regimes of
+# v = (gadget + 1) mod 2^256 are:
+#
+#     y == 0          v = 1
+#     y == 1          v = 0                      (the wrap-to-zero case)
+#     1 < y < 2^(w-1) v = 2^256 - y + 1          (huge)
+#     y == 2^(w-1)    v = x + 1                  (MIN arm; x ≡ 2^(w-1)
+#                                                 mod 2^w, so no wrap)
+#     y > 2^(w-1)     v = 2^w - y + 1            (in [2, 2^(w-1)])
+#
+# Hence Eq(v, 0) <=> Eq(y, 1) unconditionally (the chunk congruence
+# kills the MIN arm: x + 1 ≢ 0 mod 2^w), and for a constant
+# c in [1, 2^256 - 2^(w-1)]:
+#
+#     Le(v, c) <=> y <= 1
+#                  \/ y >= max(2^(w-1) + 1, 2^w + 1 - c)
+#                  \/ (y == 2^(w-1) /\ x <= c - 1)
+#
+# where the MIN-arm disjunct is emitted only when c - 1 >= 2^(w-1)
+# (below that, x ≡ 2^(w-1) mod 2^w forces x > c - 1 — pruned at emit
+# rather than left for a fold that has no shallow evidence on x).
+# Both lemmas are z3-checked at every width in the test file.
+
+
+def _match_gadget_plus_one(
+    expr: TacExpr, ctx: RewriteCtx
+) -> tuple[SymbolRef, TacExpr, _Width] | None:
+    """``Add(gadget, 1)`` (the wrapping bv Add, either operand
+    order); the gadget side resolves through lookthrough and must
+    carry chunk evidence. Returns ``(y, x, w)``."""
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op == "Add"
+        and len(expr.args) == 2
+    ):
+        return None
+    a, b = expr.args
+    if const_to_int(b) == 1:
+        host = a
+    elif const_to_int(a) == 1:
+        host = b
+    else:
+        return None
+    return _match_neg_gadget(ctx.lookthrough(host), ctx)
+
+
+def _rewrite_neg_s64_plus_one_zero_test(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    e = _eq_other_side(expr, 0)
+    if e is None:
+        return None
+    match = _match_gadget_plus_one(ctx.lookthrough(e), ctx)
+    if match is None:
+        return None
+    y, _x, _width = match
+    return ApplyExpr("Eq", (y, ConstExpr("0x1")))
+
+
+def _rewrite_neg_s64_plus_one_cmp_lift(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op in {"Le", "Lt"}
+        and len(expr.args) == 2
+    ):
+        return None
+    lhs, rhs = expr.args
+    c = const_to_int(rhs)
+    if c is None:
+        return None
+    if expr.op == "Lt":
+        c = c - 1
+    if c < 1:
+        # Le(v, 0) is the zero test's shape; Lt(v, 0) never holds.
+        return None
+    match = _match_gadget_plus_one(ctx.lookthrough(lhs), ctx)
+    if match is None:
+        return None
+    y, x, width = match
+    if c > _TWO_256 - width.half:
+        # The mid regime (huge values) would dip under c.
+        return None
+    k = max(width.half + 1, width.full + 1 - c)
+    band: TacExpr = ApplyExpr(
+        "LOr",
+        (
+            ApplyExpr("Le", (y, ConstExpr("0x1"))),
+            ApplyExpr("Ge", (y, ConstExpr(f"0x{k:x}"))),
+        ),
+    )
+    if c - 1 >= width.half:
+        min_arm = ApplyExpr(
+            "LAnd",
+            (
+                ApplyExpr("Eq", (y, width.half_const)),
+                ApplyExpr("Le", (x, ConstExpr(f"0x{c - 1:x}"))),
+            ),
+        )
+        band = ApplyExpr("LOr", (band, min_arm))
+    return band
+
+
+NEG_S64_PLUS_ONE_ZERO_TEST = Rule(
+    name="NegS64PlusOneZeroTest",
+    fn=_rewrite_neg_s64_plus_one_zero_test,
+    description=(
+        "Eq(Add(gadget(x, y), 1), 0) -> Eq(y, 1) when y = Mod(x, "
+        "2^w). The +1 wraps the negated chunk to zero exactly at "
+        "y == 1; the chunk congruence kills the i<w>::MIN arm."
+    ),
+)
+NEG_S64_PLUS_ONE_CMP_LIFT = Rule(
+    name="NegS64PlusOneCmpLift",
+    fn=_rewrite_neg_s64_plus_one_cmp_lift,
+    description=(
+        "Le/Lt(Add(gadget(x, y), 1), c) -> band on y (plus a MIN-arm "
+        "residue on x when c reaches the sign half). Removes the "
+        "increment-then-compare gadget opacity so LIA sees chunk "
+        "bands."
+    ),
+)
+
+
 # WRAP_COMPARE_LIFT: an order comparison or equality between a
 # ``wrap_256`` application and a constant lifts to an Int-domain
 # predicate on the wrap's argument::

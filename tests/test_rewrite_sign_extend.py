@@ -16,6 +16,8 @@ from ctac.rewrite.rules import (
     SIGN_EXT_CMP_LIFT,
     SIGN_EXT_SIGN_TEST,
     NEG_S64_LOW_CHUNK,
+    NEG_S64_PLUS_ONE_CMP_LIFT,
+    NEG_S64_PLUS_ONE_ZERO_TEST,
     NEG_S64_SIGN_TEST,
     NEG_S64_ZERO_TEST,
     SIGN_EXTEND_UNWRAP,
@@ -1717,3 +1719,169 @@ def test_borrow_sum_composed_double_lemma_via_z3(w):
         input=script, capture_output=True, text=True, timeout=40,
     )
     assert proc.stdout.strip() == "unsat", proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# NEG_S64_PLUS_ONE_ZERO_TEST / NEG_S64_PLUS_ONE_CMP_LIFT
+# ---------------------------------------------------------------------------
+
+_PLUS_ONE_SYMS = (
+    "X:bv256\n\tY:bv256\n\tTBC:bool\n\tI:int\n\tTBG:bool\n\tG:bv256\n\tTB:bool"
+)
+
+
+def _plus_one_body(test_cmd: str) -> str:
+    return (
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+        "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+        "\t\tAssignExpCmd TBG Eq(Y 0x8000000000000000)\n"
+        "\t\tAssignExpCmd G Ite(TBG X Apply(wrap_twos_complement_256:bif I))\n"
+        f"\t\t{test_cmd}\n"
+        "\t}\n"
+    )
+
+
+def test_neg_s64_plus_one_zero_test_fires():
+    """The B2608 inner-arm shape: (gadget + 1) == 0 collapses to
+    Eq(y, 1) — the +1 wraps the negated chunk to zero exactly at
+    y == 1, and the chunk congruence kills the MIN arm."""
+    tac = parse_string(
+        _wrap(
+            _plus_one_body("AssignExpCmd TB Eq(Add(G 0x1) 0x0)"),
+            syms=_PLUS_ONE_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program,
+        (NEG_S64_PLUS_ONE_ZERO_TEST,),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("NegS64PlusOneZeroTest") == 1
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "Eq", (SymbolRef("Y"), ConstExpr("0x1"))
+    )
+
+
+def test_neg_s64_plus_one_zero_test_int_add_no_fire():
+    """IntAdd does not wrap — (gadget +int 1) can never be 0, and the
+    rule's lemma is about the bv Add. No fire."""
+    tac = parse_string(
+        _wrap(
+            _plus_one_body("AssignExpCmd TB Eq(IntAdd(G 0x1(int)) 0x0)"),
+            syms=_PLUS_ONE_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program,
+        (NEG_S64_PLUS_ONE_ZERO_TEST,),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("NegS64PlusOneZeroTest", 0) == 0
+
+
+def test_neg_s64_plus_one_cmp_lift_with_min_arm():
+    """The assume-1139 instance: Le(gadget + 1, 2^64+1). c reaches
+    the sign half, so the MIN-arm residue on x is emitted."""
+    tac = parse_string(
+        _wrap(
+            _plus_one_body(
+                "AssignExpCmd TB Le(Add(G 0x1) 0x10000000000000001)"
+            ),
+            syms=_PLUS_ONE_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program,
+        (NEG_S64_PLUS_ONE_CMP_LIFT,),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("NegS64PlusOneCmpLift") == 1
+    y, x = SymbolRef("Y"), SymbolRef("X")
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "LOr",
+        (
+            ApplyExpr(
+                "LOr",
+                (
+                    ApplyExpr("Le", (y, ConstExpr("0x1"))),
+                    ApplyExpr("Ge", (y, ConstExpr("0x8000000000000001"))),
+                ),
+            ),
+            ApplyExpr(
+                "LAnd",
+                (
+                    ApplyExpr("Eq", (y, ConstExpr("0x8000000000000000"))),
+                    ApplyExpr("Le", (x, ConstExpr("0x10000000000000000"))),
+                ),
+            ),
+        ),
+    )
+
+
+def test_neg_s64_plus_one_cmp_lift_small_const_prunes_min_arm():
+    """Small c: x ≡ 2^63 (mod 2^64) forces x > c-1, so the MIN arm
+    is pruned at emit; pure y-band remains."""
+    tac = parse_string(
+        _wrap(
+            _plus_one_body("AssignExpCmd TB Le(Add(G 0x1) 0xa)"),
+            syms=_PLUS_ONE_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program,
+        (NEG_S64_PLUS_ONE_CMP_LIFT,),
+        symbol_sorts=tac.symbol_sorts,
+    )
+    assert res.hits_by_rule.get("NegS64PlusOneCmpLift") == 1
+    y = SymbolRef("Y")
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "LOr",
+        (
+            ApplyExpr("Le", (y, ConstExpr("0x1"))),
+            ApplyExpr("Ge", (y, ConstExpr("0xfffffffffffffff7"))),
+        ),
+    )
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+@pytest.mark.parametrize("w", [64, 128, 256])
+def test_neg_s64_plus_one_lemmas_via_z3(w):
+    """Both +1 lemmas at every width: the wrap-to-zero equivalence
+    and the Le band exactly as the rule emits it (K bound, MIN arm
+    iff c - 1 >= 2^(w-1))."""
+    two_h = 1 << (w - 1)
+    two_w = 1 << w
+    two_256 = 1 << 256
+    # Second c exercises the MIN arm where the gate allows it
+    # (impossible at w == 256: needs c - 1 >= 2^255 and
+    # c <= 2^256 - 2^255 simultaneously).
+    cs = (10, two_w + 1) if w < 256 else (10, two_h)
+    for c in cs:
+        assert c <= two_256 - two_h
+        k = max(two_h + 1, two_w + 1 - c)
+        band = f"(or (<= y 1) (>= y {k})"
+        if c - 1 >= two_h:
+            band += f" (and (= y {two_h}) (<= x {c - 1}))"
+        band += ")"
+        script = f"""(set-logic QF_NIA)
+(declare-const x Int)
+(define-fun y () Int (mod x {two_w}))
+(define-fun f () Int (ite (< y {two_h}) y (- y {two_w})))
+(define-fun g () Int (ite (= y {two_h}) x (mod (- 0 f) {two_256})))
+(define-fun v () Int (mod (+ g 1) {two_256}))
+(assert (and (<= 0 x) (< x {two_256})))
+(assert (or (not (= (= v 0) (= y 1))) (not (= (<= v {c}) {band}))))
+(check-sat)
+"""
+        proc = subprocess.run(
+            ["z3", "-smt2", "-T:10", "-in"],
+            input=script, capture_output=True, text=True, timeout=30,
+        )
+        assert proc.stdout.strip() == "unsat", (w, c, proc.stdout)

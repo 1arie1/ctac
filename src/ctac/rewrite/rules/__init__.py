@@ -66,6 +66,8 @@ from ctac.rewrite.rules.sign_extend import (
     SIGN_EXT_CMP_LIFT,
     SIGN_EXT_SIGN_TEST,
     NEG_S64_LOW_CHUNK,
+    NEG_S64_PLUS_ONE_CMP_LIFT,
+    NEG_S64_PLUS_ONE_ZERO_TEST,
     NEG_S64_SIGN_TEST,
     NEG_S64_ZERO_TEST,
     SIGN_EXTEND_UNWRAP,
@@ -320,6 +322,12 @@ simplify_pipeline: tuple[Rule, ...] = (
     # from_s64 arriving as unwrap(SignExtend(7, y)) is already in
     # the Ite form this matcher recognizes.
     NEG_S64_ZERO_TEST,
+    # The increment-then-test idiom over the same gadget: the bv +1
+    # wraps the negated chunk to zero exactly at y == 1, and small-
+    # const order compares lift to chunk bands (with the i<w>::MIN
+    # arm pruned at emit when the chunk congruence decides it).
+    NEG_S64_PLUS_ONE_ZERO_TEST,
+    NEG_S64_PLUS_ONE_CMP_LIFT,
     # The bare from_s64 zero test (no wrap round trip), living deep
     # inside the i128 negation's no-overflow assumes.
     FROM_S64_ZERO_TEST,
@@ -524,6 +532,8 @@ all_rule_names: tuple[str, ...] = (
     SELECT_OVER_STORE.name,
     SIGN_EXTEND_UNWRAP.name,
     NEG_S64_ZERO_TEST.name,
+    NEG_S64_PLUS_ONE_ZERO_TEST.name,
+    NEG_S64_PLUS_ONE_CMP_LIFT.name,
     FROM_S64_ZERO_TEST.name,
     NEG_S64_LOW_CHUNK.name,
     NEG_S64_SIGN_TEST.name,
@@ -592,6 +602,8 @@ __all__ = [
     "N4_SHR_CONST",
     "NEG_S64_DOUBLE",
     "NEG_S64_LOW_CHUNK",
+    "NEG_S64_PLUS_ONE_CMP_LIFT",
+    "NEG_S64_PLUS_ONE_ZERO_TEST",
     "NEG_S64_SIGN_TEST",
     "NEG_S64_ZERO_TEST",
     "PURIFY_ASSERT",
