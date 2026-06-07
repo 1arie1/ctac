@@ -38,6 +38,7 @@ from ctac.rewrite.materialize_equate_bounds import materialize_havoc_equate_boun
 from ctac.rewrite.materialize_h_nonzero import materialize_h_nonzero
 from ctac.rewrite.propagate_aliases import propagate_aliases_into_annotations
 from ctac.rewrite.coalesce_chunk_pairs import coalesce_chunk_pairs
+from ctac.rewrite.neg_s128_recombine import rewrite_neg_s128_recombine
 from ctac.rewrite.rewrite_u128_carry_add import rewrite_u128_carry_add
 from ctac.rewrite.rewrite_u128_decrement import rewrite_u128_decrement
 from ctac.rewrite.unpurify_div import unpurify_div
@@ -82,6 +83,7 @@ def _print_report(
     materialize_equate_bound_hits: int = 0,
     u128_carry_add_hits: int = 0,
     coalesced_chunk_pairs: int = 0,
+    neg_s128_recombined: int = 0,
     h_nonzero_hits: int = 0,
     u128_decrement_hits: int = 0,
     range_redundant_assumes_dropped: int = 0,
@@ -121,6 +123,8 @@ def _print_report(
             line(f"  u128_carry_add: {u128_carry_add_hits}")
         if coalesced_chunk_pairs:
             line(f"  coalesced_chunk_pairs: {coalesced_chunk_pairs}")
+        if neg_s128_recombined:
+            line(f"  neg_s128_recombined: {neg_s128_recombined}")
         if h_nonzero_hits:
             line(f"  materialized_h_nonzero: {h_nonzero_hits}")
         if u128_decrement_hits:
@@ -168,6 +172,8 @@ def _print_report(
         line(f"  u128_carry_add: [bold]{u128_carry_add_hits}[/bold]")
     if coalesced_chunk_pairs:
         line(f"  coalesced_chunk_pairs: [bold]{coalesced_chunk_pairs}[/bold]")
+    if neg_s128_recombined:
+        line(f"  neg_s128_recombined: [bold]{neg_s128_recombined}[/bold]")
     if h_nonzero_hits:
         line(f"  materialized_h_nonzero: [bold]{h_nonzero_hits}[/bold]")
     if u128_decrement_hits:
@@ -710,6 +716,21 @@ def rewrite_cmd(
                 rw,
                 extra_symbols=rw.extra_symbols + coalesce_res.fresh_symbols,
             )
+        # Phase 1.87: rewrite the shifted-sum recombination of two
+        # negation gadgets (the cvlr mathint i128 encode boundary)
+        # into a named neg128 value + signed-limb composite, with the
+        # gadget MIN arms preserved. WrapCompareLift then lifts the
+        # source's i128 band assumes on the clean arm.
+        neg_s128_res = rewrite_neg_s128_recombine(
+            program, symbol_sorts=_sorts_with_extras()
+        )
+        program = neg_s128_res.program
+        neg_s128_hits = neg_s128_res.hits
+        if neg_s128_res.fresh_symbols:
+            rw = replace(
+                rw,
+                extra_symbols=rw.extra_symbols + neg_s128_res.fresh_symbols,
+            )
         # DCE again: with R_low / R_hi rewritten to use T_sum, the old
         # R_sum and R_carry defs are dead; the decrement rewrite also
         # leaves B_lo / B_hi / TB defs dead once their consumers are
@@ -1057,6 +1078,7 @@ def rewrite_cmd(
             materialize_equate_bound_hits=materialize_eq_hits,
             u128_carry_add_hits=u128_add_hits,
             coalesced_chunk_pairs=coalesce_hits,
+            neg_s128_recombined=neg_s128_hits,
             h_nonzero_hits=h_nonzero_hits,
             u128_decrement_hits=u128_dec_hits,
             range_redundant_assumes_dropped=dropped_redundant_assumes,
