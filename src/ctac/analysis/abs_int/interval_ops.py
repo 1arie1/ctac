@@ -244,3 +244,26 @@ def narrow_clamp(inner: Interval, width: int) -> Interval | None:
     if inner.is_nonneg() and inner.hi is not None and inner.hi <= (1 << width) - 1:
         return inner
     return None
+
+
+def from_s_image(inner: Interval, width: int) -> Interval | None:
+    """Image of ``from_s<width>(x) = Ite(x < 2^(width-1), x, x - 2^width)``
+    over ``inner``: the hull of the identity branch (``x < 2^(w-1)``)
+    and the shifted branch (``x >= 2^(w-1)``). Exact for bounded
+    inputs; ``None`` when either bound is open (the total function is
+    unbounded on open inputs)."""
+    if inner.lo is None or inner.hi is None:
+        return None
+    half = 1 << (width - 1)
+    full = 1 << width
+    parts: list[Interval] = []
+    if inner.lo < half:
+        parts.append(Interval(inner.lo, min(inner.hi, half - 1)))
+    if inner.hi >= half:
+        parts.append(Interval(max(inner.lo, half) - full, inner.hi - full))
+    if not parts:
+        return None
+    result = parts[0]
+    for p in parts[1:]:
+        result = join(result, p)
+    return result

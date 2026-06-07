@@ -363,3 +363,53 @@ def test_int_mul_div_ceil_zero_operand_pins_zero():
     )
     r = infer_expr_range(expr, ctx)
     assert r == (0, 0)
+
+
+def test_unwrap_bif_signed_image():
+    """``Apply(unwrap_twos_complement_64:bif, Y)`` with Y a u64 chunk:
+    the from_s64 image is [-2^63, 2^63-1] (hull of both branches)."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+            "\t}",
+            syms="X:bv256\n\tY:bv256",
+        ),
+        path="<s>",
+    )
+    ctx = _ctx(tac)
+    ctx.set_position("e", 1)
+    r = infer_expr_range(
+        ApplyExpr(
+            "Apply",
+            (SymbolRef("unwrap_twos_complement_64:bif"), SymbolRef("Y")),
+        ),
+        ctx,
+    )
+    assert r == (-(1 << 63), (1 << 63) - 1)
+
+
+def test_unwrap_bif_identity_branch_only():
+    """Input pinned below the sign half: from_s64 is the identity and
+    the image stays tight."""
+    tac = parse_string(
+        _wrap(
+            "\tBlock e Succ [] {\n"
+            "\t\tAssignHavocCmd Y\n"
+            "\t\tAssumeExpCmd Le(Y 0xff)\n"
+            "\t}",
+            syms="Y:bv256",
+        ),
+        path="<s>",
+    )
+    ctx = _ctx(tac)
+    ctx.set_position("e", 2)
+    r = infer_expr_range(
+        ApplyExpr(
+            "Apply",
+            (SymbolRef("unwrap_twos_complement_64:bif"), SymbolRef("Y")),
+        ),
+        ctx,
+    )
+    assert r == (0, 255)

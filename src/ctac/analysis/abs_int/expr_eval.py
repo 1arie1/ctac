@@ -47,6 +47,14 @@ _NARROW_WIDTHS = {
 _WRAP_WIDTHS = {
     "wrap_twos_complement_256": 256,
 }
+# ``Apply(unwrap_twos_complement_<W>:bif, X)`` is the signed
+# reinterpretation ``from_s<W>``: total, defined as
+# ``Ite(X < 2^(W-1), X, X - 2^W)``.
+_UNWRAP_WIDTHS = {
+    "unwrap_twos_complement_64": 64,
+    "unwrap_twos_complement_128": 128,
+    "unwrap_twos_complement_256": 256,
+}
 
 _REL_OPS = frozenset(
     {"Eq", "Ne", "Lt", "Le", "Gt", "Ge", "Slt", "Sle", "Sgt", "Sge"}
@@ -192,6 +200,13 @@ def _eval_apply(
             inner = recurse(args[1], rw=None)
             clamped = iv.narrow_clamp(inner, width)
             return clamped if clamped is not None else iv.TOP
+        callee = args[0].name
+        core = callee[:-4] if callee.endswith(":bif") else callee
+        unwrap_width = _UNWRAP_WIDTHS.get(core)
+        if unwrap_width is not None and len(args) == 2:
+            inner = recurse(args[1], rw=None)
+            image = iv.from_s_image(inner, unwrap_width)
+            return image if image is not None else iv.TOP
         return iv.TOP
 
     # Int-domain (unbounded) arithmetic — interval math is sound
