@@ -725,11 +725,16 @@ def _shallow_operand_range(
     e: TacExpr, ctx: RewriteCtx
 ) -> tuple[int | None, int | None] | None:
     """Interval for ``e`` from shallow evidence only: constants,
-    dominating range assumes on the symbol itself, and the declared
-    sort width. Deliberately does NOT walk definition chains — a fold
-    justified by def-chain interval math makes the rw-eq CHK re-derive
-    that math in z3 (a potentially nonlinear lemma), while assumes and
-    sort bounds are facts the CHK's context already asserts."""
+    dominating range assumes on the symbol itself, the declared sort
+    width, and a Mod-by-positive-const def's operator-domain bound.
+    Deliberately does NOT do recursive def-chain interval math — a
+    fold justified by that makes the rw-eq CHK re-derive the interval
+    arithmetic in z3 (a potentially nonlinear lemma). The Mod peek is
+    different in kind: ``Mod(_, m) ∈ [0, m-1]`` holds unconditionally
+    (nothing about the dividend is consulted), so the CHK discharges
+    by builtin Euclidean mod semantics on the in-scope def — linear,
+    no recursion. Same domain fact ``abs_int``'s ``mod_by_pos_const``
+    transfer encodes."""
     if isinstance(e, ConstExpr):
         v = const_to_int(e)
         return None if v is None else (v, v)
@@ -741,6 +746,16 @@ def _shallow_operand_range(
         lo = 0 if lo is None else max(lo, 0)
         sort_hi = (1 << width) - 1
         hi = sort_hi if hi is None else min(hi, sort_hi)
+    d = ctx.lookthrough(e)
+    if (
+        isinstance(d, ApplyExpr)
+        and d.op in ("Mod", "IntMod")
+        and len(d.args) == 2
+    ):
+        m = const_to_int(d.args[1])
+        if m is not None and m > 0:
+            lo = 0 if lo is None else max(lo, 0)
+            hi = m - 1 if hi is None else min(hi, m - 1)
     if lo is None and hi is None:
         return None
     return lo, hi

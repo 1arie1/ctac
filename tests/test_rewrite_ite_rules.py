@@ -1069,3 +1069,41 @@ def test_and_lift_eq_composes_with_eq_sub_zero():
     assert _assume_cond(res.program) == ApplyExpr(
         "Eq", (SymbolRef("R0"), ConstExpr("0x1"))
     )
+
+
+def test_cmp_range_fold_mod_def_peek_decides():
+    """A Mod-by-const def pins the symbol to [0, m-1]; a comparison
+    against an out-of-range const decides without any assume."""
+    from ctac.rewrite.rules import CMP_RANGE_FOLD
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd R Mod(X 0x100)\n"
+            "\t\tAssumeExpCmd Eq(R 0x100)",
+            syms="X:bv256\n\tR:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (CMP_RANGE_FOLD,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("CmpRangeFold") == 1
+    assert _assume_cond(res.program) == ConstExpr("false")
+
+
+def test_cmp_range_fold_mod_def_peek_abstains_in_range():
+    """Const inside the Mod image: undecidable, no fold."""
+    from ctac.rewrite.rules import CMP_RANGE_FOLD
+    tac = parse_string(
+        _wrap(
+            "\t\tAssignHavocCmd X\n"
+            "\t\tAssignExpCmd R Mod(X 0x100)\n"
+            "\t\tAssumeExpCmd Eq(R 0xff)",
+            syms="X:bv256\n\tR:bv256",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (CMP_RANGE_FOLD,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("CmpRangeFold", 0) == 0
