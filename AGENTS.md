@@ -299,8 +299,12 @@ Prompt template:
 - `ctac rw-valid --plain`
   - Emit per-rule SMT-LIB soundness specs (one `.smt2` per rule +
     `manifest.json`). Does NOT invoke z3 — run the solver yourself.
-  - Currently covers R1, R4 (5 op variants), R4a (base + signed),
-    R6 (base + signed), and ADD_BV_MAX_TO_ITE. Other rules listed
+  - Covers the algebraic div rules (R1, R4 x5, R4a, R6,
+    ADD_BV_MAX_TO_ITE) and the sign-extension gadget family
+    (NegS64* zero/sign/chunk/double tests, WrapCompareLift,
+    FromS64ZeroTest, ModDivPin, CarryChunkCancel, the +1 and
+    band-lift consumers), plus EqSubZero and NegS128Recombine —
+    gadget lemmas width-parametrized (45 cases). Other rules listed
     under `manifest.json:missing`.
   - Key flags:
     - `-o <dir>` (required) — output directory.

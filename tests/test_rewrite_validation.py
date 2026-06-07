@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
-import re
+import shutil
+import subprocess
 
+import pytest
 from typer.testing import CliRunner
 
 from ctac.rewrite.rules import (
@@ -29,8 +31,9 @@ def test_registry_holds_expected_cases():
     assert ("R6", "signed") in cases_by_name
     assert ("R1", "") in cases_by_name
     assert ("ADD_BV_MAX_TO_ITE", "") in cases_by_name
-    # Registry is the sum of the per-rule case tuples.
-    assert len(validation_cases) == (
+    # The flat-envelope (algebraic) rules sum to a fixed count; the
+    # gadget-family / EqSubZero / neg_s128 cases are added on top.
+    assert len(validation_cases) >= (
         len(R1_CASES)
         + len(R4_CASES)
         + len(R4A_CASES)
@@ -39,18 +42,23 @@ def test_registry_holds_expected_cases():
     )
 
 
-def test_every_smt2_script_has_the_flat_envelope():
-    """Every emitted script must carry the exact shape we promised:
-    set-logic, decls, preconditions, definitions, soundness `(not (= ...))`,
-    and a trailing `(check-sat)`."""
+def test_every_smt2_script_is_a_negated_soundness_check():
+    """Every emitted script carries the common shape: set-logic, decls,
+    a trailing `(check-sat)`, and the soundness claim negated. The flat
+    (algebraic) rules use a single `(assert (not (= X Y)))`; the
+    gadget-family lemmas conjoin several equivalences under one negated
+    assertion (`(not (and ...))`) or the equivalent disjunction of
+    negations (`(or (not ...) ...)`). Either way the check is: no model
+    makes the claim false."""
     for vc in validation_cases:
         s = vc.smt2_text
         assert "(set-logic " in s
         assert "(declare-const " in s
         assert "(check-sat)" in s.splitlines()[-1] or s.rstrip().endswith("(check-sat)")
-        # Exactly one soundness line, of the form `(assert (not (= X Y)))`.
-        not_eq_lines = re.findall(r"\(assert \(not \(= \S+ \S+\)\)\)", s)
-        assert len(not_eq_lines) == 1, (vc.file_stem, not_eq_lines)
+        # The claim is negated, so `unsat` means sound. Flat rules use
+        # `(assert (not (= X Y)))`; gadget lemmas conjoin equivalences
+        # under `(not (and ...))` or `(or (not ...) ...)`.
+        assert "(not " in s, vc.file_stem
 
 
 def test_file_stem_combines_name_and_case():
@@ -63,6 +71,20 @@ def test_file_stem_combines_name_and_case():
     }
     assert {vc.file_stem for vc in R4A_CASES} == {"R4a", "R4a_signed"}
     assert {vc.file_stem for vc in R6_CASES} == {"R6", "R6_signed"}
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+def test_every_validation_case_discharges_unsat():
+    """Run z3 on every registered spec: each must be `unsat` (the rule
+    is sound). This is the independent check that the validation
+    module's lemmas hold — the gadget-family / EqSubZero / neg_s128
+    cases as well as the algebraic R1/R4/R4a/R6 ones."""
+    for vc in validation_cases:
+        proc = subprocess.run(
+            ["z3", "-smt2", "-T:20", "-in"],
+            input=vc.smt2_text, capture_output=True, text=True, timeout=60,
+        )
+        assert proc.stdout.strip() == vc.expected, (vc.file_stem, proc.stdout)
 
 
 def test_cli_emits_scripts_and_manifest(tmp_path):

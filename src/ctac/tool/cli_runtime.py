@@ -498,8 +498,12 @@ TYPICAL:
 
 EXPECTED: `unsat` on every script means the rule is sound. `sat` is a
 counterexample (bug). `unknown` means escalate (tactics, Lean).
-Currently covers R1, R4, R4a, R6, ADD_BV_MAX_TO_ITE (11 cases); other
-rules are listed under `manifest.json`:`missing`.
+Covers the algebraic div rules (R1, R4, R4a, R6, ADD_BV_MAX_TO_ITE)
+and the sign-extension gadget family (NegS64* tests, WrapCompareLift,
+FromS64ZeroTest, ModDivPin, CarryChunkCancel, the +1 / band-lift
+consumers), plus EqSubZero and NegS128Recombine — gadget lemmas are
+width-parametrized (45 cases total). Other rules are listed under
+`manifest.json`:`missing`.
 """,
     "rw-eq": """ctac rw-eq --agent
 
