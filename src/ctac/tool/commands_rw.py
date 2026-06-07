@@ -37,6 +37,7 @@ from ctac.rewrite.materialize_assumes import materialize_assumes
 from ctac.rewrite.materialize_equate_bounds import materialize_havoc_equate_bounds
 from ctac.rewrite.materialize_h_nonzero import materialize_h_nonzero
 from ctac.rewrite.propagate_aliases import propagate_aliases_into_annotations
+from ctac.rewrite.coalesce_chunk_pairs import coalesce_chunk_pairs
 from ctac.rewrite.rewrite_u128_carry_add import rewrite_u128_carry_add
 from ctac.rewrite.rewrite_u128_decrement import rewrite_u128_decrement
 from ctac.rewrite.unpurify_div import unpurify_div
@@ -80,6 +81,7 @@ def _print_report(
     materialize_hits: dict[str, int] | None = None,
     materialize_equate_bound_hits: int = 0,
     u128_carry_add_hits: int = 0,
+    coalesced_chunk_pairs: int = 0,
     h_nonzero_hits: int = 0,
     u128_decrement_hits: int = 0,
     range_redundant_assumes_dropped: int = 0,
@@ -117,6 +119,8 @@ def _print_report(
             )
         if u128_carry_add_hits:
             line(f"  u128_carry_add: {u128_carry_add_hits}")
+        if coalesced_chunk_pairs:
+            line(f"  coalesced_chunk_pairs: {coalesced_chunk_pairs}")
         if h_nonzero_hits:
             line(f"  materialized_h_nonzero: {h_nonzero_hits}")
         if u128_decrement_hits:
@@ -162,6 +166,8 @@ def _print_report(
         )
     if u128_carry_add_hits:
         line(f"  u128_carry_add: [bold]{u128_carry_add_hits}[/bold]")
+    if coalesced_chunk_pairs:
+        line(f"  coalesced_chunk_pairs: [bold]{coalesced_chunk_pairs}[/bold]")
     if h_nonzero_hits:
         line(f"  materialized_h_nonzero: [bold]{h_nonzero_hits}[/bold]")
     if u128_decrement_hits:
@@ -681,6 +687,25 @@ def rewrite_cmd(
                 rw,
                 extra_symbols=rw.extra_symbols + u128_dec_res.fresh_symbols,
             )
+        # Phase 1.86: coalesce (lo, hi) chunk pairs flowing through
+        # parallel selects into a fresh wide H register, re-anchoring
+        # the pair as Mod / Div of the value-level select. The
+        # convergence loop below then lets the consumers fire
+        # (CHUNKED_U128_LT on the re-anchored chunks, CHUNK_MERGE on
+        # inline recombinations).
+        merged_sorts = dict(tac.symbol_sorts)
+        for n, s in rw.extra_symbols:
+            merged_sorts[n] = s
+        coalesce_res = coalesce_chunk_pairs(
+            program, symbol_sorts=merged_sorts
+        )
+        program = coalesce_res.program
+        coalesce_hits = coalesce_res.hits
+        if coalesce_res.fresh_symbols:
+            rw = replace(
+                rw,
+                extra_symbols=rw.extra_symbols + coalesce_res.fresh_symbols,
+            )
         # DCE again: with R_low / R_hi rewritten to use T_sum, the old
         # R_sum and R_carry defs are dead; the decrement rewrite also
         # leaves B_lo / B_hi / TB defs dead once their consumers are
@@ -1027,6 +1052,7 @@ def rewrite_cmd(
             materialize_hits=materialize_hits,
             materialize_equate_bound_hits=materialize_eq_hits,
             u128_carry_add_hits=u128_add_hits,
+            coalesced_chunk_pairs=coalesce_hits,
             h_nonzero_hits=h_nonzero_hits,
             u128_decrement_hits=u128_dec_hits,
             range_redundant_assumes_dropped=dropped_redundant_assumes,
