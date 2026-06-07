@@ -1426,3 +1426,294 @@ def test_from_s_bif_pretty_names():
     assert (
         pretty_builtin_name("unwrap_twos_complement_256:bif") == "from_s256"
     )
+
+
+# ---------------------------------------------------------------------------
+# Limb-fusion cancellations: MOD_DIV_PIN / CARRY_CHUNK_CANCEL /
+# the borrow-sum composed NEG_S64_DOUBLE emit
+# ---------------------------------------------------------------------------
+
+_LIMB_SYMS = (
+    "X:bv256\n\tL:bv256\n\tH:bv256\n\tG:bool\n\tC:bv256\n\tY2:bv256\n"
+    "\tTBC2:bool\n\tI2:int\n\tTBG2:bool\n\tN1:bv256\n\tX2:bv256\n"
+    "\tY3:bv256\n\tTBC3:bool\n\tI3:int\n\tTBG3:bool\n\tR:bv256\n\tTB:bool"
+)
+
+_F128_MAX = f"0x{(1 << 128) - 1:x}"
+
+
+def test_mod_div_pin_limb_form():
+    """The i128::MIN guard shape: Eq(L, 0) && Eq(H, 2^63) with
+    L/H the Euclidean limbs of X pins X == 2^127."""
+    from ctac.rewrite.rules import MOD_DIV_PIN
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd L Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd H Div(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd G Eq(L 0x0)\n"
+        "\t\tAssignExpCmd TBG2 Eq(H 0x8000000000000000)\n"
+        "\t\tAssignExpCmd TB LNot(LAnd(G TBG2))\n"
+    )
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{body}\t}}\n", syms=_LIMB_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (MOD_DIV_PIN,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("ModDivPin") == 1
+    rhs = _rhs_of(res, "TB")
+    assert rhs == ApplyExpr(
+        "LNot",
+        (ApplyExpr("Eq", (SymbolRef("X"), ConstExpr(f"0x{1 << 127:x}"))),),
+    )
+
+
+def test_mod_div_pin_window_form():
+    """The quotient side R4-unfolded to the aligned window
+    a <= X < a + m."""
+    from ctac.rewrite.rules import MOD_DIV_PIN
+    h128 = f"0x{1 << 127:x}"
+    hi = f"0x{(1 << 127) + (1 << 64):x}"
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd L Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd G Eq(L 0x0)\n"
+        f"\t\tAssignExpCmd TBG2 LAnd(Ge(X {h128}) Lt(X {hi}))\n"
+        "\t\tAssignExpCmd TB LAnd(G TBG2)\n"
+    )
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{body}\t}}\n", syms=_LIMB_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (MOD_DIV_PIN,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("ModDivPin") == 1
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "Eq", (SymbolRef("X"), ConstExpr(f"0x{1 << 127:x}"))
+    )
+
+
+def test_mod_div_pin_nonzero_residue():
+    """General Euclidean pin: Eq(Mod(X, m), 5) && Eq(Div(X, m), 3)
+    -> Eq(X, 3m + 5)."""
+    from ctac.rewrite.rules import MOD_DIV_PIN
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd L Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd H Div(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd TB LAnd(Eq(L 0x5) Eq(0x3 H))\n"
+    )
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{body}\t}}\n", syms=_LIMB_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (MOD_DIV_PIN,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("ModDivPin") == 1
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "Eq", (SymbolRef("X"), ConstExpr(f"0x{3 * (1 << 64) + 5:x}"))
+    )
+
+
+def test_mod_div_pin_mismatched_modulus_no_fire():
+    """Mod by 2^64 paired with Div by 2^32: not a decomposition."""
+    from ctac.rewrite.rules import MOD_DIV_PIN
+    body = (
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd L Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd H Div(X 0x100000000)\n"
+        "\t\tAssignExpCmd TB LAnd(Eq(L 0x0) Eq(H 0x3))\n"
+    )
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{body}\t}}\n", syms=_LIMB_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (MOD_DIV_PIN,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("ModDivPin", 0) == 0
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+def test_mod_div_pin_lemma_via_z3():
+    """Euclidean decomposition is a bijection: X%m==r && X/m==q
+    <=> X == q*m + r (no sign gate -- holds for all int X)."""
+    script = """(set-logic QF_NIA)
+(declare-const X Int)
+(declare-const m Int)
+(declare-const q Int)
+(declare-const r Int)
+(assert (> m 0))
+(assert (and (<= 0 r) (< r m)))
+(assert (not (= (and (= (mod X m) r) (= (div X m) q))
+                (= X (+ (* q m) r)))))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=script, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip() == "unsat", proc.stdout
+
+
+_CARRY_CANCEL_BODY = (
+    "\t\tAssignHavocCmd X\n"
+    f"\t\tAssumeExpCmd Le(X {_F128_MAX})\n"
+    "\t\tAssignExpCmd L Mod(X 0x10000000000000000)\n"
+    "\t\tAssignExpCmd H Div(X 0x10000000000000000)\n"
+    "\t\tAssignExpCmd G Eq(L 0x0)\n"
+    "\t\tAssignExpCmd C Ite(G H IntAdd(H 0x1(int)))\n"
+    "\t\tAssignExpCmd Y2 Mod(C 0x10000000000000000)\n"
+)
+
+_CARRY_SELECT = (
+    "\t\tAssignExpCmd R Ite(G"
+    " Ite(Eq(Y2 0x0) 0x0 Sub(0x10000000000000000 Y2))"
+    " Ite(Le(Y2 0x1) Sub(0x1 Y2) Sub(0x10000000000000001 Y2)))\n"
+)
+
+
+def test_carry_chunk_cancel_fires():
+    """The borrow into the sum and the carry-select un-borrow
+    annihilate: the chunk lands on the plain base limb."""
+    from ctac.rewrite.rules import CARRY_CHUNK_CANCEL
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{_CARRY_CANCEL_BODY}{_CARRY_SELECT}\t}}\n",
+            syms=_LIMB_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (CARRY_CHUNK_CANCEL,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("CarryChunkCancel") == 1
+    rhs = _rhs_of(res, "R")
+    assert rhs == ApplyExpr(
+        "Ite",
+        (
+            ApplyExpr("Eq", (SymbolRef("H"), ConstExpr("0x0"))),
+            ConstExpr("0x0"),
+            ApplyExpr(
+                "Sub", (ConstExpr("0x10000000000000000"), SymbolRef("H"))
+            ),
+        ),
+    )
+
+
+def test_carry_chunk_cancel_guard_mismatch_no_fire():
+    """The select guard must BE the borrow guard; an unrelated bool
+    breaks the annihilation argument."""
+    from ctac.rewrite.rules import CARRY_CHUNK_CANCEL
+    body = _CARRY_CANCEL_BODY + (
+        "\t\tAssignHavocCmd TB\n"
+    ) + _CARRY_SELECT.replace("Ite(G", "Ite(TB", 1)
+    tac = parse_string(
+        _wrap(f"\tBlock e Succ [] {{\n{body}\t}}\n", syms=_LIMB_SYMS),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (CARRY_CHUNK_CANCEL,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("CarryChunkCancel", 0) == 0
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+@pytest.mark.parametrize("w", [64, 128])
+def test_carry_chunk_cancel_lemma_via_z3(w):
+    """base in [0, 2^w), t in {0, 1}, y2 = (base + t) mod 2^w:
+    Ite(t == 0, plain_chunk(y2), carry_chunk(y2)) ==
+    plain_chunk(base)."""
+    two_w = 1 << w
+    script = f"""(set-logic QF_NIA)
+(declare-const base Int)
+(declare-const t Int)
+(assert (and (<= 0 base) (< base {two_w})))
+(assert (or (= t 0) (= t 1)))
+(define-fun y2 () Int (mod (+ base t) {two_w}))
+(define-fun pc () Int (ite (= y2 0) 0 (- {two_w} y2)))
+(define-fun cc () Int (ite (<= y2 1) (- 1 y2) (- {two_w + 1} y2)))
+(assert (not (= (ite (= t 0) pc cc)
+                (ite (= base 0) 0 (- {two_w} base)))))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=script, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip() == "unsat", proc.stdout
+
+
+_BORROW_DOUBLE_BODY = _CARRY_CANCEL_BODY + (
+    "\t\tAssignExpCmd TBC2 Lt(Y2 0x8000000000000000)\n"
+    "\t\tAssignExpCmd I2 IntMul(0x-1(int) Ite(TBC2 Y2 IntSub(Y2 0x10000000000000000(int))))\n"
+    "\t\tAssignExpCmd TBG2 Eq(Y2 0x8000000000000000)\n"
+    "\t\tAssignExpCmd N1 Ite(TBG2 C Apply(wrap_twos_complement_256:bif I2))\n"
+    "\t\tAssignExpCmd X2 Ite(G N1 Add(N1 0x1))\n"
+    "\t\tAssignExpCmd Y3 Mod(X2 0x10000000000000000)\n"
+    "\t\tAssignExpCmd TBC3 Lt(Y3 0x8000000000000000)\n"
+    "\t\tAssignExpCmd I3 IntMul(0x-1(int) Ite(TBC3 Y3 IntSub(Y3 0x10000000000000000(int))))\n"
+    "\t\tAssignExpCmd TBG3 Eq(Y3 0x8000000000000000)\n"
+    "\t\tAssignExpCmd R Ite(TBG3 X2 Apply(wrap_twos_complement_256:bif I3))\n"
+)
+
+
+def test_neg_s64_double_borrow_sum_composed_emit():
+    """The borrow-sum tie lets the double land directly on the base
+    limb: R = signext(H), no negchunk intermediate."""
+    tac = parse_string(
+        _wrap(
+            f"\tBlock e Succ [] {{\n{_BORROW_DOUBLE_BODY}\t}}\n",
+            syms=_LIMB_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_S64_DOUBLE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegS64Double") == 1
+    rhs = _rhs_of(res, "R")
+    assert isinstance(rhs, ApplyExpr) and rhs.op == "Ite"
+    cond, ident, ext = rhs.args
+    assert cond == ApplyExpr(
+        "Le", (SymbolRef("H"), ConstExpr("0x8000000000000000"))
+    )
+    assert ident == SymbolRef("H")
+    assert isinstance(ext, ApplyExpr) and ext.op == "Add"
+    assert ext.args[0] == SymbolRef("H")
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+@pytest.mark.parametrize("w", [64, 128])
+def test_borrow_sum_composed_double_lemma_via_z3(w):
+    """Full-domain lemma for the composed emit: base in [0, 2^w),
+    shared borrow/carry flag t -- the doubled gadget over the
+    borrow sum equals the plain sign extension of base."""
+    two_h = 1 << (w - 1)
+    two_w = 1 << w
+    two_256 = 1 << 256
+    sign_ext = two_256 - two_w
+    script = f"""(set-logic QF_NIA)
+(declare-const base Int)
+(declare-const t Int)
+(assert (and (<= 0 base) (< base {two_w})))
+(assert (or (= t 0) (= t 1)))
+(define-fun C () Int (+ base t))
+(define-fun y2 () Int (mod C {two_w}))
+(define-fun fs () Int (ite (< y2 {two_h}) y2 (- y2 {two_w})))
+(define-fun n1 () Int (ite (= y2 {two_h}) C (mod (- 0 fs) {two_256})))
+(define-fun xp () Int (mod (+ n1 t) {two_256}))
+(define-fun yo () Int (mod xp {two_w}))
+(define-fun fs2 () Int (ite (< yo {two_h}) yo (- yo {two_w})))
+(define-fun r () Int (ite (= yo {two_h}) xp (mod (- 0 fs2) {two_256})))
+(assert (not (= r (ite (<= base {two_h}) base (+ base {sign_ext})))))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:20", "-in"],
+        input=script, capture_output=True, text=True, timeout=40,
+    )
+    assert proc.stdout.strip() == "unsat", proc.stdout

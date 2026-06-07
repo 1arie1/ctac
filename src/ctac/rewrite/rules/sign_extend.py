@@ -934,6 +934,29 @@ def _match_carry_chunk_emit(
     return _match_carry_chunk_shape(el, ctx, y2_name, width)
 
 
+def _cancelled_carry_chunk_evidence(
+    y_outer: SymbolRef,
+    y2: SymbolRef,
+    g: TacExpr | None,
+    ctx: RewriteCtx,
+    width: _Width,
+) -> bool:
+    """CARRY_CHUNK_CANCEL may have rewritten the outer chunk's def
+    to ``plain_chunk(base)`` before this rule ran. The borrow-sum
+    tie ``y2 = Mod(Ite(g, base, base + 1), 2^w)`` recovers the same
+    chunk relation: the cancelled and carry-selected forms are equal
+    by that rule's lemma."""
+    if g is None:
+        return False
+    lc = _match_low_chunk_shape(ctx.lookthrough(y_outer), ctx, width)
+    if lc is None:
+        return False
+    base = _match_borrow_sum(y2, g, ctx, width)
+    return base is not None and canonical_symbol(
+        base.name
+    ) == canonical_symbol(lc.name)
+
+
 def _rewrite_neg_s64_double(
     expr: TacExpr, ctx: RewriteCtx
 ) -> TacExpr | None:
@@ -978,8 +1001,29 @@ def _rewrite_neg_s64_double(
     if not _chunk_evidence(y_outer, x_outer, ctx, width):
         if not _match_carry_chunk_emit(
             ctx.lookthrough(y_outer), ctx, y2_name, g, width
+        ) and not _cancelled_carry_chunk_evidence(
+            y_outer, y2, g, ctx, width
         ):
             return None
+    # Borrow-sum composition: when y2's def is Mod(Ite(g, base,
+    # base + 1), 2^w) over the SAME flag g as the carry select, the
+    # outer chunk y' equals (-base) mod 2^w and the doubly-negated
+    # sign extension lands on base directly. Emit plain
+    # signext(base), skipping the negchunk intermediate -- whose
+    # Eq(y', 0) guard the Eq-over-Ite distribution would unfold
+    # before any downstream consumer could match it. Full-domain
+    # z3 lemma in tests (base in [0, 2^w), shared flag).
+    if g is not None:
+        base = _match_borrow_sum(y2, g, ctx, width)
+        if base is not None:
+            return ApplyExpr(
+                "Ite",
+                (
+                    ApplyExpr("Le", (base, width.half_const)),
+                    base,
+                    ApplyExpr("Add", (base, width.sign_ext_const)),
+                ),
+            )
     # signext((-y') mod 2^w), nested on y' directly so the Ite/Add
     # distribution rules leave it alone: y' == 0 -> 0; y' >= 2^(w-1)
     # -> z = 2^w - y' (the positive band, z <= 2^(w-1)); else the
@@ -1449,5 +1493,304 @@ SIGN_EXT_CMP_LIFT = Rule(
     description=(
         "Unsigned comparisons of signext(z) against constants below "
         "the negative band lift to predicates on z (Lt/Le/Gt/Ge/Eq)."
+    ),
+)
+
+
+# MOD_DIV_PIN / CARRY_CHUNK_CANCEL: limb-fusion cancellations for
+# the i128 (two-limb) negation/abs lowering, where L = Mod(X, 2^64)
+# and H = Div(X, 2^64) algebra runs limb-wise and the gadget rules
+# above lift WITHIN limbs but leave limb-shaped residue. Each rule
+# is a closed-form linear lemma (z3-checked in tests):
+#
+# - Mod/Div pin: Eq(Mod(X, m), r) && Eq(Div(X, m), q) pins
+#   X == q*m + r (Euclidean decomposition is a bijection) -- the
+#   i128::MIN no-overflow guard ``!(L == 0 && H == 2^63)`` becomes
+#   X != 2^127. The quotient also arrives R4-unfolded as the
+#   aligned window a <= X < a + m.
+#
+# - Carry-chunk cancel: with y2 = Mod(C, 2^w) over the borrow sum
+#   C = Ite(g, base, base + 1) (g <=> "no borrow"), the
+#   carry-selected chunk Ite(g, plain_chunk(y2), carry_chunk(y2))
+#   equals plain_chunk(base): the +1 borrow and the +1 un-borrow
+#   annihilate, for base in [0, 2^w) including the C = 2^w edge.
+#
+# The third member of the family lives inside NEG_S64_DOUBLE: with
+# the same borrow-sum tie, the doubly-negated sign extension lands
+# on base directly (signext((-((-base) mod 2^w)) mod 2^w) ==
+# signext(base)), and the composed emit skips the negchunk
+# intermediate that the Eq-over-Ite distribution would otherwise
+# unfold before any standalone consumer could match it.
+
+
+def _match_low_chunk_any(
+    e: TacExpr, ctx: RewriteCtx
+) -> tuple[SymbolRef, _Width] | None:
+    for width in _WIDTHS:
+        y = _match_low_chunk_shape(e, ctx, width)
+        if y is not None:
+            return y, width
+    return None
+
+
+def _ranged_in_width(e: TacExpr, ctx: RewriteCtx, width: _Width) -> bool:
+    rng = infer_expr_range(e, ctx)
+    return not (
+        rng is None
+        or rng[0] is None
+        or rng[0] < 0
+        or rng[1] is None
+        or rng[1] >= width.full
+    )
+
+
+def _match_borrow_sum(
+    y2: SymbolRef, g: TacExpr, ctx: RewriteCtx, width: _Width
+) -> SymbolRef | None:
+    """``y2 = Mod(C, 2^w)`` with ``C = Ite(g', base, base + 1)``,
+    ``g'`` the same no-borrow condition as ``g``; returns ``base``
+    when range proves ``base`` in ``[0, 2^w)``."""
+    y2_def = ctx.lookthrough(y2)
+    if not (
+        isinstance(y2_def, ApplyExpr)
+        and y2_def.op in {"Mod", "IntMod"}
+        and len(y2_def.args) == 2
+        and const_to_int(y2_def.args[1]) == width.full
+    ):
+        return None
+    c_def = ctx.lookthrough(y2_def.args[0])
+    if not (
+        isinstance(c_def, ApplyExpr)
+        and c_def.op == "Ite"
+        and len(c_def.args) == 3
+    ):
+        return None
+    g2, no_borrow, borrow = c_def.args
+    if not eq_modulo_meta(ctx.lookthrough(g2), ctx.lookthrough(g)):
+        return None
+    base_name = _canon_sym(no_borrow)
+    if base_name is None:
+        return None
+    if not (
+        isinstance(borrow, ApplyExpr)
+        and borrow.op in {"Add", "IntAdd"}
+        and len(borrow.args) == 2
+    ):
+        return None
+    a, b = borrow.args
+    if const_to_int(b) == 1 and _canon_sym(a) == base_name:
+        pass
+    elif const_to_int(a) == 1 and _canon_sym(b) == base_name:
+        pass
+    else:
+        return None
+    if not _ranged_in_width(no_borrow, ctx, width):
+        return None
+    assert isinstance(no_borrow, SymbolRef)
+    return no_borrow
+
+
+def _plain_chunk_emit(base: SymbolRef, width: _Width) -> TacExpr:
+    return ApplyExpr(
+        "Ite",
+        (
+            ApplyExpr("Eq", (base, ConstExpr("0x0"))),
+            ConstExpr("0x0"),
+            ApplyExpr("Sub", (width.full_const, base)),
+        ),
+    )
+
+
+def _rewrite_carry_chunk_cancel(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op == "Ite"
+        and len(expr.args) == 3
+    ):
+        return None
+    g, t, el = expr.args
+    plain = _match_low_chunk_any(t, ctx)
+    if plain is None:
+        return None
+    y2, width = plain
+    y2_name = canonical_symbol(y2.name)
+    if not _match_carry_chunk_shape(el, ctx, y2_name, width):
+        return None
+    base = _match_borrow_sum(y2, g, ctx, width)
+    if base is None:
+        return None
+    return _plain_chunk_emit(base, width)
+
+
+CARRY_CHUNK_CANCEL = Rule(
+    name="CarryChunkCancel",
+    fn=_rewrite_carry_chunk_cancel,
+    description=(
+        "Ite(g, plain_chunk(y2), carry_chunk(y2)) with y2 = "
+        "Mod(Ite(g, base, base + 1), 2^w) -> plain_chunk(base): the "
+        "borrow into the sum and the carry-select un-borrow "
+        "annihilate."
+    ),
+)
+
+
+def _match_eq_const(expr: TacExpr) -> tuple[TacExpr, int] | None:
+    """``Eq(e, c)`` with one side a constant (either orientation);
+    returns ``(e, c)``."""
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op == "Eq"
+        and len(expr.args) == 2
+    ):
+        return None
+    a, b = expr.args
+    v = const_to_int(b)
+    if v is not None and not isinstance(a, ConstExpr):
+        return a, v
+    v = const_to_int(a)
+    if v is not None:
+        return b, v
+    return None
+
+
+def _match_mod_residue(
+    e: TacExpr, ctx: RewriteCtx
+) -> tuple[str, int, int] | None:
+    """``Eq(Mod(X, m), r)`` (either orientation); returns
+    ``(canonical X, m, r)``."""
+    eq = _match_eq_const(e)
+    if eq is None:
+        return None
+    inner, r = eq
+    inner = ctx.lookthrough(inner)
+    if not (
+        isinstance(inner, ApplyExpr)
+        and inner.op in {"Mod", "IntMod"}
+        and len(inner.args) == 2
+    ):
+        return None
+    m = const_to_int(inner.args[1])
+    x_name = _canon_sym(inner.args[0])
+    if m is None or m <= 0 or x_name is None or r < 0 or r >= m:
+        return None
+    return x_name, m, r
+
+
+def _match_const_window(
+    e: TacExpr, ctx: RewriteCtx
+) -> tuple[SymbolRef, int, int] | None:
+    """``Ge(X, a) && Lt(X, b)`` (modulo conjunct order and compare
+    orientation); returns ``(X, a, b)`` -- inclusive lower,
+    exclusive upper."""
+    if not (
+        isinstance(e, ApplyExpr) and e.op == "LAnd" and len(e.args) == 2
+    ):
+        return None
+
+    def lower(c: TacExpr) -> tuple[SymbolRef, int] | None:
+        c = ctx.lookthrough(c)
+        if not (isinstance(c, ApplyExpr) and len(c.args) == 2):
+            return None
+        a, b = c.args
+        if c.op == "Ge" and isinstance(a, SymbolRef):
+            v = const_to_int(b)
+            return (a, v) if v is not None else None
+        if c.op == "Le" and isinstance(b, SymbolRef):
+            v = const_to_int(a)
+            return (b, v) if v is not None else None
+        return None
+
+    def upper(c: TacExpr) -> tuple[SymbolRef, int] | None:
+        c = ctx.lookthrough(c)
+        if not (isinstance(c, ApplyExpr) and len(c.args) == 2):
+            return None
+        a, b = c.args
+        if c.op == "Lt" and isinstance(a, SymbolRef):
+            v = const_to_int(b)
+            return (a, v) if v is not None else None
+        if c.op == "Gt" and isinstance(b, SymbolRef):
+            v = const_to_int(a)
+            return (b, v) if v is not None else None
+        return None
+
+    c1, c2 = e.args
+    for lo_c, hi_c in ((c1, c2), (c2, c1)):
+        lo = lower(lo_c)
+        hi = upper(hi_c)
+        if lo is None or hi is None:
+            continue
+        x_lo, a = lo
+        x_hi, b = hi
+        if canonical_symbol(x_lo.name) != canonical_symbol(x_hi.name):
+            continue
+        return x_lo, a, b
+    return None
+
+
+def _match_div_quotient(
+    e: TacExpr, ctx: RewriteCtx, m: int
+) -> tuple[SymbolRef, int] | None:
+    """Quotient evidence for modulus ``m``: ``Eq(Div(X, m), q)``
+    directly, or the R4-unfolded window ``a <= X < a + m`` with
+    ``m | a`` (then ``q = a / m``). Returns ``(X, q)``."""
+    eq = _match_eq_const(e)
+    if eq is not None:
+        inner, q = eq
+        inner = ctx.lookthrough(inner)
+        if (
+            isinstance(inner, ApplyExpr)
+            and inner.op in {"Div", "IntDiv"}
+            and len(inner.args) == 2
+            and const_to_int(inner.args[1]) == m
+            and isinstance(inner.args[0], SymbolRef)
+            and q >= 0
+        ):
+            return inner.args[0], q
+        return None
+    win = _match_const_window(e, ctx)
+    if win is None:
+        return None
+    x, a, b = win
+    if b - a != m or a % m != 0 or a < 0:
+        return None
+    return x, a // m
+
+
+def _rewrite_mod_div_pin(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op == "LAnd"
+        and len(expr.args) == 2
+    ):
+        return None
+    c1, c2 = expr.args
+    for mod_c, div_c in ((c1, c2), (c2, c1)):
+        mz = _match_mod_residue(ctx.lookthrough(mod_c), ctx)
+        if mz is None:
+            continue
+        x_name, m, r = mz
+        quot = _match_div_quotient(ctx.lookthrough(div_c), ctx, m)
+        if quot is None:
+            continue
+        x, q = quot
+        if canonical_symbol(x.name) != x_name:
+            continue
+        return ApplyExpr("Eq", (x, ConstExpr(f"0x{q * m + r:x}")))
+    return None
+
+
+MOD_DIV_PIN = Rule(
+    name="ModDivPin",
+    fn=_rewrite_mod_div_pin,
+    description=(
+        "Eq(Mod(X, m), r) && Eq(Div(X, m), q) -> Eq(X, q*m + r): a "
+        "full Euclidean residue/quotient pair pins the value (the "
+        "i128::MIN guard shape, L == 0 && H == 2^63 -> X == 2^127). "
+        "The quotient side also matches its R4-unfolded window form "
+        "a <= X < a + m with m | a."
     ),
 )

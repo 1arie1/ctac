@@ -59,7 +59,9 @@ from ctac.rewrite.rules.range_fold import RANGE_FOLD
 from ctac.rewrite.rules.sar_to_shr import SAR_TO_SHR_NONNEG
 from ctac.rewrite.rules.select_over_store import SELECT_OVER_STORE
 from ctac.rewrite.rules.sign_extend import (
+    CARRY_CHUNK_CANCEL,
     FROM_S64_ZERO_TEST,
+    MOD_DIV_PIN,
     NEG_S64_DOUBLE,
     SIGN_EXT_CMP_LIFT,
     SIGN_EXT_SIGN_TEST,
@@ -328,6 +330,12 @@ simplify_pipeline: tuple[Rule, ...] = (
     # unextended). The carry composition covers the high-limb
     # un-borrow.
     NEG_S64_DOUBLE,
+    # Limb-fusion cancellations for the two-limb (i128) lowering:
+    # the borrow-into-sum / carry-select un-borrow pair annihilates
+    # (chunk lands on the plain base limb), and a full Euclidean
+    # residue/quotient pair pins the value (the i128::MIN guard).
+    CARRY_CHUNK_CANCEL,
+    MOD_DIV_PIN,
     # Consumers of the sign-extension shape: signed zero tests and
     # unsigned const compares lift to predicates on the chunk.
     SIGN_EXT_SIGN_TEST,
@@ -479,6 +487,8 @@ all_rule_names: tuple[str, ...] = (
     NEG_S64_LOW_CHUNK.name,
     NEG_S64_SIGN_TEST.name,
     NEG_S64_DOUBLE.name,
+    CARRY_CHUNK_CANCEL.name,
+    MOD_DIV_PIN.name,
     SIGN_EXT_SIGN_TEST.name,
     SIGN_EXT_CMP_LIFT.name,
     SIGNED_CMP_NEG_ONE.name,
@@ -500,12 +510,12 @@ __all__ = [
     "ARITH_CONST_FOLD",
     "BOOL_ABSORB",
     "BOOL_CONST_FOLD",
+    "CARRY_CHUNK_CANCEL",
     "CEIL_DIV_KNUTH",
     "CEIL_TO_MULTIPLE",
-    "INT_MUL_DIV_CEIL",
-    "CHUNK_MERGE",
     "CHUNKED_MUL_BY_2N",
     "CHUNKED_U128_LT",
+    "CHUNK_MERGE",
     "CMP_RANGE_FOLD",
     "CP_ALIAS",
     "CSE",
@@ -516,6 +526,7 @@ __all__ = [
     "FROM_S64_ZERO_TEST",
     "HAVOC_EQUATE_FOLD",
     "HAVOC_EQUATE_SUBST",
+    "INT_MUL_DIV_CEIL",
     "INT_MUL_EQ_ZERO",
     "ITE_BOOL",
     "ITE_COND_FOLD",
@@ -530,6 +541,7 @@ __all__ = [
     "MULDIV_CONST_CANCEL",
     "MULDIV_TO_FULL_PRODUCT_DIV",
     "MUL_BV_TO_INT",
+    "MOD_DIV_PIN",
     "MUL_DIV_TO_MULDIV",
     "MUL_ZERO_ONE_FOLD",
     "N1_SHIFTED_BWAND",
@@ -545,24 +557,24 @@ __all__ = [
     "R1_BITFIELD_STRIP",
     "R2_DIV_FUSE",
     "R3_DIV_MUL_CANCEL",
-    "R4_DIV_IN_CMP",
     "R4A_DIV_PURIFY",
+    "R4_DIV_IN_CMP",
     "R6_CEILDIV",
     "RANGE_FOLD",
     "SAR_TO_SHR_NONNEG",
     "SELECT_OVER_STORE",
     "SHIFT_LEFT_TO_INT_MUL",
     "SIGNED_CMP_NEG_ONE",
+    "SIGN_EXTEND_UNWRAP",
     "SIGN_EXT_CMP_LIFT",
     "SIGN_EXT_SIGN_TEST",
-    "SIGN_EXTEND_UNWRAP",
     "STORE_EQ_NORM",
     "SUB_BV_TO_INT",
     "SUB_ITE_DIST_LEFT",
     "SUB_ITE_DIST_RIGHT",
+    "ValidationCase",
     "WRAP_COMPARE_LIFT",
     "XOR_BOOL_INT_EQ",
-    "ValidationCase",
     "all_rule_names",
     "cse_pipeline",
     "default_pipeline",
