@@ -75,6 +75,7 @@ from ctac.analysis.symbols import canonical_symbol
 from ctac.ast.nodes import (
     ApplyExpr,
     AssignExpCmd,
+    AssumeExpCmd,
     ConstExpr,
     SymbolRef,
     TacCmd,
@@ -421,8 +422,286 @@ def coalesce_chunk_pairs(
             fresh_symbols.append((name, "bv256"))
             sorts = {**sorts, name: "bv256"}
         total_hits += round_hits
+    slot_fresh = _FreshNames(program)
+    program, slot_hits, slot_minted = _coalesce_recomb_slots(
+        program, sorts, slot_fresh
+    )
+    total_hits += slot_hits
+    for name in slot_minted:
+        fresh_symbols.append((name, "bv256"))
     return CoalesceChunkPairsResult(
         program=program,
         hits=total_hits,
         fresh_symbols=tuple(fresh_symbols),
     )
+
+
+# ---------------------------------------------------------------------------
+# Increment 1.5 — dynamic pair slots, seeded by recombination witnesses.
+#
+# A post-join recombination ``(P_hi << 64) + P_lo`` over two
+# DSA-dynamic symbols is the pairing witness for a slot (P_lo, P_hi)
+# whose per-branch defs feed u128 values around the CFG. Each slot
+# gets a fresh dynamic ``H`` (one def per defining block, with the
+# branch's value), and the recombination consumers rewrite to ``H``.
+# Branch values are definitional — ``wrap((rhs_hi << 64) + rhs_lo)``
+# names whatever the branch recombines to, with NO semantic gate —
+# so resolution never abstains on ranges:
+#
+#   * const pair            -> the folded literal
+#   * static chunk pair     -> the extraction source V itself
+#   * dynamic pair slot     -> the child slot's H (cascade)
+#   * static symbols        -> a static H_b := Add(ShiftLeft(hi), lo)
+#                              at the end of the block's static prefix
+#
+# rw-eq: the H defs are rhs-only fresh assigns (rule 3); each
+# rewritten consumer is a rule-2 CHK that closes by case split over
+# the dynamic merge (per branch, H literally equals the recomb).
+# ---------------------------------------------------------------------------
+
+
+def _find_recomb(
+    rhs: TacExpr,
+) -> tuple[SymbolRef, SymbolRef, TacExpr] | None:
+    """``Add(ShiftLeft(hi, 64), lo)`` over two symbols; returns
+    ``(lo, hi, shift_const)``."""
+    if not (
+        isinstance(rhs, ApplyExpr) and rhs.op == "Add" and len(rhs.args) == 2
+    ):
+        return None
+    for shl, other in (rhs.args, rhs.args[::-1]):
+        if not (
+            isinstance(shl, ApplyExpr)
+            and shl.op == "ShiftLeft"
+            and len(shl.args) == 2
+            and isinstance(shl.args[0], SymbolRef)
+            and isinstance(other, SymbolRef)
+            and const_to_int(shl.args[1]) == 64
+        ):
+            continue
+        return other, shl.args[0], shl.args[1]
+    return None
+
+
+class _SlotEdits:
+    """Per-block edit ledger, applied once at the end. Inserts land
+    as one group at the block's original first-dynamic boundary:
+    hoisted statics first, then the minted dynamic H defs in mint
+    order (slot resolution completes children before parents, so a
+    same-block ``H_parent := H_child`` reference is well-ordered)."""
+
+    def __init__(self) -> None:
+        self.static_inserts: dict[str, list[TacCmd]] = {}
+        self.dyn_inserts: dict[str, list[TacCmd]] = {}
+        self.rhs_replacements: dict[str, list[tuple[int, TacExpr]]] = {}
+
+
+def _coalesce_recomb_slots(
+    program: TacProgram, sorts: dict[str, str], fresh: _FreshNames
+) -> tuple[TacProgram, int, list[str]]:
+    ctx = RewriteCtx(program, symbol_sorts=sorts)
+    dynamic_lhs = _dynamic_lhs_names(program)
+    havoc_lhs: set[str] = set()
+    defs: dict[str, list[tuple[str, int, AssignExpCmd]]] = {}
+    for block in program.blocks:
+        for idx, cmd in enumerate(block.commands):
+            lhs = getattr(cmd, "lhs", None)
+            if not isinstance(lhs, str):
+                continue
+            canon = canonical_symbol(lhs)
+            if isinstance(cmd, AssignExpCmd):
+                defs.setdefault(canon, []).append((block.id, idx, cmd))
+            else:
+                havoc_lhs.add(canon)
+
+    # Seed slots from dynamic recombination sites.
+    seeds: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    for block in program.blocks:
+        for idx, cmd in enumerate(block.commands):
+            if not isinstance(cmd, AssignExpCmd):
+                continue
+            rec = _find_recomb(cmd.rhs)
+            if rec is None:
+                continue
+            lo, hi, _shift = rec
+            lo_c, hi_c = canonical_symbol(lo.name), canonical_symbol(hi.name)
+            if lo_c in dynamic_lhs and hi_c in dynamic_lhs:
+                seeds.setdefault((lo_c, hi_c), []).append((block.id, idx))
+
+    if not seeds:
+        return program, 0, []
+
+    edits = _SlotEdits()
+    minted: list[str] = []
+    resolved: dict[tuple[str, str], str | None] = {}
+    visiting: set[tuple[str, str]] = set()
+
+    def branch_value(
+        block_id: str, rhs_lo: TacExpr, rhs_hi: TacExpr
+    ) -> TacExpr | None:
+        c_lo, c_hi = const_to_int(rhs_lo), const_to_int(rhs_hi)
+        if c_lo is not None and c_hi is not None:
+            return ConstExpr(hex(((c_hi << 64) + c_lo) % (1 << 256)))
+        if isinstance(rhs_lo, SymbolRef) and isinstance(rhs_hi, SymbolRef):
+            lo_chunk = _chunk_of(rhs_lo, ctx)
+            hi_chunk = _chunk_of(rhs_hi, ctx)
+            if (
+                lo_chunk is not None
+                and hi_chunk is not None
+                and lo_chunk[0] == "lo"
+                and hi_chunk[0] == "hi"
+                and canonical_symbol(lo_chunk[1].name)
+                == canonical_symbol(hi_chunk[1].name)
+            ):
+                return lo_chunk[1]
+            slo = canonical_symbol(rhs_lo.name)
+            shi = canonical_symbol(rhs_hi.name)
+            if slo in dynamic_lhs and shi in dynamic_lhs:
+                child = resolve((slo, shi))
+                return SymbolRef(child) if child is not None else None
+        return _definitional_recomb(block_id, rhs_lo, rhs_hi)
+
+    def _free_syms(e: TacExpr) -> set[str]:
+        out: set[str] = set()
+        stack = [e]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, SymbolRef):
+                out.add(canonical_symbol(cur.name))
+            elif isinstance(cur, ApplyExpr):
+                stack.extend(cur.args)
+        return out
+
+    def _block_dynamic_lhs(block_id: str) -> set[str]:
+        out: set[str] = set()
+        for canon, sites in defs.items():
+            if canon in dynamic_lhs and any(b == block_id for b, _, _ in sites):
+                out.add(canon)
+        return out
+
+    def _definitional_recomb(
+        block_id: str, rhs_lo: TacExpr, rhs_hi: TacExpr
+    ) -> TacExpr | None:
+        """Name the branch value as a static recomb at the end of the
+        static prefix. Inline (non-symbol) arms are hoisted as static
+        arm defs first so downstream recognizers can look through
+        them. Gated on the arms referencing no dynamic defined in
+        this same block — hoisting such a reference above its
+        redefinition would change its value (the lift_dynamic_ite
+        substitution hazard; bail instead of substituting)."""
+        block_dyn = _block_dynamic_lhs(block_id)
+        if (_free_syms(rhs_lo) | _free_syms(rhs_hi)) & block_dyn:
+            return None
+
+        def as_sym(e: TacExpr) -> TacExpr:
+            if isinstance(e, (SymbolRef, ConstExpr)):
+                return e
+            arm = fresh.pick()
+            minted.append(arm)
+            edits.static_inserts.setdefault(block_id, []).append(
+                canonicalize_cmd(AssignExpCmd(raw="", lhs=arm, rhs=e))
+            )
+            return SymbolRef(arm)
+
+        lo_part = as_sym(rhs_lo)
+        hi_part = as_sym(rhs_hi)
+        hb = fresh.pick()
+        minted.append(hb)
+        edits.static_inserts.setdefault(block_id, []).append(
+            canonicalize_cmd(
+                AssignExpCmd(
+                    raw="",
+                    lhs=hb,
+                    rhs=ApplyExpr(
+                        "Add",
+                        (
+                            ApplyExpr(
+                                "ShiftLeft", (hi_part, ConstExpr("0x40"))
+                            ),
+                            lo_part,
+                        ),
+                    ),
+                )
+            )
+        )
+        return SymbolRef(hb)
+
+    def resolve(slot: tuple[str, str]) -> str | None:
+        if slot in resolved:
+            return resolved[slot]
+        if slot in visiting:
+            return None
+        visiting.add(slot)
+        lo_c, hi_c = slot
+        result: str | None = None
+        if lo_c not in havoc_lhs and hi_c not in havoc_lhs:
+            lo_defs = {b: (i, c) for b, i, c in defs.get(lo_c, [])}
+            hi_defs = {b: (i, c) for b, i, c in defs.get(hi_c, [])}
+            if lo_defs and set(lo_defs) == set(hi_defs):
+                values: dict[str, TacExpr] = {}
+                for b in lo_defs:
+                    v = branch_value(
+                        b, lo_defs[b][1].rhs, hi_defs[b][1].rhs
+                    )
+                    if v is None:
+                        break
+                    values[b] = v
+                else:
+                    h = fresh.pick()
+                    minted.append(h)
+                    for b in lo_defs:
+                        edits.dyn_inserts.setdefault(b, []).append(
+                            canonicalize_cmd(
+                                AssignExpCmd(raw="", lhs=h, rhs=values[b])
+                            )
+                        )
+                    result = h
+        visiting.discard(slot)
+        resolved[slot] = result
+        return result
+
+    hits = 0
+    for slot, sites in seeds.items():
+        h = resolve(slot)
+        if h is None:
+            continue
+        for block_id, idx in sites:
+            edits.rhs_replacements.setdefault(block_id, []).append(
+                (idx, SymbolRef(h))
+            )
+            hits += 1
+
+    if not hits:
+        return program, 0, []
+
+    new_blocks: list[TacBlock] = []
+    for block in program.blocks:
+        s_ins = edits.static_inserts.get(block.id, [])
+        d_ins = edits.dyn_inserts.get(block.id, [])
+        reps = edits.rhs_replacements.get(block.id, [])
+        if not (s_ins or d_ins or reps):
+            new_blocks.append(block)
+            continue
+        commands: list[TacCmd] = list(block.commands)
+        for idx, new_rhs in reps:
+            old = commands[idx]
+            assert isinstance(old, AssignExpCmd)
+            commands[idx] = canonicalize_cmd(
+                replace(old, raw="", rhs=new_rhs)
+            )
+        at = _first_dynamic_index(block, dynamic_lhs)
+        commands[at:at] = list(s_ins)
+        # The dynamic H group goes at the END of the dynamic region
+        # (before the trailing terminator / annotation tail): the
+        # rw-eq walker emits rw-only extras at their stream position,
+        # and a front-placed dynamic would put every subsequently
+        # paired static after it in the merged program.
+        if d_ins:
+            tail = len(commands)
+            while tail > 0 and not isinstance(
+                commands[tail - 1], (AssignExpCmd, AssumeExpCmd)
+            ) and type(commands[tail - 1]).__name__ != "AssignHavocCmd":
+                tail -= 1
+            commands[tail:tail] = list(d_ins)
+        new_blocks.append(replace(block, commands=commands))
+    return TacProgram(blocks=new_blocks), hits, minted

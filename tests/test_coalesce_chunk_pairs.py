@@ -229,3 +229,118 @@ def test_coalesce_unbounded_widen_no_fire():
     )
     res = coalesce_chunk_pairs(tac.program, symbol_sorts=tac.symbol_sorts)
     assert res.hits == 0
+
+
+def test_recomb_witness_dynamic_slot():
+    """A post-join recombination over a dynamic pair seeds a slot:
+    per-branch H defs (chunk-pair branch resolves to the extraction
+    source; const branch folds) and the consumer rewrites to H."""
+    body = (
+        "\tBlock e Succ [t, f] {\n"
+        "\t\tAssignHavocCmd V\n"
+        f"\t\tAssumeExpCmd Le(V {_U128MAX})\n"
+        "\t\tAssignHavocCmd B\n"
+        f"\t\tAssignExpCmd VL Mod(V {_TWO64})\n"
+        f"\t\tAssignExpCmd VH Div(V {_TWO64})\n"
+        "\t\tJumpiCmd t f B\n"
+        "\t}\n"
+        "\tBlock t Succ [j] {\n"
+        "\t\tAssignExpCmd PL VL\n"
+        "\t\tAssignExpCmd PH VH\n"
+        "\t\tJumpCmd j\n"
+        "\t}\n"
+        "\tBlock f Succ [j] {\n"
+        "\t\tAssignExpCmd PL 0x5\n"
+        "\t\tAssignExpCmd PH 0x2\n"
+        "\t\tJumpCmd j\n"
+        "\t}\n"
+        "\tBlock j Succ [] {\n"
+        "\t\tAssignExpCmd R Add(ShiftLeft(PH 0x40) PL)\n"
+        "\t\tAssertCmd Lt(R V)\n"
+        "\t}"
+    )
+    syms = "V:bv256\n\tB:bool\n\tVL:bv256\n\tVH:bv256\n\tPL:bv256\n\tPH:bv256\n\tR:bv256"
+    tac = parse_string(_wrap(body, syms=syms), path="<s>")
+    res = coalesce_chunk_pairs(tac.program, symbol_sorts=tac.symbol_sorts)
+    assert res.hits == 1
+    assert _def_of(res.program, "R") == SymbolRef("H0")
+    blocks = {b.id: b for b in res.program.blocks}
+    t_defs = {
+        c.lhs: c.rhs for c in blocks["t"].commands
+        if isinstance(c, AssignExpCmd)
+    }
+    f_defs = {
+        c.lhs: c.rhs for c in blocks["f"].commands
+        if isinstance(c, AssignExpCmd)
+    }
+    assert t_defs["H0"] == SymbolRef("V")
+    assert f_defs["H0"] == ConstExpr(hex((2 << 64) + 5))
+
+
+def test_recomb_witness_inline_arm_hoist():
+    """A branch whose pair defs carry inline exprs: the arms hoist as
+    static defs and the branch value is their definitional recomb."""
+    body = (
+        "\tBlock e Succ [t, f] {\n"
+        "\t\tAssignHavocCmd A\n"
+        f"\t\tAssumeExpCmd Le(A {_U64MAX})\n"
+        "\t\tAssignHavocCmd B\n"
+        "\t\tJumpiCmd t f B\n"
+        "\t}\n"
+        "\tBlock t Succ [j] {\n"
+        "\t\tAssignExpCmd PL IntAdd(A 0x1(int))\n"
+        "\t\tAssignExpCmd PH 0x0\n"
+        "\t\tJumpCmd j\n"
+        "\t}\n"
+        "\tBlock f Succ [j] {\n"
+        "\t\tAssignExpCmd PL 0x0\n"
+        "\t\tAssignExpCmd PH 0x0\n"
+        "\t\tJumpCmd j\n"
+        "\t}\n"
+        "\tBlock j Succ [] {\n"
+        "\t\tAssignExpCmd R Add(ShiftLeft(PH 0x40) PL)\n"
+        "\t\tAssertCmd Lt(R A)\n"
+        "\t}"
+    )
+    syms = "A:bv256\n\tB:bool\n\tPL:bv256\n\tPH:bv256\n\tR:bv256"
+    tac = parse_string(_wrap(body, syms=syms), path="<s>")
+    res = coalesce_chunk_pairs(tac.program, symbol_sorts=tac.symbol_sorts)
+    assert res.hits == 1
+    assert _def_of(res.program, "R") == SymbolRef("H2")
+    blocks = {b.id: b for b in res.program.blocks}
+    t_lhs = [c.lhs for c in blocks["t"].commands if isinstance(c, AssignExpCmd)]
+    # Hoisted arm + definitional recomb precede the dynamic pair defs.
+    assert t_lhs.index("H1") < t_lhs.index("PL")
+    assert t_lhs.index("H0") < t_lhs.index("H1")
+
+
+def test_recomb_witness_same_block_dynamic_ref_abstains():
+    """A branch RHS referencing a dynamic redefined in the same block
+    cannot be hoisted (the value would change) — slot abstains."""
+    body = (
+        "\tBlock e Succ [t, f] {\n"
+        "\t\tAssignHavocCmd A\n"
+        "\t\tAssignHavocCmd B\n"
+        "\t\tJumpiCmd t f B\n"
+        "\t}\n"
+        "\tBlock t Succ [j] {\n"
+        "\t\tAssignExpCmd Q A\n"
+        "\t\tAssignExpCmd PL Q\n"
+        "\t\tAssignExpCmd PH 0x0\n"
+        "\t\tJumpCmd j\n"
+        "\t}\n"
+        "\tBlock f Succ [j] {\n"
+        "\t\tAssignExpCmd Q 0x1\n"
+        "\t\tAssignExpCmd PL IntAdd(Q 0x1(int))\n"
+        "\t\tAssignExpCmd PH 0x0\n"
+        "\t\tJumpCmd j\n"
+        "\t}\n"
+        "\tBlock j Succ [] {\n"
+        "\t\tAssignExpCmd R Add(ShiftLeft(PH 0x40) PL)\n"
+        "\t\tAssertCmd Lt(R A)\n"
+        "\t}"
+    )
+    syms = "A:bv256\n\tB:bool\n\tQ:bv256\n\tPL:bv256\n\tPH:bv256\n\tR:bv256"
+    tac = parse_string(_wrap(body, syms=syms), path="<s>")
+    res = coalesce_chunk_pairs(tac.program, symbol_sorts=tac.symbol_sorts)
+    assert res.hits == 0
