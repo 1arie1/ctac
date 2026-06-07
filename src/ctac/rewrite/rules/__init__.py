@@ -62,6 +62,7 @@ from ctac.rewrite.rules.sign_extend import (
     CARRY_CHUNK_CANCEL,
     FROM_S64_ZERO_TEST,
     MOD_DIV_PIN,
+    NEG_CHUNK_CMP_LIFT,
     NEG_FROM_S_CMP_LIFT,
     NEG_S64_DOUBLE,
     SIGN_EXT_CMP_LIFT,
@@ -333,6 +334,10 @@ simplify_pipeline: tuple[Rule, ...] = (
     # the no-overflow assumes: Cmp(IntMul(-1, from_s<w>(y)), c)
     # lifts to a chunk band on y.
     NEG_FROM_S_CMP_LIFT,
+    # Order compares on the materialized unsigned negation chunk
+    # Ite(Eq(y, 0), 0, IntSub(2^w, y)) lift to bands on y; bands on
+    # a Div-defined y reach R4 for the X-window lift.
+    NEG_CHUNK_CMP_LIFT,
     # The bare from_s64 zero test (no wrap round trip), living deep
     # inside the i128 negation's no-overflow assumes.
     FROM_S64_ZERO_TEST,
@@ -537,6 +542,7 @@ all_rule_names: tuple[str, ...] = (
     SELECT_OVER_STORE.name,
     SIGN_EXTEND_UNWRAP.name,
     NEG_S64_ZERO_TEST.name,
+    NEG_CHUNK_CMP_LIFT.name,
     NEG_FROM_S_CMP_LIFT.name,
     NEG_S64_PLUS_ONE_ZERO_TEST.name,
     NEG_S64_PLUS_ONE_CMP_LIFT.name,
@@ -608,6 +614,7 @@ __all__ = [
     "N4_SHR_CONST",
     "NEG_S64_DOUBLE",
     "NEG_S64_LOW_CHUNK",
+    "NEG_CHUNK_CMP_LIFT",
     "NEG_FROM_S_CMP_LIFT",
     "NEG_S64_PLUS_ONE_CMP_LIFT",
     "NEG_S64_PLUS_ONE_ZERO_TEST",

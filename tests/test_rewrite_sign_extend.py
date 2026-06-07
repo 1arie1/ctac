@@ -15,6 +15,7 @@ from ctac.rewrite.rules import (
     NEG_S64_DOUBLE,
     SIGN_EXT_CMP_LIFT,
     SIGN_EXT_SIGN_TEST,
+    NEG_CHUNK_CMP_LIFT,
     NEG_FROM_S_CMP_LIFT,
     NEG_S64_LOW_CHUNK,
     NEG_S64_PLUS_ONE_CMP_LIFT,
@@ -2060,3 +2061,179 @@ def test_neg_from_s_band_table_via_z3(w):
         input=script, capture_output=True, text=True, timeout=40,
     )
     assert proc.stdout.strip() == "unsat", (w, proc.stdout)
+
+
+# ---------------------------------------------------------------------------
+# NEG_CHUNK_CMP_LIFT
+# ---------------------------------------------------------------------------
+
+
+def test_neg_chunk_cmp_lift_div_guard_form():
+    """The R1537 shape: guard in its R4-lifted form Lt(x, 2^w) with
+    y = Div(x, 2^w). Ge(negchunk, 2^63) -> 1 <= y <= 2^63 (which R4
+    then lifts to X-windows in the final phase)."""
+    body = (
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssumeExpCmd Le(X 0xffffffffffffffffffffffffffffffff)\n"
+        "\t\tAssignExpCmd H Div(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd TB7 Lt(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd N Ite(TB7 0x0 IntSub(0x10000000000000000(int) H))\n"
+        "\t\tAssignExpCmd TB Ge(N 0x8000000000000000)\n"
+        "\t}\n"
+    )
+    tac = parse_string(
+        _wrap(body, syms="X:bv256\n\tH:bv256\n\tTB7:bool\n\tN:bv256\n\tTB:bool"),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_CHUNK_CMP_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegChunkCmpLift") == 1
+    y = SymbolRef("H")
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "LAnd",
+        (
+            ApplyExpr("Ge", (y, ConstExpr("0x1"))),
+            ApplyExpr("Le", (y, ConstExpr("0x8000000000000000"))),
+        ),
+    )
+
+
+def test_neg_chunk_cmp_lift_eq_guard_form():
+    """The R2586 shape: direct zero-test guard behind a purify TB,
+    y a Mod chunk. Le(negchunk, 10) -> y == 0 \\/ y >= 2^64 - 10."""
+    body = (
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd TBZ Eq(Y 0x0)\n"
+        "\t\tAssignExpCmd N Ite(TBZ 0x0 IntSub(0x10000000000000000(int) Y))\n"
+        "\t\tAssignExpCmd TB Le(N 0xa)\n"
+        "\t}\n"
+    )
+    tac = parse_string(
+        _wrap(body, syms="X:bv256\n\tY:bv256\n\tTBZ:bool\n\tN:bv256\n\tTB:bool"),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_CHUNK_CMP_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegChunkCmpLift") == 1
+    y = SymbolRef("Y")
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "LOr",
+        (
+            ApplyExpr("Eq", (y, ConstExpr("0x0"))),
+            ApplyExpr("Ge", (y, ConstExpr("0xfffffffffffffff6"))),
+        ),
+    )
+
+
+def test_neg_chunk_cmp_lift_wrong_guard_no_fire():
+    """Guard tests a different symbol than the subtrahend: not the
+    negation chunk — no fire."""
+    body = (
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignHavocCmd Z\n"
+        "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd TBZ Eq(Z 0x0)\n"
+        "\t\tAssignExpCmd N Ite(TBZ 0x0 IntSub(0x10000000000000000(int) Y))\n"
+        "\t\tAssignExpCmd TB Le(N 0xa)\n"
+        "\t}\n"
+    )
+    tac = parse_string(
+        _wrap(
+            body,
+            syms="X:bv256\n\tZ:bv256\n\tY:bv256\n\tTBZ:bool\n\tN:bv256\n\tTB:bool",
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_CHUNK_CMP_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegChunkCmpLift", 0) == 0
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+@pytest.mark.parametrize("w", [64, 128, 256])
+def test_neg_chunk_band_table_via_z3(w):
+    """The order-compare table behind NEG_CHUNK_CMP_LIFT plus the
+    div-guard equivalence (x < 2^w <=> x / 2^w == 0), one z3 call
+    per width."""
+    F = 1 << w
+    two_256 = 1 << 256
+
+    def le_band(c):
+        if c < 0:
+            return "false"
+        if c >= F - 1:
+            return "true"
+        if c == 0:
+            return "(= y 0)"
+        return f"(or (= y 0) (>= y {F - c}))"
+
+    def ge_band(c):
+        if c <= 0:
+            return "true"
+        if c > F - 1:
+            return "false"
+        return f"(and (>= y 1) (<= y {F - c}))"
+
+    H = 1 << (w - 1)
+    cs = [-1, 0, 1, 2, 10, H - 1, H, H + 1, F - 2, F - 1, F, F + 1]
+    claims = [f"(= (< x {F}) (= (div x {F}) 0))"]
+    for c in cs:
+        claims.append(f"(= (<= v {c}) {le_band(c)})")
+        claims.append(f"(= (< v {c}) {le_band(c - 1)})")
+        claims.append(f"(= (>= v {c}) {ge_band(c)})")
+        claims.append(f"(= (> v {c}) {ge_band(c + 1)})")
+    # The pre-R4 sign-test entry: Eq(Div(v, k), 0) <=> Lt(v, k).
+    for k in (1, 10, H, F):
+        claims.append(f"(= (= (div v {k}) 0) {le_band(k - 1)})")
+    script = f"""(set-logic QF_NIA)
+(declare-const x Int)
+(define-fun y () Int (mod x {F}))
+(define-fun v () Int (ite (= y 0) 0 (- {F} y)))
+(assert (and (<= 0 x) (< x {two_256})))
+(assert (not (and {' '.join(claims)})))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:20", "-in"],
+        input=script, capture_output=True, text=True, timeout=40,
+    )
+    assert proc.stdout.strip() == "unsat", (w, proc.stdout)
+
+
+def test_neg_chunk_cmp_lift_pre_r4_sign_test():
+    """The 54_1 shape: Eq(Div(negchunk, 2^63), 0) — the SBF >> 63
+    sign test before R4 exposes the order compare. Lifts directly
+    to the Lt(negchunk, 2^63) band."""
+    body = (
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd TBZ Eq(Y 0x0)\n"
+        "\t\tAssignExpCmd N Ite(TBZ 0x0 IntSub(0x10000000000000000(int) Y))\n"
+        "\t\tAssignExpCmd TB Eq(Div(N 0x8000000000000000) 0x0)\n"
+        "\t}\n"
+    )
+    tac = parse_string(
+        _wrap(body, syms="X:bv256\n\tY:bv256\n\tTBZ:bool\n\tN:bv256\n\tTB:bool"),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_CHUNK_CMP_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegChunkCmpLift") == 1
+    y = SymbolRef("Y")
+    # Lt(v, 2^63) == le_band(2^63 - 1): y == 0 \/ y >= 2^64 - (2^63-1)
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "LOr",
+        (
+            ApplyExpr("Eq", (y, ConstExpr("0x0"))),
+            ApplyExpr("Ge", (y, ConstExpr("0x8000000000000001"))),
+        ),
+    )

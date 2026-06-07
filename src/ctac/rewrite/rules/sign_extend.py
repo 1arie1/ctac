@@ -59,7 +59,7 @@ from ctac.ast.nodes import ApplyExpr, ConstExpr, SymbolRef, TacExpr
 from ctac.rewrite.context import RewriteCtx
 from ctac.rewrite.framework import Rule
 from ctac.rewrite.range_infer import infer_expr_range
-from ctac.rewrite.rules.common import const_to_int, eq_modulo_meta
+from ctac.rewrite.rules.common import DIV_OPS, const_to_int, eq_modulo_meta
 
 
 _UNWRAP_NAME = "unwrap_twos_complement_256:bif"
@@ -707,6 +707,191 @@ NEG_FROM_S_CMP_LIFT = Rule(
         "ranged w-chunk. The Int-domain negated signed value in the "
         "no-overflow assumes; removes the from_s opacity so LIA sees "
         "chunk bands."
+    ),
+)
+
+
+# Negation-chunk band consumer. The materialized unsigned negation
+# chunk ``(-y) mod 2^w`` appears as
+#
+#     Ite(g, 0, IntSub(2^w, y))      with g  <=>  Eq(y, 0)
+#
+# where the guard is either the direct zero test (possibly behind a
+# purify TB symbol) or its R4-lifted form ``Lt(x, 2^w)`` when ``y``'s
+# def is ``Div(x, 2^w)`` (``x < 2^w  <=>  x / 2^w == 0`` for
+# non-negative ``x`` — z3-checked alongside the band table). With
+# chunk evidence ``y in [0, 2^w)``, ``v = (-y) mod 2^w`` is 0 at
+# ``y == 0`` and ``2^w - y in [1, 2^w-1]`` elsewhere, so order
+# compares against an int const become bands on ``y`` (F = 2^w):
+#
+#     Le(v, c):  c < 0: false;  c >= F-1: true;  c == 0: y == 0;
+#                else: y == 0 \/ y >= F - c
+#     Ge(v, c):  c <= 0: true;  c > F-1: false;
+#                else: 1 <= y <= F - c
+#
+# Lt / Gt reduce to Le(c-1) / Ge(c+1) over Int. Eq is deliberately
+# NOT handled: ``Eq(Ite(...), c)`` is EQ_ITE_DIST's territory (the
+# const arm folds, so distribution fires first bottom-up) and the
+# distributed pieces resolve through EqSubZero + the existing zero
+# tests. Order compares have no distribution rule, so the lift owns
+# them. Bands on a Div-defined ``y`` get lifted further to
+# X-windows by R4 in the final phase.
+
+
+def _guard_is_y_zero(
+    g: TacExpr, y: SymbolRef, ctx: RewriteCtx, width: _Width
+) -> bool:
+    g_in = ctx.lookthrough(g)
+    z = _eq_other_side(g_in, 0)
+    if z is not None and _canon_sym(z) == canonical_symbol(y.name):
+        return True
+    if (
+        isinstance(g_in, ApplyExpr)
+        and g_in.op == "Lt"
+        and len(g_in.args) == 2
+        and const_to_int(g_in.args[1]) == width.full
+    ):
+        x_name = _canon_sym(g_in.args[0])
+        if x_name is None:
+            return False
+        y_def = ctx.lookthrough(y)
+        return (
+            isinstance(y_def, ApplyExpr)
+            and y_def.op in DIV_OPS
+            and len(y_def.args) == 2
+            and _canon_sym(y_def.args[0]) == x_name
+            and const_to_int(y_def.args[1]) == width.full
+        )
+    return False
+
+
+def _match_neg_chunk(
+    e: TacExpr, ctx: RewriteCtx
+) -> tuple[SymbolRef, _Width] | None:
+    """``Ite(g, 0, IntSub(2^w, y))`` with ``g <=> Eq(y, 0)`` and
+    ``y`` a ranged w-chunk. Returns ``(y, w)``."""
+    host = ctx.lookthrough(e)
+    if not (
+        isinstance(host, ApplyExpr)
+        and host.op == "Ite"
+        and len(host.args) == 3
+    ):
+        return None
+    g, zero_arm, sub = host.args
+    if const_to_int(zero_arm) != 0:
+        return None
+    if not (
+        isinstance(sub, ApplyExpr)
+        and sub.op in ("IntSub", "Sub")
+        and len(sub.args) == 2
+        and isinstance(sub.args[1], SymbolRef)
+    ):
+        return None
+    y = sub.args[1]
+    width = _WIDTH_BY_FULL.get(const_to_int(sub.args[0]))
+    if width is None:
+        return None
+    if not _guard_is_y_zero(g, y, ctx, width):
+        return None
+    if not _ranged_in_width(y, ctx, width):
+        return None
+    return y, width
+
+
+def _neg_chunk_le_band(y: SymbolRef, width: _Width, c: int) -> TacExpr:
+    if c < 0:
+        return ConstExpr("false")
+    if c >= width.full - 1:
+        return ConstExpr("true")
+    is_zero = ApplyExpr("Eq", (y, ConstExpr("0x0")))
+    if c == 0:
+        return is_zero
+    return ApplyExpr(
+        "LOr", (is_zero, ApplyExpr("Ge", (y, _hex_const(width.full - c))))
+    )
+
+
+def _neg_chunk_ge_band(y: SymbolRef, width: _Width, c: int) -> TacExpr:
+    if c <= 0:
+        return ConstExpr("true")
+    if c > width.full - 1:
+        return ConstExpr("false")
+    return ApplyExpr(
+        "LAnd",
+        (
+            ApplyExpr("Ge", (y, ConstExpr("0x1"))),
+            ApplyExpr("Le", (y, _hex_const(width.full - c))),
+        ),
+    )
+
+
+_NEG_CHUNK_OPS = frozenset({"Le", "Lt", "Ge", "Gt"})
+
+
+def _rewrite_neg_chunk_cmp_lift(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    if not (isinstance(expr, ApplyExpr) and len(expr.args) == 2):
+        return None
+    if expr.op == "Eq":
+        # Pre-R4 sign-test form: the SBF `>> (w-1)` idiom arrives as
+        # ``Eq(Div(negchunk, k), 0)`` (N4-canonicalized), and R4 only
+        # exposes the order compare in the final fold loop — after
+        # the consumer phases. Compose the one-step Euclidean
+        # reduction ``Div(v, k) == 0  <=>  v < k`` (v >= 0, k > 0)
+        # into the consumer so the lift fires in one run.
+        e = _eq_other_side(expr, 0)
+        if e is None:
+            return None
+        d = ctx.lookthrough(e)
+        if not (
+            isinstance(d, ApplyExpr)
+            and d.op in DIV_OPS
+            and len(d.args) == 2
+        ):
+            return None
+        k = const_to_int(d.args[1])
+        if k is None or k <= 0:
+            return None
+        m = _match_neg_chunk(d.args[0], ctx)
+        if m is None:
+            return None
+        y, width = m
+        return _neg_chunk_le_band(y, width, k - 1)
+    if expr.op not in _NEG_CHUNK_OPS:
+        return None
+    a, b = expr.args
+    op = expr.op
+    c = const_to_int(b)
+    host = a
+    if c is None:
+        c = const_to_int(a)
+        host = b
+        if c is None:
+            return None
+        op = _CMP_FLIP[op]
+    m = _match_neg_chunk(host, ctx)
+    if m is None:
+        return None
+    y, width = m
+    if op == "Lt":
+        op, c = "Le", c - 1
+    elif op == "Gt":
+        op, c = "Ge", c + 1
+    if op == "Le":
+        return _neg_chunk_le_band(y, width, c)
+    return _neg_chunk_ge_band(y, width, c)
+
+
+NEG_CHUNK_CMP_LIFT = Rule(
+    name="NegChunkCmpLift",
+    fn=_rewrite_neg_chunk_cmp_lift,
+    description=(
+        "Order compare on the materialized negation chunk "
+        "Ite(Eq(y, 0), 0, IntSub(2^w, y)) lifts to a band on y "
+        "(guard also matched in its R4-lifted Lt(x, 2^w) form for "
+        "y = Div(x, 2^w)). Bands on a Div-defined y reach R4 for "
+        "the X-window lift."
     ),
 )
 
