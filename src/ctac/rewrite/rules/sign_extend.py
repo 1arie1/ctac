@@ -953,8 +953,22 @@ def _lift_direct(
     if rng is None or rng[0] is None or rng[1] is None:
         return None
     lo, hi = rng
-    if hi >= _TWO_256 or lo <= c - _TWO_256:
+    if hi >= _TWO_256 or lo <= -_TWO_256:
         return None
+    if lo <= c - _TWO_256:
+        # v's negative regime straddles c - 2^256, so the cheap
+        # two-regime forms below don't apply. The exact single-wrap
+        # split still does: wrap(v) = v + (v < 0 ? 2^256 : 0), so
+        # Cmp(wrap(v), c) <=> Ite(v < 0, Cmp(v, c - 2^256), Cmp(v, c)).
+        shifted = ConstExpr(f"0x-{_TWO_256 - c:x}(int)")
+        return ApplyExpr(
+            "Ite",
+            (
+                ApplyExpr("Lt", (v, _INT_ZERO)),
+                ApplyExpr(op, (v, shifted)),
+                ApplyExpr(op, (v, c_expr)),
+            ),
+        )
     nonneg = lo >= 0
     if op == "Eq":
         return ApplyExpr("Eq", (v, c_expr))

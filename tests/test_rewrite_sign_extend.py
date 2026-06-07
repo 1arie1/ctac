@@ -2237,3 +2237,36 @@ def test_neg_chunk_cmp_lift_pre_r4_sign_test():
             ApplyExpr("Ge", (y, ConstExpr("0x8000000000000001"))),
         ),
     )
+
+
+def test_wrap_compare_lift_exact_split_when_range_straddles():
+    """v's negative regime straddles c - 2^256 (the cheap two-regime
+    forms don't apply): the exact single-wrap split fires instead of
+    abstaining. The i128 band-assume shape on recombined negation
+    values."""
+    c = (1 << 256) - 0x64
+    body = (
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd I IntMul(0x-1(int) Y)\n"
+        f"\t\tAssignExpCmd TB Ge(Apply(wrap_twos_complement_256:bif I) 0x{c:x})\n"
+        "\t}\n"
+    )
+    tac = parse_string(
+        _wrap(body, syms="X:bv256\n\tY:bv256\n\tI:int\n\tTB:bool"),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (WRAP_COMPARE_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("WrapCompareLift") == 1
+    i = SymbolRef("I")
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "Ite",
+        (
+            ApplyExpr("Lt", (i, ConstExpr("0x0(int)"))),
+            ApplyExpr("Ge", (i, ConstExpr("0x-64(int)"))),
+            ApplyExpr("Ge", (i, ConstExpr(f"0x{c:x}"))),
+        ),
+    )
