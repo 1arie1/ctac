@@ -556,6 +556,161 @@ NEG_S64_PLUS_ONE_CMP_LIFT = Rule(
 )
 
 
+# Bare Int-negation band consumer. The no-overflow assumes carry the
+# negated signed value WITHOUT the wrap round trip:
+#
+#     Cmp(IntMul(-1, from_s<w>(y)), c)        (Int domain, no mod)
+#
+# With chunk evidence y in [0, 2^w), v = -from_s<w>(y) has two
+# regimes: v = -y (non-positive) for y < 2^(w-1) and v = 2^w - y
+# (in [1, 2^(w-1)]) for y >= 2^(w-1). Every comparison against an
+# int const c becomes a band on y (H = 2^(w-1), F = 2^w):
+#
+#     Le(v, c):  c >= H: true;  c == 0: y < H;
+#                0 < c < H: y < H \/ y >= F - c;
+#                c < 0: false if -c >= H else -c <= y < H
+#     Ge(v, c):  c <= -(H-1): true;
+#                c == 0: y == 0 \/ y >= H;
+#                -(H-1) < c < 0: y <= -c \/ y >= H;
+#                c > 0: false if F - c < H else H <= y <= F - c
+#     Eq(v, c):  c == 0: y == 0;  0 < c <= H: y == F - c;
+#                -(H-1) <= c < 0: y == -c;  else false
+#
+# Lt / Gt reduce to Le(c-1) / Ge(c+1) over Int. The whole table is
+# z3-checked at every width in the test file. (Eq with c == 0 is
+# also reachable via INT_MUL_EQ_ZERO + FROM_S64_ZERO_TEST — same
+# result either way.)
+
+
+def _match_neg_from_s(
+    e: TacExpr, ctx: RewriteCtx
+) -> tuple[SymbolRef, _Width] | None:
+    """``IntMul(-1, from_s<w>(y))`` via lookthrough, with ``y`` a
+    ranged w-chunk. Returns ``(y, w)``."""
+    n = ctx.lookthrough(e)
+    if not (
+        isinstance(n, ApplyExpr) and n.op == "IntMul" and len(n.args) == 2
+    ):
+        return None
+    a, b = n.args
+    if const_to_int(a) == -1:
+        f = b
+    elif const_to_int(b) == -1:
+        f = a
+    else:
+        return None
+    m = _match_from_s(ctx.lookthrough(f), ctx)
+    if m is None:
+        return None
+    y, width = m
+    if not _ranged_in_width(y, ctx, width):
+        return None
+    return y, width
+
+
+def _hex_const(k: int) -> ConstExpr:
+    return ConstExpr(f"0x{k:x}")
+
+
+def _neg_from_s_le_band(y: SymbolRef, width: _Width, c: int) -> TacExpr:
+    if c >= width.half:
+        return ConstExpr("true")
+    lt_h = ApplyExpr("Lt", (y, width.half_const))
+    if c == 0:
+        return lt_h
+    if c > 0:
+        return ApplyExpr(
+            "LOr", (lt_h, ApplyExpr("Ge", (y, _hex_const(width.full - c))))
+        )
+    if -c >= width.half:
+        return ConstExpr("false")
+    return ApplyExpr(
+        "LAnd", (ApplyExpr("Ge", (y, _hex_const(-c))), lt_h)
+    )
+
+
+def _neg_from_s_ge_band(y: SymbolRef, width: _Width, c: int) -> TacExpr:
+    if c <= 0:
+        if -c >= width.half - 1:
+            return ConstExpr("true")
+        first: TacExpr = (
+            ApplyExpr("Eq", (y, ConstExpr("0x0")))
+            if c == 0
+            else ApplyExpr("Le", (y, _hex_const(-c)))
+        )
+        return ApplyExpr(
+            "LOr", (first, ApplyExpr("Ge", (y, width.half_const)))
+        )
+    if width.full - c < width.half:
+        return ConstExpr("false")
+    return ApplyExpr(
+        "LAnd",
+        (
+            ApplyExpr("Ge", (y, width.half_const)),
+            ApplyExpr("Le", (y, _hex_const(width.full - c))),
+        ),
+    )
+
+
+def _neg_from_s_eq_band(y: SymbolRef, width: _Width, c: int) -> TacExpr:
+    if c == 0:
+        return ApplyExpr("Eq", (y, ConstExpr("0x0")))
+    if 0 < c <= width.half:
+        return ApplyExpr("Eq", (y, _hex_const(width.full - c)))
+    if -(width.half - 1) <= c < 0:
+        return ApplyExpr("Eq", (y, _hex_const(-c)))
+    return ConstExpr("false")
+
+
+_NEG_FROM_S_OPS = frozenset({"Le", "Lt", "Ge", "Gt", "Eq"})
+
+
+def _rewrite_neg_from_s_cmp_lift(
+    expr: TacExpr, ctx: RewriteCtx
+) -> TacExpr | None:
+    if not (
+        isinstance(expr, ApplyExpr)
+        and expr.op in _NEG_FROM_S_OPS
+        and len(expr.args) == 2
+    ):
+        return None
+    a, b = expr.args
+    op = expr.op
+    c = const_to_int(b)
+    host = a
+    if c is None:
+        c = const_to_int(a)
+        host = b
+        if c is None:
+            return None
+        op = _CMP_FLIP[op]
+    m = _match_neg_from_s(host, ctx)
+    if m is None:
+        return None
+    y, width = m
+    if op == "Lt":
+        op, c = "Le", c - 1
+    elif op == "Gt":
+        op, c = "Ge", c + 1
+    if op == "Le":
+        return _neg_from_s_le_band(y, width, c)
+    if op == "Ge":
+        return _neg_from_s_ge_band(y, width, c)
+    return _neg_from_s_eq_band(y, width, c)
+
+
+NEG_FROM_S_CMP_LIFT = Rule(
+    name="NegFromSCmpLift",
+    fn=_rewrite_neg_from_s_cmp_lift,
+    description=(
+        "Cmp(IntMul(-1, from_s<w>(y)), c) -> band on y when y is a "
+        "ranged w-chunk. The Int-domain negated signed value in the "
+        "no-overflow assumes; removes the from_s opacity so LIA sees "
+        "chunk bands."
+    ),
+)
+
+
 # WRAP_COMPARE_LIFT: an order comparison or equality between a
 # ``wrap_256`` application and a constant lifts to an Int-domain
 # predicate on the wrap's argument::

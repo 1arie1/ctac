@@ -15,6 +15,7 @@ from ctac.rewrite.rules import (
     NEG_S64_DOUBLE,
     SIGN_EXT_CMP_LIFT,
     SIGN_EXT_SIGN_TEST,
+    NEG_FROM_S_CMP_LIFT,
     NEG_S64_LOW_CHUNK,
     NEG_S64_PLUS_ONE_CMP_LIFT,
     NEG_S64_PLUS_ONE_ZERO_TEST,
@@ -1885,3 +1886,177 @@ def test_neg_s64_plus_one_lemmas_via_z3(w):
             input=script, capture_output=True, text=True, timeout=30,
         )
         assert proc.stdout.strip() == "unsat", (w, c, proc.stdout)
+
+
+# ---------------------------------------------------------------------------
+# NEG_FROM_S_CMP_LIFT
+# ---------------------------------------------------------------------------
+
+
+def _neg_from_s_body(test_cmd: str) -> str:
+    return (
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd X\n"
+        "\t\tAssignExpCmd Y Mod(X 0x10000000000000000)\n"
+        "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+        "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+        f"\t\t{test_cmd}\n"
+        "\t}\n"
+    )
+
+
+_NEG_FROM_S_SYMS = "X:bv256\n\tY:bv256\n\tTBC:bool\n\tI:int\n\tTB:bool"
+
+
+def test_neg_from_s_cmp_lift_ge_zero():
+    """The no-overflow assume's `0 <= I` conjunct (const on the
+    left): nonneg negated value means y == 0 or the high band."""
+    tac = parse_string(
+        _wrap(
+            _neg_from_s_body("AssignExpCmd TB Le(0x0(int) I)"),
+            syms=_NEG_FROM_S_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_FROM_S_CMP_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegFromSCmpLift") == 1
+    y = SymbolRef("Y")
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "LOr",
+        (
+            ApplyExpr("Eq", (y, ConstExpr("0x0"))),
+            ApplyExpr("Ge", (y, ConstExpr("0x8000000000000000"))),
+        ),
+    )
+
+
+def test_neg_from_s_cmp_lift_le_above_half_is_true():
+    """`I <= 2^64+1` clears the value range entirely (v <= 2^63):
+    folds to true."""
+    tac = parse_string(
+        _wrap(
+            _neg_from_s_body(
+                "AssignExpCmd TB Le(I 0x10000000000000001(int))"
+            ),
+            syms=_NEG_FROM_S_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_FROM_S_CMP_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegFromSCmpLift") == 1
+    assert _rhs_of(res, "TB") == ConstExpr("true")
+
+
+def test_neg_from_s_cmp_lift_le_small_const():
+    """`I <= 10`: the fee-guard band — low chunk regime free, high
+    regime within 10 of the modulus."""
+    tac = parse_string(
+        _wrap(
+            _neg_from_s_body("AssignExpCmd TB Le(I 0xa(int))"),
+            syms=_NEG_FROM_S_SYMS,
+        ),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_FROM_S_CMP_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegFromSCmpLift") == 1
+    y = SymbolRef("Y")
+    assert _rhs_of(res, "TB") == ApplyExpr(
+        "LOr",
+        (
+            ApplyExpr("Lt", (y, ConstExpr("0x8000000000000000"))),
+            ApplyExpr("Ge", (y, ConstExpr("0xfffffffffffffff6"))),
+        ),
+    )
+
+
+def test_neg_from_s_cmp_lift_no_chunk_evidence_no_fire():
+    """y a bare bv256 havoc (no Mod def, no range): the band
+    derivation needs y < 2^w — no fire."""
+    body = (
+        "\tBlock e Succ [] {\n"
+        "\t\tAssignHavocCmd Y\n"
+        "\t\tAssignExpCmd TBC Lt(Y 0x8000000000000000)\n"
+        "\t\tAssignExpCmd I IntMul(0x-1(int) Ite(TBC Y IntSub(Y 0x10000000000000000(int))))\n"
+        "\t\tAssignExpCmd TB Le(0x0(int) I)\n"
+        "\t}\n"
+    )
+    tac = parse_string(
+        _wrap(body, syms="Y:bv256\n\tTBC:bool\n\tI:int\n\tTB:bool"),
+        path="<s>",
+    )
+    res = rewrite_program(
+        tac.program, (NEG_FROM_S_CMP_LIFT,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule.get("NegFromSCmpLift", 0) == 0
+
+
+@pytest.mark.skipif(shutil.which("z3") is None, reason="z3 not on PATH")
+@pytest.mark.parametrize("w", [64, 128, 256])
+def test_neg_from_s_band_table_via_z3(w):
+    """The full comparison table behind NEG_FROM_S_CMP_LIFT, exactly
+    as the emitters produce it, across a const grid spanning every
+    case boundary. One z3 call per width: the conjunction of all
+    (op, c) equivalences, negated, must be unsat."""
+    H = 1 << (w - 1)
+    F = 1 << w
+    two_256 = 1 << 256
+
+    def le_band(c):
+        if c >= H:
+            return "true"
+        if c == 0:
+            return f"(< y {H})"
+        if c > 0:
+            return f"(or (< y {H}) (>= y {F - c}))"
+        if -c >= H:
+            return "false"
+        return f"(and (>= y {-c}) (< y {H}))"
+
+    def ge_band(c):
+        if c <= 0:
+            if -c >= H - 1:
+                return "true"
+            first = "(= y 0)" if c == 0 else f"(<= y {-c})"
+            return f"(or {first} (>= y {H}))"
+        if F - c < H:
+            return "false"
+        return f"(and (>= y {H}) (<= y {F - c}))"
+
+    def eq_band(c):
+        if c == 0:
+            return "(= y 0)"
+        if 0 < c <= H:
+            return f"(= y {F - c})"
+        if -(H - 1) <= c < 0:
+            return f"(= y {-c})"
+        return "false"
+
+    cs = [-F, -(H - 1), -(H - 2), -2, -1, 0, 1, 2, 10,
+          H - 2, H - 1, H, H + 1, F - 1, F, F + 1]
+    claims = []
+    for c in cs:
+        claims.append(f"(= (<= v {c}) {le_band(c)})")
+        claims.append(f"(= (< v {c}) {le_band(c - 1)})")
+        claims.append(f"(= (>= v {c}) {ge_band(c)})")
+        claims.append(f"(= (> v {c}) {ge_band(c + 1)})")
+        claims.append(f"(= (= v {c}) {eq_band(c)})")
+    script = f"""(set-logic QF_NIA)
+(declare-const x Int)
+(define-fun y () Int (mod x {F}))
+(define-fun f () Int (ite (< y {H}) y (- y {F})))
+(define-fun v () Int (- 0 f))
+(assert (and (<= 0 x) (< x {two_256})))
+(assert (not (and {' '.join(claims)})))
+(check-sat)
+"""
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:20", "-in"],
+        input=script, capture_output=True, text=True, timeout=40,
+    )
+    assert proc.stdout.strip() == "unsat", (w, proc.stdout)
