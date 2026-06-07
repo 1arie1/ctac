@@ -614,6 +614,13 @@ def rewrite_cmd(
             )
         else:
             rw = _merge_phases(phase0, phase_cse_early, phase1)
+
+        def _sorts_with_extras() -> dict[str, str]:
+            # Fresh symbols minted by passes (H<N>, T<N>, TB<N>, ...)
+            # accumulate in rw.extra_symbols; later phases need their
+            # sorts in scope or range/sort evidence on them silently
+            # abstains (e.g. CmpRangeFold on a fresh H's bv256 bound).
+            return {**tac.symbol_sorts, **dict(rw.extra_symbols)}
         # Propagate ``X = SymRef(Y)`` aliases into AnnotationCmd
         # payloads + weak_refs BEFORE the DCE loop below. CP_ALIAS in
         # simplify_pipeline turns a folded ``Ite(Eq(R, 0), 0, R)`` into
@@ -650,7 +657,7 @@ def rewrite_cmd(
         # CHKs on R_low and R_hi (z3 closes each by case-split on the
         # carry).
         u128_add_res = rewrite_u128_carry_add(
-            program, symbol_sorts=tac.symbol_sorts
+            program, symbol_sorts=_sorts_with_extras()
         )
         program = u128_add_res.program
         u128_add_hits = u128_add_res.hits
@@ -665,7 +672,7 @@ def rewrite_cmd(
         # H's lower bound directly. Pure additive (rw-eq's rule-4
         # CHK closes by case-split on H = 0).
         h_nonzero_res = materialize_h_nonzero(
-            program, symbol_sorts=tac.symbol_sorts
+            program, symbol_sorts=_sorts_with_extras()
         )
         program = h_nonzero_res.program
         h_nonzero_hits = h_nonzero_res.hits
@@ -678,7 +685,7 @@ def rewrite_cmd(
         # phase above materialized. Drops the now-redundant
         # ``LNot(LAnd(...))`` assume.
         u128_dec_res = rewrite_u128_decrement(
-            program, symbol_sorts=tac.symbol_sorts
+            program, symbol_sorts=_sorts_with_extras()
         )
         program = u128_dec_res.program
         u128_dec_hits = u128_dec_res.hits
@@ -693,11 +700,8 @@ def rewrite_cmd(
         # convergence loop below then lets the consumers fire
         # (CHUNKED_U128_LT on the re-anchored chunks, CHUNK_MERGE on
         # inline recombinations).
-        merged_sorts = dict(tac.symbol_sorts)
-        for n, s in rw.extra_symbols:
-            merged_sorts[n] = s
         coalesce_res = coalesce_chunk_pairs(
-            program, symbol_sorts=merged_sorts
+            program, symbol_sorts=_sorts_with_extras()
         )
         program = coalesce_res.program
         coalesce_hits = coalesce_res.hits
@@ -743,7 +747,7 @@ def rewrite_cmd(
                 simplify_pipeline,
                 max_iterations=max_iterations,
                 ite_max_depth=ite_max_depth,
-                symbol_sorts=tac.symbol_sorts,
+                symbol_sorts=_sorts_with_extras(),
                 use_int_ceil_div=ceildiv_op,
                 use_interval_select=interval_select,
                 phase="simplify-post-u128",
@@ -769,7 +773,7 @@ def rewrite_cmd(
             # are reconstructible from operand ranges and only pin
             # dead chunk defs.
             drop_redundant_res = drop_range_redundant_assumes(
-                program, symbol_sorts=tac.symbol_sorts
+                program, symbol_sorts=_sorts_with_extras()
             )
             program = drop_redundant_res.program
             dropped_redundant_assumes += drop_redundant_res.hits
@@ -804,7 +808,7 @@ def rewrite_cmd(
         # and DCE clears it.
         hoist_res = hoist_path_invariant_defs(
             program,
-            symbol_sorts=tac.symbol_sorts,
+            symbol_sorts=_sorts_with_extras(),
             move_assumes=move_assumes,
         )
         program = hoist_res.program
@@ -822,7 +826,7 @@ def rewrite_cmd(
                 simplify_pipeline,
                 max_iterations=max_iterations,
                 ite_max_depth=ite_max_depth,
-                symbol_sorts=tac.symbol_sorts,
+                symbol_sorts=_sorts_with_extras(),
                 use_int_ceil_div=ceildiv_op,
                 use_interval_select=interval_select,
                 phase="simplify-post-hoist",
@@ -845,7 +849,7 @@ def rewrite_cmd(
         # purify_ite is off (no consumer for the lifted T-defs).
         lift_hits = 0
         if purify_ite:
-            lres = lift_dynamic_ite_rhs(program, symbol_sorts=tac.symbol_sorts)
+            lres = lift_dynamic_ite_rhs(program, symbol_sorts=_sorts_with_extras())
             program = lres.program
             lift_hits = lres.hits
             if lres.extra_symbols:
@@ -874,7 +878,7 @@ def rewrite_cmd(
                 tuple(phase_rules),
                 max_iterations=max_iterations,
                 ite_max_depth=ite_max_depth,
-                symbol_sorts=tac.symbol_sorts,
+                symbol_sorts=_sorts_with_extras(),
                 use_int_ceil_div=ceildiv_op,
                 use_interval_select=interval_select,
                 phase="purify",
@@ -906,7 +910,7 @@ def rewrite_cmd(
                     cse_pipeline,
                     max_iterations=max_iterations,
                     ite_max_depth=ite_max_depth,
-                    symbol_sorts=tac.symbol_sorts,
+                    symbol_sorts=_sorts_with_extras(),
                     use_int_ceil_div=ceildiv_op,
                     use_interval_select=interval_select,
                     phase="cse-late",
@@ -930,7 +934,7 @@ def rewrite_cmd(
                     (CP_ALIAS, ITE_SAME, ITE_SHARED_LEAF, SELECT_OVER_STORE),
                     max_iterations=max_iterations,
                     ite_max_depth=ite_max_depth,
-                    symbol_sorts=tac.symbol_sorts,
+                    symbol_sorts=_sorts_with_extras(),
                     use_int_ceil_div=ceildiv_op,
                     use_interval_select=interval_select,
                     phase="cp-cleanup",
@@ -968,7 +972,7 @@ def rewrite_cmd(
         # against the orig program's constraints.
         materialize_hits: dict[str, int] = {}
         if materialize_assumes_flag:
-            mres = materialize_assumes(program, symbol_sorts=tac.symbol_sorts)
+            mres = materialize_assumes(program, symbol_sorts=_sorts_with_extras())
             program = mres.program
             materialize_hits = mres.hits
         # Phase 5 (gated, VERY LAST): R4 simplify-Div-in-cmp + fold
@@ -994,7 +998,7 @@ def rewrite_cmd(
                     post_r4_fold_pipeline,
                     max_iterations=max_iterations,
                     ite_max_depth=ite_max_depth,
-                    symbol_sorts=tac.symbol_sorts,
+                    symbol_sorts=_sorts_with_extras(),
                     use_int_ceil_div=ceildiv_op,
                     use_interval_select=interval_select,
                     phase="final-fold",
@@ -1010,7 +1014,7 @@ def rewrite_cmd(
                         break
                     program = dce.program
                 drop_redundant_res = drop_range_redundant_assumes(
-                    program, symbol_sorts=tac.symbol_sorts
+                    program, symbol_sorts=_sorts_with_extras()
                 )
                 program = drop_redundant_res.program
                 dropped_redundant_assumes += drop_redundant_res.hits
