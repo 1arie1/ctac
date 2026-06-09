@@ -140,6 +140,11 @@ class HumanPrettyPrinter(PrettyPrinter):
     def __init__(self, *, strip_var_suffixes: bool = True, human_patterns: bool = True) -> None:
         super().__init__(strip_var_suffixes=strip_var_suffixes)
         self.human_patterns = human_patterns
+        # Annotations wrapped inside an expression (``AnnotationExp(e,
+        # JSON{...})``) are lifted out during expression rendering and
+        # parked here, then flushed as a short trailing ``# ...`` comment
+        # by ``print_cmd`` so they don't bloat the command body.
+        self._pending_annots: list[str] = []
         # Optional block-id back-mapping used to annotate rw-eq's
         # DEST_<bid> / IN_DEST_<bid> integer constants with the source
         # block id. Populated from a top-of-program ``rw-eq.id-of``
@@ -300,6 +305,18 @@ class HumanPrettyPrinter(PrettyPrinter):
                 return shifted
 
         op = node.op
+
+        if op == "AnnotationExp" and node.args:
+            # ``AnnotationExp(e, JSON{...})`` carries a debug payload that
+            # is irrelevant to the expression's value. Render only the
+            # wrapped expression and park the annotation's key name for a
+            # trailing comment.
+            if len(node.args) >= 2:
+                label = self._annotation_exp_label(node.args[1])
+                if label is not None:
+                    self._pending_annots.append(label)
+            return self.print_expr(node.args[0])
+
         args = [self.print_expr(a) for a in node.args]
 
         if op in self._unary_prefix and len(args) == 1:
@@ -456,6 +473,38 @@ class HumanPrettyPrinter(PrettyPrinter):
                         sym_tokens.append(self._fmt_symbol_token(p))
         sym_part = f" ({', '.join(sym_tokens)})" if sym_tokens else ""
         return f"!!! WARNING{name_part}: {msg}{sym_part}"
+
+    @staticmethod
+    def _annotation_exp_label(payload_expr: TacExpr) -> str | None:
+        """Short comment text for an ``AnnotationExp`` payload: the
+        annotation's ``key.name`` (e.g. ``sbf.tac.cannot.overflow``).
+        Returns None when the payload is not a recognizable JSON
+        annotation."""
+        if not isinstance(payload_expr, ConstExpr):
+            return None
+        payload = payload_expr.value.strip()
+        if not payload.startswith("JSON"):
+            return None
+        try:
+            obj = json.loads(payload[4:])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(obj, dict):
+            return None
+        key = obj.get("key")
+        if isinstance(key, dict):
+            name = key.get("name")
+            if isinstance(name, str) and name:
+                return name
+        return None
+
+    def print_cmd(self, cmd: TacCmd) -> str | None:
+        self._pending_annots = []
+        line = self.visit(cmd)
+        if line is not None and line != '' and self._pending_annots:
+            annots = "; ".join(dict.fromkeys(self._pending_annots))
+            line = f"{line}  # {annots}"
+        return line
 
     def visit_AnnotationCmd(self, node: AnnotationCmd) -> str | None:
         payload = node.payload.strip()

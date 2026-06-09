@@ -31,22 +31,40 @@ def _is_const_token(tok: str) -> bool:
 
 
 def _split_top_level_args(inner: str) -> list[str]:
-    """Split ``inner`` at depth-0 whitespace into argument substrings."""
+    """Split ``inner`` at depth-0 whitespace into argument substrings.
+
+    Bracket depth counts ``()``, ``{}``, and ``[]``; characters inside
+    double-quoted strings are skipped entirely. This keeps a JSON
+    annotation payload (``JSON{... "value":"a b c" ...}``) intact as one
+    argument rather than shredding it at the spaces in its string fields.
+    """
     inner = inner.strip()
     if not inner:
         return []
     parts: list[str] = []
     depth = 0
+    in_str = False
     start = 0
-    for i, ch in enumerate(inner):
-        if ch == "(":
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "({[":
             depth += 1
-        elif ch == ")":
+        elif ch in ")}]":
             depth -= 1
         elif ch.isspace() and depth == 0:
             if start < i:
                 parts.append(inner[start:i].strip())
             start = i + 1
+        i += 1
     if start < len(inner):
         parts.append(inner[start:].strip())
     return [p for p in parts if p]
@@ -79,14 +97,26 @@ def parse_expr(s: str) -> TacExpr:
         raise ValueError(f"missing operator before '(': {s!r}")
     depth = 0
     end = -1
-    for i in range(open_paren, len(s)):
-        if s[i] == "(":
+    in_str = False
+    i = open_paren
+    while i < len(s):
+        ch = s[i]
+        if in_str:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "(":
             depth += 1
-        elif s[i] == ")":
+        elif ch == ")":
             depth -= 1
             if depth == 0:
                 end = i
                 break
+        i += 1
     if end < 0:
         raise ValueError(f"unbalanced parentheses in {s!r}")
     inner = s[open_paren + 1 : end].strip()

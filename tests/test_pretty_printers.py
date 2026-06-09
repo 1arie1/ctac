@@ -28,6 +28,20 @@ def test_human_skips_annotation_and_label() -> None:
     assert lines == ['R1 = 1']
 
 
+def test_human_annotation_exp_becomes_trailing_comment() -> None:
+    # AnnotationExp(e, JSON{...}) renders the wrapped expression in the
+    # command body and lifts the annotation's key name to a short
+    # trailing `# ...` comment, instead of dumping the JSON inline.
+    cmd = parse_command_line(
+        'AssignExpCmd r1 Mod(AnnotationExp(Add(r1 0xffffffffffffffe0) '
+        'JSON{"key":{"name":"sbf.tac.cannot.overflow"},'
+        '"value":"pointer addition at x"}) 0x10000000000000000 )'
+    )
+    human = DEFAULT_PRINTERS.get('human')
+    lines = pretty_lines([cmd], printer=human)
+    assert lines == ['r1 = (r1 + [2^64-32]) % [2^64]  # sbf.tac.cannot.overflow']
+
+
 def test_human_havoc_and_ops_and_skips_jump() -> None:
     cmds = [
         parse_command_line('AssignHavocCmd:18 R1588'),

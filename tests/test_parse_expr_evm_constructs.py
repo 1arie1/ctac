@@ -32,6 +32,26 @@ def test_json_payload_round_trips_verbatim():
     assert unparse_expr(parse_expr(payload)) == payload
 
 
+def test_json_payload_with_spaces_stays_atomic():
+    # The payload's `value` field carries free text with spaces (and
+    # balanced/embedded parens). The arg splitter must not shred it: the
+    # AnnotationExp keeps exactly two args (wrapped expr + JSON literal),
+    # and none of the value's words leak out as phantom symbols.
+    src = (
+        'AnnotationExp(Add(r1 0xffffffffffffffe0) '
+        'JSON{"key":{"name":"sbf.tac.cannot.overflow"},'
+        '"value":"pointer addition at 896_120-5: r1:sp(4064) = +  -32"})'
+    )
+    e = parse_expr(src)
+    assert isinstance(e, ApplyExpr) and e.op == "AnnotationExp"
+    assert len(e.args) == 2
+    add, payload = e.args
+    assert isinstance(add, ApplyExpr) and add.op == "Add"
+    assert isinstance(payload, ConstExpr) and payload.value.startswith("JSON{")
+    assert list(iter_expr_symbols(e)) == ["r1"]
+    assert unparse_expr(e) == src
+
+
 def test_unknown_bif_head_not_a_dataflow_use():
     # `to_skey:bif` is not in ctac's builtin registry, but the `:bif`
     # suffix marks it as a function symbol by the dump format itself.
