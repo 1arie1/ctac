@@ -210,6 +210,18 @@ def _is_exact_family_label(label: str | None) -> bool:
     return "+" not in label and "-" not in label
 
 
+# Machine wrap widths: a value within a wide window below (or above)
+# 2^w for one of these w is a wrap/overflow constant — e.g.
+# ``0xffffffffffffffe0 == 2^64-32 == -32 mod 2^64``, a stack-pointer
+# adjustment. Consecutive powers at these exponents are billions apart,
+# so a generous window can't mislabel an ordinary number. Widths 8/16
+# are deliberately excluded (their window would swallow small integers),
+# and non-width powers like the SBF-region 2^33/2^34 keep the tight
+# default window so addresses render as hex.
+_WRAP_WIDTHS = frozenset({32, 64, 128, 256})
+_WRAP_NEAR_DELTA = 1 << 16
+
+
 def _pow2_near_label(n: int, *, max_delta: int = 16) -> str | None:
     """Return 2^k +/- d label when n is close to a power of two."""
     if n <= 0:
@@ -221,11 +233,12 @@ def _pow2_near_label(n: int, *, max_delta: int = 16) -> str | None:
     best_label: str | None = None
     best_abs: int | None = None
     for p in (low_pow, high_pow):
+        k = _ilog2_pow2(p)
+        allowed = _WRAP_NEAR_DELTA if k in _WRAP_WIDTHS else max_delta
         d = n - p
         ad = abs(d)
-        if ad > max_delta:
+        if ad > allowed:
             continue
-        k = _ilog2_pow2(p)
         if d == 0:
             label = f"2^{k}"
         else:

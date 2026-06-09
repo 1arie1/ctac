@@ -533,6 +533,27 @@ def test_human_renders_sbf_region_address_as_hex() -> None:
     # Just past the upper bound: falls back to the decimal default.
     assert format_value_human_single(Value("bv", 0x600000000)) == "257_6980_3776"
 
+    # A near-2^34 region address (not an exact power) still renders as
+    # hex: the wide wrap-window applies only to machine widths
+    # {32,64,128,256}, so 2^34 keeps the tight delta and the SBF
+    # override wins.
+    assert format_value_human_single(Value("bv", 0x400000048)) == "0x400000048"
+
+
+def test_human_renders_wrap_constant_near_machine_width() -> None:
+    """A bv just below 2^w for a machine wrap width (32/64/128/256)
+    compacts to ``[2^w-d]`` even when the offset exceeds the tight
+    near-power window — these are wrap/overflow constants (here
+    ``2^64-32 == -32 mod 2^64``), not coincidences."""
+    from ctac.eval.value_format import Value, format_value_human_single
+
+    assert format_value_human_single(Value("bv", 0xFFFFFFFFFFFFFFE0)) == "[2^64-32]"
+    assert format_value_human_single(Value("bv", 0xFFFFFFFFFFFFFFA0)) == "[2^64-96]"
+    assert format_value_human_single(Value("bv", 0xFFFFFFE0)) == "[2^32-32]"
+    # A non-machine-width power (2^33) keeps the tight window: an offset
+    # of 256 is far past delta-16, so no label — it is an address, hex.
+    assert format_value_human_single(Value("bv", 0x200000100)) == "0x200000100"
+
     # Below the range: the program region (0x1_0000_0000) still
     # renders as a pow2 label, untouched by this override.
     assert format_value_human_single(Value("bv", 0x100000000)) == "[2^32]"
