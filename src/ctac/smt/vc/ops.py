@@ -57,6 +57,8 @@ class _SmtName:
     BV256_MOD = "int.bv256_mod"
     BV256_SHL = "int.bv256_shl"
     BV256_LSHR = "int.bv256_lshr"
+    BV256_ASHR = "int.bv256_ashr"
+    BV256_SEXT = "int.bv256_sext"
     BV256_AND = "int.bv256_and"
     BV256_XOR = "int.bv256_xor"
     BV256_OR = "int.bv256_or"
@@ -80,6 +82,14 @@ class _SmtName:
     @staticmethod
     def bv256_lshr_const(k: int) -> str:
         return f"bv256.lshr_{k}"
+
+    @staticmethod
+    def bv256_ashr_const(k: int) -> str:
+        return f"bv256.ashr_{k}"
+
+    @staticmethod
+    def bv256_sext_const(w: int) -> str:
+        return f"bv256.sext_{w}"
 
     @staticmethod
     def bv256_and_low_mask(k: int) -> str:
@@ -801,6 +811,64 @@ class Bv256Ops:
         x = term(_X, Int)
         self.vc.define_fun(name, ((_X, Int),), Int, div(x, self._pow2(k)))
         return app(name, [a], Int)
+
+    def ashr(self, a: Term, b: Term) -> Term:
+        k = _literal_value(b, self.vc)
+        if k is not None:
+            return self.ashr_const(a, k)
+        return self._uf(_SmtName.BV256_ASHR, a, b)
+
+    def ashr_const(self, a: Term, k: int) -> Term:
+        """Sign-interpreting floor shift over bv256-as-Int.
+        Non-negative: plain div. Negative (top bit set):
+        ``floor((x - 2^256) / 2^k) + 2^256`` simplifies to
+        ``div(x, 2^k) + (2^256 - 2^(256-k))`` — the top k bits fill
+        with ones — exact because 2^k | 2^256."""
+        if k < 0:
+            raise ValueError("negative shift is unsupported")
+        name = _SmtName.bv256_ashr_const(k)
+        x = term(_X, Int)
+        if k == 0:
+            body = x
+        else:
+            self._require_is_neg_define_fun()
+            neg = app(_SmtName.BV256_IS_NEG, [x], Bool)
+            if k >= 256:
+                filled = sub(self.vc.bv256_mod(), self.vc.int_lit(1))
+                body = app(_SmtName.ITE, [neg, filled, self.vc.int_lit(0)], Int)
+            else:
+                q = div(x, self._pow2(k))
+                fill = sub(self.vc.bv256_mod(), self._pow2(256 - k))
+                body = app(_SmtName.ITE, [neg, add(q, fill), q], Int)
+        self.vc.define_fun(name, ((_X, Int),), Int, body)
+        return app(name, [a], Int)
+
+    def sext(self, b: Term, x: Term) -> Term:
+        byte_index = _literal_value(b, self.vc)
+        if byte_index is not None:
+            return self.sext_const(x, byte_index)
+        return self._uf(_SmtName.BV256_SEXT, b, x)
+
+    def sext_const(self, x: Term, byte_index: int) -> Term:
+        """``SignExtend(b, x)``: byte index ``b`` selects the sign bit
+        at ``8*(b+1)-1`` (EVM/SBF convention). With ``w = 8*(b+1)``:
+        keep the low w bits, fill the high bits with ones when the
+        sign bit is set."""
+        if not 0 <= byte_index <= 31:
+            raise ValueError(
+                f"SignExtend byte index must be in [0, 31]: {byte_index}"
+            )
+        w = 8 * (byte_index + 1)
+        name = _SmtName.bv256_sext_const(w)
+        lo = mod(term(_X, Int), self._pow2(w))
+        fill = sub(self.vc.bv256_mod(), self._pow2(w))
+        body = app(
+            _SmtName.ITE,
+            [lt(lo, self._pow2(w - 1)), lo, add(lo, fill)],
+            Int,
+        )
+        self.vc.define_fun(name, ((_X, Int),), Int, body)
+        return app(name, [x], Int)
 
     def and_(self, a: Term, b: Term) -> Term:
         a_value = _literal_value(a, self.vc)

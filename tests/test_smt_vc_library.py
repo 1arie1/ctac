@@ -632,9 +632,14 @@ def test_bv256_opaque_ops_use_uf_declarations() -> None:
     xo = vc.const("XO", Int)
     o = vc.const("O", Int)
 
+    sar = vc.const("SAR", Int)
+    se = vc.const("SE", Int)
+
     with vc.block("entry") as b:
         b.def_(left, vc.ops.bv256.shl(x, y))
         b.def_(r, vc.ops.bv256.lshr(x, y))
+        b.def_(sar, vc.ops.bv256.ashr(x, y))
+        b.def_(se, vc.ops.bv256.sext(x, y))
         b.def_(a, vc.ops.bv256.and_(x, y))
         b.def_(xo, vc.ops.bv256.xor(x, y))
         b.def_(o, vc.ops.bv256.or_(x, y))
@@ -644,6 +649,8 @@ def test_bv256_opaque_ops_use_uf_declarations() -> None:
     for name in (
         "int.bv256_shl",
         "int.bv256_lshr",
+        "int.bv256_ashr",
+        "int.bv256_sext",
         "int.bv256_and",
         "int.bv256_xor",
         "int.bv256_or",
@@ -748,9 +755,14 @@ def test_bv256_constant_shift_and_mask_ops_use_readable_define_funs() -> None:
     high = vc.const("HIGH", Int)
     slc = vc.const("SLC", Int)
 
+    sar = vc.const("SAR", Int)
+    se = vc.const("SE", Int)
+
     with vc.block("entry") as b:
         b.def_(shl, vc.ops.bv256.shl(x, vc.int_lit(8)))
         b.def_(lshr, vc.ops.bv256.lshr(x, vc.int_lit(8)))
+        b.def_(sar, vc.ops.bv256.ashr(x, vc.int_lit(8)))
+        b.def_(se, vc.ops.bv256.sext(vc.int_lit(0), x))
         b.def_(low, vc.ops.bv256.and_(x, vc.int_lit(0xFF)))
         b.def_(high, vc.ops.bv256.and_clear_low(x, 8))
         b.def_(slc, vc.ops.bv256.and_mask(x, 0xFF00))
@@ -763,11 +775,25 @@ def test_bv256_constant_shift_and_mask_ops_use_readable_define_funs() -> None:
         in text
     )
     assert "(define-fun bv256.lshr_8 ((x Int)) Int (div x POW2_8))" in text
+    assert (
+        "(define-fun bv256.ashr_8 ((x Int)) Int "
+        "(ite (bv256.is_neg x) (+ (div x POW2_8) (- BV256_MOD POW2_248)) "
+        "(div x POW2_8)))"
+        in text
+    )
+    assert (
+        "(define-fun bv256.sext_8 ((x Int)) Int "
+        "(ite (< (mod x POW2_8) POW2_7) (mod x POW2_8) "
+        "(+ (mod x POW2_8) (- BV256_MOD POW2_8))))"
+        in text
+    )
     assert "(define-fun bv256.and_FF ((x Int)) Int (mod x POW2_8))" in text
     assert "(define-fun bv256.and_clear_low_8 ((x Int)) Int (* (div x POW2_8) POW2_8))" in text
     assert "(define-fun bv256.and_slice_8_8 ((x Int)) Int (* (mod (div x POW2_8) POW2_8) POW2_8))" in text
     assert "(assert (=> BLK_entry (= SHL (bv256.shl_8 X))))" in text
     assert "(assert (=> BLK_entry (= LSHR (bv256.lshr_8 X))))" in text
+    assert "(assert (=> BLK_entry (= SAR (bv256.ashr_8 X))))" in text
+    assert "(assert (=> BLK_entry (= SE (bv256.sext_8 X))))" in text
     assert "(assert (=> BLK_entry (= LOW (bv256.and_FF X))))" in text
     assert "(assert (=> BLK_entry (= HIGH (bv256.and_clear_low_8 X))))" in text
     assert "(assert (=> BLK_entry (= SLC (bv256.and_slice_8_8 X))))" in text

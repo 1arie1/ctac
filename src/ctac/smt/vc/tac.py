@@ -270,6 +270,11 @@ class TacExprLowerer:
             return self.vc.ops.bv256.shl(a, b)
         if op == "ShiftRightLogical":
             return self.vc.ops.bv256.lshr(a, b)
+        if op == "ShiftRightArithmetical":
+            return self.vc.ops.bv256.ashr(a, b)
+        if op == "SignExtend":
+            # TAC arg order is (byte_index, value).
+            return self.vc.ops.bv256.sext(a, b)
         if op == "BWAnd":
             return self.vc.ops.bv256.and_(a, b)
         if op == "BWXOr":

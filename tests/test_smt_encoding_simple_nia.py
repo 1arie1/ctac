@@ -923,3 +923,36 @@ def test_sea_vc_sar_semantics_via_z3() -> None:
         input=rendered, capture_output=True, text=True, timeout=30,
     )
     assert proc.stdout.strip().splitlines()[0] == "unsat", proc.stdout
+
+
+def test_sea_sar_and_sign_extend_emission() -> None:
+    sar = render_smt_script(
+        build_vc(parse_string(TAC_SAR, path="<string>"), encoding="sea")
+    )
+    assert (
+        "(define-fun bv256.ashr_32 ((x Int)) Int "
+        "(ite (bv256.is_neg x) (+ (div x POW2_32) (- BV256_MOD POW2_224)) "
+        "(div x POW2_32)))"
+        in sar
+    )
+    sext = render_smt_script(
+        build_vc(parse_string(TAC_SIGN_EXTEND, path="<string>"), encoding="sea")
+    )
+    assert (
+        "(define-fun bv256.sext_64 ((x Int)) Int "
+        "(ite (< (mod x POW2_64) POW2_63) (mod x POW2_64) "
+        "(+ (mod x POW2_64) (- BV256_MOD POW2_64))))"
+        in sext
+    )
+
+
+@pytest.mark.skipif(not _z3_available(), reason="z3 not on PATH")
+def test_sea_sar_and_sign_extend_semantics_via_z3() -> None:
+    for fixture in (TAC_SAR, TAC_SIGN_EXTEND):
+        tac = parse_string(fixture, path="<string>")
+        rendered = render_smt_script(build_vc(tac, encoding="sea"))
+        proc = subprocess.run(
+            ["z3", "-smt2", "-T:10", "-in"],
+            input=rendered, capture_output=True, text=True, timeout=30,
+        )
+        assert proc.stdout.strip().splitlines()[0] == "unsat", proc.stdout
