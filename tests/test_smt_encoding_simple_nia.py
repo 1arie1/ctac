@@ -868,3 +868,58 @@ def test_sea_vc_sign_extend_semantics_via_z3() -> None:
         input=rendered, capture_output=True, text=True, timeout=30,
     )
     assert proc.stdout.strip().splitlines()[0] == "unsat", proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# ShiftRightArithmetical: sign-interpreting floor shift. The rewriter's
+# SAR_TO_SHR_NONNEG removes it when range proves the operand non-negative,
+# but the encoder must stay sound for shifts the rewriter didn't promote.
+
+TAC_SAR = """TACSymbolTable {
+\tUserDefined {
+\t}
+\tBuiltinFunctions {
+\t}
+\tUninterpretedFunctions {
+\t}
+\tr:bv256
+\ts:bv256
+\tt:bv256
+\tok:bool
+}
+Program {
+\tBlock entry Succ [] {
+\t\tAssignExpCmd r 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+\t\tAssignExpCmd s ShiftRightArithmetical(r 0x20)
+\t\tAssignExpCmd t ShiftRightArithmetical(0x100 0x4)
+\t\tAssignExpCmd ok LAnd(Eq(s r) Eq(t 0x10))
+\t\tAssertCmd ok "sar: -1 >>s 32 == -1 and 0x100 >>s 4 == 0x10"
+\t}
+}
+Axioms {
+}
+Metas {
+  "0": []
+}
+"""
+
+
+def test_sea_vc_sar_emission() -> None:
+    tac = parse_string(TAC_SAR, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    assert "(div r POW2_32)" in rendered
+    assert "(< r POW2_255)" in rendered
+    assert "(- BV256_MOD POW2_224)" in rendered
+
+
+@pytest.mark.skipif(not _z3_available(), reason="z3 not on PATH")
+def test_sea_vc_sar_semantics_via_z3() -> None:
+    """-1 >>s 32 stays all-ones and 0x100 >>s 4 is plain div: the
+    assert holds, failure VC unsat."""
+    tac = parse_string(TAC_SAR, path="<string>")
+    rendered = render_smt_script(build_vc(tac, encoding="sea_vc"))
+    proc = subprocess.run(
+        ["z3", "-smt2", "-T:10", "-in"],
+        input=rendered, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.stdout.strip().splitlines()[0] == "unsat", proc.stdout

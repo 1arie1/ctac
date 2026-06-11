@@ -1084,6 +1084,38 @@ class SeaVcEncoder(SmtEncoder):
                     if k < 0:
                         raise SmtEncodingError("negative shift is unsupported")
                     return f"(div {x} {_int_literal(1 << k)})", "Int"
+                if op in {"ShiftRightArithmetical", "Ashr", "AShr", "BvAShr", "BVAShr"}:
+                    # Sign-interpreting floor shift over bv256-as-Int
+                    # (matches the interpreter's ``_signed_256(a) >> sh``).
+                    # Non-negative: plain div. Negative (x >= 2^255):
+                    # ``floor((x - 2^256) / 2^k) + 2^256`` simplifies to
+                    # ``div(x, 2^k) + (2^256 - 2^(256-k))`` — the top k
+                    # bits fill with ones — exact because 2^k | 2^256.
+                    if len(expr.args) != 2:
+                        raise SmtEncodingError(f"{op} expects two args")
+                    x, _ = emit_expr(expr.args[0], expected_sort="Int")
+                    if not isinstance(expr.args[1], ConstExpr):
+                        uf = "bv256_ashr"
+                        y, _ = emit_expr(expr.args[1], expected_sort="Int")
+                        uf_decl_lines.add(f"(declare-fun {uf} (Int Int) Int)")
+                        _add_uf_app(uf, (x, y))
+                        return f"({uf} {x} {y})", "Int"
+                    k = _parse_const(expr.args[1].value)
+                    if k < 0:
+                        raise SmtEncodingError("negative shift is unsupported")
+                    if k == 0:
+                        return x, "Int"
+                    if k >= 256:
+                        return (
+                            f"(ite (< {x} {_int_literal(1 << 255)}) 0 BV256_MAX)",
+                            "Int",
+                        )
+                    q = f"(div {x} {_int_literal(1 << k)})"
+                    return (
+                        f"(ite (< {x} {_int_literal(1 << 255)}) {q} "
+                        f"(+ {q} (- BV256_MOD {_int_literal(1 << (256 - k))})))",
+                        "Int",
+                    )
                 if op in {"BAnd", "BitAnd", "BvAnd", "BVAnd", "BWAnd", "BWAND"}:
                     if len(expr.args) != 2:
                         raise SmtEncodingError(f"{op} expects two args")
