@@ -1,0 +1,4 @@
+pdf := "vcgen.pdf"
+
+build:
+	typst compile main.typ {{pdf}}
