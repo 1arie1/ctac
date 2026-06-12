@@ -1,7 +1,7 @@
 = VC Generation Algorithms
 
-*VCGen Problem.* Given a program $P$ in SASA form, $"VCGen"(P)$ is a formula
-$Phi$ such that $Phi$ is satisfiable iff $P$ is unsafe.
+*VCGen Problem.* Given a `ttac` program $P$ in SASA form, $"VCGen"(P)$ is a
+formula $Phi$ such that $Phi$ is satisfiable iff $P$ is unsafe.
 
 For a SASA program, this can be read as an execution query:
 

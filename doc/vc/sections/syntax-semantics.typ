@@ -3,8 +3,9 @@
 
 = Syntax and Semantics of the Target Language
 
-We use a small TAC-like language as the source of VC generation. It keeps the
-semantic core explicit and leaves implementation-specific details out of scope.
+We use *Tiny TAC*, abbreviated `ttac`, as the source language for VC generation.
+Tiny TAC keeps the semantic core explicit and leaves implementation-specific
+details out of scope.
 
 == Types
 
