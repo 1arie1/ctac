@@ -1,4 +1,8 @@
 pdf := "vcgen.pdf"
+slides_pdf := "syntax-semantics-demo.pdf"
 
 build:
 	typst compile main.typ {{pdf}}
+
+slides:
+	typst compile --root . slides/syntax-semantics-demo.typ {{slides_pdf}}

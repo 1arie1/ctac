@@ -43,15 +43,15 @@
   }
 }
 
-#let tac-code(src) = {
+#let tac-code(src, font-size: 9pt, font: "Menlo", inset: (x: 9pt, y: 7pt)) = {
   block(
     fill: rgb("#f8fafc"),
     stroke: 0.6pt + rgb("#dbe3ee"),
     radius: 3pt,
-    inset: (x: 9pt, y: 7pt),
+    inset: inset,
     width: 100%,
   )[
-    #set text(font: "Menlo", size: 9pt)
+    #set text(font: font, size: font-size)
     #for line in src.split("\n") {
       tac-line(line)
     }
