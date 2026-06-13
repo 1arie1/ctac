@@ -125,7 +125,7 @@ $) <eq:seahorn-error>
 Together with the explicit constraint $bb_"exit"$, this asks for a complete
 entry-to-exit execution that reaches the assertion failure condition.
 
-==== Example
+==== Example 1: Basic Diamond Encoding
 
 Consider:
 
@@ -339,9 +339,9 @@ collapses to:
   $
 ]
 
-==== Optimized Example
+==== Example 2: Optimized Diamond Encoding
 
-Using the same diamond program from the previous example, choose:
+Using the same diamond program from Example 1, choose:
 
 - forward CFG constraints,
 - unguarded static definitions,
