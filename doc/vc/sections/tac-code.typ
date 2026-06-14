@@ -1,14 +1,21 @@
 #let tac-keywords = (
   "assume",
   "assert",
+  "borrow",
+  "borrow_mut",
+  "borrow_ref",
+  "borrow_ref_mut",
   "else",
   "false",
   "goto",
   "halt",
   "havoc",
   "if",
+  "load",
   "not",
   "phi",
+  "release",
+  "store",
   "true",
 )
 
@@ -21,8 +28,11 @@
     text(fill: tac-keyword-color, weight: "semibold")[#tok]
   } else if tok.ends-with(":") {
     text(fill: tac-label-color, weight: "semibold")[#tok]
-  } else if tok == ":=" or tok == "==" or tok == "<=" or tok == ">=" or tok == "<" or tok == ">" {
+  } else if tok == ":=" or tok == "==" or tok == "<=" or tok == ">=" or tok == "<" or tok == ">" or tok == "," {
     text(fill: tac-op-color, weight: "semibold")[#tok]
+  } else if tok.ends-with(",") {
+    tac-token(tok.slice(0, -1))
+    text(fill: tac-op-color, weight: "semibold")[,]
   } else {
     tok
   }

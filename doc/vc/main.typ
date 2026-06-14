@@ -19,7 +19,10 @@
 
 = ctac VC Generation
 
+#outline(title: "Contents")
+
 #include "sections/overview.typ"
 #include "sections/syntax-semantics.typ"
 #include "sections/well-formedness.typ"
 #include "sections/vcgen-algorithms.typ"
+#include "sections/references-borrowing.typ"
