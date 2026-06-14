@@ -27,3 +27,9 @@ The algorithms should be compared by the shape of the formula they generate,
 the program form they prefer, and the solver behavior they induce.
 
 #include "seahorn-vcgen.typ"
+
+#include "boogie-vcgen.typ"
+
+== SeaBMC-Style VCGen
+
+*TODO*
