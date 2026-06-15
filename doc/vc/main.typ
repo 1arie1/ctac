@@ -17,7 +17,10 @@
 #show heading: set block(above: 1.2em, below: 0.6em)
 #show heading.where(level: 4): set heading(numbering: none)
 
-= ctac VC Generation
+#align(center)[
+  #text(size: 18pt, weight: "bold")[VC Generation] \
+  #text(size: 11pt)[Arie Gurfinkel]
+]
 
 #outline(title: "Contents")
 
