@@ -59,8 +59,8 @@ such as `r.value` are syntactic sugar used only to explain the lowering.
 
 == Borrowing Commands
 
-The command grammar is extended with explicit borrow, reborrow, load, store,
-and release commands:
+The command grammar is extended with explicit borrow, reborrow, `get_ref`,
+`put_ref`, and release commands:
 
 ```text
 cmd ::= ...
@@ -68,16 +68,16 @@ cmd ::= ...
       | r, M2 := borrow_mut M[i]
       | q := borrow_ref r
       | q, r2 := borrow_ref_mut r
-      | x := load r
-      | r2 := store r, v
+      | x := get_ref r
+      | r2 := put_ref r, v
       | release r
 ```
 
 The first two commands borrow a concrete memory location. The next two commands
-reborrow the location described by an existing reference. `load` reads through
-a reference. `store` writes through a mutable reference and returns a fresh
-reference value. `release` ends the reference lifetime for the purposes of
-well-formedness checking.
+reborrow the location described by an existing reference. `get_ref` observes the
+value through a reference. `put_ref` updates the value through a mutable
+reference and returns a fresh reference value. `release` ends the reference
+lifetime for the purposes of well-formedness checking.
 
 A constant borrow returns only the new reference because it cannot modify the
 underlying bytemap. A mutable borrow returns the new reference and a
@@ -94,10 +94,10 @@ entry:
   M := havoc
   i := havoc
   p := borrow M[i]
-  x := load p
+  x := get_ref p
   release p
   q, M2 := borrow_mut M[i]
-  q2 := store q, (x + 1)
+  q2 := put_ref q, (x + 1)
   release q2
   ok := M2[i] == x + 1
   assert ok
@@ -115,7 +115,7 @@ reference. The surface syntax is:
 ```tac
 p := borrow M[i]
 p2 := borrow_ref p
-x := load p2
+x := get_ref p2
 release p2
 release p
 ```
@@ -125,9 +125,9 @@ A mutable reference can also be reborrowed:
 ```tac
 r, M1 := borrow_mut M[i]
 q, q_after := borrow_ref_mut r
-q2 := store q, 7
+q2 := put_ref q, 7
 release q2
-x := load q_after
+x := get_ref q_after
 ok := x == 7
 assert ok
 release q_after
@@ -136,14 +136,15 @@ release q_after
 The well-formedness condition is stronger for mutable reborrows: while `q` is
 live, the parent reference `r` is suspended. After the borrowed reference is
 released, `q_after` represents the resumed parent reference and can observe the
-store performed through `q`.
+update performed through `q`.
 
 == Borrow Well-Formedness
 
 Borrowing introduces obligations that are best checked before VC generation.
-We expect conditions such as: loads require live references, stores require
-live mutable references, mutable references are exclusive in the appropriate
-sense, and reborrows do not outlive the references from which they were derived.
+We expect conditions such as: `get_ref` requires a live reference, `put_ref`
+requires a live mutable reference, mutable references are exclusive in the
+appropriate sense, and reborrows do not outlive the references from which they
+were derived.
 This document does not attempt to define the exact borrow discipline.
 
 It is also legal in Tiny TAC to mix direct memory operations with reference
@@ -151,7 +152,7 @@ operations:
 
 ```tac
 r, M1 := borrow_mut M[i]
-r2 := store r, 7
+r2 := put_ref r, 7
 M2 := M1[j := 9]
 release r2
 ```
@@ -176,7 +177,7 @@ between these models.
 We can explain VC generation for references by first compiling Tiny TAC with
 references into ordinary Tiny TAC plus the tuple notation introduced above.
 After this source-to-source lowering, the existing VCGen only needs to handle
-ordinary assignments, loads, stores, assumptions, and assertions.
+ordinary assignments, map reads, map updates, assumptions, and assertions.
 
 For a constant borrow:
 
@@ -209,10 +210,10 @@ M2 := M[i := r.promise]
 The map `M2` is the continuation memory: when `r` is eventually released, the
 borrow promises that address `i` contains `r.promise`.
 
-For a load:
+For a `get_ref`:
 
 ```tac
-x := load r
+x := get_ref r
 ```
 
 the lowering is:
@@ -221,10 +222,10 @@ the lowering is:
 x := r.value
 ```
 
-For a store through a mutable reference:
+For a `put_ref` through a mutable reference:
 
 ```tac
-r2 := store r, v
+r2 := put_ref r, v
 ```
 
 the lowering is:
@@ -233,7 +234,7 @@ the lowering is:
 r2 := { addr: r.addr, value: v, promise: r.promise }
 ```
 
-The store returns a fresh reference symbol so the lowered program remains in
+The `put_ref` returns a fresh reference symbol so the lowered program remains in
 SSA form.
 
 For a release:
@@ -260,7 +261,7 @@ entry:
   M := havoc
   i := havoc
   r, M2 := borrow_mut M[i]
-  r2 := store r, 7
+  r2 := put_ref r, 7
   release r2
   x := M2[i]
   ok := x == 7
@@ -344,9 +345,9 @@ entry:
   i := havoc
   r, M2 := borrow_mut M[i]
   q, r2 := borrow_ref_mut r
-  q2 := store q, 7
+  q2 := put_ref q, 7
   release q2
-  r3 := store r2, 8
+  r3 := put_ref r2, 8
   release r3
   x := M2[i]
   ok := x == 8
@@ -374,7 +375,7 @@ entry:
   halt
 ```
 
-The first release gives `q.promise == 7`, so `r2.value == 7`. The store through
+The first release gives `q.promise == 7`, so `r2.value == 7`. The update through
 `r2` then changes the value to `8` while preserving `r.promise` as the final
 promise. Releasing `r3` gives `r.promise == 8`, which is the value already
 written into the continuation memory `M2`.
@@ -395,7 +396,7 @@ The relevant equalities are:
 ]
 
 These imply $"promise"(r) = 8$, so `M2[i] == 8`. The value written by `q` is
-visible through `r2`, but the final store through `r2` determines the value
+visible through `r2`, but the final update through `r2` determines the value
 that the original mutable borrow commits to memory.
 
 == VCGen Extension
@@ -450,9 +451,8 @@ but substantial enough to be a useful project.
   such as a collection of bytes. The reference representation would then need
   to describe a base address, a size or set of offsets, and a value/promise for
   each byte or word in the region. The main question is how to keep the
-  resulting encoding compact while still allowing loads and stores inside the
-  borrowed region to use the reference representation instead of the full memory
-  map.
+  resulting encoding compact while still allowing accesses inside the borrowed
+  region to use the reference representation instead of the full memory map.
 
 - *Reference shadow memory.* Tiny TAC does not allow references to be stored in
   memory, because a reference triple does not fit into a single `int`. One way
