@@ -21,7 +21,7 @@ $"Path"$. We consider three styles:
 - $"VCGen_SeaHorn"$: explicit control representation via block variables with
   side-conditions, naturally in SSA.
 - $"VCGen_Boogie"$: weakest-precondition style formulas, naturally over DSA.
-- $"VCGen_SeaBMC"$: data-flow driven with control compiled into control.
+- $"VCGen_SeaBMC"$: data-flow driven with control compiled into data.
 
 The algorithms should be compared by the shape of the formula they generate,
 the program form they prefer, and the solver behavior they induce.
@@ -30,6 +30,4 @@ the program form they prefer, and the solver behavior they induce.
 
 #include "boogie-vcgen.typ"
 
-== SeaBMC-Style VCGen
-
-*TODO*
+#include "seabmc-vcgen.typ"
