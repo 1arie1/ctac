@@ -5,24 +5,22 @@
 
 == SeaBMC-Style VCGen
 
-Our goal is to design a VCGen algorithm that does not require separate CFG
-constraints, like the Boogie-style encoding in the previous section, while
-being direct, like the SeaHorn-style encoding.
+Our goal is a VCGen algorithm that does not need separate CFG constraints, as
+in the Boogie-style encoding, but remains direct, as in the SeaHorn-style
+encoding.
 
 The intuition is to reduce all control-dependence into data-dependence, so that
 program statements can execute in arbitrary order, and the assertion and
 assumption use only the values they require.
 
-We assume that the program $P$ is in SSA, SESE, and SASA forms. That is, every
-variable is assigned only once, there are phi nodes for joins, all paths go
-from entry to exit, and there is a single assumption and assertion in the
-designated exit block.
+Assume that $P$ is in SSA, SESE, and SASA form: every variable is assigned only
+once, joins are represented by phi nodes, all paths go from `entry` to `exit`,
+and the designated exit block contains the single assumption and assertion.
 
-Recall that the CFG is needed to directly encode phi nodes. The trick is to
-rewrite the input program to eliminate those first. In compilers, such a form
-is known as *Gated SSA*. A phi node is replaced by a gamma node that guards not
-by the basic block from which execution flows, but by the value of Boolean
-expressions.
+Direct phi encoding needs CFG information. The trick is to rewrite the input
+program so phi nodes disappear before VC generation. In compilers, this form is
+known as *Gated SSA*. A phi node is replaced by a gamma node guarded by Boolean
+program expressions rather than by predecessor block names.
 
 === Gated SSA
 
@@ -94,8 +92,8 @@ exit:
   halt
 ```
 
-There is nothing special about gamma nodes. They are just ITE expressions. We
-use `gamma` only as syntactic sugar:
+Gamma nodes add no new semantics. We use `gamma` only as syntactic sugar for
+an ITE expression:
 
 #logic-box[
   $
@@ -142,15 +140,15 @@ $"gate"(b)$ that is true exactly when execution reaches $b$, but written in
 terms of program branch conditions rather than block variables.
 
 We define #def-term[control-dependence] using #def-term[postdominators]. A
-block $d$ #def-term[postdominates] a block $b$ when every path from $b$ to
-`exit` goes through $d$. A block $b_1$ is #def-term[control-dependent] on a
-branch block $b_2$ iff:
+block $d$ #def-term[postdominates] block $b$ when every path from $b$ to `exit`
+goes through $d$. A block $b_1$ is #def-term[control-dependent] on branch block
+$b_2$ iff:
 
 - $b_2$ has a successor $s$ such that $b_1$ postdominates $s$;
 - $b_1$ does not postdominate $b_2$.
 
-Intuitively, once execution takes the edge $b_2 -> s$, it must eventually reach
-$b_1$, but before the branch at $b_2$ is resolved, reaching $b_1$ is still not
+Intuitively, after execution takes edge $b_2 -> s$, it must eventually reach
+$b_1$. Before the branch at $b_2$ is resolved, however, reaching $b_1$ is not
 forced. This is illustrated in @fig:control-dependence.
 
 The #def-term[control-dependence graph] has one node for each basic block and
@@ -169,8 +167,8 @@ block whose execution it controls.
 ) <fig:control-dependence>
 
 Let $"ctrl"(b)$ be the set of branch blocks on which $b$ is control-dependent.
-A controller $c in "ctrl"(b)$ is, therefore, a basic block whose terminator is a
-conditional branch. For such a controller $c$, let $"orient"(c,b)$ be:
+A controller $c in "ctrl"(b)$ is therefore a basic block whose terminator is a
+conditional branch. Define $"orient"(c,b)$ as:
 
 - the branch condition of $c$ when $b$ lies under the true successor of $c$;
 - the negated branch condition when $b$ lies under the false successor of $c$.
@@ -217,13 +215,13 @@ For a two-predecessor join, this is simply:
   $
 ]
 
-The order of cases is irrelevant when the gates are mutually exclusive on real
-executions. For readability, examples use the branch condition directly when
-the predecessor gate is syntactically equal to it.
+The case order is irrelevant when the gates are mutually exclusive on real
+executions. For readability, examples use the branch condition directly when it
+is syntactically equal to the predecessor gate.
 
 === Conversion Algorithm
 
-The SSA-to-GSSA conversion is a source-to-source pass:
+The SSA-to-GSSA conversion is a source-to-source pass.
 
 1. Compute postdominators and control-dependence for the CFG.
 2. For every block $b$ that can be used by a merge, compute $"gate"(b)$ from
@@ -264,18 +262,17 @@ remaining trace of control flow is the ITE guard in the definition of `a`.
 
 === Materialized Gates
 
-The previous description hides a possible exponential blow-up. The equation
-for $"gate"(b)$ is recursive: it may mention gates of controller blocks, and
-those gates may mention gates of their own controllers. If the conversion
-substitutes every gate expression textually into every gamma node, then shared
-control-dependence prefixes are copied at each use. A gate DAG can therefore
-become an exponentially large Boolean expression tree.
+The previous description hides a possible exponential blow-up. The definition
+of $"gate"(b)$ is recursive: it may mention gates of controller blocks, which
+may mention gates of their own controllers. If every gate expression is
+substituted textually into every gamma node, shared control-dependence prefixes
+are copied at each use. A gate DAG can therefore become an exponentially large
+Boolean expression tree.
 
 #def-term[Materialized gates] avoid this by introducing ordinary Boolean SSA
-variables for gate predicates. Instead of replacing a phi node by a gamma
-guarded by a fully expanded expression, the conversion introduces one named
-gate for each block whose reachability predicate is needed, and each gamma
-refers to that name.
+variables for gate predicates. Rather than guarding each gamma by a fully
+expanded expression, the conversion introduces one named gate for each needed
+block and lets gammas refer to those names.
 
 The materialized form is:
 
@@ -306,15 +303,14 @@ The materializing conversion is:
    variables.
 6. Emit gamma nodes as ordinary `ite` expressions.
 
-This is still a CFG-free VC shape. The CFG is used only by the preprocessing
-pass that computes the gate definitions. After that, the VC contains ordinary
-assignment equalities, assumptions, and the negated assertion.
+The resulting VC shape is still CFG-free. The CFG is used only by the
+preprocessing pass that computes gate definitions. After that, the VC contains
+ordinary assignment equalities, assumptions, and the negated assertion.
 
-==== Example
+==== Example 1: Shared Gate Structure
 
-The advantage of materialized gates appears when several merges reuse the same
-control-dependence structure. Consider a program whose control-dependence gates
-have the following shape:
+Materialized gates help when several merges reuse the same control-dependence
+structure. Consider a program whose gates have this shape:
 
 #logic-box[
   $
@@ -390,10 +386,10 @@ definitions plus the number of gamma uses.
 
 === Thin Gated SSA
 
-Materializing gates prevents repeated expansion of gate expressions, but it does
-not by itself explain why the gates are small. #def-term[Thin Gated SSA] is the
-form that uses only the *direct* control-dependence controllers of a block,
-rather than enumerating all complete paths from `entry` to that block.
+Materializing gates prevents repeated expansion, but it does not by itself make
+the gates small. #def-term[Thin Gated SSA] uses only the *direct*
+control-dependence controllers of a block instead of enumerating every complete
+path from `entry` to that block.
 
 A block $b$ is #def-term[directly control-dependent] on a branch block $c$ when
 there is an edge $c -> b$ in the control-dependence graph. A block $b$ is
@@ -410,18 +406,16 @@ $c$ is not just $"orient"(c,b)$. It is:
   $K_(c,b) = G_c and "orient"(c,b)$
 ]
 
-The factor $G_c$ says that the controller block $c$ itself is reached. Without
-it, the branch condition of an unreachable controller could still choose a
-case, because ordinary SSA variables are total in the formula. For example, if
-block `a` is not reached, its branch condition `c2` may still have some model
-value; switching on `c2` alone could incorrectly select the `a`-side incoming
-value.
+The factor $G_c$ says that controller block $c$ itself is reached. Without it,
+the branch condition of an unreachable controller could still choose a case,
+because ordinary SSA variables are total in the formula. For example, if block
+`a` is not reached, its branch condition `c2` may still have a model value;
+switching on `c2` alone could incorrectly select the `a`-side incoming value.
 
-If no direct-controller case $K_(c,b)$ fires, then execution does not reach
-$b$. For the Boolean reachability gate this fallback is `false`. For a value
-gamma located in $b$, the fallback value can be `undef`, because the value is
-unobservable when $b$ is not reached. This distinction is illustrated in
-@fig:thin-gssa.
+If no direct-controller case $K_(c,b)$ fires, execution does not reach $b$. For
+the Boolean reachability gate, the fallback is `false`. For a value gamma in
+$b$, the fallback can be `undef`, because the value is unobservable when $b$ is
+not reached. This distinction is illustrated in @fig:thin-gssa.
 
 #figure(
   placement: top,
@@ -475,17 +469,17 @@ The thin conversion is a control-dependence pass:
    closest-to-$b$ first.
 3. For each controller $c in "ctrl"(b)$, compute $"orient"(c,b)$ from the
    controller's branch condition.
-4. Build $G_b$ from the direct controller cases only, with `undef` as the
+4. Build $G_b$ from the direct controller cases only, with `false` as the
    fallback case.
 5. Materialize the required $G_b$ variables in topological order.
 6. Rewrite phi nodes and dynamic merge cases to use the materialized $G_b$
    variables.
 
-==== Example
+==== Example 2: Thin GSSA
 
-The running diamond does not show the benefit because it has exactly two cases
-and no extra side branches. The benefit appears when the incoming cases for a
-merge are controlled by one condition, while other local branches go elsewhere.
+The running diamond does not show the benefit: it has exactly two cases and no
+side branches. The benefit appears when one condition controls the incoming
+regions for a merge, while other branches remain local to those regions.
 
 #figure(
   placement: top,
@@ -534,9 +528,9 @@ n:
 ```
 
 The phi at `n` merges the value produced by the `a` region with the value
-produced by the `b` region. Those two regions are selected by the outer branch:
-the `a` region under `c1`, and the `b` region under `not c1`. The local
-branches `c2` and `c3` only decide how each region computes its own value.
+produced by the `b` region. The outer branch selects those regions: `c1` selects
+the `a` region, and `not c1` selects the `b` region. The local branches `c2`
+and `c3` only decide how each region computes its own value.
 
 In regular GSSA, each phi is converted independently by using the full path
 condition for each incoming predecessor:
@@ -555,9 +549,9 @@ n:
 
 In the last block, the left and right gate variables have already been inlined
 as `c1` and `not c1`. Since the source program is SESE, every real execution
-that reaches `n` arrives from exactly one predecessor. Therefore the final
-`undef` fallback in the gamma for `n` is never selected on a real execution and
-can be dropped:
+that reaches `n` arrives from exactly one predecessor. Thus the final `undef`
+fallback in the gamma for `n` is never selected on a real execution and can be
+dropped:
 
 ```tac
 a_join:
@@ -599,11 +593,10 @@ n:
 
 === Cone of Influence
 
-Once the program is converted to data-flow form, cone-of-influence reduction is
-simple. There are no CFG constraints to keep in sync with the program: every
-semantic dependency is an ordinary expression dependency. The reducer can
-therefore start from the exit assumption and assertion and walk definitions
-backward.
+Once the program is in data-flow form, cone-of-influence reduction is simple.
+There are no CFG constraints to keep in sync with the program: every semantic
+dependency is an ordinary expression dependency. The reducer can start from the
+exit assumption and assertion and walk definitions backward.
 
 The important point is that gates are ordinary Boolean definitions too. A gate
 definition is kept only when some retained gamma uses it. Branch conditions are
@@ -634,7 +627,7 @@ definitions. Since every retained expression still names only retained
 dependencies or free inputs, the reduced VC has the same value for the exit
 assumption and assertion as the unreduced data-flow VC.
 
-==== Example
+==== Example 3: COI Reduction
 
 Consider the final Thin GSSA form above, with an extra value that is computed
 but never reaches the assertion:
