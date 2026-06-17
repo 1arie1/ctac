@@ -24,3 +24,31 @@ class TtacParseError(Exception):
             caret = " " * (self.col - 1) + "^"
             return f"{self}\n    {src_line}\n    {caret}"
         return str(self)
+
+
+class TtacTypeError(Exception):
+    """Type inference could not produce a total typing.
+
+    Carries every offender so a single run reports all problems: variables
+    whose type stayed ``unknown``, variables with conflicting evidence, and
+    expression-level type mismatches.
+    """
+
+    def __init__(
+        self,
+        *,
+        unknown: tuple[str, ...] = (),
+        conflicts: tuple[str, ...] = (),
+        errors: tuple[str, ...] = (),
+    ) -> None:
+        self.unknown = unknown
+        self.conflicts = conflicts
+        self.errors = errors
+        parts: list[str] = []
+        if unknown:
+            parts.append(f"untyped variables: {', '.join(unknown)}")
+        if conflicts:
+            parts.append(f"conflicting types: {', '.join(conflicts)}")
+        if errors:
+            parts.append("; ".join(errors))
+        super().__init__("type inference failed: " + " | ".join(parts))

@@ -36,3 +36,38 @@ def test_pp_round_trips(tmp_path):
 def test_missing_file():
     result = runner.invoke(app, ["parse", "/nonexistent/path.ttac"])
     assert result.exit_code == 2
+
+
+def test_df_reports_valid_dsa(tmp_path):
+    result = runner.invoke(app, ["df", _write(tmp_path, fx.CORE), "--plain"])
+    assert result.exit_code == 0
+    assert "dsa: valid" in result.stdout
+
+
+def test_df_invalid_dsa_exits_nonzero(tmp_path):
+    src = "entry:\n  x := havoc\n  x := havoc\n  halt\n"
+    result = runner.invoke(app, ["df", _write(tmp_path, src), "--plain"])
+    assert result.exit_code == 1
+    assert "dsa: invalid" in result.stdout
+
+
+def test_types_total_program(tmp_path):
+    result = runner.invoke(app, ["types", _write(tmp_path, fx.CORE), "--plain"])
+    assert result.exit_code == 0
+    assert "bytemap | M" in result.stdout
+    assert "bool | c" in result.stdout
+
+
+def test_types_show_filter(tmp_path):
+    result = runner.invoke(
+        app, ["types", _write(tmp_path, fx.CORE), "--show", "bytemap", "--plain"]
+    )
+    assert result.exit_code == 0
+    assert "bytemap | M" in result.stdout
+    assert "bool | c" not in result.stdout
+
+
+def test_types_untyped_program_exits_nonzero(tmp_path):
+    src = "entry:\n  x := havoc\n  halt\n"
+    result = runner.invoke(app, ["types", _write(tmp_path, src), "--plain"])
+    assert result.exit_code == 1
