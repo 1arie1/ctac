@@ -151,3 +151,18 @@ def test_desugar_pipes_into_vcgen(tmp_path):
     chained = runner.invoke(app, ["vcgen", "-", "--plain"], input=desugared.output)
     assert chained.exit_code == 0
     assert "(check-sat)" in chained.output
+
+
+def test_stats_prints_capability(tmp_path):
+    result = runner.invoke(app, ["stats", _write(tmp_path, fx.CORE), "--plain"])
+    assert result.exit_code == 0
+    assert "capability" in result.output
+    assert "bytemap-rw" in result.output
+
+
+def test_stats_json(tmp_path):
+    result = runner.invoke(app, ["stats", _write(tmp_path, fx.BORROW_SURFACE), "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["overview.blocks"] == 1
+    assert data["references.reference_free"] == "false"

@@ -30,6 +30,7 @@ __all__ = [
     "split_asserts",
     "to_single_assert",
     "desugar_refs",
+    "collect_stats",
 ]
 
 _ANALYSIS_EXPORTS = ("extract_def_use", "check_dsa", "analyze_types", "infer_types")
@@ -46,4 +47,8 @@ def __getattr__(name: str):
         from . import transform
 
         return getattr(transform, name)
+    if name == "collect_stats":
+        from .stats import collect_stats
+
+        return collect_stats
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

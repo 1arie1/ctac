@@ -18,6 +18,7 @@ from . import ast, parse_program, pretty
 from .analysis import analyze_types, check_dsa, extract_def_use
 from .ast import Ty
 from .errors import TtacParseError, TtacTypeError, VcGenError
+from .stats import collect_stats, stats_to_dict
 from .transform import desugar_refs, merge_asserts, split_asserts
 from .vcgen import generate_vc
 
@@ -208,6 +209,25 @@ def _run_split(program: ast.Program, file: str, output: Path | None, report: boo
         typer.echo(f"  outputs_written: {len(res.outputs)}", err=True)
         typer.echo(f"  output_dir: {output}", err=True)
         typer.echo(f"  was_noop: {str(res.was_noop).lower()}", err=True)
+
+
+@app.command()
+def stats(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable output."),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Summary statistics: command kinds, bytemap capability, borrows, types."""
+    program = _parse_or_exit(file)
+    collection = collect_stats(program)
+    if json_out:
+        typer.echo(json.dumps(stats_to_dict(collection), indent=2))
+        return
+    from ctac.tool.stats_render import render_plain_stats
+
+    for line in render_plain_stats(collection):
+        typer.echo(line)
+    _ = plain
 
 
 @app.command()
