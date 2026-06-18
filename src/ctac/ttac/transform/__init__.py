@@ -17,6 +17,7 @@ from .ua import (
     MergeResult,
     SplitOutput,
     SplitResult,
+    annotate_havoc_types,
     merge_asserts,
     split_asserts,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "MergeResult",
     "SplitOutput",
     "SplitResult",
+    "annotate_havoc_types",
     "merge_asserts",
     "split_asserts",
 ]

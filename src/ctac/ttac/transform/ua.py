@@ -19,6 +19,7 @@ import itertools
 from dataclasses import dataclass
 
 from ctac.ttac import ast
+from ctac.ttac.analysis import analyze_types
 
 from .single_assert import to_single_assert
 
@@ -63,6 +64,10 @@ def split_asserts(program: ast.Program) -> SplitResult:
     sites = _assert_sites(program)
     if not sites:
         return SplitResult(outputs=(), asserts_before=0, was_noop=True)
+    # Stamp each havoc with its type inferred from the whole program, so the
+    # annotation survives COI pruning and every per-assert output stays
+    # type-total even when an arm no longer reads the variable.
+    program = annotate_havoc_types(program)
     outputs = tuple(
         SplitOutput(
             index=idx,
@@ -73,6 +78,28 @@ def split_asserts(program: ast.Program) -> SplitResult:
         for idx, (bl, ci, cond) in enumerate(sites)
     )
     return SplitResult(outputs=outputs, asserts_before=len(sites), was_noop=False)
+
+
+def annotate_havoc_types(program: ast.Program) -> ast.Program:
+    """Annotate each unannotated ``havoc`` target with its inferred type.
+
+    Runs type inference over the whole program (where every variable is
+    determined) and writes the inferred type onto the havoc's target. Only
+    havocs carry no inherent type; every other definition is self-typing.
+    Variables whose type is unknown/conflicting are left untouched.
+    """
+    types = analyze_types(program).types
+    new_blocks: list[ast.Block] = []
+    for block in program.blocks:
+        cmds: list[ast.Cmd] = []
+        for cmd in block.commands:
+            if isinstance(cmd, ast.Havoc) and cmd.target.ty is None:
+                ty = types.get(cmd.target.name)
+                if isinstance(ty, ast.Ty):
+                    cmd = ast.Havoc(ast.Target(cmd.target.name, ty))
+            cmds.append(cmd)
+        new_blocks.append(ast.Block(block.label, tuple(cmds), block.terminator))
+    return ast.Program(tuple(new_blocks), entry=program.entry, exit=program.exit)
 
 
 def merge_asserts(program: ast.Program) -> MergeResult:

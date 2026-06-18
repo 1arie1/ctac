@@ -96,14 +96,30 @@ def test_split_polarity_then_and_else():
     assert ast.UnExpr("not", ast.Var("c")) in r_assumes
 
 
-def test_split_outputs_wellformed():
-    # Each per-assert program is structurally well-formed and round-trips.
-    # (Type totality is not guaranteed: COI pruning can leave a havoc'd
-    # variable unused in an arm where it was only read by the other arm.)
+def test_split_outputs_wellformed_and_type_total():
+    # Havocs are annotated from whole-program inference before splitting,
+    # so every per-assert program is DSA-valid, round-trips, AND type-total
+    # even when an arm no longer reads a variable.
     res = split_asserts(parse_program(fx.BRANCH_ASSERTS))
     for out in res.outputs:
         assert check_dsa(out.program).is_valid
         assert parse_program(pretty(out.program)) == out.program
+        infer_types(out.program)  # raises if not total
+
+
+def test_split_annotates_havoc_in_pruned_arm():
+    # In the R arm, `x` is no longer read (its only use was in L), but the
+    # `x := havoc` def is annotated `x: int` from full-program inference.
+    res = split_asserts(parse_program(fx.BRANCH_ASSERTS))
+    r_out = {o.block: o for o in res.outputs}["R"]
+    havocs = {
+        c.target.name: c.target.ty
+        for b in r_out.program.blocks
+        for c in b.commands
+        if isinstance(c, ast.Havoc)
+    }
+    assert havocs["x"] == ast.Ty.INT
+    assert infer_types(r_out.program)["x"] == ast.Ty.INT
 
 
 def test_split_zero_asserts_is_noop():
