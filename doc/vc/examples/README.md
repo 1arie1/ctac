@@ -35,6 +35,13 @@ Generate the VC and solve it (`sat` = unsafe, `unsat` = safe):
 ttac vcgen safe_core.ttac --solve
 ```
 
+`--solve` finds z3 via `--z3 PATH`, the `CTAC_Z3` environment variable,
+or `z3` on `PATH` (in that order):
+
+```
+ttac vcgen safe_core.ttac --solve --z3 /path/to/z3
+```
+
 The `*_borrow_*` programs use references, which `vcgen` does not encode
 directly — desugar them first (a `ttac -> ttac` pass that lowers borrows
 to plain assignments + a prophecy `assume`):

@@ -187,3 +187,13 @@ def test_run_assume_stop_exits_2(tmp_path):
     src = "entry:\n  b := havoc\n  assume b\n  halt\n"
     result = runner.invoke(app, ["run", _write(tmp_path, src)])
     assert result.exit_code == 2
+
+
+def test_vcgen_z3_option_exists_and_validates_path(tmp_path):
+    # --z3 is accepted (regression: it was advertised in the resolver error
+    # but not wired as an option); a bad path is reported cleanly.
+    result = runner.invoke(
+        app, ["vcgen", _write(tmp_path, fx.CORE), "--solve", "--z3", "/no/such/z3"]
+    )
+    assert result.exit_code == 1
+    assert "z3 binary not found" in result.output

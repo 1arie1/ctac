@@ -323,6 +323,7 @@ def vcgen(
     solve: bool = typer.Option(False, "--solve", help="Run z3 on the VC immediately."),
     model: Path = typer.Option(None, "--model", help="On sat, write the z3 model here."),
     timeout: int = typer.Option(None, "--timeout", help="z3 timeout in seconds."),
+    z3: str = typer.Option(None, "--z3", help="Path to the z3 binary (else CTAC_Z3 / PATH)."),
     plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
 ) -> None:
     """Generate a seahorn-style SMT VC (merges multiple asserts first)."""
@@ -346,16 +347,16 @@ def vcgen(
 
     _ = plain
     if solve:
-        _run_solver(res, model, timeout)
+        _run_solver(res, model, timeout, z3)
 
 
-def _run_solver(res, model: Path | None, timeout: int | None) -> None:
+def _run_solver(res, model: Path | None, timeout: int | None, z3: str | None) -> None:
     from ctac.smt.runner import run_z3_solver
     from ctac.smt.z3_model import parse_z3_sat_output
     from ctac.solver.z3 import resolve_z3_bin
 
     try:
-        z3_path = str(resolve_z3_bin(None))
+        z3_path = str(resolve_z3_bin(z3))
     except FileNotFoundError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
