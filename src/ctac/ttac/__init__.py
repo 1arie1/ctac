@@ -26,13 +26,23 @@ __all__ = [
     "check_dsa",
     "analyze_types",
     "infer_types",
+    "merge_asserts",
+    "split_asserts",
+    "to_single_assert",
 ]
+
+_ANALYSIS_EXPORTS = ("extract_def_use", "check_dsa", "analyze_types", "infer_types")
+_TRANSFORM_EXPORTS = ("merge_asserts", "split_asserts", "to_single_assert")
 
 
 def __getattr__(name: str):
-    # Lazy re-export of the analyses (avoids importing networkx at parse time).
-    if name in ("extract_def_use", "check_dsa", "analyze_types", "infer_types"):
+    # Lazy re-export of the analyses/transforms (defers the networkx import).
+    if name in _ANALYSIS_EXPORTS:
         from . import analysis
 
         return getattr(analysis, name)
+    if name in _TRANSFORM_EXPORTS:
+        from . import transform
+
+        return getattr(transform, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

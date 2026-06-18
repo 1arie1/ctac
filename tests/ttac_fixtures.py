@@ -116,6 +116,39 @@ join:
   goto exit
 """
 
+# Not from doc/vc - purpose-built for the ua transform tests.
+
+# Two sequential asserts in one block (merge example).
+TWO_ASSERTS = """\
+entry:
+  a := havoc
+  b := havoc
+  assert a
+  assert b
+  halt
+"""
+
+# A branch with an assert on each arm (split COI / polarity example).
+BRANCH_ASSERTS = """\
+entry:
+  c := havoc
+  x := havoc
+  if c goto L else R
+
+L:
+  okL := x <= x
+  assert okL
+  goto exit
+
+R:
+  okR := havoc
+  assert okR
+  goto exit
+
+exit:
+  halt
+"""
+
 ALL = {
     "CORE": CORE,
     "BORROW_SURFACE": BORROW_SURFACE,

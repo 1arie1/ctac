@@ -7,6 +7,7 @@ much narrower surface: parse a Tiny TAC program and pretty-print it.
 
 from __future__ import annotations
 
+import json
 import sys
 from collections import Counter
 from pathlib import Path
@@ -17,6 +18,7 @@ from . import ast, parse_program, pretty
 from .analysis import analyze_types, check_dsa, extract_def_use
 from .ast import Ty
 from .errors import TtacParseError
+from .transform import merge_asserts, split_asserts
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -134,6 +136,77 @@ def types(
         _ = plain
         raise typer.Exit(1)
     _ = plain
+
+
+@app.command()
+def ua(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    strategy: str = typer.Option("merge", "--strategy", help="'merge' or 'split'."),
+    output: Path = typer.Option(
+        None, "-o", "--output", help="Output file (merge) or directory (split)."
+    ),
+    report: bool = typer.Option(False, "--report", help="Print counts."),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Uniquify assertions: merge into one __UA_ERROR sink, or split per assert."""
+    program = _parse_or_exit(file)
+    if strategy == "merge":
+        _run_merge(program, output, report)
+    elif strategy == "split":
+        _run_split(program, file, output, report)
+    else:
+        typer.echo(f"error: unknown strategy {strategy!r} (merge|split)", err=True)
+        raise typer.Exit(2)
+    _ = plain
+
+
+def _run_merge(program: ast.Program, output: Path | None, report: bool) -> None:
+    res = merge_asserts(program)
+    text = pretty(res.program)
+    if output is not None:
+        output.write_text(text, encoding="utf-8")
+    else:
+        typer.echo(text, nl=False)
+    if report:
+        typer.echo("ua:", err=True)
+        typer.echo("  strategy: merge", err=True)
+        typer.echo(f"  asserts_merged: {res.asserts_merged}", err=True)
+        typer.echo(f"  error_block: {res.error_block}", err=True)
+        typer.echo(f"  was_noop: {str(res.was_noop).lower()}", err=True)
+
+
+def _run_split(program: ast.Program, file: str, output: Path | None, report: bool) -> None:
+    if output is None:
+        typer.echo("error: split requires -o DIR", err=True)
+        raise typer.Exit(2)
+    if output.exists() and not output.is_dir():
+        typer.echo(f"error: -o must be a directory: {output}", err=True)
+        raise typer.Exit(2)
+
+    res = split_asserts(program)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest_outputs = []
+    for out in res.outputs:
+        name = f"assert_{out.index:02d}.ttac"
+        (output / name).write_text(pretty(out.program), encoding="utf-8")
+        manifest_outputs.append(
+            {"file": name, "index": out.index, "block": out.block, "cond": out.cond_name}
+        )
+    manifest = {
+        "strategy": "split",
+        "source": file,
+        "asserts_before": res.asserts_before,
+        "outputs": manifest_outputs,
+    }
+    (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    if report:
+        typer.echo("ua:", err=True)
+        typer.echo("  strategy: split", err=True)
+        typer.echo(f"  asserts_before: {res.asserts_before}", err=True)
+        typer.echo(f"  outputs_written: {len(res.outputs)}", err=True)
+        typer.echo(f"  output_dir: {output}", err=True)
+        typer.echo(f"  was_noop: {str(res.was_noop).lower()}", err=True)
 
 
 def main() -> None:

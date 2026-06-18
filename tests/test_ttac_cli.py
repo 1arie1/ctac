@@ -1,3 +1,5 @@
+import json
+
 from typer.testing import CliRunner
 
 import ttac_fixtures as fx
@@ -71,3 +73,39 @@ def test_types_untyped_program_exits_nonzero(tmp_path):
     src = "entry:\n  x := havoc\n  halt\n"
     result = runner.invoke(app, ["types", _write(tmp_path, src), "--plain"])
     assert result.exit_code == 1
+
+
+def test_ua_merge_prints_single_assert_program(tmp_path):
+    result = runner.invoke(app, ["ua", _write(tmp_path, fx.TWO_ASSERTS), "--plain"])
+    assert result.exit_code == 0
+    assert result.stdout.count("assert ") == 1
+    assert "__UA_ERROR:" in result.stdout
+
+
+def test_ua_split_creates_files_and_manifest(tmp_path):
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["ua", _write(tmp_path, fx.BRANCH_ASSERTS), "--strategy", "split", "-o", str(out)],
+    )
+    assert result.exit_code == 0
+    assert (out / "assert_00.ttac").is_file()
+    assert (out / "assert_01.ttac").is_file()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["strategy"] == "split"
+    assert manifest["asserts_before"] == 2
+    assert len(manifest["outputs"]) == 2
+
+
+def test_ua_split_requires_output_dir(tmp_path):
+    result = runner.invoke(
+        app, ["ua", _write(tmp_path, fx.BRANCH_ASSERTS), "--strategy", "split"]
+    )
+    assert result.exit_code == 2
+
+
+def test_ua_unknown_strategy(tmp_path):
+    result = runner.invoke(
+        app, ["ua", _write(tmp_path, fx.TWO_ASSERTS), "--strategy", "bogus"]
+    )
+    assert result.exit_code == 2
