@@ -109,3 +109,30 @@ def test_ua_unknown_strategy(tmp_path):
         app, ["ua", _write(tmp_path, fx.TWO_ASSERTS), "--strategy", "bogus"]
     )
     assert result.exit_code == 2
+
+
+def test_vcgen_prints_smt(tmp_path):
+    result = runner.invoke(app, ["vcgen", _write(tmp_path, fx.CORE), "--plain"])
+    assert result.exit_code == 0
+    assert "(check-sat)" in result.stdout
+    assert "(set-logic QF_UFNIA)" in result.stdout
+
+
+def test_vcgen_multi_assert_prints_merge_note(tmp_path):
+    result = runner.invoke(app, ["vcgen", _write(tmp_path, fx.TWO_ASSERTS), "--plain"])
+    assert result.exit_code == 0
+    assert "merged 2 assertions" in result.output
+
+
+def test_vcgen_reference_program_exits_nonzero(tmp_path):
+    result = runner.invoke(app, ["vcgen", _write(tmp_path, fx.MUT_BORROW_SURFACE)])
+    assert result.exit_code == 1
+
+
+def test_vcgen_writes_output_file(tmp_path):
+    out = tmp_path / "vc.smt2"
+    result = runner.invoke(
+        app, ["vcgen", _write(tmp_path, fx.CORE), "-o", str(out)]
+    )
+    assert result.exit_code == 0
+    assert "(check-sat)" in out.read_text()

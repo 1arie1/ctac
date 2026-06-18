@@ -17,8 +17,9 @@ import typer
 from . import ast, parse_program, pretty
 from .analysis import analyze_types, check_dsa, extract_def_use
 from .ast import Ty
-from .errors import TtacParseError
+from .errors import TtacParseError, TtacTypeError, VcGenError
 from .transform import merge_asserts, split_asserts
+from .vcgen import generate_vc
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -207,6 +208,69 @@ def _run_split(program: ast.Program, file: str, output: Path | None, report: boo
         typer.echo(f"  outputs_written: {len(res.outputs)}", err=True)
         typer.echo(f"  output_dir: {output}", err=True)
         typer.echo(f"  was_noop: {str(res.was_noop).lower()}", err=True)
+
+
+@app.command()
+def vcgen(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    cfg_encoding: str = typer.Option("bwd0", "--cfg-encoding", help="CFG-constraint encoding."),
+    output: Path = typer.Option(None, "-o", "--output", help="Write the SMT-LIB VC here."),
+    solve: bool = typer.Option(False, "--solve", help="Run z3 on the VC immediately."),
+    model: Path = typer.Option(None, "--model", help="On sat, write the z3 model here."),
+    timeout: int = typer.Option(None, "--timeout", help="z3 timeout in seconds."),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Generate a seahorn-style SMT VC (merges multiple asserts first)."""
+    program = _parse_or_exit(file)
+    try:
+        res = generate_vc(program, cfg_encoding=cfg_encoding)
+    except (VcGenError, TtacTypeError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    if res.merged:
+        typer.echo(
+            f"note: merged {res.asserts_before} assertions into a single __UA_ERROR sink",
+            err=True,
+        )
+
+    if output is not None:
+        output.write_text(res.smt_text, encoding="utf-8")
+    elif not solve:
+        typer.echo(res.smt_text, nl=False)
+
+    _ = plain
+    if solve:
+        _run_solver(res, model, timeout)
+
+
+def _run_solver(res, model: Path | None, timeout: int | None) -> None:
+    from ctac.smt.runner import run_z3_solver
+    from ctac.smt.z3_model import parse_z3_sat_output
+    from ctac.solver.z3 import resolve_z3_bin
+
+    try:
+        z3_path = str(resolve_z3_bin(None))
+    except FileNotFoundError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    result = run_z3_solver(
+        smt_text=res.smt_text,
+        z3_path=z3_path,
+        timeout_seconds=timeout,
+        seed=0,
+        tactic="default",
+        extra_args=[],
+        want_model=model is not None,
+    )
+    if result.timed_out:
+        typer.echo("timeout")
+        raise typer.Exit(2)
+    out = parse_z3_sat_output(result.stdout)
+    typer.echo(out.status)
+    if out.status == "sat" and model is not None:
+        model.write_text(out.model_text, encoding="utf-8")
 
 
 def main() -> None:

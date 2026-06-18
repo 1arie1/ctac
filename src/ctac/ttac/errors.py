@@ -26,6 +26,12 @@ class TtacParseError(Exception):
         return str(self)
 
 
+class VcGenError(Exception):
+    """The program is not in proper form for VC generation, or uses a
+    construct vcgen does not support (e.g. references, which must be
+    desugared first)."""
+
+
 class TtacTypeError(Exception):
     """Type inference could not produce a total typing.
 
