@@ -77,6 +77,7 @@ class RunEvent:
     note: str | None = None
     value: Value | None = None
     mem: str | None = None  # concrete memory access(es), e.g. "M[3]" / "M[3 := 7]"
+    failed: bool = False  # this command is a failing assert (rendered red)
 
 
 @dataclass
@@ -180,31 +181,39 @@ class _Interp:
             return self._lookup_map(rhs.name)
         raise UnknownValueError("bytemap right-hand side")
 
-    # --- command execution: returns (note, value, stop) ---
+    # --- command execution: returns (note, value, stop, failed) ---
 
-    def exec_cmd(self, cmd: ast.Cmd, prev: str | None) -> tuple[str | None, Value | None, bool]:
+    def exec_cmd(
+        self, cmd: ast.Cmd, prev: str | None
+    ) -> tuple[str | None, Value | None, bool, bool]:
         if isinstance(cmd, ast.Assign):
-            return self._assign(cmd)
+            n, v, s = self._assign(cmd)
+            return (n, v, s, False)
         if isinstance(cmd, ast.Havoc):
-            return self._havoc(cmd)
+            n, v, s = self._havoc(cmd)
+            return (n, v, s, False)
         if isinstance(cmd, ast.Phi):
-            return self._phi(cmd, prev)
+            n, v, s = self._phi(cmd, prev)
+            return (n, v, s, False)
         if isinstance(cmd, ast.Assume):
             try:
                 ok = _as_bool(self.eval(cmd.cond))
             except UnknownValueError:
-                return ("assume: unknown (skip)", None, False)
-            return ("assume: true", None, False) if ok else ("assume: false -> stop", None, True)
+                return ("assume: unknown (skip)", None, False, False)
+            if ok:
+                return ("assume: true", None, False, False)
+            return ("assume: false -> stop", None, True, False)
         if isinstance(cmd, ast.Assert):
             try:
                 ok = _as_bool(self.get_symbol(cmd.cond_name))
             except UnknownValueError:
-                return ("assert: inconclusive", None, False)
+                return ("assert: inconclusive", None, False, False)
             if ok:
                 self.assert_ok += 1
-                return ("assert: ok", None, False)
+                return ("assert: ok", None, False, False)
+            # A failing assert stops execution: no execution past it.
             self.assert_fail += 1
-            return ("assert: FAILED", None, False)
+            return ("assert: FAILED", None, True, True)
         raise ValueError(f"unsupported command {type(cmd).__name__} (desugar references first)")
 
     def _assign(self, cmd: ast.Assign) -> tuple[str | None, Value | None, bool]:
@@ -353,12 +362,15 @@ def run_program(program: ast.Program, *, config: RunConfig | None = None) -> Run
             steps += 1
             mem = interp.mem_repr(cmd)  # before exec: indices hold pre-command values
             try:
-                note, val, stop = interp.exec_cmd(cmd, prev)
+                note, val, stop, failed = interp.exec_cmd(cmd, prev)
             except ValueError as exc:
                 events.append(RunEvent(cur, cmd_str(cmd), f"error: {exc}", mem=mem))
                 status, reason, stopped = "error", str(exc), True
                 break
-            events.append(RunEvent(cur, cmd_str(cmd), note, val, mem))
+            events.append(RunEvent(cur, cmd_str(cmd), note, val, mem, failed))
+            if failed:
+                status, reason, stopped = "assert_failed", f"assertion failed in block {cur}", True
+                break
             if stop:
                 status, reason, stopped = "stopped", f"assume failed in block {cur}", True
                 break

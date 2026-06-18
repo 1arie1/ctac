@@ -268,17 +268,23 @@ def run(
         typer.echo(f"warning: {w}", err=True)
     if trace:
         _print_trace(res.events, plain=plain)
-    raise typer.Exit({"done": 0, "stopped": 2}.get(res.status, 3))
+    raise typer.Exit({"done": 0, "assert_failed": 1, "stopped": 2}.get(res.status, 3))
 
 
 def _print_trace(events, *, plain: bool) -> None:
+    """Print the trace pp-style: each block label once as a header, its
+    commands indented beneath. A failing assert is highlighted red."""
     use_color = (not plain) and sys.stdout.isatty()
     if not use_color:
+        last_block = None
         for ev in events:
+            if ev.block != last_block:
+                typer.echo(f"{ev.block}:")
+                last_block = ev.block
             val = f"  = {_fmt_value(ev.value)}" if ev.value is not None else ""
             extras = [x for x in (ev.note, ev.mem) if x]
             comment = f"  # {' | '.join(extras)}" if extras else ""
-            typer.echo(f"  {ev.block}: {ev.rendered}{val}{comment}")
+            typer.echo(f"  {ev.rendered}{val}{comment}")
         return
     from rich.console import Console
     from rich.text import Text
@@ -286,15 +292,21 @@ def _print_trace(events, *, plain: bool) -> None:
     from .highlight import TTAC_THEME, highlight_line
 
     console = Console(theme=TTAC_THEME)
+    last_block = None
     for ev in events:
+        if ev.block != last_block:
+            console.print(highlight_line(f"{ev.block}:"))
+            last_block = ev.block
         t = Text("  ")
-        t.append(f"{ev.block}: ", style="ttac.label")
-        t.append_text(highlight_line(ev.rendered))
+        if ev.failed:
+            t.append(ev.rendered, style="bold red")
+        else:
+            t.append_text(highlight_line(ev.rendered))
         if ev.value is not None:
             t.append(f"  = {_fmt_value(ev.value)}", style="yellow")
         extras = [x for x in (ev.note, ev.mem) if x]
         if extras:
-            t.append(f"  # {' | '.join(extras)}", style="dim")
+            t.append(f"  # {' | '.join(extras)}", style="bold red" if ev.failed else "dim")
         console.print(t, soft_wrap=True)
 
 

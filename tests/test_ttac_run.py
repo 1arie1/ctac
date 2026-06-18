@@ -14,10 +14,14 @@ def test_arithmetic_with_zero_havoc():
     assert r.final_store["y"].data == 1
 
 
-def test_assert_failure_counts_and_continues():
-    r = run("entry:\n  b := havoc\n  assert b\n  halt\n")  # b havoc-zero -> false
-    assert r.status == "done"
+def test_assert_failure_stops_execution():
+    # b havoc-zero -> false; the failing assert stops the run (no execution
+    # past it), so the trailing `halt` does not run.
+    r = run("entry:\n  b := havoc\n  assert b\n  halt\n")
+    assert r.status == "assert_failed"
     assert r.assert_fail == 1
+    assert not any(ev.rendered == "halt" for ev in r.events)
+    assert any(ev.failed for ev in r.events)
 
 
 def test_assume_false_stops():
