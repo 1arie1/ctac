@@ -136,3 +136,18 @@ def test_vcgen_writes_output_file(tmp_path):
     )
     assert result.exit_code == 0
     assert "(check-sat)" in out.read_text()
+
+
+def test_desugar_removes_borrow_commands(tmp_path):
+    result = runner.invoke(app, ["desugar", _write(tmp_path, fx.MUT_BORROW_SURFACE)])
+    assert result.exit_code == 0
+    assert "borrow" not in result.output
+    assert "r__value" in result.output
+
+
+def test_desugar_pipes_into_vcgen(tmp_path):
+    desugared = runner.invoke(app, ["desugar", _write(tmp_path, fx.MUT_BORROW_SURFACE)])
+    assert desugared.exit_code == 0
+    chained = runner.invoke(app, ["vcgen", "-", "--plain"], input=desugared.output)
+    assert chained.exit_code == 0
+    assert "(check-sat)" in chained.output

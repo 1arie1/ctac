@@ -47,3 +47,43 @@ def test_bytemap_store_then_read_is_unsat():
 def test_two_asserts_havoc_bools_is_sat():
     # Asserting arbitrary havoc'd bools can fail -> merged VC is sat.
     assert _solve(fx.TWO_ASSERTS) == "sat"
+
+
+# --- desugar -> vcgen: the strong check that borrow lowering matches the doc ---
+
+from ctac.ttac.transform import desugar_refs  # noqa: E402
+
+
+def _solve_desugared(src):
+    return _solve_program(desugar_refs(parse_program(src)).program)
+
+
+def _solve_program(program):
+    from ctac.ttac.vcgen import generate_vc
+    res = generate_vc(program)
+    r = run_z3_solver(
+        smt_text=res.smt_text, z3_path=_Z3, timeout_seconds=30, seed=0,
+        tactic="default", extra_args=[], want_model=False,
+    )
+    assert not r.timed_out
+    return parse_z3_sat_output(r.stdout).status
+
+
+_UNSAFE_BORROW = (
+    "entry:\n  M := havoc\n  i := havoc\n  r, M2 := borrow_mut M[i]\n"
+    "  r2 := put_ref r, 7\n  release r2\n  x := M2[i]\n  ok := x == 8\n"
+    "  assert ok\n  halt\n"
+)
+
+
+@requires_z3
+@pytest.mark.parametrize(
+    "name", ["BORROW_SURFACE", "MUT_BORROW_SURFACE", "REBORROW_SURFACE"]
+)
+def test_desugared_surface_examples_are_unsat(name):
+    assert _solve_desugared(fx.ALL[name]) == "unsat"
+
+
+@requires_z3
+def test_desugared_unsafe_borrow_is_sat():
+    assert _solve_desugared(_UNSAFE_BORROW) == "sat"

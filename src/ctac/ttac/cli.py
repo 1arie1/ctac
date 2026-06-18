@@ -18,7 +18,7 @@ from . import ast, parse_program, pretty
 from .analysis import analyze_types, check_dsa, extract_def_use
 from .ast import Ty
 from .errors import TtacParseError, TtacTypeError, VcGenError
-from .transform import merge_asserts, split_asserts
+from .transform import desugar_refs, merge_asserts, split_asserts
 from .vcgen import generate_vc
 
 app = typer.Typer(
@@ -208,6 +208,27 @@ def _run_split(program: ast.Program, file: str, output: Path | None, report: boo
         typer.echo(f"  outputs_written: {len(res.outputs)}", err=True)
         typer.echo(f"  output_dir: {output}", err=True)
         typer.echo(f"  was_noop: {str(res.was_noop).lower()}", err=True)
+
+
+@app.command()
+def desugar(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    output: Path = typer.Option(None, "-o", "--output", help="Write the result here."),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Desugar references/borrows into a reference-free Tiny TAC program."""
+    program = _parse_or_exit(file)
+    try:
+        res = desugar_refs(program)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    text = pretty(res.program)
+    if output is not None:
+        output.write_text(text, encoding="utf-8")
+    else:
+        typer.echo(text, nl=False)
+    _ = plain
 
 
 @app.command()

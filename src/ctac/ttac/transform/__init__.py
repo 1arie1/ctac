@@ -12,6 +12,7 @@ Layered, bottom-up:
 from __future__ import annotations
 
 from .cfg_slice import restrict_to_block
+from .desugar import DesugarResult, desugar_refs
 from .single_assert import to_single_assert
 from .ua import (
     MergeResult,
@@ -25,6 +26,8 @@ from .ua import (
 __all__ = [
     "restrict_to_block",
     "to_single_assert",
+    "DesugarResult",
+    "desugar_refs",
     "MergeResult",
     "SplitOutput",
     "SplitResult",

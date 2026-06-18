@@ -29,10 +29,11 @@ __all__ = [
     "merge_asserts",
     "split_asserts",
     "to_single_assert",
+    "desugar_refs",
 ]
 
 _ANALYSIS_EXPORTS = ("extract_def_use", "check_dsa", "analyze_types", "infer_types")
-_TRANSFORM_EXPORTS = ("merge_asserts", "split_asserts", "to_single_assert")
+_TRANSFORM_EXPORTS = ("merge_asserts", "split_asserts", "to_single_assert", "desugar_refs")
 
 
 def __getattr__(name: str):
