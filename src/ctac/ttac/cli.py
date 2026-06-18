@@ -267,12 +267,35 @@ def run(
     for w in res.warnings:
         typer.echo(f"warning: {w}", err=True)
     if trace:
-        for ev in res.events:
-            val = f"  = {_fmt_value(ev.value)}" if ev.value is not None else ""
-            note = f"  # {ev.note}" if ev.note else ""
-            typer.echo(f"  {ev.block}: {ev.rendered}{val}{note}")
-    _ = plain
+        _print_trace(res.events, plain=plain)
     raise typer.Exit({"done": 0, "stopped": 2}.get(res.status, 3))
+
+
+def _print_trace(events, *, plain: bool) -> None:
+    use_color = (not plain) and sys.stdout.isatty()
+    if not use_color:
+        for ev in events:
+            val = f"  = {_fmt_value(ev.value)}" if ev.value is not None else ""
+            extras = [x for x in (ev.note, ev.mem) if x]
+            comment = f"  # {' | '.join(extras)}" if extras else ""
+            typer.echo(f"  {ev.block}: {ev.rendered}{val}{comment}")
+        return
+    from rich.console import Console
+    from rich.text import Text
+
+    from .highlight import TTAC_THEME, highlight_line
+
+    console = Console(theme=TTAC_THEME)
+    for ev in events:
+        t = Text("  ")
+        t.append(f"{ev.block}: ", style="ttac.label")
+        t.append_text(highlight_line(ev.rendered))
+        if ev.value is not None:
+            t.append(f"  = {_fmt_value(ev.value)}", style="yellow")
+        extras = [x for x in (ev.note, ev.mem) if x]
+        if extras:
+            t.append(f"  # {' | '.join(extras)}", style="dim")
+        console.print(t, soft_wrap=True)
 
 
 @app.command()

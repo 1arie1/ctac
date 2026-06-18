@@ -183,6 +183,15 @@ def test_run_trace(tmp_path):
     assert "y := x + 1" in result.output
 
 
+def test_run_trace_shows_memory_index(tmp_path):
+    src = "entry:\n  M := havoc\n  i := havoc\n  x := M[i]\n  ok := x == 0\n  assert ok\n  halt\n"
+    result = runner.invoke(app, ["run", _write(tmp_path, src), "--trace"])
+    assert result.exit_code == 0
+    # The M[i] line is annotated with the concrete index.
+    assert "x := M[i]" in result.output
+    assert "M[0]" in result.output
+
+
 def test_run_assume_stop_exits_2(tmp_path):
     src = "entry:\n  b := havoc\n  assume b\n  halt\n"
     result = runner.invoke(app, ["run", _write(tmp_path, src)])

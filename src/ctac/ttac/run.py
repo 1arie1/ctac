@@ -76,6 +76,7 @@ class RunEvent:
     rendered: str
     note: str | None = None
     value: Value | None = None
+    mem: str | None = None  # concrete memory access(es), e.g. "M[3]" / "M[3 := 7]"
 
 
 @dataclass
@@ -265,6 +266,46 @@ class _Interp:
         except ValueError:
             return _vint(0)
 
+    def mem_repr(self, cmd: ast.Cmd) -> str | None:
+        """Concrete memory accesses in ``cmd`` with indices resolved, e.g.
+        ``M[3]`` for ``x := M[i]`` or ``M[3 := 7]`` for ``M2 := M[i := v]``.
+        Evaluate before the command runs so indices hold their pre-command
+        values. Mirrors ctac run's counterexample memory annotation."""
+        parts: list[str] = []
+        if isinstance(cmd, ast.Assign):
+            self._collect_mem(cmd.rhs, parts)
+        elif isinstance(cmd, ast.Assume):
+            self._collect_mem(cmd.cond, parts)
+        return ", ".join(parts) if parts else None
+
+    def _collect_mem(self, e: ast.Expr, parts: list[str]) -> None:
+        if isinstance(e, ast.Load):
+            self._collect_mem(e.base, parts)
+            self._collect_mem(e.index, parts)
+            base = e.base.name if isinstance(e.base, ast.Var) else "?"
+            try:
+                parts.append(f"{base}[{_as_int(self.eval(e.index))}]")
+            except (UnknownValueError, ValueError):
+                pass
+        elif isinstance(e, ast.Update):
+            self._collect_mem(e.base, parts)
+            self._collect_mem(e.index, parts)
+            self._collect_mem(e.value, parts)
+            base = e.base.name if isinstance(e.base, ast.Var) else "?"
+            try:
+                parts.append(f"{base}[{_as_int(self.eval(e.index))} := {_as_int(self.eval(e.value))}]")
+            except (UnknownValueError, ValueError):
+                pass
+        elif isinstance(e, ast.BinExpr):
+            self._collect_mem(e.lhs, parts)
+            self._collect_mem(e.rhs, parts)
+        elif isinstance(e, ast.UnExpr):
+            self._collect_mem(e.operand, parts)
+        elif isinstance(e, ast.IfExpr):
+            self._collect_mem(e.cond, parts)
+            self._collect_mem(e.then, parts)
+            self._collect_mem(e.els, parts)
+
     def _phi(self, cmd: ast.Phi, prev: str | None) -> tuple[str | None, Value | None, bool]:
         t = cmd.target.name
         arm = next((a for a in cmd.arms if a.label == prev), None)
@@ -310,13 +351,14 @@ def run_program(program: ast.Program, *, config: RunConfig | None = None) -> Run
         stopped = False
         for cmd in block.commands:
             steps += 1
+            mem = interp.mem_repr(cmd)  # before exec: indices hold pre-command values
             try:
                 note, val, stop = interp.exec_cmd(cmd, prev)
             except ValueError as exc:
-                events.append(RunEvent(cur, cmd_str(cmd), f"error: {exc}"))
+                events.append(RunEvent(cur, cmd_str(cmd), f"error: {exc}", mem=mem))
                 status, reason, stopped = "error", str(exc), True
                 break
-            events.append(RunEvent(cur, cmd_str(cmd), note, val))
+            events.append(RunEvent(cur, cmd_str(cmd), note, val, mem))
             if stop:
                 status, reason, stopped = "stopped", f"assume failed in block {cur}", True
                 break
@@ -327,18 +369,23 @@ def run_program(program: ast.Program, *, config: RunConfig | None = None) -> Run
             break
 
         term = block.terminator
-        events.append(RunEvent(cur, terminator_str(term)))
         if isinstance(term, ast.Halt):
+            events.append(RunEvent(cur, terminator_str(term), "halt"))
             prev, cur = cur, None
         elif isinstance(term, ast.Goto):
+            events.append(RunEvent(cur, terminator_str(term), f"-> {term.target}"))
             prev, cur = cur, term.target
         elif isinstance(term, ast.IfGoto):
             try:
                 take_then = _as_bool(interp.get_symbol(term.cond))
+                note = f"{term.cond}={'true' if take_then else 'false'}"
             except UnknownValueError:
                 interp.warnings.append(f"branch cond {term.cond!r} unknown -> then")
                 take_then = True
-            prev, cur = cur, (term.then_target if take_then else term.else_target)
+                note = f"{term.cond}=unknown"
+            target = term.then_target if take_then else term.else_target
+            events.append(RunEvent(cur, terminator_str(term), f"{note} -> {target}"))
+            prev, cur = cur, target
 
     if config.validate and interp.model is not None:
         for name, v in interp.store.items():

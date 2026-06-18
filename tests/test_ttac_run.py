@@ -68,6 +68,29 @@ def test_borrow_free_run_stops_at_prophecy_assume():
     assert "assume" in r.reason
 
 
+def test_trace_annotates_memory_indices():
+    src = (
+        "entry:\n  M := havoc\n  i := havoc\n  M2 := M[i := 7]\n  x := M2[i]\n"
+        "  ok := x == 7\n  assert ok\n  halt\n"
+    )
+    r = run(src)
+    by_lhs = {ev.rendered: ev for ev in r.events}
+    # Load shows the resolved index; store shows index := value.
+    assert by_lhs["x := M2[i]"].mem == "M2[0]"
+    assert by_lhs["x := M2[i]"].value.data == 7
+    assert by_lhs["M2 := M[i := 7]"].mem == "M[0 := 7]"
+
+
+def test_trace_terminator_branch_note():
+    src = (
+        "entry:\n  c := 0 <= 1\n  if c goto yes else no\n\n"
+        "yes:\n  halt\n\nno:\n  halt\n"
+    )
+    r = run(src)
+    term = next(ev for ev in r.events if ev.rendered.startswith("if "))
+    assert "c=true" in term.note and "-> yes" in term.note
+
+
 def test_division_is_euclidean():
     r = run("entry:\n  q := havoc\n  halt\n")  # warm-up; check eval via expression
     from ctac.ttac.run import _ediv
