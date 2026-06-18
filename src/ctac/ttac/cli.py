@@ -73,8 +73,19 @@ def pp(
 ) -> None:
     """Pretty-print FILE (round-trips through the parser)."""
     program = _parse_or_exit(file)
-    typer.echo(pretty(program), nl=False)
-    _ = plain
+    text = pretty(program)
+    # Syntax-highlight only on a real terminal; piped / --plain output stays
+    # plain so it round-trips through the parser unchanged.
+    if plain or not sys.stdout.isatty():
+        typer.echo(text, nl=False)
+        return
+    from rich.console import Console
+
+    from .highlight import TTAC_THEME, highlight_line
+
+    console = Console(theme=TTAC_THEME)
+    for line in text.splitlines():
+        console.print(highlight_line(line), soft_wrap=True)
 
 
 @app.command()
