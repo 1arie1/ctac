@@ -1,0 +1,7 @@
+// Unsafe (SAT): c = (a < b) need not hold -- e.g. a >= b is a counterexample.
+entry:
+  a := havoc
+  b := havoc
+  c := a < b
+  assert c
+  halt

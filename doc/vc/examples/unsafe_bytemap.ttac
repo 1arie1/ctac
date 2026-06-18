@@ -1,0 +1,8 @@
+// Unsafe (SAT): a value read from havoced memory need not be 0.
+entry:
+  M := havoc
+  i := havoc
+  x := M[i]
+  ok := x == 0
+  assert ok
+  halt

@@ -1,0 +1,12 @@
+// Unsafe (SAT): write 7 through a mutable borrow, then assert it is 8.
+// Uses references; desugar before vcgen:  ttac desugar f | ttac vcgen -
+entry:
+  M := havoc
+  i := havoc
+  r, M2 := borrow_mut M[i]
+  r2 := put_ref r, 7
+  release r2
+  x := M2[i]
+  ok := x == 8
+  assert ok
+  halt
