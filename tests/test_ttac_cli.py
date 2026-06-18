@@ -166,3 +166,24 @@ def test_stats_json(tmp_path):
     data = json.loads(result.output)
     assert data["overview.blocks"] == 1
     assert data["references.reference_free"] == "false"
+
+
+def test_run_reports_asserts(tmp_path):
+    src = "entry:\n  x := havoc\n  y := x + 1\n  ok := y == 1\n  assert ok\n  halt\n"
+    result = runner.invoke(app, ["run", _write(tmp_path, src)])
+    assert result.exit_code == 0
+    assert "assert_ok: 1" in result.output
+    assert "status: done" in result.output
+
+
+def test_run_trace(tmp_path):
+    src = "entry:\n  x := havoc\n  y := x + 1\n  ok := y == 1\n  assert ok\n  halt\n"
+    result = runner.invoke(app, ["run", _write(tmp_path, src), "--trace"])
+    assert result.exit_code == 0
+    assert "y := x + 1" in result.output
+
+
+def test_run_assume_stop_exits_2(tmp_path):
+    src = "entry:\n  b := havoc\n  assume b\n  halt\n"
+    result = runner.invoke(app, ["run", _write(tmp_path, src)])
+    assert result.exit_code == 2

@@ -87,3 +87,24 @@ def test_desugared_surface_examples_are_unsat(name):
 @requires_z3
 def test_desugared_unsafe_borrow_is_sat():
     assert _solve_desugared(_UNSAFE_BORROW) == "sat"
+
+
+@requires_z3
+def test_run_replays_vcgen_counterexample():
+    # vcgen --model on the desugared unsafe borrow, then run with that model
+    # must reproduce the assertion failure (run and vcgen share semantics).
+    from ctac.eval.model import parse_model_text
+    from ctac.ttac.run import RunConfig, run_program
+    from ctac.ttac.vcgen import generate_vc
+
+    desugared = desugar_refs(parse_program(_UNSAFE_BORROW)).program
+    res = generate_vc(desugared)
+    r = run_z3_solver(
+        smt_text=res.smt_text, z3_path=_Z3, timeout_seconds=30, seed=0,
+        tactic="default", extra_args=[], want_model=True,
+    )
+    out = parse_z3_sat_output(r.stdout)
+    assert out.status == "sat"
+    model = parse_model_text(out.model_text)
+    rr = run_program(desugared, config=RunConfig(model=model))
+    assert rr.assert_fail >= 1

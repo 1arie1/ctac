@@ -18,6 +18,7 @@ from . import ast, parse_program, pretty
 from .analysis import analyze_types, check_dsa, extract_def_use
 from .ast import Ty
 from .errors import TtacParseError, TtacTypeError, VcGenError
+from .run import RunConfig, run_program
 from .stats import collect_stats, stats_to_dict
 from .transform import desugar_refs, merge_asserts, split_asserts
 from .vcgen import generate_vc
@@ -209,6 +210,58 @@ def _run_split(program: ast.Program, file: str, output: Path | None, report: boo
         typer.echo(f"  outputs_written: {len(res.outputs)}", err=True)
         typer.echo(f"  output_dir: {output}", err=True)
         typer.echo(f"  was_noop: {str(res.was_noop).lower()}", err=True)
+
+
+def _fmt_value(v) -> str:
+    if v is None:
+        return "?"
+    return "true" if (v.kind == "bool" and v.data) else "false" if v.kind == "bool" else str(int(v.data))
+
+
+@app.command()
+def run(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    trace: bool = typer.Option(False, "--trace", help="Show a per-command execution trace."),
+    entry: str = typer.Option(None, "--entry", help="Entry block label (default: program entry)."),
+    max_steps: int = typer.Option(50_000, "--max-steps", min=1, help="Execution step cap."),
+    havoc_mode: str = typer.Option("zero", "--havoc-mode", help="zero | random | ask."),
+    model: Path = typer.Option(None, "--model", help="Model file (z3/SMT-LIB or TAC) for replay."),
+    validate: bool = typer.Option(False, "--validate", help="Compare computed values to the model."),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Concrete interpreter (desugars references first; replays --model)."""
+    program = _parse_or_exit(file)
+    tac_model = None
+    if model is not None:
+        from ctac.eval.model import parse_model_path
+
+        tac_model = parse_model_path(model)
+    cfg = RunConfig(
+        havoc_mode=havoc_mode, max_steps=max_steps, entry=entry,
+        model=tac_model, validate=validate,
+    )
+    try:
+        res = run_program(program, config=cfg)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(3) from exc
+
+    typer.echo(f"status: {res.status} ({res.reason})")
+    typer.echo(f"steps: {res.steps}")
+    typer.echo(f"executed_blocks: {len(res.executed_blocks)}")
+    typer.echo(f"assert_ok: {res.assert_ok}")
+    typer.echo(f"assert_fail: {res.assert_fail}")
+    if validate and tac_model is not None:
+        typer.echo(f"mismatches: {res.mismatches}")
+    for w in res.warnings:
+        typer.echo(f"warning: {w}", err=True)
+    if trace:
+        for ev in res.events:
+            val = f"  = {_fmt_value(ev.value)}" if ev.value is not None else ""
+            note = f"  # {ev.note}" if ev.note else ""
+            typer.echo(f"  {ev.block}: {ev.rendered}{val}{note}")
+    _ = plain
+    raise typer.Exit({"done": 0, "stopped": 2}.get(res.status, 3))
 
 
 @app.command()
