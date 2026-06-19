@@ -1,0 +1,50 @@
+// Unsafe (SAT): distilled from a larger TAC account-state proof.
+// Keeps the account-state unpack/update/pack shape.  The source TAC fans out
+// over optional fields and then asserts the delegate flag is cleared after an
+// authorized clear operation.  This version leaves one realistic bug path: the
+// delegated amount can be cleared while the delegate option flag is accidentally
+// preserved.
+entry:
+  Account := havoc
+  signer_key := havoc
+  delegate_key := havoc
+  owner_key := Account[0]
+  delegate_option := Account[1]
+  delegate_value := Account[2]
+  delegated_amount := Account[3]
+  is_initialized := Account[4]
+  assume is_initialized == 1
+  signer_is_owner := signer_key == owner_key
+  signer_is_delegate := signer_key == delegate_key
+  has_delegate := delegate_option == 1
+  delegate_matches := delegate_value == delegate_key
+  can_clear_as_delegate := has_delegate and delegate_matches
+  authorized := signer_is_owner or (signer_is_delegate and can_clear_as_delegate)
+  if authorized goto clear_delegate else reject
+
+reject:
+  Result := Account
+  reject_delegate_option := Result[1]
+  goto check
+
+clear_delegate:
+  cleared_amount_account := Account[3 := 0]
+  preserve_flag_bug := havoc
+  if preserve_flag_bug goto bug_pack else correct_pack
+
+bug_pack:
+  BugPacked := cleared_amount_account
+  bug_delegate_option := BugPacked[1]
+  goto check
+
+correct_pack:
+  no_delegate_account := cleared_amount_account[1 := 0]
+  CorrectPacked := no_delegate_account[2 := 0]
+  correct_delegate_option := CorrectPacked[1]
+  goto check
+
+check:
+  final_delegate_option := phi [reject: reject_delegate_option, bug_pack: bug_delegate_option, correct_pack: correct_delegate_option]
+  ok := final_delegate_option == 0
+  assert ok
+  halt

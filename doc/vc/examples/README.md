@@ -1,9 +1,10 @@
 # Tiny TAC examples
 
-Small `ttac` programs for trying the toolchain end to end. The `safe_*`
-programs are **UNSAT** (the assertion always holds); the `unsafe_*`
-programs are **SAT** (the assertion can fail, and the solver finds a
-counterexample).
+`ttac` programs for trying the toolchain end to end. The `safe_*` programs are
+small feature demos; the `practical_*` programs are reduced from larger TAC
+programs and keep the main computation while dropping bv256/chunking noise.
+**UNSAT** means the assertion always holds; **SAT** means the assertion can fail,
+and the solver finds a counterexample.
 
 | File | Verdict | What it shows |
 |---|---|---|
@@ -13,6 +14,9 @@ counterexample).
 | `unsafe_assert.ttac` | sat | a plain assertion that need not hold |
 | `unsafe_bytemap.ttac` | sat | reading havoced memory |
 | `unsafe_borrow_mut.ttac` | sat | a wrong assertion after a borrowed write |
+| `practical_share_burn_monotonicity.ttac` | unsat | reduced share-burn monotonicity: proportional conversion, exact-balance branches, min caps |
+| `practical_withdrawal_summary.ttac` | unsat | reduced withdrawal summary: utilization branch, mode selection, capped withdrawal |
+| `practical_delegate_clear.ttac` | sat | reduced account delegate-clear flow: unpack state, authorize, repack, assert delegate cleared |
 
 ## Commands
 
