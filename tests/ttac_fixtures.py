@@ -1,10 +1,10 @@
-"""Tiny TAC example programs taken verbatim from ``doc/vc/``.
+"""Tiny TAC example programs taken verbatim from ``docs/vc/``.
 
 Not a test module (no ``test_`` prefix) - shared fixtures for the parser
 and round-trip tests. Each entry is a complete program.
 """
 
-# doc/vc/sections/syntax-semantics.typ:134-155
+# docs/vc/sections/syntax-semantics.typ:134-155
 CORE = """\
 entry:
   M := havoc
@@ -28,7 +28,7 @@ exit:
   halt
 """
 
-# doc/vc/sections/references-borrowing.typ:92-105
+# docs/vc/sections/references-borrowing.typ:92-105
 BORROW_SURFACE = """\
 entry:
   M := havoc
@@ -44,7 +44,7 @@ entry:
   halt
 """
 
-# doc/vc/sections/references-borrowing.typ:259-269
+# docs/vc/sections/references-borrowing.typ:259-269
 MUT_BORROW_SURFACE = """\
 entry:
   M := havoc
@@ -58,7 +58,7 @@ entry:
   halt
 """
 
-# doc/vc/sections/references-borrowing.typ:274-286 (lowered form)
+# docs/vc/sections/references-borrowing.typ:274-286 (lowered form)
 MUT_BORROW_LOWERED = """\
 entry:
   M := havoc
@@ -73,7 +73,7 @@ entry:
   halt
 """
 
-# doc/vc/sections/references-borrowing.typ:342-356
+# docs/vc/sections/references-borrowing.typ:342-356
 REBORROW_SURFACE = """\
 entry:
   M := havoc
@@ -90,7 +90,7 @@ entry:
   halt
 """
 
-# doc/vc/sections/references-borrowing.typ:361-376 (lowered form)
+# docs/vc/sections/references-borrowing.typ:361-376 (lowered form)
 REBORROW_LOWERED = """\
 entry:
   M := havoc
@@ -109,14 +109,14 @@ entry:
   halt
 """
 
-# doc/vc/sections/syntax-semantics.typ:179-183
+# docs/vc/sections/syntax-semantics.typ:179-183
 PHI = """\
 join:
   x := phi [left: x_left, right: x_right]
   goto exit
 """
 
-# Not from doc/vc - purpose-built for the ua transform tests.
+# Not from docs/vc - purpose-built for the ua transform tests.
 
 # Two sequential asserts in one block (merge example).
 TWO_ASSERTS = """\

@@ -1,6 +1,6 @@
 """Borrow desugaring: a reference-free Tiny TAC source-to-source pass.
 
-Follows the documented lowering (``doc/vc/sections/references-borrowing.typ``)
+Follows the documented lowering (``docs/vc/sections/references-borrowing.typ``)
 verbatim, producing the *substituted* form directly: each reference ``r``
 becomes three ``int`` registers ``r__addr`` / ``r__value`` / ``r__promise``,
 and every borrow command expands to ordinary assignments / a ``havoc`` /

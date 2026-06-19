@@ -1,7 +1,7 @@
 """Tiny TAC (``ttac``) AST.
 
 Frozen-dataclass node set for the source language described in
-``doc/vc/``. ``ttac`` is a fragment of TAC with a different concrete
+``docs/vc/``. ``ttac`` is a fragment of TAC with a different concrete
 syntax (infix expressions, label-prefixed blocks, named terminators)
 plus references and borrowing. This module defines only the AST; the
 lexer/parser build it and the pretty-printer renders it back.

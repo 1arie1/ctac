@@ -1,7 +1,7 @@
 """Tiny TAC (``ttac``) - parser, AST, and pretty-printer.
 
 ``ttac`` is the small source language for VC generation documented in
-``doc/vc/``: a fragment of TAC with infix expressions, label-prefixed
+``docs/vc/``: a fragment of TAC with infix expressions, label-prefixed
 blocks, named terminators, and references/borrowing.
 """
 

@@ -1,5 +1,5 @@
 // Safe (UNSAT): the assert in `ok` only runs when `c` is true.
-// From doc/vc/sections/syntax-semantics.typ.
+// From docs/vc/sections/syntax-semantics.typ.
 entry:
   M := havoc
   i := havoc
