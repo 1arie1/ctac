@@ -305,6 +305,34 @@ def test_sos_cache_reuse_across_multiple_selects():
     assert _rhs(res.program, "R2") == SymbolRef("R0")
 
 
+def test_sos_deep_chain_no_recursion_error():
+    """A bytemap Store chain thousands of links deep must resolve
+    without overflowing Python's recursion limit. Real Prover dumps
+    carry chains ~3800 deep; the descent is iterative so depth is
+    bounded by the data, not the call stack."""
+    depth = 5000
+    lines = ["\tBlock e Succ [] {", "\t\tAssignHavocCmd M0", "\t\tAssignHavocCmd R0"]
+    syms = ["M0:bytemap", "R0:bv256"]
+    for i in range(1, depth + 1):
+        # Each Store writes a distinct constant key, all disjoint from
+        # the query key 0x0 below, so the Select peels the whole chain
+        # down to M0.
+        lines.append(f"\t\tAssignExpCmd M{i} Store(M{i - 1} {hex(i)} R0)")
+        syms.append(f"M{i}:bytemap")
+    lines.append(f"\t\tAssignExpCmd R1 Select(M{depth} 0x0)")
+    lines.append("\t}")
+    syms.append("R1:bv256")
+    body = "\n".join(lines)
+    tac = parse_string(_wrap(body, syms="\n\t".join(syms)), path="<s>")
+    res = rewrite_program(
+        tac.program, (SELECT_OVER_STORE,), symbol_sorts=tac.symbol_sorts
+    )
+    assert res.hits_by_rule == {"SelectOverStore": 1}
+    assert _rhs(res.program, "R1") == ApplyExpr(
+        "Select", (SymbolRef("M0"), ConstExpr("0x0"))
+    )
+
+
 def test_sos_dsa_valid_and_no_use_before_def():
     """End-to-end: rule output remains DSA-valid and use-before-def
     clean across a multi-step chain + Ite."""

@@ -128,43 +128,96 @@ def _is_bytemap_symbol(name: str, ctx: RewriteCtx) -> bool:
 def _resolve_select(
     map_sym: SymbolRef, idx_expr: TacExpr, ctx: RewriteCtx, cache: dict
 ) -> TacExpr | None:
-    """Top-level resolution entry: handle a SymbolRef map by looking
-    up its static def, then dispatching to ``_resolve_in_def``. Cache
-    the result.
+    """Top-level resolution entry: walk a SymbolRef map's static def
+    chain. Cache the result.
 
-    "Last good map" fallback: if the inner walk through this symbol's
-    def can't make clean progress (returns ``None``), commit to the
-    current symbol level as ``Select(SymRef, idx)``. Sound because we
-    arrived here only via const-disjoint Store peels at the outer
-    callers, each of which is independently sound. The fallback lets
-    those outer peels survive even when the deeper walk bails."""
-    canon = canonical_symbol(map_sym.name)
-    cache_key = (canon, _canonical_expr(idx_expr))
-    if cache_key in cache:
-        return cache[cache_key]
+    The chain descent — alias hops (``M = M'``) and constant-disjoint
+    Store peels (``M = Store(M', k', v)`` with ``k' ≠ idx``) — is a
+    straight-line walk and is done iteratively. A real Prover dump can
+    carry bytemap Store chains thousands of links deep, which would
+    overflow Python's recursion limit if walked recursively. Only the
+    genuine branch (an ``Ite`` of two bytemaps) and rare inline-Store
+    shapes recurse via :func:`_resolve_in_def`; their nesting is
+    bounded by CFG merge structure, not by chain length.
 
-    # Belt-and-braces: the rule's caller already checks the outer
-    # SymbolRef is a bytemap, but recursion through aliases lands here
-    # too — re-check.
-    if not _is_bytemap_symbol(map_sym.name, ctx):
-        cache[cache_key] = None
-        return None
+    Every symbol on a single descent resolves to the *same* answer (a
+    stored value, or the leaf where the walk bottomed out), so the
+    final result is backfilled to every visited symbol's cache key.
 
-    leaf_form: TacExpr = ApplyExpr("Select", (SymbolRef(canon), idx_expr))
+    "Last good map" fallback: when the walk can't make clean progress
+    (symbolic-key Store, non-bytemap alias, no static def), commit to
+    the current symbol level as ``Select(SymRef, idx)``. Sound because
+    we arrived here only via alias hops and const-disjoint Store peels,
+    each independently sound. The outer guard in
+    ``_rewrite_select_over_store`` suppresses the rule fire when this
+    fallback equals the input."""
+    canon_idx = _canonical_expr(idx_expr)
+    visited: list[tuple] = []
+    seen: set[str] = set()  # cycle guard; DSA defs are acyclic but stay safe
+    cur = canonical_symbol(map_sym.name)
+    result: TacExpr | None
+    while True:
+        cache_key = (cur, canon_idx)
+        if cache_key in cache:
+            result = cache[cache_key]
+            break
+        if cur in seen:
+            result = ApplyExpr("Select", (SymbolRef(cur), idx_expr))
+            break
+        seen.add(cur)
+        # Belt-and-braces: the rule's caller already checks the outer
+        # SymbolRef is a bytemap, but alias hops land here too — re-check.
+        if not _is_bytemap_symbol(cur, ctx):
+            result = None
+            break
+        visited.append(cache_key)
+        leaf_form: TacExpr = ApplyExpr("Select", (SymbolRef(cur), idx_expr))
+        def_rhs = ctx.definition(cur)
+        if def_rhs is None:
+            # Leaf: havoc-defined, dynamic-multi-def, or no static def.
+            result = leaf_form
+            break
+        if isinstance(def_rhs, SymbolRef):
+            # Alias to another bytemap symbol — continue the walk.
+            if not _is_bytemap_symbol(def_rhs.name, ctx):
+                result = leaf_form
+                break
+            cur = canonical_symbol(def_rhs.name)
+            continue
+        if isinstance(def_rhs, ApplyExpr) and def_rhs.op == "Store" and (
+            len(def_rhs.args) == 3
+        ):
+            m_old, k_store, v = def_rhs.args
+            rel = _key_relation(k_store, idx_expr, ctx)
+            if rel == "eq":
+                result = v
+                break
+            if rel == "neq":
+                # Const-disjoint peel: continue at m_old. Iterative when
+                # m_old is a symbol (the deep-chain case); delegate to the
+                # recursive helper for rare inline Store/Ite shapes.
+                if isinstance(m_old, SymbolRef):
+                    if not _is_bytemap_symbol(m_old.name, ctx):
+                        result = leaf_form
+                        break
+                    cur = canonical_symbol(m_old.name)
+                    continue
+                inner = _resolve_in_def(m_old, idx_expr, ctx, cache)
+                result = inner if inner is not None else leaf_form
+                break
+            result = leaf_form  # symbolic / mixed shape: bail to leaf
+            break
+        if isinstance(def_rhs, ApplyExpr) and def_rhs.op == "Ite" and (
+            len(def_rhs.args) == 3
+        ):
+            inner = _resolve_in_def(def_rhs, idx_expr, ctx, cache)
+            result = inner if inner is not None else leaf_form
+            break
+        result = leaf_form  # unhandled def shape: commit to leaf
+        break
 
-    def_rhs = ctx.definition(canon)
-    if def_rhs is None:
-        # Leaf: havoc-defined, dynamic-multi-def, or no static def.
-        cache[cache_key] = leaf_form
-        return leaf_form
-
-    inner = _resolve_in_def(def_rhs, idx_expr, ctx, cache)
-    # Fallback to the leaf form if the inner walk couldn't produce a
-    # single clean answer (symbolic-key Store, Ite-arms disagree, etc).
-    # The outer top-level guard in ``_rewrite_select_over_store``
-    # suppresses the rule fire when this fallback equals the input.
-    result: TacExpr | None = inner if inner is not None else leaf_form
-    cache[cache_key] = result
+    for key in visited:
+        cache.setdefault(key, result)
     return result
 
 
