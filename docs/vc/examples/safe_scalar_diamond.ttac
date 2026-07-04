@@ -1,0 +1,18 @@
+entry:
+  x := havoc
+  c := 0 <= x
+  if c goto pos else neg
+
+pos:
+  y1 := x + 1
+  goto join
+
+neg:
+  y2 := 0 - x
+  goto join
+
+join:
+  y := phi [pos: y1, neg: y2]
+  ok := 0 <= y
+  assert ok
+  halt

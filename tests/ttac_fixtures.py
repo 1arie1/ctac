@@ -118,8 +118,9 @@ join:
 
 # Not from docs/vc - purpose-built for the ttac lean tests.
 
-# Scalar-only diamond with havoc, phi, branch, and assert; mirrors the
-# golden lean/TtacExamples/Diamond.lean pair.
+# docs/vc/examples/safe_scalar_diamond.ttac - scalar-only diamond with
+# havoc, phi, branch, and assert; mirrors the golden
+# lean/TtacExamples/Diamond.lean pair.
 SCALAR_DIAMOND = """\
 entry:
   x := havoc

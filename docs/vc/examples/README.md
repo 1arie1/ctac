@@ -9,6 +9,7 @@ and the solver finds a counterexample.
 | File | Verdict | What it shows |
 |---|---|---|
 | `safe_core.ttac` | unsat | branches, `assume`, an assert that only runs on a feasible path |
+| `safe_scalar_diamond.ttac` | unsat | scalar-only diamond (havoc, branch, phi); the `ttac lean` v1 fragment |
 | `safe_bytemap.ttac` | unsat | bytemap store-then-load (`M[i:=v]`, `M[i]`) |
 | `safe_borrow_mut.ttac` | unsat | mutable borrow + `put_ref`/`release` (references) |
 | `unsafe_assert.ttac` | sat | a plain assertion that need not hold |
@@ -63,8 +64,8 @@ VCGen) and *shallow* (per-block `Prop` definitions in native Lean, for
 proving properties of the program itself):
 
 ```
-ttac lean prog.ttac -o out/prog
-cd out/prog && lake exe cache get && lake build
+ttac lean safe_scalar_diamond.ttac -o out/diamond
+cd out/diamond && lake exe cache get && lake build
 ```
 
 The project contains `<Name>/Deep.lean` and `<Name>/Shallow.lean`
@@ -77,10 +78,10 @@ under a second.
 
 v1 accepts only the scalar fragment: `int`/`bool` registers, pure SSA
 (phi fine, no dynamic definitions), loop-free CFG, no use-before-def.
-Bytemaps and references are rejected, so the examples in this directory
-are outside the fragment for now; the reference scalar program is the
-diamond in `lean/TtacExamples/Diamond.lean` (hand-written golden twin of
-the generated output, with the shallow safety theorem proved).
+Bytemaps and references are rejected, so of the examples in this
+directory only `safe_scalar_diamond.ttac` is inside the fragment. Its
+hand-written golden twin is `lean/TtacExamples/Diamond.lean` (same
+program, shallow safety theorem proved).
 
 ## Counterexamples (model replay)
 
