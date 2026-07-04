@@ -3,3 +3,9 @@ import Ttac.State
 import Ttac.Eval
 import Ttac.Semantics
 import Ttac.Safety
+import Ttac.Vc
+import Ttac.VcCheck
+import Ttac.VcLemmas
+import Ttac.VcTrace
+import Ttac.VcReplay
+import Ttac.VcSound

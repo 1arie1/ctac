@@ -19,9 +19,29 @@ sync with the emitter in `src/ctac/ttac/lean/`.
   `assume false` is stuck (pruned, vacuously safe).
 - `Ttac/Safety.lean` — `Steps` (`Relation.ReflTransGen`),
   `Program.Safe`/`Unsafe`. `Unsafe` mirrors "the VC is satisfiable".
+- `Ttac/Vc.lean` — the expected-constraint generator for `ttac
+  vc-check`: exact Lean mirrors of the Python encoder's constant folds
+  (`mkImp`, `mkOr`, `amoClauses`, ...), the lowering mirror, phi
+  right-hand sides, `Vc.Sat`/`Vc.Unsat`.
+- `Ttac/VcCheck.lean` — `checkVC`: decidable well-formedness (single
+  assert last-in-block, pure SSA, forward edges, phi shape, the
+  critical-edge side condition, register/block-var disjointness, a
+  checked dominator certificate) plus per-constraint membership in the
+  expected set.
+- `Ttac/VcLemmas.lean` / `VcTrace.lean` / `VcReplay.lean` /
+  `VcSound.lean` — the soundness proof: a failing execution abstracts
+  to a `Suffix` of final-state facts; the witness extends the failing
+  state with block-visit booleans and repairs unvisited phis; every
+  expected constraint is satisfied. Main results, all sorry-free:
+  `checkVC_sound` (failing execution ⇒ VC satisfiable) and
+  `checkVC_safe` (`checkVC` accepts ∧ VC unsat ⇒ `Program.Safe`).
 - `TtacExamples/Diamond.lean` — golden deep + shallow embeddings of the
   scalar diamond, shallow safety theorem proved. The Python test suite
   pins the emitter against these shapes; keep them in sync.
+- `TtacExamples/DiamondVc.lean` — the diamond's real `ttac vcgen`
+  output, hand-transcribed, accepted by `checkVC` via `native_decide`
+  (and a tampered variant rejected); pins the fold mirror against the
+  Python encoder.
 
 ## Building
 

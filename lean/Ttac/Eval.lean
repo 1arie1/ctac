@@ -39,6 +39,7 @@ mutual
     | .and a b => evalB s a && evalB s b
     | .or a b => evalB s a || evalB s b
     | .ite c t e => if evalB s c then evalB s t else evalB s e
+    | .imp a b => !(evalB s a) || evalB s b
 end
 
 -- Division semantics pins (mirror run.py's `_ediv` test vectors).

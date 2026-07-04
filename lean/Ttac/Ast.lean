@@ -28,9 +28,10 @@ mutual
     | mul (a b : IExp)
     | div (a b : IExp)
     | ite (c : BExp) (t e : IExp)
-  deriving Repr
+  deriving Repr, DecidableEq
 
-  /-- Boolean expressions. -/
+  /-- Boolean expressions. `imp` is SMT-LIB `(=> a b)`: it occurs only in
+  transpiled VC formulas, never in programs (ttac has no implication). -/
   inductive BExp : Type where
     | lit (b : Bool)
     | var (c : Nat)
@@ -42,7 +43,8 @@ mutual
     | and (a b : BExp)
     | or (a b : BExp)
     | ite (c t e : BExp)
-  deriving Repr
+    | imp (a b : BExp)
+  deriving Repr, DecidableEq
 end
 
 /-- Phi arms: `(predecessor block index, source register index)`. -/
