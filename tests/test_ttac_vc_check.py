@@ -75,7 +75,7 @@ def test_transpile_ops():
         "(< x y)": ".lt (.var 0) (.var 3)",
         "(= c ok)": ".eqB (.var 0) (.var 1)",
         "(not c)": ".not (.var 0)",
-        "(=> BLK_pos c)": ".imp (.var 3) (.var 0)",
+        "(=> BLK_pos c)": ".imp (.blk 1) (.var 0)",
         "(= y (ite c x y1))": ".eqI (.var 3) (.ite (.var 0) (.var 0) (.var 1))",
         "(ite c ok true)": ".ite (.var 0) (.var 1) (.lit true)",
     }
@@ -98,7 +98,7 @@ def test_transpile_nary_fold_right():
     got, _ = _transpile("(and c ok (not c))")
     assert got == ".and (.var 0) (.and (.var 1) (.not (.var 0)))"
     got, _ = _transpile("(or c ok BLK_EXIT)")
-    assert got == ".or (.var 0) (.or (.var 1) (.var 6))"
+    assert got == ".or (.var 0) (.or (.var 1) (.blk 4))"
 
 
 def test_transpile_eq_sort_mismatch():
@@ -113,9 +113,9 @@ def test_transpile_unsupported_operator():
 
 def test_transpile_block_var_mapping():
     got, _ = _transpile("BLK_EXIT")
-    assert got == ".var 6"
+    assert got == ".blk 4"
     got, _ = _transpile("BLK_entry")
-    assert got == ".var 2"
+    assert got == ".blk 0"
 
 
 # --- symbol table / statement triage ---
@@ -226,16 +226,14 @@ def _diamond_result(**kwargs):
 
 def test_diamond_vc_lines_golden():
     res, _ = _diamond_result()
-    assert res.block_off == 2
     assert res.n_asserts == 13
     text = res.vc_text
-    assert "def blockOff : Nat := 2" in text
     assert ".eqB (.var 0) (.le (.lit 0) (.var 0))," in text
-    assert ".eqI (.var 3) (.ite (.var 3) (.var 1) (.var 2))," in text
-    assert ".imp (.var 6) (.and (.var 5) (.not (.var 1)))," in text
+    assert ".eqI (.var 3) (.ite (.blk 1) (.var 1) (.var 2))," in text
+    assert ".imp (.blk 4) (.and (.blk 3) (.not (.var 1)))," in text
     assert text.rstrip().endswith("end Diamond.Vc")
-    assert text.count(".imp (.var 5) (.or (.var 3) (.var 4)),") == 2
-    assert "theorem vc_ok : Ttac.checkVC Deep.prog Vc.blockOff Vc.vc = true := by" in res.check_text
+    assert text.count(".imp (.blk 3) (.or (.blk 1) (.blk 2)),") == 2
+    assert "theorem vc_ok : Ttac.checkVC Deep.prog Vc.vc = true := by" in res.check_text
     assert "native_decide" in res.check_text
 
 
@@ -276,7 +274,7 @@ def test_expected_mirror_matches_transpiled_multiset():
     syms, _ = build_vc_symbols(program, numbering, types, smt)
     asserts, errs = transpile_vc(smt, syms)
     assert errs == []
-    expected = expected_vc(program, numbering, types, 2)
+    expected = expected_vc(program, numbering, types)
     assert precheck_diff(asserts, expected) == ()
 
 

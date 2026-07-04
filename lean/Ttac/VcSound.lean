@@ -38,39 +38,22 @@ theorem armUseOK_dom {P : Program} {f : Cmd → Option Nat} {src p : Nat}
   simp only [Bool.and_eq_true, decide_eq_true_eq] at this
   exact List.contains_iff_mem.mp this.2
 
-/-- Any bool register occurring in a command lies below `off`. -/
-theorem cmdBoolReg_lt_off {P : Program} {off : Nat} (hoff : offOK P off = true)
-    {B : Block} (hB : B ∈ P.blocks) {c : Cmd} (hc : c ∈ B.cmds) {t : Nat}
-    (ht : t ∈ cmdBoolRegs c) : t < off := by
-  have hmem : t ∈ boolRegsOf P := by
-    simp only [boolRegsOf, List.mem_flatten, List.mem_map]
-    refine ⟨_, ⟨B, hB, rfl⟩, List.mem_append_left _ ?_⟩
-    simp only [List.mem_flatten, List.mem_map]
-    exact ⟨_, ⟨c, hc, rfl⟩, ht⟩
-  exact of_decide_eq_true (List.all_eq_true.mp hoff t hmem)
-
-/-- The branch condition of a terminator lies below `off`. -/
-theorem termBoolReg_lt_off {P : Program} {off : Nat} (hoff : offOK P off = true)
-    {B : Block} (hB : B ∈ P.blocks) {creg t e : Nat}
-    (hterm : B.term = .ifGoto creg t e) : creg < off := by
-  have hmem : creg ∈ boolRegsOf P := by
-    simp only [boolRegsOf, List.mem_flatten, List.mem_map]
-    refine ⟨_, ⟨B, hB, rfl⟩, List.mem_append_right _ ?_⟩
-    rw [hterm]
-    exact List.mem_singleton.mpr rfl
-  exact of_decide_eq_true (List.all_eq_true.mp hoff creg hmem)
+/-- Program expressions are guard-free (W8 bridge). -/
+theorem guardFree_at {P : Program} (hgf : guardFreeOK P = true)
+    {B : Block} (hB : B ∈ P.blocks) {c : Cmd} (hc : c ∈ B.cmds) :
+    cmdGuardFree c = true :=
+  List.all_eq_true.mp (List.all_eq_true.mp hgf B hB) c hc
 
 /-- Guard evaluation under the witness: visited iff true. -/
-theorem guard_eval {P : Program} {off : Nat} {V : List Nat} {σ : State}
-    (hoff : offOK P off = true) (hentryV : P.entry ∈ V) {q : Nat}
-    (hq : q < P.blocks.length) :
-    evalB (witness P off V σ) (Vc.guardOf P off q) = decide (q ∈ V) := by
+theorem guard_eval {P : Program} {V : List Nat} {σ : State}
+    (hentryV : P.entry ∈ V) {q : Nat} (hq : q < P.blocks.length) :
+    evalB (witness P V σ) (Vc.guardOf P q) = decide (q ∈ V) := by
   unfold Vc.guardOf
   split
   · rename_i h
     rw [h]
     simp [evalB, hentryV]
-  · simpa [evalB] using witness_blk hoff hq
+  · simpa [evalB] using witness_blk hq
 
 /-- Predecessor extraction for a tail element of a doubly-chained list. -/
 theorem chained_pred {R S : Nat → Nat → Prop} :
@@ -146,7 +129,7 @@ theorem phiArm_pred {P : Program} {b : Nat} {arms : PhiArms}
 are exactly the source block's branch condition. -/
 theorem edge_cond_vars {P : Program} {S p : Nat} {cond : BExp}
     (h : (p, cond) ∈ Vc.edgesTo P S) :
-    cond.intVars = []
+    cond.intVars = [] ∧ cond.blkVars = []
       ∧ ∀ r ∈ cond.boolVars,
           ∃ B t e, P.block? p = some B ∧ B.term = .ifGoto r t e := by
   obtain ⟨B, hB, hout⟩ := mem_allEdges_elim (mem_edgesTo.mp h)
@@ -156,27 +139,27 @@ theorem edge_cond_vars {P : Program} {S p : Nat} {cond : BExp}
   · obtain rfl : cond = .lit true := by
       simp only [List.mem_singleton, Prod.mk.injEq] at hout
       exact hout.2.2
-    exact ⟨rfl, fun r hr => by cases hr⟩
+    exact ⟨rfl, rfl, fun r hr => by cases hr⟩
   · rename_i creg t e hterm
     simp only [List.mem_cons, Prod.mk.injEq,
       List.not_mem_nil, or_false] at hout
     rcases hout with ⟨-, -, rfl⟩ | ⟨-, -, rfl⟩
-    · refine ⟨rfl, fun r hr => ?_⟩
+    · refine ⟨rfl, rfl, fun r hr => ?_⟩
       obtain rfl : r = creg := by simpa [BExp.boolVars] using hr
       exact ⟨B, t, e, hB, hterm⟩
-    · refine ⟨rfl, fun r hr => ?_⟩
+    · refine ⟨rfl, rfl, fun r hr => ?_⟩
       obtain rfl : r = creg := by simpa [BExp.boolVars, BExp.intVars] using hr
       exact ⟨B, t, e, hB, hterm⟩
 
 /-! ## The main satisfaction theorem -/
 
-theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
+theorem expected_sat {P : Program} {σ : State} {V : List Nat}
     (hone : singleAssertOK P = true) (hssa : ssaOK P = true)
     (hfwd : forwardOK P = true) (hphi : phiOK P = true)
-    (hamo : amoSideOK P = true) (hoff : offOK P off = true)
+    (hamo : amoSideOK P = true) (hgf : guardFreeOK P = true)
     (hdc : domClosedOK P = true) (huse : usesOK P = true)
     (hS : Suffix P σ P.entry 0 none V) :
-    ∀ c ∈ Vc.expected P off, evalB (witness P off V σ) c = true := by
+    ∀ c ∈ Vc.expected P, evalB (witness P V σ) c = true := by
   have hedge := hS.chain_edge
   have hhead := hS.head
   have hentryV : P.entry ∈ V := by
@@ -187,10 +170,10 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
         exact List.mem_cons_self ..
   have hdomV := dom_visited hdc hfwd hedge hhead
   have hfacts := facts_of_suffix hone hS
-  set w := witness P off V σ with hwdef
+  set w := witness P V σ with hwdef
   have hguard : ∀ q, q < P.blocks.length →
-      evalB w (Vc.guardOf P off q) = decide (q ∈ V) :=
-    fun q hq => guard_eval hoff hentryV hq
+      evalB w (Vc.guardOf P q) = decide (q ∈ V) :=
+    fun q hq => guard_eval hentryV hq
   have hagree_int : ∀ v ∈ V, ∀ r : Nat,
       (∀ d j, IsDefAt P cmdIntDef r d j → d = v ∨ d ∈ domOf P v) →
       w.ints r = σ.ints r := by
@@ -199,20 +182,25 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
     rcases hd d j hdj with rfl | hdm
     · exact hv
     · exact hdomV v hv d hdm
-  have hagree_bool : ∀ v ∈ V, ∀ r : Nat, r < off →
+  have hagree_bool : ∀ v ∈ V, ∀ r : Nat,
       (∀ d j, IsDefAt P cmdBoolDef r d j → d = v ∨ d ∈ domOf P v) →
       w.bools r = σ.bools r := by
-    intro v hv r hrlt hd
-    refine witness_agree_bool hrlt fun d j hdj => ?_
+    intro v hv r hd
+    refine witness_agree_bool fun d j hdj => ?_
     rcases hd d j hdj with rfl | hdm
     · exact hv
     · exact hdomV v hv d hdm
+  have hnoblk : ∀ {B : Block}, B ∈ P.blocks → ∀ {c : Cmd}, c ∈ B.cmds →
+      ∀ {eI : List Nat}, eI = [] → ∀ q ∈ eI, w.blks q = σ.blks q := by
+    intro B _ c _ eI heI q hq
+    rw [heI] at hq
+    cases hq
   obtain ⟨aB, iA, okReg, BA, heq, hBA, hcA, hlastA⟩ := singleAssert_shape hone
   intro c hc
-  have hexp : Vc.expected P off
+  have hexp : Vc.expected P
       = (P.blocks.zipIdx.map fun (B, b) =>
-          (B.cmds.map (Vc.cmdConstraints P off b)).flatten).flatten
-        ++ Vc.cfgConstraints P off ++ Vc.objective P off aB okReg := by
+          (B.cmds.map (Vc.cmdConstraints P b)).flatten).flatten
+        ++ Vc.cfgConstraints P ++ Vc.objective P aB okReg := by
     unfold Vc.expected
     rw [heq]
   rw [hexp, List.mem_append, List.mem_append] at hc
@@ -244,16 +232,19 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
             obtain ⟨rfl, -⟩ := ssa_unique_int hssa
               ⟨B, _, hB, hci, by simp [cmdIntDef]⟩ hdj
             exact hbV
+          have hgfc := guardFree_at hgf (List.mem_of_getElem? hB) hcmdmem
+          simp only [cmdGuardFree, List.isEmpty_iff] at hgfc
           have hevals : evalI w e = evalI σ e := by
-            refine evalI_congr e ?_ ?_
+            refine evalI_congr e ?_ ?_ ?_
             · intro r hr
               exact hagree_int b hbV r
                 (useOK_dom (List.all_eq_true.mp hcuse.1 r hr))
             · intro r hr
-              refine hagree_bool b hbV r
-                (cmdBoolReg_lt_off hoff (List.mem_of_getElem? hB) hcmdmem
-                  (by simp [cmdBoolRegs, hr]))
+              exact hagree_bool b hbV r
                 (useOK_dom (List.all_eq_true.mp hcuse.2 r hr))
+            · intro q hq
+              rw [hgfc] at hq
+              cases hq
           simp only [evalB, evalI, Vc.evalI_lowerI, hwx, hevals, hfact]
           simp
         · rw [Bool.or_eq_true]; left
@@ -268,23 +259,23 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
           obtain ⟨prev, hfact, -⟩ := hfacts b hbV B i _ hB hci
           simp only [CmdFact] at hfact
           have hwx : w.bools x = σ.bools x := by
-            refine witness_agree_bool
-              (cmdBoolReg_lt_off hoff (List.mem_of_getElem? hB) hcmdmem
-                (by simp [cmdBoolRegs]))
-              fun d j hdj => ?_
+            refine witness_agree_bool fun d j hdj => ?_
             obtain ⟨rfl, -⟩ := ssa_unique_bool hssa
               ⟨B, _, hB, hci, by simp [cmdBoolDef]⟩ hdj
             exact hbV
+          have hgfc := guardFree_at hgf (List.mem_of_getElem? hB) hcmdmem
+          simp only [cmdGuardFree, List.isEmpty_iff] at hgfc
           have hevals : evalB w e = evalB σ e := by
-            refine evalB_congr e ?_ ?_
+            refine evalB_congr e ?_ ?_ ?_
             · intro r hr
               exact hagree_int b hbV r
                 (useOK_dom (List.all_eq_true.mp hcuse.1 r hr))
             · intro r hr
-              refine hagree_bool b hbV r
-                (cmdBoolReg_lt_off hoff (List.mem_of_getElem? hB) hcmdmem
-                  (by simp [cmdBoolRegs, hr]))
+              exact hagree_bool b hbV r
                 (useOK_dom (List.all_eq_true.mp hcuse.2 r hr))
+            · intro q hq
+              rw [hgfc] at hq
+              cases hq
           simp only [evalB, Vc.evalB_lowerB, hwx, hevals, hfact]
           simp
         · rw [Bool.or_eq_true]; left
@@ -300,16 +291,19 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
           simp only [cmdUsesOK, Bool.and_eq_true] at hcuse
           obtain ⟨prev, hfact, -⟩ := hfacts b hbV B i _ hB hci
           simp only [CmdFact] at hfact
+          have hgfc := guardFree_at hgf (List.mem_of_getElem? hB) hcmdmem
+          simp only [cmdGuardFree, List.isEmpty_iff] at hgfc
           have hevals : evalB w φ = evalB σ φ := by
-            refine evalB_congr φ ?_ ?_
+            refine evalB_congr φ ?_ ?_ ?_
             · intro r hr
               exact hagree_int b hbV r
                 (useOK_dom (List.all_eq_true.mp hcuse.1 r hr))
             · intro r hr
-              refine hagree_bool b hbV r
-                (cmdBoolReg_lt_off hoff (List.mem_of_getElem? hB) hcmdmem
-                  (by simp [cmdBoolRegs, hr]))
+              exact hagree_bool b hbV r
                 (useOK_dom (List.all_eq_true.mp hcuse.2 r hr))
+            · intro q hq
+              rw [hgfc] at hq
+              cases hq
           rw [Vc.evalB_lowerB, hevals, hfact]
         · rw [Bool.or_eq_true]; left
           rw [hguard b hblt]
@@ -347,16 +341,16 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
               · exact hap
               · exact visited_amo hfwd hamo hedge hblt
                   (two_mem_le_length haP hpP hap) haV haP hpV hpP
-            have hsel : evalI w (Vc.phiRhsI P off arms) = w.ints src :=
-              phiRhsI_select (fun q hq => witness_blk hoff hq) hentryV
+            have hsel : evalI w (Vc.phiRhsI P arms) = w.ints src :=
+              phiRhsI_select (fun q hq => witness_blk hq) hentryV
                 harm hpV harm_lt huniq
             have hwsrc : w.ints src = σ.ints src := by
               refine witness_agree_int fun d j hdj => ?_
               have harmuse := List.all_eq_true.mp hcuse (p, src) (lookup_mem harm)
               exact hdomV p hpV d (armUseOK_dom harmuse d j hdj)
             exact decide_eq_true (by rw [hwy, hσy, ← hwsrc, ← hsel])
-          · have hphiv : w.ints y = evalI w (Vc.phiRhsI P off arms) :=
-              witness_phiI hssa huse hphi hoff hB hci hbV
+          · have hphiv : w.ints y = evalI w (Vc.phiRhsI P arms) :=
+              witness_phiI hssa huse hphi hB hci hbV
             exact decide_eq_true hphiv
         · -- the at-most-one clauses
           split at hcamo
@@ -398,11 +392,8 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
             have hpP : p ∈ predsOf P b := by
               obtain ⟨cond, hcond, -⟩ := hEdge.edge_cond
               exact mem_predsOf.mpr ⟨cond, hcond⟩
-            have hylt : y < off :=
-              cmdBoolReg_lt_off hoff (List.mem_of_getElem? hB) hcmdmem
-                (by simp [cmdBoolRegs])
             have hwy : w.bools y = σ.bools y := by
-              refine witness_agree_bool hylt fun d j hdj => ?_
+              refine witness_agree_bool fun d j hdj => ?_
               obtain ⟨rfl, -⟩ := ssa_unique_bool hssa
                 ⟨B, _, hB, hci, by simp [cmdBoolDef]⟩ hdj
               exact hbV
@@ -414,21 +405,18 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
               · exact hap
               · exact visited_amo hfwd hamo hedge hblt
                   (two_mem_le_length haP hpP hap) haV haP hpV hpP
-            have hsel : evalB w (Vc.phiRhsB P off arms) = w.bools src :=
-              phiRhsB_select (fun q hq => witness_blk hoff hq) hentryV
+            have hsel : evalB w (Vc.phiRhsB P arms) = w.bools src :=
+              phiRhsB_select (fun q hq => witness_blk hq) hentryV
                 harm hpV harm_lt huniq
             have hwsrc : w.bools src = σ.bools src := by
-              refine witness_agree_bool
-                (cmdBoolReg_lt_off hoff (List.mem_of_getElem? hB) hcmdmem
-                  (by simp [cmdBoolRegs]; exact Or.inr ⟨p, lookup_mem harm⟩))
-                fun d j hdj => ?_
+              refine witness_agree_bool fun d j hdj => ?_
               have harmuse := List.all_eq_true.mp hcuse (p, src) (lookup_mem harm)
               exact hdomV p hpV d (armUseOK_dom harmuse d j hdj)
-            have hyeq : w.bools y = evalB w (Vc.phiRhsB P off arms) := by
+            have hyeq : w.bools y = evalB w (Vc.phiRhsB P arms) := by
               rw [hwy, hσy, ← hwsrc, ← hsel]
             simp [hyeq]
-          · have hphiv : w.bools y = evalB w (Vc.phiRhsB P off arms) :=
-              witness_phiB hssa huse hphi hoff hB hci hbV
+          · have hphiv : w.bools y = evalB w (Vc.phiRhsB P arms) :=
+              witness_phiB hssa huse hphi hB hci hbV
             simp [hphiv]
         · split at hcamo
           · obtain ⟨g1, g2, hg1, hg2, hne, rfl⟩ := Vc.mem_amoClauses hcamo
@@ -476,15 +464,15 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
           obtain ⟨p, hpV, hE, -⟩ := chained_pred hedge hedge (hStail hSV)
           obtain ⟨cond, hcondmem, hcondeval⟩ := hE.edge_cond
           apply List.any_eq_true.mpr
-          refine ⟨Vc.mkAnd2 (Vc.guardOf P off p) cond,
+          refine ⟨Vc.mkAnd2 (Vc.guardOf P p) cond,
             List.mem_map.mpr ⟨(p, cond), hcondmem, rfl⟩, ?_⟩
           rw [Vc.evalB_mkAnd2]
           have hplt : p < P.blocks.length :=
             Nat.lt_trans (pred_lt hfwd (mem_predsOf.mpr ⟨cond, hcondmem⟩)) hSmem
           rw [hguard p hplt]
-          obtain ⟨hintnil, hbvars⟩ := edge_cond_vars hcondmem
+          obtain ⟨hintnil, hblknil, hbvars⟩ := edge_cond_vars hcondmem
           have hcondw : evalB w cond = evalB σ cond := by
-            refine evalB_congr cond ?_ ?_
+            refine evalB_congr cond ?_ ?_ ?_
             · intro r hr
               rw [hintnil] at hr
               cases hr
@@ -493,9 +481,11 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
               have hterm_use := usesOK_term huse hB'
               simp only [termUsesOK, hterm'] at hterm_use
               exact hagree_bool p hpV r
-                (termBoolReg_lt_off hoff (List.mem_of_getElem? hB') hterm')
                 (useOK_dom (List.all_eq_true.mp hterm_use r
                   (List.mem_singleton.mpr rfl)))
+            · intro q hq
+              rw [hblknil] at hq
+              cases hq
           rw [hcondw, hcondeval]
           simp [hpV]
         · rw [Bool.or_eq_true]; left
@@ -510,7 +500,7 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
             obtain ⟨p, hpV, hE, -⟩ := chained_pred hedge hedge (hStail hSV)
             obtain ⟨cond, hcondmem, -⟩ := hE.edge_cond
             apply List.any_eq_true.mpr
-            refine ⟨Vc.guardOf P off p,
+            refine ⟨Vc.guardOf P p,
               List.mem_map.mpr ⟨(p, cond), hcondmem, rfl⟩, ?_⟩
             have hplt : p < P.blocks.length :=
               Nat.lt_trans (pred_lt hfwd (mem_predsOf.mpr ⟨cond, hcondmem⟩)) hSmem
@@ -564,8 +554,6 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
         have hcuse := usesOK_cmd huse hBA hcA
         simp only [cmdUsesOK] at hcuse
         rw [hagree_bool aB haBV okReg
-          (cmdBoolReg_lt_off hoff (List.mem_of_getElem? hBA)
-            (List.mem_of_getElem? hcA) (by simp [cmdBoolRegs]))
           (useOK_dom (List.all_eq_true.mp hcuse okReg
             (List.mem_singleton.mpr rfl)))]
         exact hfalse
@@ -573,30 +561,30 @@ theorem expected_sat {P : Program} {off : Nat} {σ : State} {V : List Nat}
       simp [evalB, hok, haBV]
     · rcases List.mem_cons.mp hc' with rfl | hc''
       · simp only [Vc.exitVar, evalB]
-        exact witness_exit hoff
+        exact witness_exit
       · cases hc''
 
 /-! ## Soundness -/
 
-theorem checkVC_sound {P : Program} {off : Nat} {vc : List BExp}
-    (hchk : checkVC P off vc = true) {s0 σ : State}
+theorem checkVC_sound {P : Program} {vc : List BExp}
+    (hchk : checkVC P vc = true) {s0 σ : State}
     (hrun : Steps P (Config.init P s0) (.failed σ)) :
     ∃ w, Vc.Sat w vc := by
   rw [checkVC, Bool.and_eq_true] at hchk
   obtain ⟨hwf, hmem⟩ := hchk
   rw [wellFormed] at hwf
   simp only [Bool.and_eq_true] at hwf
-  obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphi⟩, hamo⟩, hoff⟩, hentry⟩, hdc⟩, huse⟩ := hwf
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphi⟩, hamo⟩, hentry⟩, hgf⟩, hdc⟩, huse⟩ := hwf
   obtain ⟨V, hS⟩ := suffix_of_steps hfwd hssa huse hphi hone hrun rfl
-  refine ⟨witness P off V σ, fun c hc => ?_⟩
-  exact expected_sat hone hssa hfwd hphi hamo hoff hdc huse hS c
+  refine ⟨witness P V σ, fun c hc => ?_⟩
+  exact expected_sat hone hssa hfwd hphi hamo hgf hdc huse hS c
     (of_decide_eq_true (List.all_eq_true.mp hmem c hc))
 
 /-- If `checkVC` accepts and the VC is unsatisfiable, the program is
 safe: every model of the expected constraint set is refuted, so no
 failing execution can exist. -/
-theorem checkVC_safe {P : Program} {off : Nat} {vc : List BExp}
-    (hchk : checkVC P off vc = true) (hunsat : Vc.Unsat vc) : P.Safe :=
+theorem checkVC_safe {P : Program} {vc : List BExp}
+    (hchk : checkVC P vc = true) (hunsat : Vc.Unsat vc) : P.Safe :=
   fun ⟨_s0, _σ, hrun⟩ => hunsat (checkVC_sound hchk hrun)
 
 end Ttac

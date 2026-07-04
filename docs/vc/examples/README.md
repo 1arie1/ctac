@@ -97,7 +97,7 @@ ttac vc-check safe_scalar_diamond.ttac d.smt2 -o out/check
 The command transpiles the program to the deep embedding and the smt2
 asserts to a deep formula list, generates a Lean project, and runs
 `lake build` (default; `--no-build` to skip). The build proves
-`vc_ok : checkVC prog blockOff vc = true` by `native_decide` and
+`vc_ok : checkVC prog vc = true` by `native_decide` and
 instantiates the library's once-and-for-all soundness theorem as
 `vc_implies_safe : Unsat vc → prog.Safe`. Success prints
 `vc-check: validated`.

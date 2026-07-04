@@ -3,10 +3,10 @@ import Ttac.Vc
 /-!
 # The VC checker
 
-`checkVC P off vc` validates a transpiled VC against a program:
+`checkVC P vc` validates a transpiled VC against a program:
 well-formedness of `P` (the side conditions under which the bwd0
 encoding is complete) plus membership of every VC constraint in
-`Vc.expected P off`. All checks are `Bool`-valued so a per-instance
+`Vc.expected P`. All checks are `Bool`-valued so a per-instance
 `theorem ... := by native_decide` discharges them.
 
 The dominator table is computed by ordinary *unverified* code; the
@@ -194,38 +194,34 @@ def usesOK (P : Program) : Bool :=
     (B.cmds.zipIdx.all fun (c, i) => cmdUsesOK P (domTable P) b i c)
       && termUsesOK P (domTable P) b B
 
-/-- W7: block booleans `off + b` must lie above every program bool
-register, so the witness can set them independently. -/
-def cmdBoolRegs : Cmd → List Nat
-  | .assignI _ e => e.boolVars
-  | .assignB c e => c :: e.boolVars
-  | .havocI _ => []
-  | .havocB c => [c]
-  | .phiI _ _ => []
-  | .phiB c arms => c :: arms.map (·.2)
-  | .assume φ => φ.boolVars
-  | .assert c => [c]
-
-def boolRegsOf (P : Program) : List Nat :=
-  (P.blocks.map fun B =>
-    (B.cmds.map cmdBoolRegs).flatten
-      ++ (match B.term with | .ifGoto c _ _ => [c] | _ => [])).flatten
-
-def offOK (P : Program) (off : Nat) : Bool :=
-  (boolRegsOf P).all (· < off)
-
-/-- W8. -/
+/-- W7: the entry block is block 0 and the program is nonempty. Under
+forward edges block 0 can have no predecessors, so this is what the
+Python generator produces anyway; requiring it keeps the guard
+convention uniform. -/
 def entryOK (P : Program) : Bool :=
-  decide (P.entry < P.blocks.length)
+  decide (P.entry = 0) && decide (0 < P.blocks.length)
 
-def wellFormed (P : Program) (off : Nat) : Bool :=
+/-- W8: program expressions never mention guard atoms (`.blk`). ttac
+programs cannot express them, but the checker quantifies over arbitrary
+deep programs, and a guard-reading expression would let the program
+observe the witness's guard assignment. -/
+def cmdGuardFree : Cmd → Bool
+  | .assignI _ e => e.blkVars.isEmpty
+  | .assignB _ e => e.blkVars.isEmpty
+  | .assume φ => φ.blkVars.isEmpty
+  | _ => true
+
+def guardFreeOK (P : Program) : Bool :=
+  P.blocks.all fun B => B.cmds.all cmdGuardFree
+
+def wellFormed (P : Program) : Bool :=
   singleAssertOK P && ssaOK P && forwardOK P && phiOK P && amoSideOK P
-    && offOK P off && entryOK P && domClosedOK P && usesOK P
+    && entryOK P && guardFreeOK P && domClosedOK P && usesOK P
 
 /-- The checker: well-formed program, and every VC constraint is one the
 bwd0 encoder is entitled to emit. Subset is the sound direction -
 duplicates and omissions in `vc` are harmless. -/
-def checkVC (P : Program) (off : Nat) (vc : List BExp) : Bool :=
-  wellFormed P off && vc.all fun c => decide (c ∈ Vc.expected P off)
+def checkVC (P : Program) (vc : List BExp) : Bool :=
+  wellFormed P && vc.all fun c => decide (c ∈ Vc.expected P)
 
 end Ttac

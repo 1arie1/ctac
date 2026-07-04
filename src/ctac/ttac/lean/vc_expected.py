@@ -172,15 +172,15 @@ def lower_bexpr(e: ast.Expr, num: Numbering, types: dict[str, Ty]) -> Term:
 
 
 def expected_vc(
-    program: ast.Program, num: Numbering, types: dict[str, Ty], block_off: int
+    program: ast.Program, num: Numbering, types: dict[str, Ty]
 ) -> list[Term]:
     entry = num.entry_index
     n_blocks = len(program.blocks)
 
     def guard(b: int) -> Term:
-        return TRUE if b == entry else ("var", block_off + b)
+        return TRUE if b == entry else ("blk", b)
 
-    exit_term: Term = ("var", block_off + n_blocks)
+    exit_term: Term = ("blk", n_blocks)
 
     edges: list[tuple[int, int, Term]] = []
     for b, block in enumerate(program.blocks):

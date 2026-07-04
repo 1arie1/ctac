@@ -30,8 +30,11 @@ mutual
     | ite (c : BExp) (t e : IExp)
   deriving Repr, DecidableEq
 
-  /-- Boolean expressions. `imp` is SMT-LIB `(=> a b)`: it occurs only in
-  transpiled VC formulas, never in programs (ttac has no implication). -/
+  /-- Boolean expressions. `imp` (SMT-LIB `(=> a b)`) and `blk` (the
+  block-reachability guard `BLK_<b>`; index `P.blocks.length` is the
+  synthetic `BLK_EXIT`) occur only in transpiled VC formulas, never in
+  programs - keeping guards a separate constructor makes their
+  disjointness from program bool registers hold by construction. -/
   inductive BExp : Type where
     | lit (b : Bool)
     | var (c : Nat)
@@ -44,6 +47,7 @@ mutual
     | or (a b : BExp)
     | ite (c t e : BExp)
     | imp (a b : BExp)
+    | blk (b : Nat)
   deriving Repr, DecidableEq
 end
 

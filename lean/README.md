@@ -25,9 +25,10 @@ sync with the emitter in `src/ctac/ttac/lean/`.
   right-hand sides, `Vc.Sat`/`Vc.Unsat`.
 - `Ttac/VcCheck.lean` — `checkVC`: decidable well-formedness (single
   assert last-in-block, pure SSA, forward edges, phi shape, the
-  critical-edge side condition, register/block-var disjointness, a
-  checked dominator certificate) plus per-constraint membership in the
-  expected set.
+  critical-edge side condition, guard-free program expressions, a
+  checked dominator certificate; block guards are a dedicated `BExp.blk`
+  namespace, disjoint from program registers by construction) plus
+  per-constraint membership in the expected set.
 - `Ttac/VcLemmas.lean` / `VcTrace.lean` / `VcReplay.lean` /
   `VcSound.lean` — the soundness proof: a failing execution abstracts
   to a `Suffix` of final-state facts; the witness extends the failing

@@ -1,6 +1,6 @@
 """Driver for ``ttac vc-check``: validate, transpile, emit Lean texts.
 
-The generated project proves ``Ttac.checkVC prog blockOff vc = true``;
+The generated project proves ``Ttac.checkVC prog vc = true``;
 `lake build` success is the validation verdict. Everything here is
 untrusted - the Lean checker re-verifies every property it relies on.
 """
@@ -29,7 +29,6 @@ class VcCheckResult:
     check_text: str
     root_text: str
     numbering: Numbering
-    block_off: int
     n_asserts: int
     mismatches: tuple[VcMismatch, ...]
 
@@ -87,12 +86,11 @@ def _vc_module(
     result_lines: list[str],
     module_name: str,
     numbering: Numbering,
-    block_off: int,
     smt_source: str | None,
 ) -> str:
     n_blocks = len(numbering.block_index)
     block_map = ", ".join(
-        f"{block_off + i} = {label}"
+        f".blk {i} = {label}"
         for label, i in sorted(numbering.block_index.items(), key=lambda kv: kv[1])
     )
     lines = [
@@ -104,11 +102,8 @@ def _vc_module(
         "open Ttac",
         "",
         "/-!",
-        f"blockOff = {block_off} (program bool registers are 0..{block_off - 1})",
-        f"block vars: {block_map}; {block_off + n_blocks} = BLK_EXIT",
+        f"guard atoms: {block_map}; .blk {n_blocks} = BLK_EXIT",
         "-/",
-        "",
-        f"def blockOff : Nat := {block_off}",
         "",
         "def vc : List BExp := [",
         *result_lines,
@@ -136,7 +131,7 @@ def _check_module(module_name: str, kernel: bool) -> str:
         "",
         "/-- The transpiled smt2 asserts all belong to the constraint set the",
         "bwd0 encoder is entitled to emit for the deep program. -/",
-        "theorem vc_ok : Ttac.checkVC Deep.prog Vc.blockOff Vc.vc = true := by",
+        "theorem vc_ok : Ttac.checkVC Deep.prog Vc.vc = true := by",
         f"  {tactic}",
         "",
         "/-- The solver's `unsat` verdict on the smt2 file is `Ttac.Vc.Unsat",
@@ -166,7 +161,6 @@ def generate_vc_check(
         raise VcCheckError(tuple(errors))
 
     numbering = build_numbering(program, pre.types)
-    block_off = len(numbering.bool_regs)
 
     smt = parse_smt2(smt2_source)
     syms, sym_errors = build_vc_symbols(program, numbering, pre.types, smt)
@@ -177,7 +171,7 @@ def generate_vc_check(
 
     mismatches: tuple[VcMismatch, ...] = ()
     if precheck:
-        expected = expected_vc(program, numbering, pre.types, block_off)
+        expected = expected_vc(program, numbering, pre.types)
         mismatches = precheck_diff(asserts, expected)
 
     vc_lines = _render_vc_entries(asserts)
@@ -187,7 +181,7 @@ def generate_vc_check(
             program, numbering, pre.types, module_name, source,
             tool="ttac vc-check",
         ),
-        vc_text=_vc_module(vc_lines, module_name, numbering, block_off, smt_source),
+        vc_text=_vc_module(vc_lines, module_name, numbering, smt_source),
         check_text=_check_module(module_name, kernel),
         root_text="\n".join([
             f"import {module_name}.Deep",
@@ -196,7 +190,6 @@ def generate_vc_check(
             "",
         ]),
         numbering=numbering,
-        block_off=block_off,
         n_asserts=len(asserts),
         mismatches=mismatches,
     )

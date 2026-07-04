@@ -276,6 +276,30 @@ theorem stable_bool {P : Program} (hfwd : forwardOK P = true) {σ : State}
             (forward_target hfwd hB (by rw [hterm]; simp [termTargets])).1
           exact ih rfl (defsBefore_next_block hlt hdefs)
 
+/-- The guard component is never written by execution. -/
+theorem stable_blks {P : Program} {σ : State} {c : Config}
+    (h : Steps P c (.failed σ)) :
+    ∀ {b pc prev s}, c = .running b pc prev s → σ.blks = s.blks := by
+  induction h using Relation.ReflTransGen.head_induction_on with
+  | refl => intro b pc prev s heq; cases heq
+  | head hstep hrest ih =>
+      intro b pc prev s heq
+      subst heq
+      cases hstep with
+      | assignI hB hc => exact (ih rfl).trans rfl
+      | assignB hB hc => exact (ih rfl).trans rfl
+      | havocI v hB hc => exact (ih rfl).trans rfl
+      | havocB v hB hc => exact (ih rfl).trans rfl
+      | phiI hB hc harm => exact (ih rfl).trans rfl
+      | phiB hB hc harm => exact (ih rfl).trans rfl
+      | assume hB hc hcond => exact ih rfl
+      | assertTrue hB hc hcond => exact ih rfl
+      | assertFalse hB hc hcond => rw [steps_failed_eq hrest]
+      | halt hB hterm => exact absurd hrest steps_done_not_failed
+      | goto hB hterm => exact ih rfl
+      | ifTrue hB hterm hcond => exact ih rfl
+      | ifFalse hB hterm hcond => exact ih rfl
+
 /-- Expressions over stably-defined variables evaluate equally in the
 final and current states. -/
 theorem stable_evalI {P : Program} (hfwd : forwardOK P = true) {σ : State}
@@ -285,6 +309,7 @@ theorem stable_evalI {P : Program} (hfwd : forwardOK P = true) {σ : State}
     evalI σ e = evalI s e :=
   evalI_congr e (fun r hr => stable_int hfwd h rfl (hi r hr))
     (fun r hr => stable_bool hfwd h rfl (hb r hr))
+    (fun q _ => congrFun (stable_blks h rfl) q)
 
 theorem stable_evalB {P : Program} (hfwd : forwardOK P = true) {σ : State}
     {b pc prev s} (h : Steps P (.running b pc prev s) (.failed σ)) {e : BExp}
@@ -293,6 +318,7 @@ theorem stable_evalB {P : Program} (hfwd : forwardOK P = true) {σ : State}
     evalB σ e = evalB s e :=
   evalB_congr e (fun r hr => stable_int hfwd h rfl (hi r hr))
     (fun r hr => stable_bool hfwd h rfl (hb r hr))
+    (fun q _ => congrFun (stable_blks h rfl) q)
 
 /-! ## More bridges: phis, asserts, lookups -/
 
@@ -500,6 +526,7 @@ theorem suffix_of_steps {P : Program} (hfwd : forwardOK P = true)
             exact evalI_congr e
               (fun r hr => State.updI_ints_of_ne s (hne r hr) _)
               (fun r _ => by rw [State.updI_bools])
+              (fun q _ => by rw [State.updI_blks])
           exact ⟨V, .assignI hB hc (hσy.trans heval.symm) hS⟩
       | @assignB _ _ _ _ B y e hB hc =>
           obtain ⟨V, hS⟩ := ih rfl
@@ -526,6 +553,7 @@ theorem suffix_of_steps {P : Program} (hfwd : forwardOK P = true)
             exact evalB_congr e
               (fun r _ => by rw [State.updB_ints])
               (fun r hr => State.updB_bools_of_ne s (hne r hr) _)
+              (fun q _ => by rw [State.updB_blks])
           exact ⟨V, .assignB hB hc (hσy.trans heval.symm) hS⟩
       | havocI v hB hc =>
           obtain ⟨V, hS⟩ := ih rfl

@@ -33,7 +33,8 @@ from ctac.ttac.ast import Ty
 
 from .naming import Numbering
 
-# Term = ("lit", int) | ("litb", bool) | ("var", int) | (op, Term, ...)
+# Term = ("lit", int) | ("litb", bool) | ("var", int) | ("blk", int)
+#      | (op, Term, ...)
 Term = tuple
 
 _INT_OPS = {"+": "add", "-": "sub", "*": "mul", "div": "div"}
@@ -51,6 +52,8 @@ def render(t: Term) -> str:
         return f"(.lit {'true' if t[1] else 'false'})"
     if kind == "var":
         return f"(.var {t[1]})"
+    if kind == "blk":
+        return f"(.blk {t[1]})"
     args = " ".join(render(a) for a in t[1:])
     return f"(.{kind} {args})"
 
@@ -64,10 +67,8 @@ def render_top(t: Term) -> str:
 class VcSymbols:
     numbering: Numbering
     types: dict[str, Ty]
-    block_off: int
-    exit_var: int
     sorts: dict[str, Ty]  # every declared smt2 const
-    block_vars: dict[str, int]  # "BLK_<label>" / "BLK_EXIT" -> bool var index
+    block_vars: dict[str, int]  # "BLK_<label>" / "BLK_EXIT" -> guard index
 
 
 class TranspileError(Exception):
@@ -94,13 +95,10 @@ def build_vc_symbols(
     smt: Smt2File,
 ) -> tuple[VcSymbols, list[str]]:
     errors: list[str] = []
-    block_off = len(numbering.bool_regs)
     block_vars = {
-        f"BLK_{label}": block_off + idx
-        for label, idx in numbering.block_index.items()
+        f"BLK_{label}": idx for label, idx in numbering.block_index.items()
     }
-    exit_var = block_off + len(numbering.block_index)
-    block_vars["BLK_EXIT"] = exit_var
+    block_vars["BLK_EXIT"] = len(numbering.block_index)
 
     sorts: dict[str, Ty] = {}
     for stmt in smt.statements:
@@ -140,8 +138,6 @@ def build_vc_symbols(
     syms = VcSymbols(
         numbering=numbering,
         types=types,
-        block_off=block_off,
-        exit_var=exit_var,
         sorts=sorts,
         block_vars=block_vars,
     )
@@ -257,7 +253,7 @@ def _bool_term(node: SexprNode, syms: VcSymbols, src: str) -> Term:
         if node.text == "false":
             return ("litb", False)
         if node.text in syms.block_vars:
-            return ("var", syms.block_vars[node.text])
+            return ("blk", syms.block_vars[node.text])
         if node.text in syms.numbering.bool_regs:
             return ("var", syms.numbering.bool_regs[node.text])
         if node.text in syms.sorts:

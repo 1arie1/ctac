@@ -14,6 +14,10 @@ namespace Ttac
 structure State where
   ints : Nat → Int
   bools : Nat → Bool
+  /-- Block-reachability guards, read only by VC formulas (`BExp.blk`).
+  The program semantics neither reads nor writes this component; the
+  VC witness sets it once from the visited-block list. -/
+  blks : Nat → Bool
 
 namespace State
 
@@ -44,6 +48,12 @@ def updB (s : State) (c : Nat) (v : Bool) : State :=
 
 @[simp] theorem updB_ints (s : State) (c : Nat) (v : Bool) :
     (s.updB c v).ints = s.ints := rfl
+
+@[simp] theorem updI_blks (s : State) (x : Nat) (v : Int) :
+    (s.updI x v).blks = s.blks := rfl
+
+@[simp] theorem updB_blks (s : State) (c : Nat) (v : Bool) :
+    (s.updB c v).blks = s.blks := rfl
 
 end State
 

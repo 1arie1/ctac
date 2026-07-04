@@ -5,12 +5,12 @@ import Ttac.Eval
 
 `ttac vcgen` (Python, bwd0 encoding) emits an SMT VC over the program's
 scalar registers plus per-block reachability booleans. The unverified
-transpiler maps that VC to a `List BExp` over an extended register
-space: block `b` becomes bool register `off + b`, the synthetic
-`BLK_EXIT` becomes `off + P.blocks.length`, where `off` lies above every
-program bool register (verified by `VcCheck.offOK`).
+transpiler maps that VC to a `List BExp`: block `b` becomes the guard
+atom `.blk b` and the synthetic `BLK_EXIT` becomes
+`.blk P.blocks.length` - a namespace disjoint from program registers by
+construction.
 
-`expected P off` recomputes, in Lean, the full list of constraints the
+`expected P` recomputes, in Lean, the full list of constraints the
 encoder is entitled to emit. The fold helpers (`mkImp`, `mkOr`, ...)
 mirror the Python constant folding (`smt/util.py`, `smt/vc/terms.py`)
 exactly - including quirks like keep-first dedup and the *unfolded*
@@ -42,19 +42,32 @@ mutual
     | .ite c t e => c.boolVars ++ t.boolVars ++ e.boolVars
 
   def BExp.intVars : BExp → List Nat
-    | .lit _ | .var _ => []
+    | .lit _ | .var _ | .blk _ => []
     | .le a b | .lt a b | .eqI a b => a.intVars ++ b.intVars
     | .eqB a b | .and a b | .or a b | .imp a b => a.intVars ++ b.intVars
     | .not a => a.intVars
     | .ite c t e => c.intVars ++ t.intVars ++ e.intVars
 
   def BExp.boolVars : BExp → List Nat
-    | .lit _ => []
+    | .lit _ | .blk _ => []
     | .var c => [c]
     | .le a b | .lt a b | .eqI a b => a.boolVars ++ b.boolVars
     | .eqB a b | .and a b | .or a b | .imp a b => a.boolVars ++ b.boolVars
     | .not a => a.boolVars
     | .ite c t e => c.boolVars ++ t.boolVars ++ e.boolVars
+
+  def IExp.blkVars : IExp → List Nat
+    | .lit _ | .var _ => []
+    | .add a b | .sub a b | .mul a b | .div a b => a.blkVars ++ b.blkVars
+    | .ite c t e => c.blkVars ++ t.blkVars ++ e.blkVars
+
+  def BExp.blkVars : BExp → List Nat
+    | .lit _ | .var _ => []
+    | .blk b => [b]
+    | .le a b | .lt a b | .eqI a b => a.blkVars ++ b.blkVars
+    | .eqB a b | .and a b | .or a b | .imp a b => a.blkVars ++ b.blkVars
+    | .not a => a.blkVars
+    | .ite c t e => c.blkVars ++ t.blkVars ++ e.blkVars
 end
 
 namespace Vc
@@ -63,12 +76,13 @@ namespace Vc
 
 /-- The block-reachability term. The entry block's guard is the literal
 `true` (the Python encoder never declares `BLK_entry`); every other
-block `b` is bool register `off + b`. -/
-def guardOf (P : Program) (off b : Nat) : BExp :=
-  if b = P.entry then .lit true else .var (off + b)
+block `b` is the dedicated guard atom `.blk b`. -/
+def guardOf (P : Program) (b : Nat) : BExp :=
+  if b = P.entry then .lit true else .blk b
 
-def exitVar (P : Program) (off : Nat) : BExp :=
-  .var (off + P.blocks.length)
+/-- The synthetic `BLK_EXIT`: guard index one past the last block. -/
+def exitVar (P : Program) : BExp :=
+  .blk P.blocks.length
 
 /-! ## Fold helpers - exact mirrors of the Python term constructors -/
 
@@ -186,6 +200,7 @@ mutual
     | .or a b => mkOr2 (lowerB a) (lowerB b)
     | .ite c t e => mkIteB (lowerB c) (lowerB t) (lowerB e)
     | .imp a b => mkImp (lowerB a) (lowerB b)
+    | .blk b => .blk b
 end
 
 /-! ## CFG edges -/
@@ -213,51 +228,51 @@ satisfaction proof for phi equations is by construction. The ITE chain
 selects on the *predecessor block guards* in arm order; the last arm is
 the else-tail. -/
 
-def phiChainI (P : Program) (off : Nat) : (Nat × Nat) → List (Nat × Nat) → IExp
+def phiChainI (P : Program) : (Nat × Nat) → List (Nat × Nat) → IExp
   | (_, s), [] => .var s
-  | (p, s), a :: r => mkIteI (guardOf P off p) (.var s) (phiChainI P off a r)
+  | (p, s), a :: r => mkIteI (guardOf P p) (.var s) (phiChainI P a r)
 
-def phiRhsI (P : Program) (off : Nat) (arms : PhiArms) : IExp :=
+def phiRhsI (P : Program) (arms : PhiArms) : IExp :=
   match arms with
   | [] => .lit 0
-  | a :: r => phiChainI P off a r
+  | a :: r => phiChainI P a r
 
-def phiChainB (P : Program) (off : Nat) : (Nat × Nat) → List (Nat × Nat) → BExp
+def phiChainB (P : Program) : (Nat × Nat) → List (Nat × Nat) → BExp
   | (_, s), [] => .var s
-  | (p, s), a :: r => mkIteB (guardOf P off p) (.var s) (phiChainB P off a r)
+  | (p, s), a :: r => mkIteB (guardOf P p) (.var s) (phiChainB P a r)
 
-def phiRhsB (P : Program) (off : Nat) (arms : PhiArms) : BExp :=
+def phiRhsB (P : Program) (arms : PhiArms) : BExp :=
   match arms with
   | [] => .lit false
-  | a :: r => phiChainB P off a r
+  | a :: r => phiChainB P a r
 
 /-! ## The expected constraint set -/
 
-def cmdConstraints (P : Program) (off b : Nat) : Cmd → List BExp
-  | .assignI x e => [mkImp (guardOf P off b) (.eqI (.var x) (lowerI e))]
-  | .assignB c e => [mkImp (guardOf P off b) (.eqB (.var c) (lowerB e))]
+def cmdConstraints (P : Program) (b : Nat) : Cmd → List BExp
+  | .assignI x e => [mkImp (guardOf P b) (.eqI (.var x) (lowerI e))]
+  | .assignB c e => [mkImp (guardOf P b) (.eqB (.var c) (lowerB e))]
   | .havocI _ | .havocB _ => []
-  | .assume φ => [mkImp (guardOf P off b) (lowerB φ)]
+  | .assume φ => [mkImp (guardOf P b) (lowerB φ)]
   | .assert _ => []
   | .phiI x arms =>
-      BExp.eqI (.var x) (phiRhsI P off arms)
+      BExp.eqI (.var x) (phiRhsI P arms)
         :: (if 2 ≤ arms.length then
-              amoClauses (arms.map fun (p, _) => guardOf P off p)
+              amoClauses (arms.map fun (p, _) => guardOf P p)
             else [])
   | .phiB c arms =>
-      BExp.eqB (.var c) (phiRhsB P off arms)
+      BExp.eqB (.var c) (phiRhsB P arms)
         :: (if 2 ≤ arms.length then
-              amoClauses (arms.map fun (p, _) => guardOf P off p)
+              amoClauses (arms.map fun (p, _) => guardOf P p)
             else [])
 
-def cfgConstraints (P : Program) (off : Nat) : List BExp :=
+def cfgConstraints (P : Program) : List BExp :=
   ((List.range P.blocks.length).map fun S =>
     if S = P.entry then []
     else
       let ins := edgesTo P S
-      let gS := guardOf P off S
-      let edgeTerms := ins.map fun (p, cond) => mkAnd2 (guardOf P off p) cond
-      let predTerms := ins.map fun (p, _) => guardOf P off p
+      let gS := guardOf P S
+      let edgeTerms := ins.map fun (p, cond) => mkAnd2 (guardOf P p) cond
+      let predTerms := ins.map fun (p, _) => guardOf P p
       mkImp gS (mkOr edgeTerms)
         :: mkImp gS (mkOr predTerms)
         :: (amoClauses predTerms).map (mkImp gS)).flatten
@@ -270,17 +285,17 @@ def assertSites (P : Program) : List (Nat × Nat × Nat) :=
       | .assert r => some (b, i, r)
       | _ => none).flatten
 
-def objective (P : Program) (off aB okReg : Nat) : List BExp :=
-  [ mkImp (exitVar P off) (mkAnd2 (guardOf P off aB) (mkNot (.var okReg))),
-    exitVar P off ]
+def objective (P : Program) (aB okReg : Nat) : List BExp :=
+  [ mkImp (exitVar P) (mkAnd2 (guardOf P aB) (mkNot (.var okReg))),
+    exitVar P ]
 
 /-- Every constraint the bwd0 encoder is entitled to emit for `P`. -/
-def expected (P : Program) (off : Nat) : List BExp :=
+def expected (P : Program) : List BExp :=
   match assertSites P with
   | [(aB, _, okReg)] =>
       (P.blocks.zipIdx.map fun (B, b) =>
-        (B.cmds.map (cmdConstraints P off b)).flatten).flatten
-        ++ cfgConstraints P off ++ objective P off aB okReg
+        (B.cmds.map (cmdConstraints P b)).flatten).flatten
+        ++ cfgConstraints P ++ objective P aB okReg
   | _ => []
 
 /-! ## Satisfaction -/

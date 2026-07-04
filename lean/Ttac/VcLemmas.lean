@@ -16,102 +16,134 @@ mutual
   theorem evalI_congr {s t : State} : (e : IExp) →
       (∀ x ∈ e.intVars, s.ints x = t.ints x) →
       (∀ c ∈ e.boolVars, s.bools c = t.bools c) →
+      (∀ q ∈ e.blkVars, s.blks q = t.blks q) →
       evalI s e = evalI t e
-    | .lit _, _, _ => rfl
-    | .var x, hi, _ => hi x (by simp [IExp.intVars])
-    | .add a b, hi, hb => by
+    | .lit _, _, _, _ => rfl
+    | .var x, hi, _, _ => hi x (by simp [IExp.intVars])
+    | .add a b, hi, hb, hk => by
         simp only [evalI]
         rw [evalI_congr a (fun x hx => hi x (by simp [IExp.intVars, hx]))
-              (fun c hc => hb c (by simp [IExp.boolVars, hc])),
+              (fun c hc => hb c (by simp [IExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [IExp.blkVars, hq])),
             evalI_congr b (fun x hx => hi x (by simp [IExp.intVars, hx]))
-              (fun c hc => hb c (by simp [IExp.boolVars, hc]))]
-    | .sub a b, hi, hb => by
+              (fun c hc => hb c (by simp [IExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [IExp.blkVars, hq]))]
+    | .sub a b, hi, hb, hk => by
         simp only [evalI]
         rw [evalI_congr a (fun x hx => hi x (by simp [IExp.intVars, hx]))
-              (fun c hc => hb c (by simp [IExp.boolVars, hc])),
+              (fun c hc => hb c (by simp [IExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [IExp.blkVars, hq])),
             evalI_congr b (fun x hx => hi x (by simp [IExp.intVars, hx]))
-              (fun c hc => hb c (by simp [IExp.boolVars, hc]))]
-    | .mul a b, hi, hb => by
+              (fun c hc => hb c (by simp [IExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [IExp.blkVars, hq]))]
+    | .mul a b, hi, hb, hk => by
         simp only [evalI]
         rw [evalI_congr a (fun x hx => hi x (by simp [IExp.intVars, hx]))
-              (fun c hc => hb c (by simp [IExp.boolVars, hc])),
+              (fun c hc => hb c (by simp [IExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [IExp.blkVars, hq])),
             evalI_congr b (fun x hx => hi x (by simp [IExp.intVars, hx]))
-              (fun c hc => hb c (by simp [IExp.boolVars, hc]))]
-    | .div a b, hi, hb => by
+              (fun c hc => hb c (by simp [IExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [IExp.blkVars, hq]))]
+    | .div a b, hi, hb, hk => by
         simp only [evalI]
         rw [evalI_congr a (fun x hx => hi x (by simp [IExp.intVars, hx]))
-              (fun c hc => hb c (by simp [IExp.boolVars, hc])),
+              (fun c hc => hb c (by simp [IExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [IExp.blkVars, hq])),
             evalI_congr b (fun x hx => hi x (by simp [IExp.intVars, hx]))
-              (fun c hc => hb c (by simp [IExp.boolVars, hc]))]
-    | .ite c t' e', hi, hb => by
+              (fun c hc => hb c (by simp [IExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [IExp.blkVars, hq]))]
+    | .ite c t' e', hi, hb, hk => by
         simp only [evalI]
         rw [evalB_congr c (fun x hx => hi x (by simp [IExp.intVars, hx]))
-              (fun d hd => hb d (by simp [IExp.boolVars, hd])),
+              (fun c hc => hb c (by simp [IExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [IExp.blkVars, hq])),
             evalI_congr t' (fun x hx => hi x (by simp [IExp.intVars, hx]))
-              (fun d hd => hb d (by simp [IExp.boolVars, hd])),
+              (fun c hc => hb c (by simp [IExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [IExp.blkVars, hq])),
             evalI_congr e' (fun x hx => hi x (by simp [IExp.intVars, hx]))
-              (fun d hd => hb d (by simp [IExp.boolVars, hd]))]
+              (fun c hc => hb c (by simp [IExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [IExp.blkVars, hq]))]
 
   theorem evalB_congr {s t : State} : (e : BExp) →
       (∀ x ∈ e.intVars, s.ints x = t.ints x) →
       (∀ c ∈ e.boolVars, s.bools c = t.bools c) →
+      (∀ q ∈ e.blkVars, s.blks q = t.blks q) →
       evalB s e = evalB t e
-    | .lit _, _, _ => rfl
-    | .var c, _, hb => hb c (by simp [BExp.boolVars])
-    | .le a b, hi, hb => by
+    | .lit _, _, _, _ => rfl
+    | .var c, _, hb, _ => hb c (by simp [BExp.boolVars])
+    | .blk b, _, _, hk => hk b (by simp [BExp.blkVars])
+    | .le a b, hi, hb, hk => by
         simp only [evalB]
         rw [evalI_congr a (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc])),
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq])),
             evalI_congr b (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc]))]
-    | .lt a b, hi, hb => by
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq]))]
+    | .lt a b, hi, hb, hk => by
         simp only [evalB]
         rw [evalI_congr a (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc])),
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq])),
             evalI_congr b (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc]))]
-    | .eqI a b, hi, hb => by
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq]))]
+    | .eqI a b, hi, hb, hk => by
         simp only [evalB]
         rw [evalI_congr a (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc])),
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq])),
             evalI_congr b (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc]))]
-    | .eqB a b, hi, hb => by
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq]))]
+    | .eqB a b, hi, hb, hk => by
         simp only [evalB]
         rw [evalB_congr a (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc])),
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq])),
             evalB_congr b (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc]))]
-    | .not a, hi, hb => by
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq]))]
+    | .and a b, hi, hb, hk => by
         simp only [evalB]
         rw [evalB_congr a (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc]))]
-    | .and a b, hi, hb => by
-        simp only [evalB]
-        rw [evalB_congr a (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc])),
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq])),
             evalB_congr b (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc]))]
-    | .or a b, hi, hb => by
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq]))]
+    | .or a b, hi, hb, hk => by
         simp only [evalB]
         rw [evalB_congr a (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc])),
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq])),
             evalB_congr b (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc]))]
-    | .imp a b, hi, hb => by
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq]))]
+    | .imp a b, hi, hb, hk => by
         simp only [evalB]
         rw [evalB_congr a (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc])),
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq])),
             evalB_congr b (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun c hc => hb c (by simp [BExp.boolVars, hc]))]
-    | .ite c t' e', hi, hb => by
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq]))]
+    | .not a, hi, hb, hk => by
+        simp only [evalB]
+        rw [evalB_congr a (fun x hx => hi x (by simp [BExp.intVars, hx]))
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq]))]
+    | .ite c t' e', hi, hb, hk => by
         simp only [evalB]
         rw [evalB_congr c (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun d hd => hb d (by simp [BExp.boolVars, hd])),
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq])),
             evalB_congr t' (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun d hd => hb d (by simp [BExp.boolVars, hd])),
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq])),
             evalB_congr e' (fun x hx => hi x (by simp [BExp.intVars, hx]))
-              (fun d hd => hb d (by simp [BExp.boolVars, hd]))]
+              (fun c hc => hb c (by simp [BExp.boolVars, hc]))
+              (fun q hq => hk q (by simp [BExp.blkVars, hq]))]
 end
 
 namespace Vc
@@ -326,6 +358,7 @@ mutual
         simp only [lowerB, evalB, evalB_mkOr2, evalB_lowerB s a, evalB_lowerB s b]
     | .imp a b => by
         simp only [lowerB, evalB, evalB_mkImp, evalB_lowerB s a, evalB_lowerB s b]
+    | .blk b => rfl
     | .ite c t e => by
         simp only [lowerB, evalB, evalB_mkIteB, evalB_lowerB s c,
           evalB_lowerB s t, evalB_lowerB s e]
