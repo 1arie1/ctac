@@ -17,7 +17,13 @@ import typer
 from . import ast, parse_program, pretty
 from .analysis import analyze_types, check_dsa, extract_def_use
 from .ast import Ty
-from .errors import LeanGenError, TtacParseError, TtacTypeError, VcGenError
+from .errors import (
+    LeanGenError,
+    TtacParseError,
+    TtacTypeError,
+    VcCheckError,
+    VcGenError,
+)
 from .run import RunConfig, run_program
 from .stats import collect_stats, stats_to_dict
 from .transform import desugar_refs, merge_asserts, split_asserts
@@ -465,6 +471,75 @@ def lean(
     else:
         cache = "lake exe cache get && " if res.deep_text is not None else ""
         typer.echo(f"next: cd {output} && {cache}lake build")
+
+
+@app.command("vc-check")
+def vc_check(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    smt2: Path = typer.Argument(..., help="SMT-LIB VC produced by `ttac vcgen`."),
+    output: Path = typer.Option(
+        ..., "-o", "--output", help="Directory for the generated Lean project."
+    ),
+    name: str = typer.Option(None, "--name", help="Lean module name (default: from FILE)."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing output directory."),
+    build: bool = typer.Option(
+        True, "--build/--no-build", help="Run 'lake build' (the validation verdict)."
+    ),
+    precheck: bool = typer.Option(
+        True, "--precheck/--no-precheck", help="Diagnostic Python-side constraint diff."
+    ),
+    kernel: bool = typer.Option(
+        False, "--kernel", help="Prove vc_ok by kernel `decide` instead of `native_decide`."
+    ),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Validate an SMT VC against its program via a Lean-checked proof (single-assert, scalar, loop-free SSA)."""
+    from .lean import generate_vc_check, write_vc_check_project
+    from .lean.naming import module_name_for
+
+    if not smt2.is_file():
+        typer.echo(f"error: no such file: {smt2}", err=True)
+        raise typer.Exit(2)
+    program = _parse_or_exit(file)
+    module_name = name or module_name_for(file)
+    try:
+        res = generate_vc_check(
+            program,
+            smt2.read_text(encoding="utf-8"),
+            module_name=module_name,
+            source=None if file == "-" else Path(file).name,
+            smt_source=smt2.name,
+            precheck=precheck,
+            kernel=kernel,
+        )
+    except VcCheckError as exc:
+        for msg in exc.errors:
+            typer.echo(f"error: {msg}", err=True)
+        raise typer.Exit(1) from exc
+
+    try:
+        written = write_vc_check_project(res, output, force=force)
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    for m in res.mismatches:
+        typer.echo(f"precheck mismatch ({m.kind}): {m.detail}", err=True)
+    if res.mismatches:
+        typer.echo(
+            f"precheck: {len(res.mismatches)} mismatch(es) "
+            "(diagnostic only; the Lean build is authoritative)",
+            err=True,
+        )
+    for path in written:
+        typer.echo(f"wrote: {path}")
+    _ = plain
+    if build:
+        _run_lake_build(output)
+        typer.echo("vc-check: validated")
+    else:
+        typer.echo(f"next: cd {output} && lake exe cache get && lake build")
+        typer.echo("generated (not validated)")
 
 
 def _run_lake_build(output: Path, *, with_mathlib: bool = True) -> None:

@@ -1,0 +1,391 @@
+import os
+import shutil
+import subprocess
+
+import pytest
+from typer.testing import CliRunner
+
+import ttac_fixtures as fx
+from ctac.solver.smt2 import parse as parse_smt2
+from ctac.ttac import parse_program
+from ctac.ttac.analysis import infer_types
+from ctac.ttac.cli import app
+from ctac.ttac.errors import VcCheckError
+from ctac.ttac.lean import generate_vc_check
+from ctac.ttac.lean.naming import build_numbering
+from ctac.ttac.lean.vc import (
+    build_vc_symbols,
+    render_top,
+    transpile_vc,
+)
+from ctac.ttac.lean.vc_expected import expected_vc, precheck_diff
+from ctac.ttac.vcgen import generate_vc
+
+runner = CliRunner()
+
+
+def _write(tmp_path, src, name="prog.ttac"):
+    f = tmp_path / name
+    f.write_text(src)
+    return str(f)
+
+
+def _symbols(src):
+    program = parse_program(src)
+    types = infer_types(program)
+    numbering = build_numbering(program, types)
+    return program, numbering, types
+
+
+DECLS = """\
+(declare-const x Int)
+(declare-const c Bool)
+(declare-const BLK_pos Bool)
+(declare-const y1 Int)
+(declare-const BLK_neg Bool)
+(declare-const y2 Int)
+(declare-const BLK_join Bool)
+(declare-const y Int)
+(declare-const ok Bool)
+(declare-const BLK_EXIT Bool)
+"""
+
+
+def _transpile(body, decls=DECLS):
+    program, numbering, types = _symbols(fx.SCALAR_DIAMOND)
+    smt = parse_smt2(f"{decls}(assert {body})\n(check-sat)\n")
+    syms, errs = build_vc_symbols(program, numbering, types, smt)
+    assert errs == []
+    asserts, errs = transpile_vc(smt, syms)
+    if errs:
+        return None, errs
+    return render_top(asserts[0].term), []
+
+
+# --- transpiler units ---
+
+
+def test_transpile_ops():
+    cases = {
+        "(= y (+ x 1))": ".eqI (.var 3) (.add (.var 0) (.lit 1))",
+        "(= y (- x y1))": ".eqI (.var 3) (.sub (.var 0) (.var 1))",
+        "(= y (* x x))": ".eqI (.var 3) (.mul (.var 0) (.var 0))",
+        "(= y (div x y1))": ".eqI (.var 3) (.div (.var 0) (.var 1))",
+        "(<= x y)": ".le (.var 0) (.var 3)",
+        "(< x y)": ".lt (.var 0) (.var 3)",
+        "(= c ok)": ".eqB (.var 0) (.var 1)",
+        "(not c)": ".not (.var 0)",
+        "(=> BLK_pos c)": ".imp (.var 3) (.var 0)",
+        "(= y (ite c x y1))": ".eqI (.var 3) (.ite (.var 0) (.var 0) (.var 1))",
+        "(ite c ok true)": ".ite (.var 0) (.var 1) (.lit true)",
+    }
+    for body, want in cases.items():
+        got, errs = _transpile(body)
+        assert errs == [], (body, errs)
+        assert got == want, body
+
+
+def test_transpile_negative_literal():
+    got, _ = _transpile("(= x (- 5))")
+    assert got == ".eqI (.var 0) (.lit (-5))"
+    got, _ = _transpile("(= x (- 0 x))")
+    assert got == ".eqI (.var 0) (.sub (.lit 0) (.var 0))"
+    _, errs = _transpile("(= x (- y))")
+    assert any("unary minus" in e for e in errs)
+
+
+def test_transpile_nary_fold_right():
+    got, _ = _transpile("(and c ok (not c))")
+    assert got == ".and (.var 0) (.and (.var 1) (.not (.var 0)))"
+    got, _ = _transpile("(or c ok BLK_EXIT)")
+    assert got == ".or (.var 0) (.or (.var 1) (.var 6))"
+
+
+def test_transpile_eq_sort_mismatch():
+    _, errs = _transpile("(= x c)")
+    assert any("different sorts" in e for e in errs)
+
+
+def test_transpile_unsupported_operator():
+    _, errs = _transpile("(select x c)")
+    assert any("unsupported operator 'select'" in e for e in errs)
+
+
+def test_transpile_block_var_mapping():
+    got, _ = _transpile("BLK_EXIT")
+    assert got == ".var 6"
+    got, _ = _transpile("BLK_entry")
+    assert got == ".var 2"
+
+
+# --- symbol table / statement triage ---
+
+
+def test_unknown_const_rejected():
+    program, numbering, types = _symbols(fx.SCALAR_DIAMOND)
+    smt = parse_smt2("(declare-const zzz Int)\n(assert true)\n")
+    _, errs = build_vc_symbols(program, numbering, types, smt)
+    assert any("unknown constant 'zzz'" in e for e in errs)
+
+
+def test_sort_mismatch_rejected():
+    program, numbering, types = _symbols(fx.SCALAR_DIAMOND)
+    smt = parse_smt2("(declare-const c Int)\n(assert true)\n")
+    _, errs = build_vc_symbols(program, numbering, types, smt)
+    assert any("bool register but declared Int" in e for e in errs)
+
+
+def test_declare_fun_rejected():
+    program = parse_program(fx.SCALAR_DIAMOND)
+    smt2 = "(declare-fun M (Int) Int)\n(assert true)\n(check-sat)\n"
+    with pytest.raises(VcCheckError) as exc:
+        generate_vc_check(program, smt2, module_name="P")
+    assert any("unsupported statement DeclareFun" in e for e in exc.value.errors)
+
+
+# --- program-side validation ---
+
+
+def _gen_errors(src, smt2="(assert true)\n"):
+    with pytest.raises(VcCheckError) as exc:
+        generate_vc_check(parse_program(src), smt2, module_name="P")
+    return exc.value.errors
+
+
+def test_two_asserts_rejected_with_ua_hint():
+    errs = _gen_errors(fx.TWO_ASSERTS)
+    assert any("run `ttac ua" in e for e in errs)
+
+
+def test_assert_not_last_rejected():
+    src = """\
+entry:
+  a := havoc
+  ok := 0 <= a
+  assert ok
+  b := a + 1
+  halt
+"""
+    errs = _gen_errors(src)
+    assert any("not the last command" in e for e in errs)
+
+
+def test_no_assert_rejected():
+    src = "entry:\n  a := havoc\n  b := a + 1\n  halt\n"
+    errs = _gen_errors(src)
+    assert any("no assert" in e for e in errs)
+
+
+def test_backward_edge_rejected():
+    errs = _gen_errors(
+        """\
+entry:
+  c := havoc
+  if c goto b2 else b1
+
+b2:
+  ok2 := c == c
+  goto b3
+
+b1:
+  goto b2
+
+b3:
+  assert ok2
+  halt
+"""
+    )
+    assert any("backward edge b1 -> b2" in e for e in errs)
+
+
+def test_unreachable_block_rejected():
+    src = """\
+entry:
+  a := havoc
+  ok := 0 <= a
+  assert ok
+  halt
+
+orphan:
+  halt
+"""
+    errs = _gen_errors(src)
+    assert any("unreachable" in e for e in errs)
+
+
+# --- golden e2e on the diamond ---
+
+
+def _diamond_result(**kwargs):
+    program = parse_program(fx.SCALAR_DIAMOND)
+    smt_text = generate_vc(program).smt_text
+    return generate_vc_check(
+        program, smt_text, module_name="Diamond", **kwargs
+    ), smt_text
+
+
+def test_diamond_vc_lines_golden():
+    res, _ = _diamond_result()
+    assert res.block_off == 2
+    assert res.n_asserts == 13
+    text = res.vc_text
+    assert "def blockOff : Nat := 2" in text
+    assert ".eqB (.var 0) (.le (.lit 0) (.var 0))," in text
+    assert ".eqI (.var 3) (.ite (.var 3) (.var 1) (.var 2))," in text
+    assert ".imp (.var 6) (.and (.var 5) (.not (.var 1)))," in text
+    assert text.rstrip().endswith("end Diamond.Vc")
+    assert text.count(".imp (.var 5) (.or (.var 3) (.var 4)),") == 2
+    assert "theorem vc_ok : Ttac.checkVC Deep.prog Vc.blockOff Vc.vc = true := by" in res.check_text
+    assert "native_decide" in res.check_text
+
+
+def test_diamond_precheck_clean():
+    res, _ = _diamond_result()
+    assert res.mismatches == ()
+
+
+def test_precheck_clean_on_scalar_fixtures():
+    for src in (fx.SCALAR_DIAMOND, fx.SCALAR_STRAIGHT):
+        program = parse_program(src)
+        smt_text = generate_vc(program).smt_text
+        res = generate_vc_check(program, smt_text, module_name="P")
+        assert res.mismatches == (), src
+
+
+def test_precheck_catches_tampering():
+    program = parse_program(fx.SCALAR_DIAMOND)
+    smt_text = generate_vc(program).smt_text
+    tampered = smt_text.replace("(<= 0 y)", "(< 0 y)")
+    res = generate_vc_check(program, tampered, module_name="P")
+    kinds = {m.kind for m in res.mismatches}
+    assert "unexpected-assert" in kinds
+    assert "missing-assert" in kinds
+
+
+def test_precheck_catches_dropped_assert():
+    program = parse_program(fx.SCALAR_DIAMOND)
+    smt_text = generate_vc(program).smt_text
+    tampered = smt_text.replace("(assert BLK_EXIT)\n", "")
+    res = generate_vc_check(program, tampered, module_name="P")
+    assert any(m.kind == "missing-assert" for m in res.mismatches)
+
+
+def test_expected_mirror_matches_transpiled_multiset():
+    program, numbering, types = _symbols(fx.SCALAR_DIAMOND)
+    smt = parse_smt2(generate_vc(program).smt_text)
+    syms, _ = build_vc_symbols(program, numbering, types, smt)
+    asserts, errs = transpile_vc(smt, syms)
+    assert errs == []
+    expected = expected_vc(program, numbering, types, 2)
+    assert precheck_diff(asserts, expected) == ()
+
+
+def test_kernel_flag():
+    res, _ = _diamond_result(kernel=True)
+    assert "by\n  decide" in res.check_text
+    assert "native_decide" not in res.check_text
+
+
+def test_determinism():
+    a, _ = _diamond_result()
+    b, _ = _diamond_result()
+    assert a.vc_text == b.vc_text
+    assert a.deep_text == b.deep_text
+
+
+# --- CLI ---
+
+
+def _diamond_files(tmp_path):
+    ttac = _write(tmp_path, fx.SCALAR_DIAMOND)
+    smt_text = generate_vc(parse_program(fx.SCALAR_DIAMOND)).smt_text
+    smt2 = tmp_path / "prog.smt2"
+    smt2.write_text(smt_text)
+    return ttac, str(smt2)
+
+
+def test_cli_writes_project(tmp_path):
+    ttac, smt2 = _diamond_files(tmp_path)
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app, ["vc-check", ttac, smt2, "-o", str(out), "--no-build", "--plain"]
+    )
+    assert result.exit_code == 0, result.output
+    assert (out / "Prog" / "Deep.lean").is_file()
+    assert (out / "Prog" / "Vc.lean").is_file()
+    assert (out / "Prog" / "Check.lean").is_file()
+    assert (out / "Ttac" / "VcCheck.lean").is_file()
+    assert "generated (not validated)" in result.output
+
+
+def test_cli_missing_smt2(tmp_path):
+    ttac = _write(tmp_path, fx.SCALAR_DIAMOND)
+    result = runner.invoke(
+        app,
+        ["vc-check", ttac, str(tmp_path / "nope.smt2"), "-o", str(tmp_path / "o"),
+         "--no-build", "--plain"],
+    )
+    assert result.exit_code == 2
+
+
+def test_cli_validation_error(tmp_path):
+    ttac = _write(tmp_path, fx.TWO_ASSERTS)
+    smt2 = tmp_path / "x.smt2"
+    smt2.write_text("(assert true)\n")
+    result = runner.invoke(
+        app,
+        ["vc-check", ttac, str(smt2), "-o", str(tmp_path / "o"),
+         "--no-build", "--plain"],
+    )
+    assert result.exit_code == 1
+    assert "ttac ua" in result.output
+
+
+def test_cli_force(tmp_path):
+    ttac, smt2 = _diamond_files(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "junk").write_text("x")
+    args = ["vc-check", ttac, smt2, "-o", str(out), "--no-build", "--plain"]
+    assert runner.invoke(app, args).exit_code == 2
+    assert runner.invoke(app, [*args, "--force"]).exit_code == 0
+
+
+# --- integration (opt-in) ---
+
+
+@pytest.mark.skipif(shutil.which("lake") is None, reason="lake not on PATH")
+@pytest.mark.skipif(not os.environ.get("CTAC_LEAN_TESTS"), reason="set CTAC_LEAN_TESTS=1")
+def test_lake_build_validates_diamond(tmp_path):
+    ttac, smt2 = _diamond_files(tmp_path)
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app, ["vc-check", ttac, smt2, "-o", str(out), "--no-build", "--plain"]
+    )
+    assert result.exit_code == 0
+    subprocess.run(["lake", "exe", "cache", "get"], cwd=out, check=True, timeout=1800)
+    build = subprocess.run(
+        ["lake", "build"], cwd=out, capture_output=True, text=True, timeout=1800
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+
+
+@pytest.mark.skipif(shutil.which("lake") is None, reason="lake not on PATH")
+@pytest.mark.skipif(not os.environ.get("CTAC_LEAN_TESTS"), reason="set CTAC_LEAN_TESTS=1")
+def test_lake_build_rejects_tampered_vc(tmp_path):
+    ttac = _write(tmp_path, fx.SCALAR_DIAMOND)
+    smt_text = generate_vc(parse_program(fx.SCALAR_DIAMOND)).smt_text
+    smt2 = tmp_path / "bad.smt2"
+    smt2.write_text(smt_text.replace("(<= 0 y)", "(< 0 y)"))
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["vc-check", ttac, str(smt2), "-o", str(out), "--no-build",
+         "--no-precheck", "--plain"],
+    )
+    assert result.exit_code == 0
+    subprocess.run(["lake", "exe", "cache", "get"], cwd=out, check=True, timeout=1800)
+    build = subprocess.run(
+        ["lake", "build"], cwd=out, capture_output=True, text=True, timeout=1800
+    )
+    assert build.returncode != 0

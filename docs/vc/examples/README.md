@@ -83,6 +83,38 @@ directory only `safe_scalar_diamond.ttac` is inside the fragment. Its
 hand-written golden twin is `lean/TtacExamples/Diamond.lean` (same
 program, shallow safety theorem proved).
 
+## Verified VC validation (`ttac vc-check`)
+
+Validate that a VC really is a correct verification condition for its
+program, with a machine-checked Lean proof instead of trust in the
+encoder:
+
+```
+ttac vcgen safe_scalar_diamond.ttac -o d.smt2
+ttac vc-check safe_scalar_diamond.ttac d.smt2 -o out/check
+```
+
+The command transpiles the program to the deep embedding and the smt2
+asserts to a deep formula list, generates a Lean project, and runs
+`lake build` (default; `--no-build` to skip). The build proves
+`vc_ok : checkVC prog blockOff vc = true` by `native_decide` and
+instantiates the library's once-and-for-all soundness theorem as
+`vc_implies_safe : Unsat vc → prog.Safe`. Success prints
+`vc-check: validated`.
+
+What that buys: the logical gap between "z3 said unsat" and "the
+program is safe" is closed by proof — every failing execution of the
+program would be a satisfying assignment of the transpiled VC
+(`Ttac.checkVC_sound`, sorry-free). The remaining trust surface is the
+Lean toolchain, z3's unsat verdict, and two dumb syntactic translations
+pinned by golden tests. A Python-side precheck (`--no-precheck` to
+skip) diagnoses mismatches with exact line numbers before the build;
+the build stays authoritative.
+
+Same input fragment as `ttac lean`, plus: exactly one assert (run
+`ttac ua --strategy merge` first), the assert last in its block, blocks
+in topological source order, every block reachable. bwd0 encoding only.
+
 ## Counterexamples (model replay)
 
 For an unsafe program, ask the solver for a model and replay it

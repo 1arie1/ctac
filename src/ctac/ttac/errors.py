@@ -44,6 +44,18 @@ class LeanGenError(Exception):
         super().__init__("lean generation failed:\n  " + "\n  ".join(errors))
 
 
+class VcCheckError(Exception):
+    """The program or smt2 file is outside the vc-check v1 fragment, or
+    the smt2 could not be mapped onto the program's registers.
+
+    Carries every violation so a single run reports all problems.
+    """
+
+    def __init__(self, errors: tuple[str, ...]) -> None:
+        self.errors = errors
+        super().__init__("vc-check failed:\n  " + "\n  ".join(errors))
+
+
 class TtacTypeError(Exception):
     """Type inference could not produce a total typing.
 
