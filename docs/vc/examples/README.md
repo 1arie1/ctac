@@ -54,6 +54,34 @@ to plain assignments + a prophecy `assume`):
 ttac desugar safe_borrow_mut.ttac | ttac vcgen - --solve
 ```
 
+## Lean project (`ttac lean`)
+
+Transpile a program into a self-contained Lean 4 project with two
+embeddings — *deep* (a term of the `Ttac` inductive types from
+`<repo>/lean/`, with a small-step semantics, for proving properties of
+VCGen) and *shallow* (per-block `Prop` definitions in native Lean, for
+proving properties of the program itself):
+
+```
+ttac lean prog.ttac -o out/prog
+cd out/prog && lake exe cache get && lake build
+```
+
+The project contains `<Name>/Deep.lean` and `<Name>/Shallow.lean`
+(regenerated on `--force`) plus `<Name>/Proofs.lean` with `sorry`
+theorem stubs (generated once, never overwritten — proofs written there
+survive regeneration). `--build` runs the lake build directly.
+`--no-deep` / `--no-shallow` select a single embedding; a shallow-only
+project is pure core Lean (no `Ttac` library, no mathlib) and builds in
+under a second.
+
+v1 accepts only the scalar fragment: `int`/`bool` registers, pure SSA
+(phi fine, no dynamic definitions), loop-free CFG, no use-before-def.
+Bytemaps and references are rejected, so the examples in this directory
+are outside the fragment for now; the reference scalar program is the
+diamond in `lean/TtacExamples/Diamond.lean` (hand-written golden twin of
+the generated output, with the shallow safety theorem proved).
+
 ## Counterexamples (model replay)
 
 For an unsafe program, ask the solver for a model and replay it

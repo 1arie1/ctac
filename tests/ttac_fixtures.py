@@ -116,6 +116,42 @@ join:
   goto exit
 """
 
+# Not from docs/vc - purpose-built for the ttac lean tests.
+
+# Scalar-only diamond with havoc, phi, branch, and assert; mirrors the
+# golden lean/TtacExamples/Diamond.lean pair.
+SCALAR_DIAMOND = """\
+entry:
+  x := havoc
+  c := 0 <= x
+  if c goto pos else neg
+
+pos:
+  y1 := x + 1
+  goto join
+
+neg:
+  y2 := 0 - x
+  goto join
+
+join:
+  y := phi [pos: y1, neg: y2]
+  ok := 0 <= y
+  assert ok
+  halt
+"""
+
+# Single scalar block: havoc / assign / assume / assert / halt.
+SCALAR_STRAIGHT = """\
+entry:
+  a := havoc
+  b := a * 2
+  assume 0 <= a
+  ok := a <= b
+  assert ok
+  halt
+"""
+
 # Not from docs/vc - purpose-built for the ua transform tests.
 
 # Two sequential asserts in one block (merge example).

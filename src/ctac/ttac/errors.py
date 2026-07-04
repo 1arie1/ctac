@@ -32,6 +32,18 @@ class VcGenError(Exception):
     desugared first)."""
 
 
+class LeanGenError(Exception):
+    """The program is outside the ttac-lean v1 fragment (scalar-only,
+    pure SSA, loop-free, no use-before-def).
+
+    Carries every violation so a single run reports all problems.
+    """
+
+    def __init__(self, errors: tuple[str, ...]) -> None:
+        self.errors = errors
+        super().__init__("lean generation failed:\n  " + "\n  ".join(errors))
+
+
 class TtacTypeError(Exception):
     """Type inference could not produce a total typing.
 
