@@ -478,219 +478,6 @@ theorem forwardStructural {P : Program} (hone : singleAssertOK P = true)
               simp [posLt, hipcf]
           exact hfacts v i B c' hB hci hvV hpos hna
 
-/-! ## Part 2: every expected constraint is robust or a definition
-
-The encoding-generic half, re-derived over the *forward* structural facts
-(`forwardStructural`) instead of the `Suffix`. Byte-for-byte the same
-dispatch as `expected_robust_or_def`; the only place the suffix proof touched
-`hS` was its `last_block`, which is now the passed `hlast`. Every leaf
-(`robust_cmd_fact`, `visited_phi_defHolds`, `visited_amo`, `dom_visited`,
-`robust_intro`) is shared, structural-fact-typed infrastructure. -/
-theorem annExpected_robust_or_def {P : Program} {σ : State} {V : List Nat}
-    (hone : singleAssertOK P = true) (hssa : ssaOK P = true)
-    (hfwd : forwardOK P = true) (hphi : phiOK P = true)
-    (hamo : amoSideOK P = true) (hgf : guardFreeOK P = true)
-    (hdc : domClosedOK P = true) (huse : usesOK P = true)
-    (hentryV : P.entry ∈ V) (hhead : V.head? = some P.entry)
-    (hedge : Chained (EdgeTaken P σ) V)
-    (hfacts : ∀ v ∈ V, ∀ (B : Block) (i : Nat) (c' : Cmd),
-      P.block? v = some B → B.cmds[i]? = some c' →
-      ∃ prev : Option Nat, CmdFact σ prev c'
-        ∧ ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P σ p v)
-    (hlast : ∃ (bf : Nat) (Bf : Block) (pcf cf : Nat), V.getLast? = some bf
-      ∧ P.block? bf = some Bf ∧ Bf.cmds[pcf]? = some (.assert cf)
-      ∧ σ.regs .bool cf = false) :
-    ∀ c ∈ Vc.expected P,
-      DefExt.Robust (fun t x => (t, x) ∈ DefExt.targets (witnessDefs P V))
-          (setBlockVars P V σ) c
-        ∨ ∃ d ∈ witnessDefs P V, d.toConstraint? = some c := by
-  have hdomV := dom_visited hdc hfwd hedge hhead
-  obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, hlastA⟩ := singleAssert_shape hone
-  intro c hc
-  have hexp : Vc.expected P
-      = (P.blocks.zipIdx.map fun (B, b) =>
-          (B.cmds.map (Vc.cmdConstraints P b)).flatten).flatten
-        ++ Vc.cfgConstraints P ++ Vc.objective P aB okReg := by
-    unfold Vc.expected
-    rw [heqs]
-  rw [hexp, List.mem_append, List.mem_append] at hc
-  rcases hc with (hc | hc) | hc
-  · rw [List.mem_flatten] at hc
-    obtain ⟨L, hL, hcL⟩ := hc
-    rw [List.mem_map] at hL
-    obtain ⟨⟨B, b⟩, hbmem, rfl⟩ := hL
-    rw [List.mem_flatten] at hcL
-    obtain ⟨L2, hL2, hcL2⟩ := hcL
-    rw [List.mem_map] at hL2
-    obtain ⟨cmd, hcmdmem, rfl⟩ := hL2
-    have hB : P.block? b = some B := List.mem_zipIdx_iff_getElem?.mp hbmem
-    have hblt : b < P.blocks.length := (List.getElem?_eq_some_iff.mp hB).1
-    obtain ⟨i, hci⟩ := List.mem_iff_getElem?.mp hcmdmem
-    rcases mem_cmdConstraints hcL2 with hfc | ⟨t, y, arms, rfl, hshape⟩
-    · obtain ⟨f, hfb, rfl⟩ := mem_factConstraints hfc
-      refine Or.inl (robust_cmd_fact hentryV hdomV hblt hfb ?_
-        (factB_vars_dom hssa huse hB hci hfb)
-        (factB_blkVars (guardFree_at hgf (List.mem_of_getElem? hB)
-          hcmdmem) hfb))
-      intro hbV
-      obtain ⟨prev, hfact, -⟩ := hfacts b hbV B i _ hB hci
-      exact ⟨prev, hfact⟩
-    · have harms : phiArmsOK P b arms = true := phiOK_at hphi hB hcmdmem
-      rcases hshape with heq | ⟨hlen2, hcamo⟩
-      · by_cases hbV : b ∈ V
-        · refine Or.inl (robust_intro hentryV hdomV
-            fun w' hblk _hexit _hguard hag _hdom => ?_)
-          exact (visited_phi_defHolds hssa hfwd hphi hamo huse hedge
-            hentryV hdomV hfacts hbV hB hci hblt hblk hag).toConstraint_eval
-            heq
-        · exact Or.inr ⟨⟨t, y, Vc.phiRhs P t arms⟩,
-            witnessDefAt_mem_witnessDefs ⟨B, _, hB, hci, rfl⟩ hbV, heq⟩
-      · obtain ⟨g1, g2, hg1, hg2, hne, rfl⟩ := Vc.mem_amoClauses hcamo
-        rw [List.mem_map] at hg1 hg2
-        obtain ⟨⟨q1, s1⟩, hq1arm, rfl⟩ := hg1
-        obtain ⟨⟨q2, s2⟩, hq2arm, rfl⟩ := hg2
-        refine Or.inl (robust_intro hentryV hdomV
-          fun w' _hblk _hexit hguard _hag _hdom => ?_)
-        have hq1lt : q1 < P.blocks.length := by
-          have := phiArm_lt harms hq1arm; omega
-        have hq2lt : q2 < P.blocks.length := by
-          have := phiArm_lt harms hq2arm; omega
-        simp only [Exp.eval, UnOp.denote, BinOp.denote,
-          hguard q1 hq1lt, hguard q2 hq2lt]
-        by_cases h1 : q1 ∈ V
-        · by_cases h2 : q2 ∈ V
-          · exfalso
-            have hq12 : q1 ≠ q2 := fun h => hne (by rw [h])
-            exact hq12 (visited_amo hfwd hamo hedge hblt
-              (two_mem_le_length (phiArm_pred harms hq1arm)
-                (phiArm_pred harms hq2arm) hq12)
-              h1 (phiArm_pred harms hq1arm) h2 (phiArm_pred harms hq2arm))
-          · simp [h2]
-        · simp [h1]
-  · simp only [Vc.cfgConstraints, List.mem_flatten, List.mem_map] at hc
-    obtain ⟨L, ⟨S, hSmem, rfl⟩, hcL⟩ := hc
-    rw [List.mem_range] at hSmem
-    by_cases hSe : S = P.entry
-    · rw [if_pos hSe] at hcL; cases hcL
-    · rw [if_neg hSe] at hcL
-      have hStail : S ∈ V → S ∈ V.tail := by
-        intro hSV
-        cases V with
-        | nil => cases hhead
-        | cons v0 rest =>
-            obtain rfl := Option.some.inj hhead
-            rcases List.mem_cons.mp hSV with rfl | h
-            · exact absurd rfl hSe
-            · exact h
-      rcases List.mem_cons.mp hcL with rfl | hcL'
-      · refine Or.inl (robust_intro hentryV hdomV
-          fun w' _hblk _hexit hguard _hag hdom => ?_)
-        rw [Vc.eval_mkImp]
-        by_cases hSV : S ∈ V
-        · rw [Bool.or_eq_true]; right
-          rw [Vc.eval_mkOr]
-          obtain ⟨p, hpV, hE, -⟩ := chained_pred hedge hedge (hStail hSV)
-          obtain ⟨cond, hcondmem, hcondeval⟩ := hE.edge_cond
-          apply List.any_eq_true.mpr
-          refine ⟨Vc.mkAnd2 (Vc.guardOf P p) cond,
-            List.mem_map.mpr ⟨(p, cond), hcondmem, rfl⟩, ?_⟩
-          rw [Vc.eval_mkAnd2]
-          have hplt : p < P.blocks.length :=
-            Nat.lt_trans (pred_lt hfwd (mem_predsOf.mpr ⟨cond, hcondmem⟩)) hSmem
-          rw [hguard p hplt]
-          obtain ⟨hblknil, hbvars⟩ := edge_cond_vars hcondmem
-          have hcondw : cond.eval w' = cond.eval σ := by
-            refine eval_congr cond ?_ ?_
-            · intro q hq
-              obtain ⟨r, B', t', e', rfl, hB', hterm'⟩ := hbvars q hq
-              have hterm_use := usesOK_term huse hB'
-              simp only [termUsesOK, hterm'] at hterm_use
-              exact hdom p hpV .bool r (useOK_dom hterm_use)
-            · intro q hq
-              rw [hblknil] at hq
-              cases hq
-          rw [hcondw, hcondeval]
-          simp [hpV]
-        · rw [Bool.or_eq_true]; left
-          rw [hguard S hSmem]
-          simp [hSV]
-      · rcases List.mem_cons.mp hcL' with rfl | hcL''
-        · refine Or.inl (robust_intro hentryV hdomV
-            fun w' _hblk _hexit hguard _hag _hdom => ?_)
-          rw [Vc.eval_mkImp]
-          by_cases hSV : S ∈ V
-          · rw [Bool.or_eq_true]; right
-            rw [Vc.eval_mkOr]
-            obtain ⟨p, hpV, hE, -⟩ := chained_pred hedge hedge (hStail hSV)
-            obtain ⟨cond, hcondmem, -⟩ := hE.edge_cond
-            apply List.any_eq_true.mpr
-            refine ⟨Vc.guardOf P p,
-              List.mem_map.mpr ⟨(p, cond), hcondmem, rfl⟩, ?_⟩
-            have hplt : p < P.blocks.length :=
-              Nat.lt_trans (pred_lt hfwd (mem_predsOf.mpr ⟨cond, hcondmem⟩)) hSmem
-            rw [hguard p hplt]
-            simp [hpV]
-          · rw [Bool.or_eq_true]; left
-            rw [hguard S hSmem]
-            simp [hSV]
-        · rw [List.mem_map] at hcL''
-          obtain ⟨cl, hclmem, rfl⟩ := hcL''
-          refine Or.inl (robust_intro hentryV hdomV
-            fun w' _hblk _hexit hguard _hag _hdom => ?_)
-          rw [Vc.eval_mkImp]
-          by_cases hSV : S ∈ V
-          · rw [Bool.or_eq_true]; right
-            obtain ⟨g1, g2, hg1, hg2, hne, rfl⟩ := Vc.mem_amoClauses hclmem
-            rw [List.mem_map] at hg1 hg2
-            obtain ⟨⟨q1, c1⟩, hq1e, rfl⟩ := hg1
-            obtain ⟨⟨q2, c2⟩, hq2e, rfl⟩ := hg2
-            have hq1p : q1 ∈ predsOf P S := mem_predsOf.mpr ⟨c1, hq1e⟩
-            have hq2p : q2 ∈ predsOf P S := mem_predsOf.mpr ⟨c2, hq2e⟩
-            have hq1lt : q1 < P.blocks.length :=
-              Nat.lt_trans (pred_lt hfwd hq1p) hSmem
-            have hq2lt : q2 < P.blocks.length :=
-              Nat.lt_trans (pred_lt hfwd hq2p) hSmem
-            simp only [Exp.eval, UnOp.denote, BinOp.denote,
-              hguard q1 hq1lt, hguard q2 hq2lt]
-            by_cases h1 : q1 ∈ V
-            · by_cases h2 : q2 ∈ V
-              · exfalso
-                have hq12 : q1 ≠ q2 := fun h => hne (by rw [h])
-                exact hq12 (visited_amo hfwd hamo hedge hSmem
-                  (two_mem_le_length hq1p hq2p hq12) h1 hq1p h2 hq2p)
-              · simp [h2]
-            · simp [h1]
-          · rw [Bool.or_eq_true]; left
-            rw [hguard S hSmem]
-            simp [hSV]
-  · rcases List.mem_cons.mp hc with rfl | hc'
-    · refine Or.inl (robust_intro hentryV hdomV
-        fun w' _hblk _hexit hguard _hag hdom => ?_)
-      rw [Vc.eval_mkImp]
-      rw [Bool.or_eq_true]; right
-      obtain ⟨bf, Bf, pcf, cf, hlastV, hBf, hcf, hfalse⟩ := hlast
-      obtain ⟨hbf, hpcf, hcfok⟩ := singleAssert_unique hone hBf hcf hBA hcA
-      have hbf' := hbf.symm
-      have hcfok' := hcfok.symm
-      subst hbf'
-      subst hcfok'
-      have haBV : aB ∈ V := getLast?_mem hlastV
-      have haBlt : aB < P.blocks.length := (List.getElem?_eq_some_iff.mp hBA).1
-      rw [Vc.eval_mkAnd2, hguard aB haBlt]
-      have hok : w'.regs .bool okReg = false := by
-        have hcuse := usesOK_cmd huse hBA hcA
-        simp only [cmdUsesOK] at hcuse
-        rw [hdom aB haBV .bool okReg (useOK_dom hcuse)]
-        exact hfalse
-      rw [Vc.eval_mkNot]
-      simp [Exp.eval, hok, haBV]
-    · rcases List.mem_cons.mp hc' with rfl | hc''
-      · refine Or.inl (robust_intro hentryV hdomV
-          fun w' _hblk hexit _hguard _hag _hdom => ?_)
-        simp only [Vc.exitVar, Exp.eval]
-        exact hexit
-      · cases hc''
-
 /-- The map-definition half, over the forward structural facts. No `hlast`
 (map definitions have no objective row); shares `visited_phi_defHolds`. -/
 theorem annExpectedMapDefs_robust_or_def {P : Program} {σ : State} {V : List Nat}
@@ -864,69 +651,282 @@ theorem checkVCAnn_true {P : Program} {a : AnnVC} (h : checkVCAnn P a = true) :
               fun c hc => of_decide_eq_true (List.all_eq_true.mp hobj c hc)⟩
         | cons a1 rest' => intro hobj; simp at hobj
 
-/-- Every constraint the annotated VC denotes is one the encoder is entitled
-to emit (`expected P`): each bucket is a subset of its block's generators, so
-`flatten` is a subset of `expected P`. -/
-theorem flatten_mem_expected {P : Program} {a : AnnVC}
-    (h : checkVCAnn P a = true) {c : BExp} (hc : c ∈ a.flatten) :
-    c ∈ expected P := by
-  obtain ⟨-, hlen, hblocks, ⟨aB, iA, okReg, hsig, hobjsub⟩, -⟩ := checkVCAnn_true h
-  have hexp : expected P
-      = (P.blocks.zipIdx.map fun (B, b) =>
-          (B.cmds.map (cmdConstraints P b)).flatten).flatten
-        ++ cfgConstraints P ++ objective P aB okReg := by
-    unfold expected; rw [hsig]
-  rw [hexp]
-  rw [AnnVC.flatten, List.mem_append] at hc
-  rcases hc with hc | hc
-  · rw [List.mem_flatten] at hc
-    obtain ⟨L, hL, hcL⟩ := hc
-    rw [List.mem_map] at hL
-    obtain ⟨bk, hbk, rfl⟩ := hL
-    obtain ⟨b, hbidx⟩ := List.mem_iff_getElem?.mp hbk
-    have hmemz : (bk, b) ∈ a.perBlock.zipIdx :=
-      List.mem_zipIdx_iff_getElem?.mpr hbidx
-    have hblt : b < P.blocks.length := by
-      have := (List.getElem?_eq_some_iff.mp hbidx).1; omega
-    obtain ⟨hcfgsub, B, hB, hcmdssub⟩ := hblocks bk b hmemz
-    rw [List.mem_append] at hcL
-    rcases hcL with hccfg | hccmds
-    · refine List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inr ?_)))
-      rw [cfgConstraints_eq, List.mem_flatten]
-      exact ⟨cfgConstraintsFor P b, List.mem_map.mpr
-        ⟨b, List.mem_range.mpr hblt, rfl⟩, hcfgsub c hccfg⟩
-    · refine List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inl ?_)))
-      rw [List.mem_flatten]
-      exact ⟨(B.cmds.map (cmdConstraints P b)).flatten,
-        List.mem_map.mpr ⟨(B, b), List.mem_zipIdx_iff_getElem?.mpr hB, rfl⟩,
-        hcmdssub c hccmds⟩
-  · exact List.mem_append.mpr (Or.inr (hobjsub c hc))
-
 end Vc
+
+/-! ## Per-bucket robustness — the annotation, consumed
+
+The three factored halves of the old `expected`-wide dispatch, one per
+annotation bucket kind. `checkVCAnn_sound` walks the `AnnVC`'s `perBlock`
+buckets and applies these directly (each bucket is validated a subset of the
+matching block generator), so the proof follows the annotation's structure
+rather than re-searching `expected P`. -/
+
+/-- Every CFG constraint the encoder emits for a block `S` is robust. -/
+theorem cfg_robust {P : Program} {σ : State} {V : List Nat}
+    (hfwd : forwardOK P = true) (hamo : amoSideOK P = true)
+    (huse : usesOK P = true) (hdc : domClosedOK P = true)
+    (hentryV : P.entry ∈ V) (hhead : V.head? = some P.entry)
+    (hedge : Chained (EdgeTaken P σ) V) {S : Nat} (hSmem : S < P.blocks.length) :
+    ∀ c ∈ Vc.cfgConstraintsFor P S,
+      DefExt.Robust (fun t x => (t, x) ∈ DefExt.targets (witnessDefs P V))
+          (setBlockVars P V σ) c
+        ∨ ∃ d ∈ witnessDefs P V, d.toConstraint? = some c := by
+  have hdomV := dom_visited hdc hfwd hedge hhead
+  intro c hc
+  unfold Vc.cfgConstraintsFor at hc
+  by_cases hSe : S = P.entry
+  · rw [if_pos hSe] at hc; cases hc
+  · rw [if_neg hSe] at hc
+    have hStail : S ∈ V → S ∈ V.tail := by
+      intro hSV
+      cases V with
+      | nil => cases hhead
+      | cons v0 rest =>
+          obtain rfl := Option.some.inj hhead
+          rcases List.mem_cons.mp hSV with rfl | h
+          · exact absurd rfl hSe
+          · exact h
+    rcases List.mem_cons.mp hc with rfl | hcL'
+    · refine Or.inl (robust_intro hentryV hdomV
+        fun w' _hblk _hexit hguard _hag hdom => ?_)
+      rw [Vc.eval_mkImp]
+      by_cases hSV : S ∈ V
+      · rw [Bool.or_eq_true]; right
+        rw [Vc.eval_mkOr]
+        obtain ⟨p, hpV, hE, -⟩ := chained_pred hedge hedge (hStail hSV)
+        obtain ⟨cond, hcondmem, hcondeval⟩ := hE.edge_cond
+        apply List.any_eq_true.mpr
+        refine ⟨Vc.mkAnd2 (Vc.guardOf P p) cond,
+          List.mem_map.mpr ⟨(p, cond), hcondmem, rfl⟩, ?_⟩
+        rw [Vc.eval_mkAnd2]
+        have hplt : p < P.blocks.length :=
+          Nat.lt_trans (pred_lt hfwd (mem_predsOf.mpr ⟨cond, hcondmem⟩)) hSmem
+        rw [hguard p hplt]
+        obtain ⟨hblknil, hbvars⟩ := edge_cond_vars hcondmem
+        have hcondw : cond.eval w' = cond.eval σ := by
+          refine eval_congr cond ?_ ?_
+          · intro q hq
+            obtain ⟨r, B', t', e', rfl, hB', hterm'⟩ := hbvars q hq
+            have hterm_use := usesOK_term huse hB'
+            simp only [termUsesOK, hterm'] at hterm_use
+            exact hdom p hpV .bool r (useOK_dom hterm_use)
+          · intro q hq
+            rw [hblknil] at hq
+            cases hq
+        rw [hcondw, hcondeval]
+        simp [hpV]
+      · rw [Bool.or_eq_true]; left
+        rw [hguard S hSmem]
+        simp [hSV]
+    · rcases List.mem_cons.mp hcL' with rfl | hcL''
+      · refine Or.inl (robust_intro hentryV hdomV
+          fun w' _hblk _hexit hguard _hag _hdom => ?_)
+        rw [Vc.eval_mkImp]
+        by_cases hSV : S ∈ V
+        · rw [Bool.or_eq_true]; right
+          rw [Vc.eval_mkOr]
+          obtain ⟨p, hpV, hE, -⟩ := chained_pred hedge hedge (hStail hSV)
+          obtain ⟨cond, hcondmem, -⟩ := hE.edge_cond
+          apply List.any_eq_true.mpr
+          refine ⟨Vc.guardOf P p,
+            List.mem_map.mpr ⟨(p, cond), hcondmem, rfl⟩, ?_⟩
+          have hplt : p < P.blocks.length :=
+            Nat.lt_trans (pred_lt hfwd (mem_predsOf.mpr ⟨cond, hcondmem⟩)) hSmem
+          rw [hguard p hplt]
+          simp [hpV]
+        · rw [Bool.or_eq_true]; left
+          rw [hguard S hSmem]
+          simp [hSV]
+      · rw [List.mem_map] at hcL''
+        obtain ⟨cl, hclmem, rfl⟩ := hcL''
+        refine Or.inl (robust_intro hentryV hdomV
+          fun w' _hblk _hexit hguard _hag _hdom => ?_)
+        rw [Vc.eval_mkImp]
+        by_cases hSV : S ∈ V
+        · rw [Bool.or_eq_true]; right
+          obtain ⟨g1, g2, hg1, hg2, hne, rfl⟩ := Vc.mem_amoClauses hclmem
+          rw [List.mem_map] at hg1 hg2
+          obtain ⟨⟨q1, c1⟩, hq1e, rfl⟩ := hg1
+          obtain ⟨⟨q2, c2⟩, hq2e, rfl⟩ := hg2
+          have hq1p : q1 ∈ predsOf P S := mem_predsOf.mpr ⟨c1, hq1e⟩
+          have hq2p : q2 ∈ predsOf P S := mem_predsOf.mpr ⟨c2, hq2e⟩
+          have hq1lt : q1 < P.blocks.length :=
+            Nat.lt_trans (pred_lt hfwd hq1p) hSmem
+          have hq2lt : q2 < P.blocks.length :=
+            Nat.lt_trans (pred_lt hfwd hq2p) hSmem
+          simp only [Exp.eval, UnOp.denote, BinOp.denote,
+            hguard q1 hq1lt, hguard q2 hq2lt]
+          by_cases h1 : q1 ∈ V
+          · by_cases h2 : q2 ∈ V
+            · exfalso
+              have hq12 : q1 ≠ q2 := fun h => hne (by rw [h])
+              exact hq12 (visited_amo hfwd hamo hedge hSmem
+                (two_mem_le_length hq1p hq2p hq12) h1 hq1p h2 hq2p)
+            · simp [h2]
+          · simp [h1]
+        · rw [Bool.or_eq_true]; left
+          rw [hguard S hSmem]
+          simp [hSV]
+
+/-- Every per-command constraint of a block's command is robust, or is one of
+the unvisited-block definitions. -/
+theorem cmd_robust_or_def {P : Program} {σ : State} {V : List Nat}
+    (hssa : ssaOK P = true) (hfwd : forwardOK P = true) (hphi : phiOK P = true)
+    (hamo : amoSideOK P = true) (hgf : guardFreeOK P = true)
+    (hdc : domClosedOK P = true) (huse : usesOK P = true)
+    (hentryV : P.entry ∈ V) (hhead : V.head? = some P.entry)
+    (hedge : Chained (EdgeTaken P σ) V)
+    (hfacts : ∀ v ∈ V, ∀ (B : Block) (i : Nat) (c' : Cmd),
+      P.block? v = some B → B.cmds[i]? = some c' →
+      ∃ prev : Option Nat, CmdFact σ prev c'
+        ∧ ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P σ p v)
+    {b : Nat} {B : Block} {i : Nat} {cmd : Cmd}
+    (hB : P.block? b = some B) (hci : B.cmds[i]? = some cmd) :
+    ∀ c ∈ Vc.cmdConstraints P b cmd,
+      DefExt.Robust (fun t x => (t, x) ∈ DefExt.targets (witnessDefs P V))
+          (setBlockVars P V σ) c
+        ∨ ∃ d ∈ witnessDefs P V, d.toConstraint? = some c := by
+  have hdomV := dom_visited hdc hfwd hedge hhead
+  have hblt : b < P.blocks.length := (List.getElem?_eq_some_iff.mp hB).1
+  have hcmdmem : cmd ∈ B.cmds := List.mem_of_getElem? hci
+  intro c hc
+  rcases mem_cmdConstraints hc with hfc | ⟨t, y, arms, rfl, hshape⟩
+  · obtain ⟨f, hfb, rfl⟩ := mem_factConstraints hfc
+    refine Or.inl (robust_cmd_fact hentryV hdomV hblt hfb ?_
+      (factB_vars_dom hssa huse hB hci hfb)
+      (factB_blkVars (guardFree_at hgf (List.mem_of_getElem? hB)
+        hcmdmem) hfb))
+    intro hbV
+    obtain ⟨prev, hfact, -⟩ := hfacts b hbV B i _ hB hci
+    exact ⟨prev, hfact⟩
+  · have harms : phiArmsOK P b arms = true := phiOK_at hphi hB hcmdmem
+    rcases hshape with heq | ⟨hlen2, hcamo⟩
+    · by_cases hbV : b ∈ V
+      · refine Or.inl (robust_intro hentryV hdomV
+          fun w' hblk _hexit _hguard hag _hdom => ?_)
+        exact (visited_phi_defHolds hssa hfwd hphi hamo huse hedge
+          hentryV hdomV hfacts hbV hB hci hblt hblk hag).toConstraint_eval
+          heq
+      · exact Or.inr ⟨⟨t, y, Vc.phiRhs P t arms⟩,
+          witnessDefAt_mem_witnessDefs ⟨B, _, hB, hci, rfl⟩ hbV, heq⟩
+    · obtain ⟨g1, g2, hg1, hg2, hne, rfl⟩ := Vc.mem_amoClauses hcamo
+      rw [List.mem_map] at hg1 hg2
+      obtain ⟨⟨q1, s1⟩, hq1arm, rfl⟩ := hg1
+      obtain ⟨⟨q2, s2⟩, hq2arm, rfl⟩ := hg2
+      refine Or.inl (robust_intro hentryV hdomV
+        fun w' _hblk _hexit hguard _hag _hdom => ?_)
+      have hq1lt : q1 < P.blocks.length := by
+        have := phiArm_lt harms hq1arm; omega
+      have hq2lt : q2 < P.blocks.length := by
+        have := phiArm_lt harms hq2arm; omega
+      simp only [Exp.eval, UnOp.denote, BinOp.denote,
+        hguard q1 hq1lt, hguard q2 hq2lt]
+      by_cases h1 : q1 ∈ V
+      · by_cases h2 : q2 ∈ V
+        · exfalso
+          have hq12 : q1 ≠ q2 := fun h => hne (by rw [h])
+          exact hq12 (visited_amo hfwd hamo hedge hblt
+            (two_mem_le_length (phiArm_pred harms hq1arm)
+              (phiArm_pred harms hq2arm) hq12)
+            h1 (phiArm_pred harms hq1arm) h2 (phiArm_pred harms hq2arm))
+        · simp [h2]
+      · simp [h1]
+
+/-- Every objective constraint is robust: the failing assert's condition is
+false at σ (via `hlast`), dominated into every agreeing state. -/
+theorem objective_robust {P : Program} {σ : State} {V : List Nat}
+    (hone : singleAssertOK P = true) (hfwd : forwardOK P = true)
+    (hdc : domClosedOK P = true) (huse : usesOK P = true)
+    (hentryV : P.entry ∈ V) (hhead : V.head? = some P.entry)
+    (hedge : Chained (EdgeTaken P σ) V)
+    {aB iA okReg : Nat} {BA : Block} (hBA : P.block? aB = some BA)
+    (hcA : BA.cmds[iA]? = some (.assert okReg))
+    (hlast : ∃ (bf : Nat) (Bf : Block) (pcf cf : Nat), V.getLast? = some bf
+      ∧ P.block? bf = some Bf ∧ Bf.cmds[pcf]? = some (.assert cf)
+      ∧ σ.regs .bool cf = false) :
+    ∀ c ∈ Vc.objective P aB okReg,
+      DefExt.Robust (fun t x => (t, x) ∈ DefExt.targets (witnessDefs P V))
+          (setBlockVars P V σ) c
+        ∨ ∃ d ∈ witnessDefs P V, d.toConstraint? = some c := by
+  have hdomV := dom_visited hdc hfwd hedge hhead
+  intro c hc
+  rcases List.mem_cons.mp hc with rfl | hc'
+  · refine Or.inl (robust_intro hentryV hdomV
+      fun w' _hblk _hexit hguard _hag hdom => ?_)
+    rw [Vc.eval_mkImp]
+    rw [Bool.or_eq_true]; right
+    obtain ⟨bf, Bf, pcf, cf, hlastV, hBf, hcf, hfalse⟩ := hlast
+    obtain ⟨hbf, hpcf, hcfok⟩ := singleAssert_unique hone hBf hcf hBA hcA
+    have hbf' := hbf.symm
+    have hcfok' := hcfok.symm
+    subst hbf'
+    subst hcfok'
+    have haBV : aB ∈ V := getLast?_mem hlastV
+    have haBlt : aB < P.blocks.length := (List.getElem?_eq_some_iff.mp hBA).1
+    rw [Vc.eval_mkAnd2, hguard aB haBlt]
+    have hok : w'.regs .bool okReg = false := by
+      have hcuse := usesOK_cmd huse hBA hcA
+      simp only [cmdUsesOK] at hcuse
+      rw [hdom aB haBV .bool okReg (useOK_dom hcuse)]
+      exact hfalse
+    rw [Vc.eval_mkNot]
+    simp [Exp.eval, hok, haBV]
+  · rcases List.mem_cons.mp hc' with rfl | hc''
+    · exact Or.inl (robust_intro hentryV hdomV
+        fun w' _hblk hexit _hguard _hag _hdom => by
+          simp only [Vc.exitVar, Exp.eval]; exact hexit)
+    · cases hc''
 
 /-! ## Soundness of `checkVCAnn`
 
 The forward analogue of `checkVC_sound`/`checkVC_safe`: `forwardStructural`
-supplies the structural facts, the part-2 glue turns them into "the witness
-satisfies every expected constraint / map definition", and the annotated VC's
-constraints are a subset of `expected P` by the per-site validation. -/
+supplies the structural facts and the per-bucket robustness lemmas above are
+applied by walking the annotation's buckets; the annotated VC's constraints
+are a subset of the block generators by the per-site validation. -/
 
 theorem checkVCAnn_sound {P : Program} {a : Vc.AnnVC}
     (hchk : Vc.checkVCAnn P a = true) {s0 σ : State}
     (hrun : Steps P (Config.init P s0) (.failed σ)) :
     ∃ w, a.Sat w := by
-  obtain ⟨hwf, -, -, -, hmap⟩ := Vc.checkVCAnn_true hchk
+  obtain ⟨hwf, hlen, hblocks, ⟨aB, iA, okReg, hsig, hobjsub⟩, hmap⟩ :=
+    Vc.checkVCAnn_true hchk
   rw [wellFormed] at hwf
   simp only [Bool.and_eq_true] at hwf
   obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphi⟩, hamo⟩, hentry⟩, hgf⟩, hdc⟩, huse⟩ := hwf
   obtain ⟨V, hentV, hhead, hedge, hfacts, hlast⟩ :=
     forwardStructural hone hssa huse hfwd hphi hentry hrun
+  obtain ⟨BA, hBA, hcA⟩ : ∃ B, P.block? aB = some B ∧ B.cmds[iA]? = some (.assert okReg) :=
+    mem_assertSites.mp (by rw [hsig]; exact List.mem_singleton.mpr rfl)
   refine ⟨witness P V σ, ?_, ?_⟩
-  · intro c hc
-    exact DefExt.sat_extend (orderedDefs_witnessDefs hssa huse hphi)
-      (annExpected_robust_or_def hone hssa hfwd hphi hamo hgf hdc huse
-        hentV hhead hedge hfacts hlast)
-      c (Vc.flatten_mem_expected hchk hc)
+  · -- Walk the annotation's buckets: each is a subset of its block generator,
+    -- so the matching per-bucket robustness lemma applies directly.
+    refine DefExt.sat_extend (orderedDefs_witnessDefs hssa huse hphi) ?_
+    intro c hc
+    rw [Vc.AnnVC.flatten, List.mem_append] at hc
+    rcases hc with hc | hc
+    · rw [List.mem_flatten] at hc
+      obtain ⟨L, hL, hcL⟩ := hc
+      rw [List.mem_map] at hL
+      obtain ⟨bk, hbk, rfl⟩ := hL
+      obtain ⟨b, hbidx⟩ := List.mem_iff_getElem?.mp hbk
+      have hblt : b < P.blocks.length := by
+        have := (List.getElem?_eq_some_iff.mp hbidx).1; omega
+      obtain ⟨hcfgsub, B, hB, hcmdssub⟩ :=
+        hblocks bk b (List.mem_zipIdx_iff_getElem?.mpr hbidx)
+      rw [List.mem_append] at hcL
+      rcases hcL with hccfg | hccmds
+      · exact cfg_robust hfwd hamo huse hdc hentV hhead hedge hblt c
+          (hcfgsub c hccfg)
+      · have hcmem := hcmdssub c hccmds
+        rw [List.mem_flatten] at hcmem
+        obtain ⟨L2, hL2, hcL2⟩ := hcmem
+        rw [List.mem_map] at hL2
+        obtain ⟨cmd, hcmdmem, rfl⟩ := hL2
+        obtain ⟨i, hci⟩ := List.mem_iff_getElem?.mp hcmdmem
+        exact cmd_robust_or_def hssa hfwd hphi hamo hgf hdc huse hentV hhead
+          hedge hfacts hB hci c hcL2
+    · exact objective_robust hone hfwd hdc huse hentV hhead hedge hBA hcA hlast
+        c (hobjsub c hc)
   · have hall := DefExt.sat_extend_defs
       (ds := (Vc.expectedMapDefs P).map fun md => (⟨.map, md.1, md.2⟩ : DefExt.Def))
       (orderedDefs_witnessDefs hssa huse hphi)
