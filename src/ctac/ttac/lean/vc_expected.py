@@ -123,9 +123,9 @@ def mk_ite_b(c: Term, t: Term, e: Term) -> Term:
 
 def lower_iexpr(e: ast.Expr, num: Numbering, types: dict[str, Ty]) -> Term:
     if isinstance(e, ast.Num):
-        return ("lit", e.value)
+        return ("litI", e.value)
     if isinstance(e, ast.Var):
-        return ("var", num.int_regs[e.name])
+        return ("varI", num.int_regs[e.name])
     if isinstance(e, ast.BinExpr):
         return (
             _BIN_I[e.op],
@@ -145,7 +145,7 @@ def lower_bexpr(e: ast.Expr, num: Numbering, types: dict[str, Ty]) -> Term:
     if isinstance(e, ast.BoolLit):
         return ("litb", e.value)
     if isinstance(e, ast.Var):
-        return ("var", num.bool_regs[e.name])
+        return ("varB", num.bool_regs[e.name])
     if isinstance(e, ast.UnExpr):
         return mk_not(lower_bexpr(e.operand, num, types))
     if isinstance(e, ast.BinExpr):
@@ -188,15 +188,17 @@ def expected_vc(
         if isinstance(term, ast.Goto):
             edges.append((b, num.block_index[term.target], TRUE))
         elif isinstance(term, ast.IfGoto):
-            cond: Term = ("var", num.bool_regs[term.cond])
+            cond: Term = ("varB", num.bool_regs[term.cond])
             edges.append((b, num.block_index[term.then_target], cond))
             edges.append((b, num.block_index[term.else_target], ("not", cond)))
 
-    def phi_rhs(arms, regs: dict[str, int], mk_ite) -> Term:
-        chain: Term = ("var", regs[arms[-1].value])
+    def phi_rhs(arms, regs: dict[str, int], mk_ite, var_tag: str) -> Term:
+        chain: Term = (var_tag, regs[arms[-1].value])
         for arm in reversed(arms[:-1]):
             chain = mk_ite(
-                guard(num.block_index[arm.label]), ("var", regs[arm.value]), chain
+                guard(num.block_index[arm.label]),
+                (var_tag, regs[arm.value]),
+                chain,
             )
         return chain
 
@@ -208,10 +210,10 @@ def expected_vc(
         for cmd in block.commands:
             if isinstance(cmd, ast.Assign):
                 if types[cmd.target.name] is Ty.INT:
-                    eq: Term = ("eqI", ("var", num.int_regs[cmd.target.name]),
+                    eq: Term = ("eqI", ("varI", num.int_regs[cmd.target.name]),
                                 lower_iexpr(cmd.rhs, num, types))
                 else:
-                    eq = ("eqB", ("var", num.bool_regs[cmd.target.name]),
+                    eq = ("eqB", ("varB", num.bool_regs[cmd.target.name]),
                           lower_bexpr(cmd.rhs, num, types))
                 out.append(mk_imp(g, eq))
             elif isinstance(cmd, ast.Assume):
@@ -221,9 +223,10 @@ def expected_vc(
                 regs = num.int_regs if is_int else num.bool_regs
                 mk_ite = mk_ite_i if is_int else mk_ite_b
                 eq_op = "eqI" if is_int else "eqB"
+                var_tag = "varI" if is_int else "varB"
                 out.append(
-                    (eq_op, ("var", regs[cmd.target.name]),
-                     phi_rhs(cmd.arms, regs, mk_ite))
+                    (eq_op, (var_tag, regs[cmd.target.name]),
+                     phi_rhs(cmd.arms, regs, mk_ite, var_tag))
                 )
                 if len(cmd.arms) >= 2:
                     out.extend(amo_clauses(
@@ -246,7 +249,7 @@ def expected_vc(
     if assert_site is not None:
         a_b, ok_reg = assert_site
         out.append(mk_imp(exit_term,
-                          mk_and2(guard(a_b), mk_not(("var", ok_reg)))))
+                          mk_and2(guard(a_b), mk_not(("varB", ok_reg)))))
         out.append(exit_term)
 
     return out
@@ -277,7 +280,7 @@ def precheck_diff(
     # constraints missing from the smt2 are fine soundness-wise, but a
     # dropped assert usually signals tampering - report it.
     for key in expected_counts:
-        if key == ".lit true":
+        if key == ".litB true":
             continue  # encoder-dropped (folded-away) constraints
         if seen[key] == 0:
             mismatches.append(VcMismatch(kind="missing-assert", detail=key))

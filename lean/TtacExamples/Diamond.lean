@@ -42,21 +42,21 @@ def prog : Program where
   blocks := [
     -- 0: entry
     { cmds := [
-        .havocI 0,
-        .assignB 0 (.le (.lit 0) (.var 0))],
+        .havoc .int 0,
+        .assign .bool 0 (.le (.litI 0) (.var .int 0))],
       term := .ifGoto 0 1 2 },
     -- 1: pos
     { cmds := [
-        .assignI 1 (.add (.var 0) (.lit 1))],
+        .assign .int 1 (.add (.var .int 0) (.litI 1))],
       term := .goto 3 },
     -- 2: neg
     { cmds := [
-        .assignI 2 (.sub (.lit 0) (.var 0))],
+        .assign .int 2 (.sub (.litI 0) (.var .int 0))],
       term := .goto 3 },
     -- 3: join
     { cmds := [
-        .phiI 3 [(1, 1), (2, 2)],
-        .assignB 1 (.le (.lit 0) (.var 3)),
+        .phi .int 3 [(1, 1), (2, 2)],
+        .assign .bool 1 (.le (.litI 0) (.var .int 3)),
         .assert 1],
       term := .halt }]
   entry := 0

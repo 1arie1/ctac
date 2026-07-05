@@ -18,8 +18,10 @@ from .liveness import BlockLiveness
 from .naming import Numbering, ShallowNames
 
 _DEEP = {
-    "lit": ".lit",
-    "var": ".var",
+    "litI": ".litI",
+    "litB": ".litB",
+    "varI": ".var .int",
+    "varB": ".var .bool",
     "+": ".add",
     "-": ".sub",
     "*": ".mul",
@@ -32,12 +34,12 @@ _DEEP = {
     "and": ".and",
     "or": ".or",
     "ite": ".ite",
-    "assignI": ".assignI",
-    "assignB": ".assignB",
-    "havocI": ".havocI",
-    "havocB": ".havocB",
-    "phiI": ".phiI",
-    "phiB": ".phiB",
+    "assignI": ".assign .int",
+    "assignB": ".assign .bool",
+    "havocI": ".havoc .int",
+    "havocB": ".havoc .bool",
+    "phiI": ".phi .int",
+    "phiB": ".phi .bool",
     "assume": ".assume",
     "assert": ".assert",
     "halt": ".halt",
@@ -82,9 +84,9 @@ def _nat_lit(n: int) -> str:
 
 def deep_iexpr(e: ast.Expr, num: Numbering, types: dict[str, Ty]) -> str:
     if isinstance(e, ast.Num):
-        return f"({_DEEP['lit']} {_nat_lit(e.value)})"
+        return f"({_DEEP['litI']} {_nat_lit(e.value)})"
     if isinstance(e, ast.Var):
-        return f"({_DEEP['var']} {num.int_regs[e.name]})"
+        return f"({_DEEP['varI']} {num.int_regs[e.name]})"
     if isinstance(e, ast.BinExpr):
         lhs = deep_iexpr(e.lhs, num, types)
         rhs = deep_iexpr(e.rhs, num, types)
@@ -99,9 +101,9 @@ def deep_iexpr(e: ast.Expr, num: Numbering, types: dict[str, Ty]) -> str:
 
 def deep_bexpr(e: ast.Expr, num: Numbering, types: dict[str, Ty]) -> str:
     if isinstance(e, ast.BoolLit):
-        return f"({_DEEP['lit']} {'true' if e.value else 'false'})"
+        return f"({_DEEP['litB']} {'true' if e.value else 'false'})"
     if isinstance(e, ast.Var):
-        return f"({_DEEP['var']} {num.bool_regs[e.name]})"
+        return f"({_DEEP['varB']} {num.bool_regs[e.name]})"
     if isinstance(e, ast.UnExpr):
         return f"({_DEEP['not']} {deep_bexpr(e.operand, num, types)})"
     if isinstance(e, ast.BinExpr):

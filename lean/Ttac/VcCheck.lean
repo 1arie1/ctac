@@ -9,6 +9,10 @@ encoding is complete) plus membership of every VC constraint in
 `Vc.expected P`. All checks are `Bool`-valued so a per-instance
 `theorem ... := by native_decide` discharges them.
 
+Definition sites and uses are checked uniformly over `(sort, register)`
+pairs via the effect table `Cmd.def?` and the collector `Exp.vars` -
+no per-sort checker duplication.
+
 The dominator table is computed by ordinary *unverified* code; the
 soundness proof consumes only the two closure properties re-checked by
 `domClosedOK` (a wrong table either fails the check - rejection - or
@@ -26,30 +30,11 @@ def posLt (p q : Pos) : Bool :=
 
 /-! ## Definition sites -/
 
-def cmdIntDef : Cmd → Option Nat
-  | .assignI x _ => some x
-  | .havocI x => some x
-  | .phiI x _ => some x
-  | _ => none
-
-def cmdBoolDef : Cmd → Option Nat
-  | .assignB c _ => some c
-  | .havocB c => some c
-  | .phiB c _ => some c
-  | _ => none
-
-/-- Positions of every definition of register `x` under the def-selector
-`f` (`cmdIntDef` or `cmdBoolDef`). -/
-def defPositions (P : Program) (f : Cmd → Option Nat) (x : Nat) : List Pos :=
+/-- Positions of every definition of register `tx = (sort, index)`. -/
+def defPositions (P : Program) (tx : Ty × Nat) : List Pos :=
   (P.blocks.zipIdx.map fun (B, b) =>
     B.cmds.zipIdx.filterMap fun (c, i) =>
-      if f c = some x then some ((b, i) : Pos) else none).flatten
-
-def intDefPositions (P : Program) (x : Nat) : List Pos :=
-  defPositions P cmdIntDef x
-
-def boolDefPositions (P : Program) (x : Nat) : List Pos :=
-  defPositions P cmdBoolDef x
+      if c.def? = some tx then some ((b, i) : Pos) else none).flatten
 
 /-! ## CFG shape -/
 
@@ -79,14 +64,11 @@ def singleAssertOK (P : Program) : Bool :=
         | none => false
 
 def cmdSsaOK (P : Program) (b i : Nat) (c : Cmd) : Bool :=
-  (match cmdIntDef c with
-    | some x => (intDefPositions P x).all fun q => decide (q = ((b, i) : Pos))
-    | none => true)
-  && (match cmdBoolDef c with
-    | some x => (boolDefPositions P x).all fun q => decide (q = ((b, i) : Pos))
-    | none => true)
+  match c.def? with
+  | some tx => (defPositions P tx).all fun q => decide (q = ((b, i) : Pos))
+  | none => true
 
-/-- W2: pure SSA - each register (per namespace) defined at most once
+/-- W2: pure SSA - each register (per sort) defined at most once
 program-wide, checked as: every def site is the *only* member of its
 register's def-position list. Rejects DSA-dynamic variables. -/
 def ssaOK (P : Program) : Bool :=
@@ -111,7 +93,7 @@ def phiOK (P : Program) : Bool :=
   P.blocks.zipIdx.all fun (B, b) =>
     B.cmds.all fun c =>
       match c with
-      | .phiI _ arms | .phiB _ arms => phiArmsOK P b arms
+      | .phi _ _ arms => phiArmsOK P b arms
       | _ => true
 
 /-- W5: the critical-edge side condition that justifies the at-most-one
@@ -165,28 +147,23 @@ predecessor block and dominate it. -/
 def armUseOK (dom : Array (List Nat)) (defs : List Pos) (p : Nat) : Bool :=
   defs.all fun (d, _) => d ≤ p && (dom.getD p []).contains d
 
-def intUsesOK (P : Program) (dom : Array (List Nat)) (b i : Nat)
-    (rs : List Nat) : Bool :=
-  rs.all fun r => useOK dom (intDefPositions P r) b i
-
-def boolUsesOK (P : Program) (dom : Array (List Nat)) (b i : Nat)
-    (rs : List Nat) : Bool :=
-  rs.all fun r => useOK dom (boolDefPositions P r) b i
+/-- Every register an expression reads is dominated at `(b, i)` - one
+pass over the `(sort, register)` inventory, no per-sort split. -/
+def expUsesOK (P : Program) (dom : Array (List Nat)) (b i : Nat)
+    {t : Ty} (e : Exp t) : Bool :=
+  e.vars.all fun tx => useOK dom (defPositions P tx) b i
 
 def cmdUsesOK (P : Program) (dom : Array (List Nat)) (b i : Nat) : Cmd → Bool
-  | .assignI _ e => intUsesOK P dom b i e.intVars && boolUsesOK P dom b i e.boolVars
-  | .assignB _ e => intUsesOK P dom b i e.intVars && boolUsesOK P dom b i e.boolVars
-  | .assume φ => intUsesOK P dom b i φ.intVars && boolUsesOK P dom b i φ.boolVars
-  | .assert r => boolUsesOK P dom b i [r]
-  | .havocI _ | .havocB _ => true
-  | .phiI _ arms =>
-      arms.all fun (p, src) => armUseOK dom (intDefPositions P src) p
-  | .phiB _ arms =>
-      arms.all fun (p, src) => armUseOK dom (boolDefPositions P src) p
+  | .assign _ _ e => expUsesOK P dom b i e
+  | .assume φ => expUsesOK P dom b i φ
+  | .assert r => useOK dom (defPositions P (.bool, r)) b i
+  | .havoc _ _ => true
+  | .phi t _ arms =>
+      arms.all fun (p, src) => armUseOK dom (defPositions P (t, src)) p
 
 def termUsesOK (P : Program) (dom : Array (List Nat)) (b : Nat) (B : Block) : Bool :=
   match B.term with
-  | .ifGoto c _ _ => boolUsesOK P dom b B.cmds.length [c]
+  | .ifGoto c _ _ => useOK dom (defPositions P (.bool, c)) b B.cmds.length
   | _ => true
 
 def usesOK (P : Program) : Bool :=
@@ -206,8 +183,7 @@ programs cannot express them, but the checker quantifies over arbitrary
 deep programs, and a guard-reading expression would let the program
 observe the witness's guard assignment. -/
 def cmdGuardFree : Cmd → Bool
-  | .assignI _ e => e.blkVars.isEmpty
-  | .assignB _ e => e.blkVars.isEmpty
+  | .assign _ _ e => e.blkVars.isEmpty
   | .assume φ => φ.blkVars.isEmpty
   | _ => true
 

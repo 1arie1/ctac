@@ -21,28 +21,28 @@ open Ttac
 
 def vc : List BExp := [
   -- (assert (= c (<= 0 x)))
-  .eqB (.var 0) (.le (.lit 0) (.var 0)),
+  .eqB (.var .bool 0) (.le (.litI 0) (.var .int 0)),
   -- (assert (=> BLK_pos (= y1 (+ x 1))))
-  .imp (.blk 1) (.eqI (.var 1) (.add (.var 0) (.lit 1))),
+  .imp (.blk 1) (.eqI (.var .int 1) (.add (.var .int 0) (.litI 1))),
   -- (assert (=> BLK_neg (= y2 (- 0 x))))
-  .imp (.blk 2) (.eqI (.var 2) (.sub (.lit 0) (.var 0))),
+  .imp (.blk 2) (.eqI (.var .int 2) (.sub (.litI 0) (.var .int 0))),
   -- (assert (= y (ite BLK_pos y1 y2)))
-  .eqI (.var 3) (.ite (.blk 1) (.var 1) (.var 2)),
+  .eqI (.var .int 3) (.ite (.blk 1) (.var .int 1) (.var .int 2)),
   -- (assert (or (not BLK_pos) (not BLK_neg)))
   .or (.not (.blk 1)) (.not (.blk 2)),
   -- (assert (=> BLK_join (= ok (<= 0 y))))
-  .imp (.blk 3) (.eqB (.var 1) (.le (.lit 0) (.var 3))),
+  .imp (.blk 3) (.eqB (.var .bool 1) (.le (.litI 0) (.var .int 3))),
   -- (assert (=> BLK_pos c))
-  .imp (.blk 1) (.var 0),
+  .imp (.blk 1) (.var .bool 0),
   -- (assert (=> BLK_neg (not c)))
-  .imp (.blk 2) (.not (.var 0)),
+  .imp (.blk 2) (.not (.var .bool 0)),
   -- (assert (=> BLK_join (or BLK_pos BLK_neg)))  [emitted twice]
   .imp (.blk 3) (.or (.blk 1) (.blk 2)),
   .imp (.blk 3) (.or (.blk 1) (.blk 2)),
   -- (assert (=> BLK_join (or (not BLK_pos) (not BLK_neg))))
   .imp (.blk 3) (.or (.not (.blk 1)) (.not (.blk 2))),
   -- (assert (=> BLK_EXIT (and BLK_join (not ok))))
-  .imp (.blk 4) (.and (.blk 3) (.not (.var 1))),
+  .imp (.blk 4) (.and (.blk 3) (.not (.var .bool 1))),
   -- (assert BLK_EXIT)
   .blk 4]
 
@@ -56,7 +56,8 @@ theorem vc_implies_safe : Vc.Unsat vc → prog.Safe :=
 /-- A tampered constraint (flipped comparison) must be rejected. -/
 example :
     checkVC prog
-      [.imp (.blk 3) (.eqB (.var 1) (.lt (.lit 0) (.var 3)))] = false := by
+      [.imp (.blk 3) (.eqB (.var .bool 1) (.lt (.litI 0) (.var .int 3)))]
+      = false := by
   native_decide
 
 end TtacExamples.Diamond

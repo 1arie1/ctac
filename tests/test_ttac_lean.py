@@ -179,8 +179,8 @@ def test_generate_raises_with_all_errors():
 def test_deep_text_pins():
     res = _gen(fx.SCALAR_DIAMOND, name="Diamond")
     assert "def prog : Program where" in res.deep_text
-    assert ".phiI 3 [(1, 1), (2, 2)]" in res.deep_text
-    assert ".assignB 0 (.le (.lit 0) (.var 0))" in res.deep_text
+    assert ".phi .int 3 [(1, 1), (2, 2)]" in res.deep_text
+    assert ".assign .bool 0 (.le (.litI 0) (.var .int 0))" in res.deep_text
     assert "term := .ifGoto 0 1 2" in res.deep_text
     assert "int registers:  0 = x, 1 = y1, 2 = y2, 3 = y" in res.deep_text
     assert "namespace Diamond.Deep" in res.deep_text
@@ -214,7 +214,7 @@ entry:
     res = _gen(src)
     assert "Int.ediv a 2" in res.shallow_text
     assert "(!(decide (a ≤ 0))) = true →" in res.shallow_text
-    assert ".div (.var 0) (.lit 2)" in res.deep_text
+    assert ".div (.var .int 0) (.litI 2)" in res.deep_text
 
 
 def test_assert_parenthesizes_implication_continuation():

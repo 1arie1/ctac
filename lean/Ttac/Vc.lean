@@ -16,8 +16,18 @@ mirror the Python constant folding (`smt/util.py`, `smt/vc/terms.py`)
 exactly - including quirks like keep-first dedup and the *unfolded*
 at-most-one clauses - so real vcgen output matches structurally. A
 constraint the encoder folds away entirely is represented as
-`.lit true` and simply kept in the list (never matched, trivially
+`.litB true` and simply kept in the list (never matched, trivially
 satisfied).
+
+The per-command constraint shape is table-driven: `Cmd.factB` supplies
+the boolean fact and the constraint is `guard ⇒ lower(fact)`; only phi
+(whose constraint is predecessor-indexed) is special-cased. Commands
+without a bool-expressible fact contribute nothing.
+
+Folds are written with named binders and term-level matches (never
+equation-style) so `unfold f; split` works in the characterization
+lemmas — equation-style non-recursive defs wrap a vacuous outer match
+that blocks `split`.
 
 Soundness (`VcSound.lean`) only needs the subset direction: every
 member of `expected` is satisfied by the witness built from a failing
@@ -35,7 +45,7 @@ namespace Vc
 `true` (the Python encoder never declares `BLK_entry`); every other
 block `b` is the dedicated guard atom `.blk b`. -/
 def guardOf (P : Program) (b : Nat) : BExp :=
-  if b = P.entry then .lit true else .blk b
+  if b = P.entry then .litB true else .blk b
 
 /-- The synthetic `BLK_EXIT`: guard index one past the last block. -/
 def exitVar (P : Program) : BExp :=
@@ -44,33 +54,35 @@ def exitVar (P : Program) : BExp :=
 /-! ## Fold helpers - exact mirrors of the Python term constructors -/
 
 /-- `implies`: `(=> true φ) → φ`; `(=> g true) → true` (a literal-`true`
-fact is dropped by the encoder; we keep it as `.lit true`). -/
-def mkImp : BExp → BExp → BExp
-  | .lit true, φ => φ
-  | _, .lit true => .lit true
-  | g, φ => .imp g φ
+fact is dropped by the encoder; we keep it as `.litB true`). -/
+def mkImp (g φ : BExp) : BExp :=
+  match g, φ with
+  | .litB true, φ => φ
+  | _, .litB true => .litB true
+  | g, φ => .bin .imp g φ
 
 /-- `not_`: folds literals only. -/
-def mkNot : BExp → BExp
-  | .lit true => .lit false
-  | .lit false => .lit true
-  | a => .not a
+def mkNot (a : BExp) : BExp :=
+  match a with
+  | .litB true => .litB false
+  | .litB false => .litB true
+  | a => .un .not a
 
 /-- Binary `and_`: drop `true`, `false` dominates, dedup. -/
 def mkAnd2 (a b : BExp) : BExp :=
-  if a = .lit true then b
-  else if b = .lit true then a
-  else if a = .lit false ∨ b = .lit false then .lit false
+  if a = .litB true then b
+  else if b = .litB true then a
+  else if a = .litB false ∨ b = .litB false then .litB false
   else if a = b then a
-  else .and a b
+  else .bin .and a b
 
 /-- Binary `or_`: drop `false`, `true` dominates, dedup. -/
 def mkOr2 (a b : BExp) : BExp :=
-  if a = .lit false then b
-  else if b = .lit false then a
-  else if a = .lit true ∨ b = .lit true then .lit true
+  if a = .litB false then b
+  else if b = .litB false then a
+  else if a = .litB true ∨ b = .litB true then .litB true
   else if a = b then a
-  else .or a b
+  else .bin .or a b
 
 /-- Keep-first dedup (Python `seen`-set semantics). Filtering after the
 recursive call keeps the recursion structural; the result is the same. -/
@@ -82,16 +94,16 @@ def dedup1 : List BExp → List BExp
 nesting the transpiler uses for n-ary SMT `or`. -/
 def orChain : BExp → List BExp → BExp
   | a, [] => a
-  | a, b :: r => .or a (orChain b r)
+  | a, b :: r => .bin .or a (orChain b r)
 
 /-- `util.or_terms`: keep-first dedup, `true` short-circuit, drop
 `false`, singleton collapse. -/
 def mkOr (l : List BExp) : BExp :=
   let u := dedup1 l
-  if BExp.lit true ∈ u then .lit true
+  if Exp.litB true ∈ u then .litB true
   else
-    match u.filter (· ≠ .lit false) with
-    | [] => .lit false
+    match u.filter (· ≠ .litB false) with
+    | [] => .litB false
     | [d] => d
     | d :: ds => orChain d ds
 
@@ -102,74 +114,77 @@ def pairsLt : List BExp → List (BExp × BExp)
 
 /-- `util.at_most_one_terms`: pairwise `(or (not gᵢ) (not gⱼ))` over the
 dedup'd, `false`-filtered guard list. NO folding inside - when the entry
-guard (`.lit true`) is among the guards, `(or (not true) (not g))`
+guard (`.litB true`) is among the guards, `(or (not true) (not g))`
 appears verbatim, matching the Python output. -/
 def amoClauses (l : List BExp) : List BExp :=
-  (pairsLt (dedup1 (l.filter (· ≠ .lit false)))).map
-    fun (a, b) => .or (.not a) (.not b)
+  (pairsLt (dedup1 (l.filter (· ≠ .litB false)))).map
+    fun (a, b) => .bin .or (.un .not a) (.un .not b)
 
-/-- `terms.ite` on int results: identical arms collapse, literal guards
-select. -/
-def mkIteI (c : BExp) (t e : IExp) : IExp :=
-  if t = e then t
-  else match c with
-    | .lit true => t
-    | .lit false => e
-    | c => .ite c t e
+/-- `terms.ite`, polymorphic in the result sort: identical arms
+collapse, literal guards select, and the bool-literal-arm folds apply
+exactly at `t = .bool` (index unification prunes those arms at other
+sorts — this single definition is the v1 `mkIteI` at `.int` and
+`mkIteB` at `.bool`). -/
+def mkIte {t : Ty} (c : BExp) (th el : Exp t) : Exp t :=
+  if th = el then th
+  else match c, th, el with
+    | .litB true, th, _ => th
+    | .litB false, _, el => el
+    | c, .litB true, .litB false => c
+    | c, .litB false, .litB true => mkNot c
+    | c, th, el => .ite c th el
 
-/-- `terms.ite` on bool results: identical arms, literal guards, and the
-bool-literal-arm folds. -/
-def mkIteB (c t e : BExp) : BExp :=
-  if t = e then t
-  else match c, t, e with
-    | .lit true, t, _ => t
-    | .lit false, _, e => e
-    | c, .lit true, .lit false => c
-    | c, .lit false, .lit true => mkNot c
-    | c, t, e => .ite c t e
+abbrev mkIteI (c : BExp) (t e : IExp) : IExp := mkIte c t e
+abbrev mkIteB (c t e : BExp) : BExp := mkIte c t e
 
 /-! ## Lowering mirror
 
-The Python lowerer routes program `not/and/or/ite` through the folding
-constructors, so the term printed for a program expression is the
-*folded* form. `lowerI`/`lowerB` reproduce it; arithmetic and
-comparisons pass through untouched. -/
+The Python lowerer routes program `not/and/or/ite` (and the transpiler
+routes `=>`) through the folding constructors, so the term printed for
+a program expression is the *folded* form. `lower` reproduces it;
+arithmetic, comparisons, and map operators pass through untouched. -/
 
-mutual
-  def lowerI : IExp → IExp
-    | .lit n => .lit n
-    | .var x => .var x
-    | .add a b => .add (lowerI a) (lowerI b)
-    | .sub a b => .sub (lowerI a) (lowerI b)
-    | .mul a b => .mul (lowerI a) (lowerI b)
-    | .div a b => .div (lowerI a) (lowerI b)
-    | .ite c t e => mkIteI (lowerB c) (lowerI t) (lowerI e)
+/-- Folding application of a unary operator (the operators the Python
+side folds route through their `mk*`; the rest apply bare). -/
+def unFold : {a c : Ty} → UnOp a c → Exp a → Exp c
+  | _, _, .not, e => mkNot e
 
-  def lowerB : BExp → BExp
-    | .lit b => .lit b
-    | .var c => .var c
-    | .le a b => .le (lowerI a) (lowerI b)
-    | .lt a b => .lt (lowerI a) (lowerI b)
-    | .eqI a b => .eqI (lowerI a) (lowerI b)
-    | .eqB a b => .eqB (lowerB a) (lowerB b)
-    | .not a => mkNot (lowerB a)
-    | .and a b => mkAnd2 (lowerB a) (lowerB b)
-    | .or a b => mkOr2 (lowerB a) (lowerB b)
-    | .ite c t e => mkIteB (lowerB c) (lowerB t) (lowerB e)
-    | .imp a b => mkImp (lowerB a) (lowerB b)
-    | .blk b => .blk b
-end
+/-- Folding application of a binary operator. -/
+def binFold : {a b c : Ty} → BinOp a b c → Exp a → Exp b → Exp c
+  | _, _, _, .and, l, r => mkAnd2 l r
+  | _, _, _, .or, l, r => mkOr2 l r
+  | _, _, _, .imp, l, r => mkImp l r
+  | _, _, _, .add, l, r => .bin .add l r
+  | _, _, _, .sub, l, r => .bin .sub l r
+  | _, _, _, .mul, l, r => .bin .mul l r
+  | _, _, _, .div, l, r => .bin .div l r
+  | _, _, _, .le, l, r => .bin .le l r
+  | _, _, _, .lt, l, r => .bin .lt l r
+  | _, _, _, .eqI, l, r => .bin .eqI l r
+  | _, _, _, .eqB, l, r => .bin .eqB l r
+  | _, _, _, .select, l, r => .bin .select l r
+
+def lower : {t : Ty} → Exp t → Exp t
+  | _, .litI n => .litI n
+  | _, .litB b => .litB b
+  | _, .var t x => .var t x
+  | _, .blk b => .blk b
+  | _, .un op a => unFold op (lower a)
+  | _, .bin op l r => binFold op (lower l) (lower r)
+  | _, .tern op e₁ e₂ e₃ => .tern op (lower e₁) (lower e₂) (lower e₃)
+  | _, .ite c th el => mkIte (lower c) (lower th) (lower el)
 
 /-! ## CFG edges -/
 
 /-- Out-edges of block `p` in emission order: goto contributes cond
-`.lit true`; ifGoto contributes the then-edge on `.var c` before the
-else-edge on `.not (.var c)`. -/
+`.litB true`; ifGoto contributes the then-edge on `.var .bool c` before
+the else-edge on its negation. -/
 def outEdges (p : Nat) (B : Block) : List (Nat × Nat × BExp) :=
   match B.term with
   | .halt => []
-  | .goto t => [(p, t, .lit true)]
-  | .ifGoto c t e => [(p, t, .var c), (p, e, .not (.var c))]
+  | .goto t => [(p, t, .litB true)]
+  | .ifGoto c t e =>
+      [(p, t, .var .bool c), (p, e, .un .not (.var .bool c))]
 
 def allEdges (P : Program) : List (Nat × Nat × BExp) :=
   (P.blocks.zipIdx.map fun (B, p) => outEdges p B).flatten
@@ -180,47 +195,45 @@ def edgesTo (P : Program) (S : Nat) : List (Nat × BExp) :=
 
 /-! ## Phi right-hand sides
 
-Shared between the phi constraint and the replay witness, so the
-satisfaction proof for phi equations is by construction. The ITE chain
-selects on the *predecessor block guards* in arm order; the last arm is
-the else-tail. -/
+Shared between the phi constraint and the definitional-extension
+witness, so the satisfaction proof for phi equations is by
+construction. The ITE chain selects on the *predecessor block guards*
+in arm order; the last arm is the else-tail. -/
 
-def phiChainI (P : Program) : (Nat × Nat) → List (Nat × Nat) → IExp
-  | (_, s), [] => .var s
-  | (p, s), a :: r => mkIteI (guardOf P p) (.var s) (phiChainI P a r)
+def phiChain (P : Program) (t : Ty) : (Nat × Nat) → List (Nat × Nat) → Exp t
+  | (_, s), [] => .var t s
+  | (p, s), a :: r => mkIte (guardOf P p) (.var t s) (phiChain P t a r)
 
-def phiRhsI (P : Program) (arms : PhiArms) : IExp :=
+/-- The empty-arms placeholder is unreachable under `phiOK` (arms are
+nonempty); any term works. -/
+def phiRhs (P : Program) (t : Ty) (arms : PhiArms) : Exp t :=
   match arms with
-  | [] => .lit 0
-  | a :: r => phiChainI P a r
-
-def phiChainB (P : Program) : (Nat × Nat) → List (Nat × Nat) → BExp
-  | (_, s), [] => .var s
-  | (p, s), a :: r => mkIteB (guardOf P p) (.var s) (phiChainB P a r)
-
-def phiRhsB (P : Program) (arms : PhiArms) : BExp :=
-  match arms with
-  | [] => .lit false
-  | a :: r => phiChainB P a r
+  | [] => .var t 0
+  | a :: r => phiChain P t a r
 
 /-! ## The expected constraint set -/
 
+/-- The constraint a command's boolean fact contributes:
+`guard ⇒ lower(fact)`, or nothing. Generic over the effect table - a
+new local instruction gets its constraint (and its slice of the
+soundness proof) from its `factB` row. -/
+def factConstraints (P : Program) (b : Nat) (c : Cmd) : List BExp :=
+  match c.factB with
+  | some f => [mkImp (guardOf P b) (lower f)]
+  | none => []
+
+/-- Per-command constraints: phi contributes its (unguarded) defining
+equation - at sorts that have one - plus the at-most-one clauses over
+its arm guards; everything else is table-driven via `factConstraints`. -/
 def cmdConstraints (P : Program) (b : Nat) : Cmd → List BExp
-  | .assignI x e => [mkImp (guardOf P b) (.eqI (.var x) (lowerI e))]
-  | .assignB c e => [mkImp (guardOf P b) (.eqB (.var c) (lowerB e))]
-  | .havocI _ | .havocB _ => []
-  | .assume φ => [mkImp (guardOf P b) (lowerB φ)]
-  | .assert _ => []
-  | .phiI x arms =>
-      BExp.eqI (.var x) (phiRhsI P arms)
-        :: (if 2 ≤ arms.length then
-              amoClauses (arms.map fun (p, _) => guardOf P p)
-            else [])
-  | .phiB c arms =>
-      BExp.eqB (.var c) (phiRhsB P arms)
-        :: (if 2 ≤ arms.length then
-              amoClauses (arms.map fun (p, _) => guardOf P p)
-            else [])
+  | .phi t x arms =>
+      (match eqConstraint? t x (phiRhs P t arms) with
+        | some eq => [eq]
+        | none => [])
+      ++ (if 2 ≤ arms.length then
+            amoClauses (arms.map fun (p, _) => guardOf P p)
+          else [])
+  | c => factConstraints P b c
 
 def cfgConstraints (P : Program) : List BExp :=
   ((List.range P.blocks.length).map fun S =>
@@ -243,7 +256,7 @@ def assertSites (P : Program) : List (Nat × Nat × Nat) :=
       | _ => none).flatten
 
 def objective (P : Program) (aB okReg : Nat) : List BExp :=
-  [ mkImp (exitVar P) (mkAnd2 (guardOf P aB) (mkNot (.var okReg))),
+  [ mkImp (exitVar P) (mkAnd2 (guardOf P aB) (mkNot (.var .bool okReg))),
     exitVar P ]
 
 /-- Every constraint the bwd0 encoder is entitled to emit for `P`. -/
@@ -257,7 +270,7 @@ def expected (P : Program) : List BExp :=
 
 /-! ## Satisfaction -/
 
-def Sat (w : State) (vc : List BExp) : Prop := ∀ c ∈ vc, evalB w c = true
+def Sat (w : State) (vc : List BExp) : Prop := ∀ c ∈ vc, c.eval w = true
 
 def Unsat (vc : List BExp) : Prop := ¬∃ w, Sat w vc
 

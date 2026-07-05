@@ -4,8 +4,9 @@ import Ttac.Vc
 # Evaluation lemmas for the VC infrastructure
 
 Semantic characterizations of the fold helpers - after these, no proof
-ever needs to look inside `mkImp`/`mkOr`/... again. (The congruence
-lemma lives below, in `Ttac.Vars`.)
+ever needs to look inside `mkImp`/`mkOr`/... again. One lemma per fold;
+the operator-fold dispatchers (`unFold`/`binFold`) get one lemma each by
+a `cases op` sweep, so a new operator costs one automatic case here.
 -/
 
 namespace Ttac
@@ -14,49 +15,49 @@ namespace Vc
 
 /-! ## Fold-evaluation characterizations -/
 
-@[simp] theorem evalB_mkImp (s : State) (g φ : BExp) :
-    evalB s (mkImp g φ) = (!evalB s g || evalB s φ) := by
+@[simp] theorem eval_mkImp (s : State) (g φ : BExp) :
+    (mkImp g φ).eval s = (!g.eval s || φ.eval s) := by
   unfold mkImp
-  split <;> simp [evalB]
+  split <;> simp [Exp.eval, BinOp.denote]
 
-@[simp] theorem evalB_mkNot (s : State) (a : BExp) :
-    evalB s (mkNot a) = !evalB s a := by
+@[simp] theorem eval_mkNot (s : State) (a : BExp) :
+    (mkNot a).eval s = !a.eval s := by
   unfold mkNot
-  split <;> simp [evalB]
+  split <;> simp [Exp.eval, UnOp.denote]
 
-@[simp] theorem evalB_mkAnd2 (s : State) (a b : BExp) :
-    evalB s (mkAnd2 a b) = (evalB s a && evalB s b) := by
+@[simp] theorem eval_mkAnd2 (s : State) (a b : BExp) :
+    (mkAnd2 a b).eval s = (a.eval s && b.eval s) := by
   unfold mkAnd2
   split
-  · simp_all [evalB]
+  · simp_all [Exp.eval]
   · split
-    · simp_all [evalB]
+    · simp_all [Exp.eval]
     · split
       · rename_i h
-        rcases h with h | h <;> simp_all [evalB]
+        rcases h with h | h <;> simp_all [Exp.eval]
       · split
         · simp_all
-        · simp [evalB]
+        · simp [Exp.eval, BinOp.denote]
 
-@[simp] theorem evalB_mkOr2 (s : State) (a b : BExp) :
-    evalB s (mkOr2 a b) = (evalB s a || evalB s b) := by
+@[simp] theorem eval_mkOr2 (s : State) (a b : BExp) :
+    (mkOr2 a b).eval s = (a.eval s || b.eval s) := by
   unfold mkOr2
   split
-  · simp_all [evalB]
+  · simp_all [Exp.eval]
   · split
-    · simp_all [evalB]
+    · simp_all [Exp.eval]
     · split
       · rename_i h
-        rcases h with h | h <;> simp_all [evalB]
+        rcases h with h | h <;> simp_all [Exp.eval]
       · split
         · simp_all
-        · simp [evalB]
+        · simp [Exp.eval, BinOp.denote]
 
-theorem evalB_orChain (s : State) (a : BExp) (l : List BExp) :
-    evalB s (orChain a l) = (evalB s a || l.any (evalB s ·)) := by
+theorem eval_orChain (s : State) (a : BExp) (l : List BExp) :
+    (orChain a l).eval s = (a.eval s || l.any (Exp.eval s ·)) := by
   induction l generalizing a with
   | nil => simp [orChain]
-  | cons b r ih => simp [orChain, evalB, ih]
+  | cons b r ih => simp [orChain, Exp.eval, BinOp.denote, ih]
 
 theorem mem_dedup1 {a : BExp} {l : List BExp} : a ∈ dedup1 l ↔ a ∈ l := by
   induction l with
@@ -86,26 +87,26 @@ theorem any_dedup1 (p : BExp → Bool) (l : List BExp) :
       have := List.any_eq_true.mpr ⟨a, mem_dedup1.mp ha, hp⟩
       simp [hl] at this
 
-theorem evalB_mkOr (s : State) (l : List BExp) :
-    evalB s (mkOr l) = l.any (evalB s ·) := by
+theorem eval_mkOr (s : State) (l : List BExp) :
+    (mkOr l).eval s = l.any (Exp.eval s ·) := by
   simp only [mkOr]
   split
   · rename_i h
-    have : (BExp.lit true) ∈ l := mem_dedup1.mp h
-    simp only [evalB]
+    have : (Exp.litB true) ∈ l := mem_dedup1.mp h
+    simp only [Exp.eval]
     symm
     simp only [List.any_eq_true]
     exact ⟨_, this, rfl⟩
   · rename_i hT
     have hfilter :
-        ((dedup1 l).filter (· ≠ BExp.lit false)).any (evalB s ·)
-          = l.any (evalB s ·) := by
-      cases hl : l.any (evalB s ·) with
+        ((dedup1 l).filter (· ≠ Exp.litB false)).any (Exp.eval s ·)
+          = l.any (Exp.eval s ·) := by
+      cases hl : l.any (Exp.eval s ·) with
       | true =>
           obtain ⟨a, ha, hp⟩ := List.any_eq_true.mp hl
           refine List.any_eq_true.mpr
             ⟨a, List.mem_filter.mpr ⟨mem_dedup1.mpr ha, ?_⟩, hp⟩
-          exact decide_eq_true fun h => by subst h; simp [evalB] at hp
+          exact decide_eq_true fun h => by subst h; simp [Exp.eval] at hp
       | false =>
           by_contra hne
           simp only [Bool.not_eq_false, List.any_eq_true, List.mem_filter,
@@ -117,12 +118,12 @@ theorem evalB_mkOr (s : State) (l : List BExp) :
     split
     · rename_i hnil
       rw [← hfilter, hnil]
-      simp [evalB]
+      simp [Exp.eval]
     · rename_i d hone
       rw [← hfilter, hone]
       simp [List.any]
     · rename_i d ds hcons
-      rw [← hfilter, hcons, evalB_orChain]
+      rw [← hfilter, hcons, eval_orChain]
       simp [List.any_cons]
 
 theorem mem_pairsLt {p : BExp × BExp} {l : List BExp} :
@@ -160,7 +161,8 @@ theorem pairsLt_ne {l : List BExp} (hnd : l.Nodup) {p : BExp × BExp}
       · exact ih hnd' hp'
 
 theorem mem_amoClauses {cl : BExp} {l : List BExp} (h : cl ∈ amoClauses l) :
-    ∃ a b, a ∈ l ∧ b ∈ l ∧ a ≠ b ∧ cl = .or (.not a) (.not b) := by
+    ∃ a b, a ∈ l ∧ b ∈ l ∧ a ≠ b
+      ∧ cl = .bin .or (.un .not a) (.un .not b) := by
   simp only [amoClauses, List.mem_map] at h
   obtain ⟨⟨a, b⟩, hp, rfl⟩ := h
   have hne := pairsLt_ne (dedup1_nodup _) hp
@@ -168,65 +170,53 @@ theorem mem_amoClauses {cl : BExp} {l : List BExp} (h : cl ∈ amoClauses l) :
   exact ⟨a, b, (List.mem_filter.mp (mem_dedup1.mp h1)).1,
     (List.mem_filter.mp (mem_dedup1.mp h2)).1, hne, rfl⟩
 
-@[simp] theorem evalI_mkIteI (s : State) (c : BExp) (t e : IExp) :
-    evalI s (mkIteI c t e) = if evalB s c then evalI s t else evalI s e := by
-  by_cases ht : t = e
-  · subst ht; simp [mkIteI]
-  · unfold mkIteI
-    rw [if_neg ht]
+@[simp] theorem eval_mkIte (s : State) {t : Ty} (c : BExp) (th el : Exp t) :
+    (mkIte c th el).eval s
+      = if c.eval s then th.eval s else el.eval s := by
+  by_cases hte : th = el
+  · subst hte; simp [mkIte]
+  · unfold mkIte
+    rw [if_neg hte]
     split
-    · simp [evalB]
-    · simp [evalB]
-    · simp [evalI]
-
-@[simp] theorem evalB_mkIteB (s : State) (c t e : BExp) :
-    evalB s (mkIteB c t e) = if evalB s c then evalB s t else evalB s e := by
-  by_cases ht : t = e
-  · subst ht; simp [mkIteB]
-  · unfold mkIteB
-    rw [if_neg ht]
-    split
-    · simp [evalB]
-    · simp [evalB]
-    · simp only [evalB]
-      cases hc : evalB s c <;> simp
-    · simp only [evalB_mkNot, evalB]
-      cases hc : evalB s c <;> simp
-    · simp [evalB]
+    · simp [Exp.eval]
+    · simp [Exp.eval]
+    · simp only [Exp.eval]
+      cases hc : c.eval s <;> simp
+    · simp only [eval_mkNot, Exp.eval]
+      cases hc : c.eval s <;> simp
+    · simp [Exp.eval]
 
 /-! ## The lowering mirror is semantics-preserving -/
 
-mutual
-  theorem evalI_lowerI (s : State) : (e : IExp) → evalI s (lowerI e) = evalI s e
-    | .lit _ => rfl
-    | .var _ => rfl
-    | .add a b => by simp only [lowerI, evalI, evalI_lowerI s a, evalI_lowerI s b]
-    | .sub a b => by simp only [lowerI, evalI, evalI_lowerI s a, evalI_lowerI s b]
-    | .mul a b => by simp only [lowerI, evalI, evalI_lowerI s a, evalI_lowerI s b]
-    | .div a b => by simp only [lowerI, evalI, evalI_lowerI s a, evalI_lowerI s b]
-    | .ite c t e => by
-        simp only [lowerI, evalI, evalI_mkIteI, evalB_lowerB s c,
-          evalI_lowerI s t, evalI_lowerI s e]
+@[simp] theorem eval_unFold (s : State) {a c : Ty} (op : UnOp a c)
+    (e : Exp a) : (unFold op e).eval s = op.denote (e.eval s) := by
+  cases op
+  simp [unFold, UnOp.denote, eval_mkNot]
 
-  theorem evalB_lowerB (s : State) : (e : BExp) → evalB s (lowerB e) = evalB s e
-    | .lit _ => rfl
-    | .var _ => rfl
-    | .le a b => by simp only [lowerB, evalB, evalI_lowerI s a, evalI_lowerI s b]
-    | .lt a b => by simp only [lowerB, evalB, evalI_lowerI s a, evalI_lowerI s b]
-    | .eqI a b => by simp only [lowerB, evalB, evalI_lowerI s a, evalI_lowerI s b]
-    | .eqB a b => by simp only [lowerB, evalB, evalB_lowerB s a, evalB_lowerB s b]
-    | .not a => by simp only [lowerB, evalB, evalB_mkNot, evalB_lowerB s a]
-    | .and a b => by
-        simp only [lowerB, evalB, evalB_mkAnd2, evalB_lowerB s a, evalB_lowerB s b]
-    | .or a b => by
-        simp only [lowerB, evalB, evalB_mkOr2, evalB_lowerB s a, evalB_lowerB s b]
-    | .imp a b => by
-        simp only [lowerB, evalB, evalB_mkImp, evalB_lowerB s a, evalB_lowerB s b]
-    | .blk b => rfl
-    | .ite c t e => by
-        simp only [lowerB, evalB, evalB_mkIteB, evalB_lowerB s c,
-          evalB_lowerB s t, evalB_lowerB s e]
-end
+@[simp] theorem eval_binFold (s : State) {a b c : Ty} (op : BinOp a b c)
+    (l : Exp a) (r : Exp b) :
+    (binFold op l r).eval s = op.denote (l.eval s) (r.eval s) := by
+  cases op <;>
+    simp [binFold, BinOp.denote, Exp.eval, eval_mkAnd2, eval_mkOr2,
+      eval_mkImp]
+
+theorem eval_lower (s : State) : {t : Ty} → (e : Exp t) →
+    (lower e).eval s = e.eval s
+  | _, .litI _ => rfl
+  | _, .litB _ => rfl
+  | _, .var _ _ => rfl
+  | _, .blk _ => rfl
+  | _, .un op e => by
+      simp only [lower, eval_unFold, eval_lower s e, Exp.eval]
+  | _, .bin op l r => by
+      simp only [lower, eval_binFold, eval_lower s l, eval_lower s r,
+        Exp.eval]
+  | _, .tern op e₁ e₂ e₃ => by
+      simp only [lower, Exp.eval, eval_lower s e₁, eval_lower s e₂,
+        eval_lower s e₃]
+  | _, .ite c th el => by
+      simp only [lower, eval_mkIte, eval_lower s c, eval_lower s th,
+        eval_lower s el, Exp.eval]
 
 end Vc
 

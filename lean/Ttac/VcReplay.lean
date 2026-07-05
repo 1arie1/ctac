@@ -16,19 +16,22 @@ file discharges the generic lemma's two obligations for it -
   targets, and the phi-arm rule (every arm source is defined in a
   strictly earlier block, `d ≤ p < b`) gives the no-later-read
   condition; program order refines both to the list order.
-- **target inventory** (`intTarget_defAt`/`boolTarget_defAt`): a target
-  is precisely a register phi-defined in an unvisited block, which is
-  what the robustness instances in `VcSound` reason against.
+- **target inventory** (`target_defAt`/`not_target_of_visited`): a
+  target is precisely a register phi-defined in an unvisited block,
+  which is what the robustness instances in `VcSound` reason against.
 
-The witness itself is then just `applyDefs` over this list
-(`witness`); no bespoke replay machinery remains. Guards live in their
-own `State.blks` component, written once by `setBlockVars` and never
-touched by the extension (definitions only write program registers).
+Everything is sort-generic: one extraction, one ordering proof, one
+chain-selection lemma - phis of any sort go through the same machinery.
 
-The chain-selection lemmas at the bottom (`phiRhsI_select`/
-`phiRhsB_select`) are the semantic content of the phi constraint for
-*visited* joins - which ITE arm survives under the guard assignment -
-and are consumed by the robustness instance for visited phi equations.
+The witness itself is just `applyDefs` over the extracted list
+(`witness`). Guards live in their own `State.blks` component, written
+once by `setBlockVars` and never touched by the extension (definitions
+only write program registers).
+
+The chain-selection lemmas at the bottom (`phiRhs_select`) are the
+semantic content of the phi constraint for *visited* joins - which ITE
+arm survives under the guard assignment - and are consumed by the
+robustness instance for visited phi equations.
 -/
 
 namespace Ttac
@@ -40,11 +43,8 @@ namespace Ttac
 def setBlockVars (P : Program) (V : List Nat) (σ : State) : State :=
   { σ with blks := fun q => decide (q ∈ V ∨ q = P.blocks.length) }
 
-@[simp] theorem setBlockVars_ints (P : Program) (V : List Nat) (σ : State) :
-    (setBlockVars P V σ).ints = σ.ints := rfl
-
-@[simp] theorem setBlockVars_bools (P : Program) (V : List Nat) (σ : State) :
-    (setBlockVars P V σ).bools = σ.bools := rfl
+@[simp] theorem setBlockVars_regs (P : Program) (V : List Nat) (σ : State) :
+    (setBlockVars P V σ).regs = σ.regs := rfl
 
 theorem setBlockVars_blk (P : Program) (V : List Nat) (σ : State)
     {q : Nat} (hq : q < P.blocks.length) :
@@ -58,206 +58,82 @@ theorem setBlockVars_exit (P : Program) (V : List Nat) (σ : State) :
 
 /-! ## Variable inventories of phi right-hand sides -/
 
-theorem guardOf_intVars (P : Program) (q : Nat) :
-    (Vc.guardOf P q).intVars = [] := by
+theorem guardOf_vars (P : Program) (q : Nat) :
+    (Vc.guardOf P q).vars = [] := by
   unfold Vc.guardOf; split <;> rfl
 
-theorem guardOf_boolVars (P : Program) (q : Nat) :
-    (Vc.guardOf P q).boolVars = [] := by
-  unfold Vc.guardOf; split <;> rfl
-
-theorem mkIteI_intVars {c : BExp} {t e : IExp} :
-    ∀ r ∈ (Vc.mkIteI c t e).intVars,
-      r ∈ c.intVars ∨ r ∈ t.intVars ∨ r ∈ e.intVars := by
-  intro r hr
-  unfold Vc.mkIteI at hr
-  split at hr
-  · exact Or.inr (Or.inl hr)
-  · split at hr
-    · exact Or.inr (Or.inl hr)
-    · exact Or.inr (Or.inr hr)
-    · simp only [IExp.intVars, List.mem_append] at hr
-      tauto
-
-theorem mkIteI_boolVars {c : BExp} {t e : IExp} :
-    ∀ r ∈ (Vc.mkIteI c t e).boolVars,
-      r ∈ c.boolVars ∨ r ∈ t.boolVars ∨ r ∈ e.boolVars := by
-  intro r hr
-  unfold Vc.mkIteI at hr
-  split at hr
-  · exact Or.inr (Or.inl hr)
-  · split at hr
-    · exact Or.inr (Or.inl hr)
-    · exact Or.inr (Or.inr hr)
-    · simp only [IExp.boolVars, List.mem_append] at hr
-      tauto
-
-theorem mkNot_boolVars {a : BExp} :
-    ∀ r ∈ (Vc.mkNot a).boolVars, r ∈ a.boolVars := by
+theorem mkNot_vars {a : BExp} :
+    ∀ p ∈ (Vc.mkNot a).vars, p ∈ a.vars := by
   unfold Vc.mkNot
-  split <;> intro r hr <;> simp_all [BExp.boolVars]
+  split <;> intro p hp <;> simp_all [Exp.vars]
 
-theorem mkIteB_intVars {c t e : BExp} :
-    ∀ r ∈ (Vc.mkIteB c t e).intVars,
-      r ∈ c.intVars ∨ r ∈ t.intVars ∨ r ∈ e.intVars := by
-  intro r hr
-  unfold Vc.mkIteB at hr
-  split at hr
-  · exact Or.inr (Or.inl hr)
-  · split at hr
-    · exact Or.inr (Or.inl hr)
-    · exact Or.inr (Or.inr hr)
-    · exact Or.inl hr
-    · unfold Vc.mkNot at hr
-      split at hr <;> simp_all [BExp.intVars]
-    · simp only [BExp.intVars, List.mem_append] at hr
+theorem mkIte_vars {t : Ty} {c : BExp} {th el : Exp t} :
+    ∀ p ∈ (Vc.mkIte c th el).vars,
+      p ∈ c.vars ∨ p ∈ th.vars ∨ p ∈ el.vars := by
+  intro p hp
+  unfold Vc.mkIte at hp
+  split at hp
+  · exact Or.inr (Or.inl hp)
+  · split at hp
+    · exact Or.inr (Or.inl hp)
+    · exact Or.inr (Or.inr hp)
+    · exact Or.inl hp
+    · exact Or.inl (mkNot_vars _ hp)
+    · simp only [Exp.vars, List.mem_append] at hp
       tauto
 
-theorem mkIteB_boolVars {c t e : BExp} :
-    ∀ r ∈ (Vc.mkIteB c t e).boolVars,
-      r ∈ c.boolVars ∨ r ∈ t.boolVars ∨ r ∈ e.boolVars := by
-  intro r hr
-  unfold Vc.mkIteB at hr
-  split at hr
-  · exact Or.inr (Or.inl hr)
-  · split at hr
-    · exact Or.inr (Or.inl hr)
-    · exact Or.inr (Or.inr hr)
-    · exact Or.inl hr
-    · exact Or.inl (mkNot_boolVars _ hr)
-    · simp only [BExp.boolVars, List.mem_append] at hr
-      tauto
-
-theorem phiChainI_intVars {P : Program} :
+theorem phiChain_vars {P : Program} {t : Ty} :
     ∀ (a : Nat × Nat) (rest : List (Nat × Nat)),
-      ∀ r ∈ (Vc.phiChainI P a rest).intVars, ∃ q, (q, r) ∈ a :: rest
-  | (q0, s0), [], r, hr => by
-      simp only [Vc.phiChainI, IExp.intVars] at hr
-      obtain rfl := List.mem_singleton.mp hr
-      exact ⟨q0, List.mem_cons_self ..⟩
-  | (q0, s0), a' :: rest', r, hr => by
-      rcases mkIteI_intVars r hr with hg | hs | ht
-      · rw [guardOf_intVars] at hg; cases hg
-      · simp only [IExp.intVars] at hs
+      ∀ p ∈ (Vc.phiChain P t a rest).vars,
+        ∃ q s, (q, s) ∈ a :: rest ∧ p = (t, s)
+  | (q0, s0), [], p, hp => by
+      simp only [Vc.phiChain, Exp.vars] at hp
+      obtain rfl := List.mem_singleton.mp hp
+      exact ⟨q0, s0, List.mem_cons_self .., rfl⟩
+  | (q0, s0), a' :: rest', p, hp => by
+      rcases mkIte_vars p hp with hg | hs | ht
+      · rw [guardOf_vars] at hg; cases hg
+      · simp only [Exp.vars] at hs
         obtain rfl := List.mem_singleton.mp hs
-        exact ⟨q0, List.mem_cons_self ..⟩
-      · obtain ⟨q, hq⟩ := phiChainI_intVars a' rest' r ht
-        exact ⟨q, List.mem_cons_of_mem _ hq⟩
-
-theorem phiChainI_boolVars {P : Program} :
-    ∀ (a : Nat × Nat) (rest : List (Nat × Nat)),
-      ∀ r ∈ (Vc.phiChainI P a rest).boolVars, False
-  | (q0, s0), [], r, hr => by
-      simp only [Vc.phiChainI, IExp.boolVars] at hr
-      cases hr
-  | (q0, s0), a' :: rest', r, hr => by
-      rcases mkIteI_boolVars r hr with hg | hs | ht
-      · rw [guardOf_boolVars] at hg; cases hg
-      · simp only [IExp.boolVars] at hs; cases hs
-      · exact phiChainI_boolVars a' rest' r ht
-
-theorem phiRhsI_intVars {P : Program} {arms : PhiArms} :
-    ∀ r ∈ (Vc.phiRhsI P arms).intVars, ∃ q, (q, r) ∈ arms := by
-  cases arms with
-  | nil => intro r hr; cases hr
-  | cons a rest => exact phiChainI_intVars a rest
-
-theorem phiRhsI_boolVars {P : Program} {arms : PhiArms} :
-    ∀ r ∈ (Vc.phiRhsI P arms).boolVars, False := by
-  cases arms with
-  | nil => intro r hr; cases hr
-  | cons a rest => exact phiChainI_boolVars a rest
-
-theorem phiChainB_intVars {P : Program} :
-    ∀ (a : Nat × Nat) (rest : List (Nat × Nat)),
-      ∀ r ∈ (Vc.phiChainB P a rest).intVars, False
-  | (q0, s0), [], r, hr => by
-      simp only [Vc.phiChainB, BExp.intVars] at hr
-      cases hr
-  | (q0, s0), a' :: rest', r, hr => by
-      rcases mkIteB_intVars r hr with hg | hs | ht
-      · rw [show (Vc.guardOf P q0).intVars = [] from by
-          unfold Vc.guardOf; split <;> rfl] at hg
-        cases hg
-      · simp only [BExp.intVars] at hs; cases hs
-      · exact phiChainB_intVars a' rest' r ht
-
-theorem phiChainB_boolVars {P : Program} :
-    ∀ (a : Nat × Nat) (rest : List (Nat × Nat)),
-      ∀ r ∈ (Vc.phiChainB P a rest).boolVars, ∃ q, (q, r) ∈ a :: rest
-  | (q0, s0), [], r, hr => by
-      simp only [Vc.phiChainB, BExp.boolVars] at hr
-      obtain rfl := List.mem_singleton.mp hr
-      exact ⟨q0, List.mem_cons_self ..⟩
-  | (q0, s0), a' :: rest', r, hr => by
-      rcases mkIteB_boolVars r hr with hg | hs | ht
-      · rw [guardOf_boolVars] at hg; cases hg
-      · simp only [BExp.boolVars] at hs
-        obtain rfl := List.mem_singleton.mp hs
-        exact ⟨q0, List.mem_cons_self ..⟩
-      · obtain ⟨q, hq⟩ := phiChainB_boolVars a' rest' r ht
-        exact ⟨q, List.mem_cons_of_mem _ hq⟩
-
-theorem phiRhsB_intVars {P : Program} {arms : PhiArms} :
-    ∀ r ∈ (Vc.phiRhsB P arms).intVars, False := by
-  cases arms with
-  | nil => intro r hr; cases hr
-  | cons a rest => exact phiChainB_intVars a rest
-
-theorem phiRhsB_boolVars {P : Program} {arms : PhiArms} :
-    ∀ r ∈ (Vc.phiRhsB P arms).boolVars, ∃ q, (q, r) ∈ arms := by
-  cases arms with
-  | nil => intro r hr; cases hr
-  | cons a rest => exact phiChainB_boolVars a rest
+        exact ⟨q0, s0, List.mem_cons_self .., rfl⟩
+      · obtain ⟨q, s, hq, rfl⟩ := phiChain_vars a' rest' p ht
+        exact ⟨q, s, List.mem_cons_of_mem _ hq, rfl⟩
 
 /-! ## The phi-arm rule, in dependence form
 
 Every variable a phi right-hand side reads is defined strictly below
 the phi's block: the checker's arm-use rule gives `d ≤ p` and the phi
-shape gives `p < b`. This single fact drives both ordering obligations
+shape gives `p < b` (and its nonemptiness discharges the placeholder
+case of `phiRhs`). This single fact drives both ordering obligations
 below. -/
 
-theorem phi_srcI_lt {P : Program}
+theorem phi_src_lt {P : Program}
     (huse : usesOK P = true) (hphi : phiOK P = true)
-    {b : Nat} {B : Block} {i y : Nat} {arms : PhiArms}
-    (hB : P.block? b = some B) (hc : B.cmds[i]? = some (.phiI y arms)) :
-    ∀ r ∈ (Vc.phiRhsI P arms).intVars,
-      ∀ d j, IsDefAt P cmdIntDef r d j → d < b := by
+    {b : Nat} {B : Block} {i : Nat} {t : Ty} {x : Nat} {arms : PhiArms}
+    (hB : P.block? b = some B) (hc : B.cmds[i]? = some (.phi t x arms)) :
+    ∀ p ∈ (Vc.phiRhs P t arms).vars,
+      ∀ d j, IsDefAt P p d j → d < b := by
   have harms : phiArmsOK P b arms = true :=
-    (phiOK_at hphi hB (List.mem_of_getElem? hc)).1 y arms rfl
+    phiOK_at hphi hB (List.mem_of_getElem? hc)
   have hu := usesOK_cmd huse hB hc
   simp only [cmdUsesOK] at hu
-  intro r hr d j hd
-  obtain ⟨q, hq⟩ := phiRhsI_intVars r hr
-  have hle := armUseOK_le (List.all_eq_true.mp hu (q, r) hq) d j hd
-  have := phiArm_lt harms hq
-  omega
-
-theorem phi_srcB_lt {P : Program}
-    (huse : usesOK P = true) (hphi : phiOK P = true)
-    {b : Nat} {B : Block} {i y : Nat} {arms : PhiArms}
-    (hB : P.block? b = some B) (hc : B.cmds[i]? = some (.phiB y arms)) :
-    ∀ r ∈ (Vc.phiRhsB P arms).boolVars,
-      ∀ d j, IsDefAt P cmdBoolDef r d j → d < b := by
-  have harms : phiArmsOK P b arms = true :=
-    (phiOK_at hphi hB (List.mem_of_getElem? hc)).2 y arms rfl
-  have hu := usesOK_cmd huse hB hc
-  simp only [cmdUsesOK] at hu
-  intro r hr d j hd
-  obtain ⟨q, hq⟩ := phiRhsB_boolVars r hr
-  have hle := armUseOK_le (List.all_eq_true.mp hu (q, r) hq) d j hd
-  have := phiArm_lt harms hq
-  omega
+  intro p hp d j hd
+  cases arms with
+  | nil => simp [phiArmsOK] at harms
+  | cons a rest =>
+      obtain ⟨q, s, hq, rfl⟩ := phiChain_vars a rest p hp
+      have hle := armUseOK_le (List.all_eq_true.mp hu (q, s) hq) d j hd
+      have := phiArm_lt harms hq
+      omega
 
 /-! ## The unvisited-phi definition list -/
 
 /-- The definition a phi command contributes; `none` for anything else.
-The right-hand side is the *same* `phiRhsI`/`phiRhsB` term the expected
-phi constraint uses, so a definition's `toConstraint` is literally the
+The right-hand side is the *same* `phiRhs` term the expected phi
+constraint uses, so a definition's `toConstraint?` is literally the
 constraint - `sat_extend`'s second disjunct needs no reasoning. -/
 def phiDef? (P : Program) : Cmd → Option DefExt.Def
-  | .phiI x arms => some (.defI x (Vc.phiRhsI P arms))
-  | .phiB x arms => some (.defB x (Vc.phiRhsB P arms))
+  | .phi t x arms => some ⟨t, x, Vc.phiRhs P t arms⟩
   | _ => none
 
 def phiDefs (P : Program) (cs : List Cmd) : List DefExt.Def :=
@@ -288,49 +164,23 @@ def PhiDefAt (P : Program) (d : DefExt.Def) (b i : Nat) : Prop :=
 
 theorem phiDef?_eq_some {P : Program} {c : Cmd} {d : DefExt.Def}
     (h : phiDef? P c = some d) :
-    (∃ x arms, c = .phiI x arms ∧ d = .defI x (Vc.phiRhsI P arms))
-      ∨ (∃ x arms, c = .phiB x arms ∧ d = .defB x (Vc.phiRhsB P arms)) := by
+    ∃ t x arms, c = .phi t x arms ∧ d = ⟨t, x, Vc.phiRhs P t arms⟩ := by
   cases c <;> simp only [phiDef?, Option.some.injEq, reduceCtorEq] at h
-  case phiI x arms => exact Or.inl ⟨x, arms, rfl, h.symm⟩
-  case phiB x arms => exact Or.inr ⟨x, arms, rfl, h.symm⟩
+  case phi t x arms => exact ⟨t, x, arms, rfl, h.symm⟩
 
-theorem PhiDefAt.intTarget_defAt {P : Program} {d : DefExt.Def} {b i : Nat}
-    (h : PhiDefAt P d b i) {x : Nat} (hx : d.intTarget? = some x) :
-    IsDefAt P cmdIntDef x b i := by
+theorem PhiDefAt.target_defAt {P : Program} {d : DefExt.Def} {b i : Nat}
+    (h : PhiDefAt P d b i) : IsDefAt P d.target b i := by
   obtain ⟨B, c, hB, hc, hd⟩ := h
-  rcases phiDef?_eq_some hd with ⟨y, arms, rfl, rfl⟩ | ⟨y, arms, rfl, rfl⟩
-  · obtain rfl : y = x := Option.some.inj hx
-    exact ⟨B, _, hB, hc, rfl⟩
-  · cases hx
+  obtain ⟨t, x, arms, rfl, rfl⟩ := phiDef?_eq_some hd
+  exact ⟨B, _, hB, hc, rfl⟩
 
-theorem PhiDefAt.boolTarget_defAt {P : Program} {d : DefExt.Def} {b i : Nat}
-    (h : PhiDefAt P d b i) {x : Nat} (hx : d.boolTarget? = some x) :
-    IsDefAt P cmdBoolDef x b i := by
-  obtain ⟨B, c, hB, hc, hd⟩ := h
-  rcases phiDef?_eq_some hd with ⟨y, arms, rfl, rfl⟩ | ⟨y, arms, rfl, rfl⟩
-  · cases hx
-  · obtain rfl : y = x := Option.some.inj hx
-    exact ⟨B, _, hB, hc, rfl⟩
-
-theorem PhiDefAt.rhsIntVars_lt {P : Program}
+theorem PhiDefAt.rhsVars_lt {P : Program}
     (huse : usesOK P = true) (hphi : phiOK P = true)
     {d : DefExt.Def} {b i : Nat} (h : PhiDefAt P d b i) :
-    ∀ r ∈ d.rhsIntVars, ∀ e j, IsDefAt P cmdIntDef r e j → e < b := by
+    ∀ p ∈ d.rhs.vars, ∀ e j, IsDefAt P p e j → e < b := by
   obtain ⟨B, c, hB, hc, hd⟩ := h
-  rcases phiDef?_eq_some hd with ⟨y, arms, rfl, rfl⟩ | ⟨y, arms, rfl, rfl⟩
-  · exact phi_srcI_lt huse hphi hB hc
-  · intro r hr
-    exact (phiRhsB_intVars r hr).elim
-
-theorem PhiDefAt.rhsBoolVars_lt {P : Program}
-    (huse : usesOK P = true) (hphi : phiOK P = true)
-    {d : DefExt.Def} {b i : Nat} (h : PhiDefAt P d b i) :
-    ∀ r ∈ d.rhsBoolVars, ∀ e j, IsDefAt P cmdBoolDef r e j → e < b := by
-  obtain ⟨B, c, hB, hc, hd⟩ := h
-  rcases phiDef?_eq_some hd with ⟨y, arms, rfl, rfl⟩ | ⟨y, arms, rfl, rfl⟩
-  · intro r hr
-    exact (phiRhsI_boolVars r hr).elim
-  · exact phi_srcB_lt huse hphi hB hc
+  obtain ⟨t, x, arms, rfl, rfl⟩ := phiDef?_eq_some hd
+  exact phi_src_lt huse hphi hB hc
 
 /-- No phi reads its own target: the right-hand side's variables are
 defined strictly below the phi's block, the target at it. -/
@@ -338,13 +188,9 @@ theorem PhiDefAt.selfOK {P : Program}
     (huse : usesOK P = true) (hphi : phiOK P = true)
     {d : DefExt.Def} {b i : Nat} (h : PhiDefAt P d b i) :
     DefExt.SelfOK d := by
-  constructor
-  · intro x hx hxin
-    have := h.rhsIntVars_lt huse hphi x hxin b i (h.intTarget_defAt hx)
-    omega
-  · intro x hx hxin
-    have := h.rhsBoolVars_lt huse hphi x hxin b i (h.boolTarget_defAt hx)
-    omega
+  intro hmem
+  have := h.rhsVars_lt huse hphi d.target hmem b i h.target_defAt
+  omega
 
 /-- Two phi definitions at lexicographically ordered positions satisfy
 the generic no-later-write condition: SSA makes the targets distinct,
@@ -356,25 +202,15 @@ theorem untouched_of_positions {P : Program}
     (hlex : b < b' ∨ (b = b' ∧ i < i'))
     (hd : PhiDefAt P d b i) (hd' : PhiDefAt P d' b' i') :
     DefExt.Untouched d d' := by
+  have hdef' : IsDefAt P d'.target b' i' := hd'.target_defAt
   constructor
-  · intro x hx'
-    have hdef' : IsDefAt P cmdIntDef x b' i' := hd'.intTarget_defAt hx'
-    constructor
-    · intro hx
-      obtain ⟨hb, hi⟩ := ssa_unique_int hssa (hd.intTarget_defAt hx) hdef'
-      omega
-    · intro hr
-      have := hd.rhsIntVars_lt huse hphi x hr b' i' hdef'
-      omega
-  · intro x hx'
-    have hdef' : IsDefAt P cmdBoolDef x b' i' := hd'.boolTarget_defAt hx'
-    constructor
-    · intro hx
-      obtain ⟨hb, hi⟩ := ssa_unique_bool hssa (hd.boolTarget_defAt hx) hdef'
-      omega
-    · intro hr
-      have := hd.rhsBoolVars_lt huse hphi x hr b' i' hdef'
-      omega
+  · intro heq
+    rw [heq] at hdef'
+    obtain ⟨hb, hi⟩ := ssa_unique hssa hd.target_defAt hdef'
+    omega
+  · intro hmem
+    have := hd.rhsVars_lt huse hphi d'.target hmem b' i' hdef'
+    omega
 
 /-! ## Membership in the definition list -/
 
@@ -499,8 +335,8 @@ theorem pairwise_unvisitedPhiDefs {P : Program} {V : List Nat}
           exact untouched_of_positions hssa huse hphi
             (Or.inl (by omega)) hAt hAt'
 
-/-- The unvisited phis form an ordered definition list: what your
-one-paragraph proof calls "acyclic with distinct left-hand sides". -/
+/-- The unvisited phis form an ordered definition list ("acyclic with
+distinct left-hand sides"). -/
 theorem orderedDefs_witnessDefs {P : Program} {V : List Nat}
     (hssa : ssaOK P = true) (huse : usesOK P = true)
     (hphi : phiOK P = true) :
@@ -517,30 +353,17 @@ phi-defined in unvisited blocks. The negative form is what the
 robustness instances use - a register whose every definition is in a
 visited block is outside `W`. -/
 
-theorem intTarget_defAt {P : Program} {V : List Nat} {x : Nat}
-    (hx : x ∈ DefExt.intTargets (witnessDefs P V)) :
-    ∃ b, b ∉ V ∧ ∃ i, IsDefAt P cmdIntDef x b i := by
-  obtain ⟨d, hd, htgt⟩ := DefExt.mem_intTargets.mp hx
+theorem target_defAt {P : Program} {V : List Nat} {tx : Ty × Nat}
+    (hx : tx ∈ DefExt.targets (witnessDefs P V)) :
+    ∃ b, b ∉ V ∧ ∃ i, IsDefAt P tx b i := by
+  obtain ⟨d, hd, rfl⟩ := DefExt.mem_targets.mp hx
   obtain ⟨b, hbV, i, hAt⟩ := witnessDefs_defAt hd
-  exact ⟨b, hbV, i, hAt.intTarget_defAt htgt⟩
+  exact ⟨b, hbV, i, hAt.target_defAt⟩
 
-theorem boolTarget_defAt {P : Program} {V : List Nat} {x : Nat}
-    (hx : x ∈ DefExt.boolTargets (witnessDefs P V)) :
-    ∃ b, b ∉ V ∧ ∃ i, IsDefAt P cmdBoolDef x b i := by
-  obtain ⟨d, hd, htgt⟩ := DefExt.mem_boolTargets.mp hx
-  obtain ⟨b, hbV, i, hAt⟩ := witnessDefs_defAt hd
-  exact ⟨b, hbV, i, hAt.boolTarget_defAt htgt⟩
-
-theorem not_intTarget_of_visited {P : Program} {V : List Nat} {x : Nat}
-    (h : ∀ b i, IsDefAt P cmdIntDef x b i → b ∈ V) :
-    x ∉ DefExt.intTargets (witnessDefs P V) := fun hx => by
-  obtain ⟨b, hbV, i, hdef⟩ := intTarget_defAt hx
-  exact hbV (h b i hdef)
-
-theorem not_boolTarget_of_visited {P : Program} {V : List Nat} {x : Nat}
-    (h : ∀ b i, IsDefAt P cmdBoolDef x b i → b ∈ V) :
-    x ∉ DefExt.boolTargets (witnessDefs P V) := fun hx => by
-  obtain ⟨b, hbV, i, hdef⟩ := boolTarget_defAt hx
+theorem not_target_of_visited {P : Program} {V : List Nat} {tx : Ty × Nat}
+    (h : ∀ b i, IsDefAt P tx b i → b ∈ V) :
+    tx ∉ DefExt.targets (witnessDefs P V) := fun hx => by
+  obtain ⟨b, hbV, i, hdef⟩ := target_defAt hx
   exact hbV (h b i hdef)
 
 /-! ## Chain selection for visited phis -/
@@ -553,14 +376,14 @@ theorem lookupArm_cons {q s' p : Nat} {rest : List (Nat × Nat)} :
   · simp only [lookupArm, List.lookup, if_neg h]
     rw [show (p == q) = false from beq_eq_false_iff_ne.mpr h]
 
-theorem phiChainI_select {P : Program} {V : List Nat} {w : State}
+theorem phiChain_select {P : Program} {V : List Nat} {w : State}
     (hblk : ∀ q, q < P.blocks.length → w.blks q = decide (q ∈ V))
-    (hentryV : P.entry ∈ V) :
+    (hentryV : P.entry ∈ V) {t : Ty} :
     ∀ (a : Nat × Nat) (rest : List (Nat × Nat)) {p src : Nat},
       lookupArm (a :: rest) p = some src → p ∈ V →
       (∀ x ∈ a :: rest, x.1 < P.blocks.length) →
       (∀ x ∈ a :: rest, x.1 ∈ V → x.1 = p) →
-      evalI w (Vc.phiChainI P a rest) = w.ints src := by
+      (Vc.phiChain P t a rest).eval w = w.regs t src := by
   intro a rest
   induction rest generalizing a with
   | nil =>
@@ -570,26 +393,26 @@ theorem phiChainI_select {P : Program} {V : List Nat} {w : State}
       by_cases hpq : p = q
       · rw [if_pos hpq] at harm
         obtain rfl := Option.some.inj harm
-        simp [Vc.phiChainI, evalI]
+        simp [Vc.phiChain, Exp.eval]
       · rw [if_neg hpq] at harm
         simp [lookupArm, List.lookup] at harm
   | cons a' rest' ih =>
       obtain ⟨q, s'⟩ := a
       intro p src harm hpV hlt huniq
-      have hguard : evalB w (Vc.guardOf P q) = decide (q ∈ V) := by
+      have hguard : (Vc.guardOf P q).eval w = decide (q ∈ V) := by
         unfold Vc.guardOf
         split
         · rename_i hq
           rw [hq]
-          simp [evalB, hentryV]
-        · simpa [evalB] using hblk q (hlt (q, s') (List.mem_cons_self ..))
+          simp [Exp.eval, hentryV]
+        · simpa [Exp.eval] using hblk q (hlt (q, s') (List.mem_cons_self ..))
       rw [lookupArm_cons] at harm
-      simp only [Vc.phiChainI, Vc.evalI_mkIteI, hguard]
+      simp only [Vc.phiChain, Vc.eval_mkIte, hguard]
       by_cases hpq : p = q
       · rw [if_pos hpq] at harm
         obtain rfl := Option.some.inj harm
         have hqV : q ∈ V := hpq ▸ hpV
-        simp [hqV, evalI]
+        simp [hqV, Exp.eval]
       · rw [if_neg hpq] at harm
         have hqV : q ∉ V := fun hq =>
           hpq ((huniq (q, s') (List.mem_cons_self ..) hq).symm)
@@ -598,73 +421,16 @@ theorem phiChainI_select {P : Program} {V : List Nat} {w : State}
           (fun x hx => hlt x (List.mem_cons_of_mem _ hx))
           (fun x hx => huniq x (List.mem_cons_of_mem _ hx))
 
-theorem phiChainB_select {P : Program} {V : List Nat} {w : State}
+theorem phiRhs_select {P : Program} {V : List Nat} {w : State}
     (hblk : ∀ q, q < P.blocks.length → w.blks q = decide (q ∈ V))
-    (hentryV : P.entry ∈ V) :
-    ∀ (a : Nat × Nat) (rest : List (Nat × Nat)) {p src : Nat},
-      lookupArm (a :: rest) p = some src → p ∈ V →
-      (∀ x ∈ a :: rest, x.1 < P.blocks.length) →
-      (∀ x ∈ a :: rest, x.1 ∈ V → x.1 = p) →
-      evalB w (Vc.phiChainB P a rest) = w.bools src := by
-  intro a rest
-  induction rest generalizing a with
-  | nil =>
-      obtain ⟨q, s'⟩ := a
-      intro p src harm hpV hlt huniq
-      rw [lookupArm_cons] at harm
-      by_cases hpq : p = q
-      · rw [if_pos hpq] at harm
-        obtain rfl := Option.some.inj harm
-        simp [Vc.phiChainB, evalB]
-      · rw [if_neg hpq] at harm
-        simp [lookupArm, List.lookup] at harm
-  | cons a' rest' ih =>
-      obtain ⟨q, s'⟩ := a
-      intro p src harm hpV hlt huniq
-      have hguard : evalB w (Vc.guardOf P q) = decide (q ∈ V) := by
-        unfold Vc.guardOf
-        split
-        · rename_i hq
-          rw [hq]
-          simp [evalB, hentryV]
-        · simpa [evalB] using hblk q (hlt (q, s') (List.mem_cons_self ..))
-      rw [lookupArm_cons] at harm
-      simp only [Vc.phiChainB, Vc.evalB_mkIteB, hguard]
-      by_cases hpq : p = q
-      · rw [if_pos hpq] at harm
-        obtain rfl := Option.some.inj harm
-        have hqV : q ∈ V := hpq ▸ hpV
-        simp [hqV, evalB]
-      · rw [if_neg hpq] at harm
-        have hqV : q ∉ V := fun hq =>
-          hpq ((huniq (q, s') (List.mem_cons_self ..) hq).symm)
-        simp only [hqV, decide_false, Bool.false_eq_true, if_false]
-        exact ih a' harm hpV
-          (fun x hx => hlt x (List.mem_cons_of_mem _ hx))
-          (fun x hx => huniq x (List.mem_cons_of_mem _ hx))
-
-theorem phiRhsI_select {P : Program} {V : List Nat} {w : State}
-    (hblk : ∀ q, q < P.blocks.length → w.blks q = decide (q ∈ V))
-    (hentryV : P.entry ∈ V) {arms : PhiArms} {p src : Nat}
+    (hentryV : P.entry ∈ V) {t : Ty} {arms : PhiArms} {p src : Nat}
     (harm : lookupArm arms p = some src) (hpV : p ∈ V)
     (hlt : ∀ x ∈ arms, x.1 < P.blocks.length)
     (huniq : ∀ x ∈ arms, x.1 ∈ V → x.1 = p) :
-    evalI w (Vc.phiRhsI P arms) = w.ints src := by
+    (Vc.phiRhs P t arms).eval w = w.regs t src := by
   cases arms with
   | nil => simp [lookupArm, List.lookup] at harm
   | cons a rest =>
-      exact phiChainI_select hblk hentryV a rest harm hpV hlt huniq
-
-theorem phiRhsB_select {P : Program} {V : List Nat} {w : State}
-    (hblk : ∀ q, q < P.blocks.length → w.blks q = decide (q ∈ V))
-    (hentryV : P.entry ∈ V) {arms : PhiArms} {p src : Nat}
-    (harm : lookupArm arms p = some src) (hpV : p ∈ V)
-    (hlt : ∀ x ∈ arms, x.1 < P.blocks.length)
-    (huniq : ∀ x ∈ arms, x.1 ∈ V → x.1 = p) :
-    evalB w (Vc.phiRhsB P arms) = w.bools src := by
-  cases arms with
-  | nil => simp [lookupArm, List.lookup] at harm
-  | cons a rest =>
-      exact phiChainB_select hblk hentryV a rest harm hpV hlt huniq
+      exact phiChain_select hblk hentryV a rest harm hpV hlt huniq
 
 end Ttac

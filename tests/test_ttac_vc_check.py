@@ -67,17 +67,19 @@ def _transpile(body, decls=DECLS):
 
 def test_transpile_ops():
     cases = {
-        "(= y (+ x 1))": ".eqI (.var 3) (.add (.var 0) (.lit 1))",
-        "(= y (- x y1))": ".eqI (.var 3) (.sub (.var 0) (.var 1))",
-        "(= y (* x x))": ".eqI (.var 3) (.mul (.var 0) (.var 0))",
-        "(= y (div x y1))": ".eqI (.var 3) (.div (.var 0) (.var 1))",
-        "(<= x y)": ".le (.var 0) (.var 3)",
-        "(< x y)": ".lt (.var 0) (.var 3)",
-        "(= c ok)": ".eqB (.var 0) (.var 1)",
-        "(not c)": ".not (.var 0)",
-        "(=> BLK_pos c)": ".imp (.blk 1) (.var 0)",
-        "(= y (ite c x y1))": ".eqI (.var 3) (.ite (.var 0) (.var 0) (.var 1))",
-        "(ite c ok true)": ".ite (.var 0) (.var 1) (.lit true)",
+        "(= y (+ x 1))": ".eqI (.var .int 3) (.add (.var .int 0) (.litI 1))",
+        "(= y (- x y1))": ".eqI (.var .int 3) (.sub (.var .int 0) (.var .int 1))",
+        "(= y (* x x))": ".eqI (.var .int 3) (.mul (.var .int 0) (.var .int 0))",
+        "(= y (div x y1))":
+            ".eqI (.var .int 3) (.div (.var .int 0) (.var .int 1))",
+        "(<= x y)": ".le (.var .int 0) (.var .int 3)",
+        "(< x y)": ".lt (.var .int 0) (.var .int 3)",
+        "(= c ok)": ".eqB (.var .bool 0) (.var .bool 1)",
+        "(not c)": ".not (.var .bool 0)",
+        "(=> BLK_pos c)": ".imp (.blk 1) (.var .bool 0)",
+        "(= y (ite c x y1))":
+            ".eqI (.var .int 3) (.ite (.var .bool 0) (.var .int 0) (.var .int 1))",
+        "(ite c ok true)": ".ite (.var .bool 0) (.var .bool 1) (.litB true)",
     }
     for body, want in cases.items():
         got, errs = _transpile(body)
@@ -87,18 +89,18 @@ def test_transpile_ops():
 
 def test_transpile_negative_literal():
     got, _ = _transpile("(= x (- 5))")
-    assert got == ".eqI (.var 0) (.lit (-5))"
+    assert got == ".eqI (.var .int 0) (.litI (-5))"
     got, _ = _transpile("(= x (- 0 x))")
-    assert got == ".eqI (.var 0) (.sub (.lit 0) (.var 0))"
+    assert got == ".eqI (.var .int 0) (.sub (.litI 0) (.var .int 0))"
     _, errs = _transpile("(= x (- y))")
     assert any("unary minus" in e for e in errs)
 
 
 def test_transpile_nary_fold_right():
     got, _ = _transpile("(and c ok (not c))")
-    assert got == ".and (.var 0) (.and (.var 1) (.not (.var 0)))"
+    assert got == ".and (.var .bool 0) (.and (.var .bool 1) (.not (.var .bool 0)))"
     got, _ = _transpile("(or c ok BLK_EXIT)")
-    assert got == ".or (.var 0) (.or (.var 1) (.blk 4))"
+    assert got == ".or (.var .bool 0) (.or (.var .bool 1) (.blk 4))"
 
 
 def test_transpile_eq_sort_mismatch():
@@ -228,9 +230,9 @@ def test_diamond_vc_lines_golden():
     res, _ = _diamond_result()
     assert res.n_asserts == 13
     text = res.vc_text
-    assert ".eqB (.var 0) (.le (.lit 0) (.var 0))," in text
-    assert ".eqI (.var 3) (.ite (.blk 1) (.var 1) (.var 2))," in text
-    assert ".imp (.blk 4) (.and (.blk 3) (.not (.var 1)))," in text
+    assert ".eqB (.var .bool 0) (.le (.litI 0) (.var .int 0))," in text
+    assert (".eqI (.var .int 3) (.ite (.blk 1) (.var .int 1) (.var .int 2))," in text)
+    assert (".imp (.blk 4) (.and (.blk 3) (.not (.var .bool 1)))," in text)
     assert text.rstrip().endswith("end Diamond.Vc")
     assert text.count(".imp (.blk 3) (.or (.blk 1) (.blk 2)),") == 2
     assert "theorem vc_ok : Ttac.checkVC Deep.prog Vc.vc = true := by" in res.check_text

@@ -3,8 +3,16 @@ import Ttac.Eval
 /-!
 # Tiny TAC deep embedding: small-step operational semantics
 
-`Step P` is an inductive predicate over configurations. Design notes:
+`Step P` is an inductive predicate over configurations. The relation is
+the language's definition — the effect tables (`Cmd.def?`/`Cmd.factB`)
+are characterized *about* it by lemmas in `VcTrace`, never used to
+define it (a fact-based step would diverge from the reference
+interpreter on ill-formed programs).
 
+Design notes:
+
+* One rule per command *kind*, sort-generic: `assign`/`havoc`/`phi`
+  each write through `State.upd t`.
 * Havoc rules take the chosen value as a constructor argument — that is
   the (only) source of nondeterminism.
 * `assume` has a rule only when the condition evaluates to `true`. An
@@ -34,39 +42,29 @@ def lookupArm (arms : PhiArms) (p : Nat) : Option Nat :=
   (arms.lookup p : Option Nat)
 
 inductive Step (P : Program) : Config → Config → Prop where
-  | assignI {b pc prev s B x e} :
-      P.block? b = some B → B.cmds[pc]? = some (.assignI x e) →
-      Step P (.running b pc prev s) (.running b (pc + 1) prev (s.updI x (evalI s e)))
-  | assignB {b pc prev s B c e} :
-      P.block? b = some B → B.cmds[pc]? = some (.assignB c e) →
-      Step P (.running b pc prev s) (.running b (pc + 1) prev (s.updB c (evalB s e)))
-  | havocI {b pc prev s B x} (v : Int) :
-      P.block? b = some B → B.cmds[pc]? = some (.havocI x) →
-      Step P (.running b pc prev s) (.running b (pc + 1) prev (s.updI x v))
-  | havocB {b pc prev s B c} (v : Bool) :
-      P.block? b = some B → B.cmds[pc]? = some (.havocB c) →
-      Step P (.running b pc prev s) (.running b (pc + 1) prev (s.updB c v))
-  | phiI {b pc p s B x arms src} :
-      P.block? b = some B → B.cmds[pc]? = some (.phiI x arms) →
+  | assign {b pc prev s B t x e} :
+      P.block? b = some B → B.cmds[pc]? = some (.assign t x e) →
+      Step P (.running b pc prev s)
+        (.running b (pc + 1) prev (s.upd t x (e.eval s)))
+  | havoc {b pc prev s B t x} (v : t.denote) :
+      P.block? b = some B → B.cmds[pc]? = some (.havoc t x) →
+      Step P (.running b pc prev s) (.running b (pc + 1) prev (s.upd t x v))
+  | phi {b pc p s B t x arms src} :
+      P.block? b = some B → B.cmds[pc]? = some (.phi t x arms) →
       lookupArm arms p = some src →
       Step P (.running b pc (some p) s)
-        (.running b (pc + 1) (some p) (s.updI x (s.ints src)))
-  | phiB {b pc p s B c arms src} :
-      P.block? b = some B → B.cmds[pc]? = some (.phiB c arms) →
-      lookupArm arms p = some src →
-      Step P (.running b pc (some p) s)
-        (.running b (pc + 1) (some p) (s.updB c (s.bools src)))
-  | assume {b pc prev s B e} :
-      P.block? b = some B → B.cmds[pc]? = some (.assume e) →
-      evalB s e = true →
+        (.running b (pc + 1) (some p) (s.upd t x (s.regs t src)))
+  | assume {b pc prev s B φ} :
+      P.block? b = some B → B.cmds[pc]? = some (.assume φ) →
+      φ.eval s = true →
       Step P (.running b pc prev s) (.running b (pc + 1) prev s)
   | assertTrue {b pc prev s B c} :
       P.block? b = some B → B.cmds[pc]? = some (.assert c) →
-      s.bools c = true →
+      s.regs .bool c = true →
       Step P (.running b pc prev s) (.running b (pc + 1) prev s)
   | assertFalse {b pc prev s B c} :
       P.block? b = some B → B.cmds[pc]? = some (.assert c) →
-      s.bools c = false →
+      s.regs .bool c = false →
       Step P (.running b pc prev s) (.failed s)
   | halt {b prev s B} :
       P.block? b = some B → B.term = .halt →
@@ -75,10 +73,10 @@ inductive Step (P : Program) : Config → Config → Prop where
       P.block? b = some B → B.term = .goto b' →
       Step P (.running b B.cmds.length prev s) (.running b' 0 (some b) s)
   | ifTrue {b prev s B c t e} :
-      P.block? b = some B → B.term = .ifGoto c t e → s.bools c = true →
+      P.block? b = some B → B.term = .ifGoto c t e → s.regs .bool c = true →
       Step P (.running b B.cmds.length prev s) (.running t 0 (some b) s)
   | ifFalse {b prev s B c t e} :
-      P.block? b = some B → B.term = .ifGoto c t e → s.bools c = false →
+      P.block? b = some B → B.term = .ifGoto c t e → s.regs .bool c = false →
       Step P (.running b B.cmds.length prev s) (.running e 0 (some b) s)
 
 end Ttac

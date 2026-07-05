@@ -33,8 +33,8 @@ from ctac.ttac.ast import Ty
 
 from .naming import Numbering
 
-# Term = ("lit", int) | ("litb", bool) | ("var", int) | ("blk", int)
-#      | (op, Term, ...)
+# Term = ("litI", int) | ("litb", bool) | ("varI", int) | ("varB", int)
+#      | ("blk", int) | (op, Term, ...)
 Term = tuple
 
 _INT_OPS = {"+": "add", "-": "sub", "*": "mul", "div": "div"}
@@ -45,13 +45,15 @@ def render(t: Term) -> str:
     """Render a term as a parenthesized Lean anonymous-constructor
     application; ``render_top`` strips the outer parens for list entries."""
     kind = t[0]
-    if kind == "lit":
+    if kind == "litI":
         n = t[1]
-        return f"(.lit {n})" if n >= 0 else f"(.lit ({n}))"
+        return f"(.litI {n})" if n >= 0 else f"(.litI ({n}))"
     if kind == "litb":
-        return f"(.lit {'true' if t[1] else 'false'})"
-    if kind == "var":
-        return f"(.var {t[1]})"
+        return f"(.litB {'true' if t[1] else 'false'})"
+    if kind == "varI":
+        return f"(.var .int {t[1]})"
+    if kind == "varB":
+        return f"(.var .bool {t[1]})"
     if kind == "blk":
         return f"(.blk {t[1]})"
     args = " ".join(render(a) for a in t[1:])
@@ -203,9 +205,9 @@ def _sort_of(node: SexprNode, syms: VcSymbols, src: str) -> Ty:
 def _int_term(node: SexprNode, syms: VcSymbols, src: str) -> Term:
     if isinstance(node, Atom):
         if node.kind == TokenKind.NUMERAL:
-            return ("lit", int(node.text))
+            return ("litI", int(node.text))
         if node.text in syms.numbering.int_regs:
-            return ("var", syms.numbering.int_regs[node.text])
+            return ("varI", syms.numbering.int_regs[node.text])
         if node.text in syms.sorts:
             raise TranspileError(
                 f"'{node.text}' is Bool-sorted but used as Int at "
@@ -220,7 +222,7 @@ def _int_term(node: SexprNode, syms: VcSymbols, src: str) -> Term:
         if head == "-" and len(args) == 1:
             inner = args[0]
             if isinstance(inner, Atom) and inner.kind == TokenKind.NUMERAL:
-                return ("lit", -int(inner.text))
+                return ("litI", -int(inner.text))
             raise TranspileError(
                 f"unary minus of a non-literal at {_at(src, node)}", node.span
             )
@@ -255,7 +257,7 @@ def _bool_term(node: SexprNode, syms: VcSymbols, src: str) -> Term:
         if node.text in syms.block_vars:
             return ("blk", syms.block_vars[node.text])
         if node.text in syms.numbering.bool_regs:
-            return ("var", syms.numbering.bool_regs[node.text])
+            return ("varB", syms.numbering.bool_regs[node.text])
         if node.text in syms.sorts:
             raise TranspileError(
                 f"'{node.text}' is Int-sorted but used as Bool at "
