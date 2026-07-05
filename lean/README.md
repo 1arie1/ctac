@@ -77,6 +77,23 @@ lemma, and the proof layers never mention individual operators.
   the witness. Main results, all sorry-free: `checkVC_sound` (failing
   execution ⇒ VC satisfiable) and `checkVC_safe` (`checkVC` accepts ∧
   VC unsat ⇒ `Program.Safe`).
+- `Ttac/VcPrefix.lean` — an independent *forward* (prefix-induction)
+  soundness proof, parallel to `VcSound`. Instead of the backward
+  `Suffix`, `forwardTrace` does one induction over the execution prefix
+  (the `ReflTransGen` tail recursor), producing the visited list in
+  execution order, the taken-edge chain, and per-command facts — with a
+  local per-step SSA freeze (`cmdFact_freeze`/`edgeTaken_freeze`) rather
+  than a global stability lemma, and no transfer to a final state.
+  `forwardStructural` splits off the failing `assertFalse` step and
+  packages this into the structural facts the *encoding-generic* leaves
+  (`robust_cmd_fact`, `visited_phi_defHolds`, `visited_amo`,
+  `dom_visited`, `sat_extend`) consume — those are shared verbatim with
+  `VcSound`. The VC is a site-annotated, per-block bucketed `Vc.AnnVC`
+  validated locally by `Vc.checkVCAnn` against the encoder's own
+  generators (a wrong annotation fails the cheap local check — a
+  completeness loss, never unsound). Main results, sorry-free:
+  `checkVCAnn_sound` and `checkVCAnn_safe`, the forward analogues of
+  `checkVC_sound`/`checkVC_safe`.
 - `TtacExamples/Diamond.lean` — golden deep + shallow embeddings of the
   scalar diamond, shallow safety theorem proved. The Python test suite
   pins the emitter against these shapes; keep them in sync.
@@ -88,6 +105,10 @@ lemma, and the proof layers never mention individual operators.
   (`safe_bytemap_phi.ttac`): stores, a map phi, and a select, with the
   encoder's `define-fun`s as `mapDefs`; pins the map side of the
   mirror (and rejects a tampered store).
+- `TtacExamples/DiamondAnnVc.lean` — the diamond's annotated VC
+  (`Vc.AnnVC`) accepted by `checkVCAnn` via `native_decide`, threaded
+  through `checkVCAnn_safe` (and a tampered annotation rejected);
+  confirms the forward checker accepts a real program's buckets.
 
 ## Building
 
