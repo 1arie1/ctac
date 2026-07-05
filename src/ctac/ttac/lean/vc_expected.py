@@ -312,6 +312,111 @@ def expected_map_defs(
     return out
 
 
+def expected_buckets(
+    program: ast.Program, num: Numbering, types: dict[str, Ty]
+) -> tuple[list[list[Term]], list[list[Term]], list[Term]]:
+    """Per-block decomposition of ``expected_vc``: mirror of the Lean
+    generators the annotated checker validates against, block by block.
+
+    Returns ``(cfg_per_block, cmd_per_block, objective)`` where
+    ``cfg_per_block[b]`` is ``cfgConstraintsFor P b`` and
+    ``cmd_per_block[b]`` is the flattened per-command constraints of
+    block ``b`` (``(cmds.map (cmdConstraints P b)).flatten``). The
+    untrusted annotator files each transpiled assert into the bucket whose
+    list contains it; the Lean ``checkVCAnn`` re-checks the (subset)
+    membership.
+    """
+    entry = num.entry_index
+    n_blocks = len(program.blocks)
+
+    def guard(b: int) -> Term:
+        return TRUE if b == entry else ("blk", b)
+
+    exit_term: Term = ("blk", n_blocks)
+
+    edges: list[tuple[int, int, Term]] = []
+    for b, block in enumerate(program.blocks):
+        term = block.terminator
+        if isinstance(term, ast.Goto):
+            edges.append((b, num.block_index[term.target], TRUE))
+        elif isinstance(term, ast.IfGoto):
+            cond: Term = ("varB", num.bool_regs[term.cond])
+            edges.append((b, num.block_index[term.then_target], cond))
+            edges.append((b, num.block_index[term.else_target], ("not", cond)))
+
+    def phi_rhs(arms, regs: dict[str, int], mk_ite, var_tag: str) -> Term:
+        chain: Term = (var_tag, regs[arms[-1].value])
+        for arm in reversed(arms[:-1]):
+            chain = mk_ite(
+                guard(num.block_index[arm.label]),
+                (var_tag, regs[arm.value]),
+                chain,
+            )
+        return chain
+
+    cmd_per_block: list[list[Term]] = []
+    assert_site: tuple[int, int] | None = None
+    for b, block in enumerate(program.blocks):
+        g = guard(b)
+        cmds: list[Term] = []
+        for cmd in block.commands:
+            if isinstance(cmd, ast.Assign):
+                ty = types[cmd.target.name]
+                if ty is Ty.BYTEMAP:
+                    continue
+                if ty is Ty.INT:
+                    eq: Term = ("eqI", ("varI", num.int_regs[cmd.target.name]),
+                                lower_iexpr(cmd.rhs, num, types))
+                else:
+                    eq = ("eqB", ("varB", num.bool_regs[cmd.target.name]),
+                          lower_bexpr(cmd.rhs, num, types))
+                cmds.append(mk_imp(g, eq))
+            elif isinstance(cmd, ast.Assume):
+                cmds.append(mk_imp(g, lower_bexpr(cmd.cond, num, types)))
+            elif isinstance(cmd, ast.Phi):
+                ty = types[cmd.target.name]
+                if ty is not Ty.BYTEMAP:
+                    is_int = ty is Ty.INT
+                    regs = num.int_regs if is_int else num.bool_regs
+                    mk_ite = mk_ite_i if is_int else mk_ite_b
+                    eq_op = "eqI" if is_int else "eqB"
+                    var_tag = "varI" if is_int else "varB"
+                    cmds.append(
+                        (eq_op, (var_tag, regs[cmd.target.name]),
+                         phi_rhs(cmd.arms, regs, mk_ite, var_tag))
+                    )
+                if len(cmd.arms) >= 2:
+                    cmds.extend(amo_clauses(
+                        [guard(num.block_index[a.label]) for a in cmd.arms]
+                    ))
+            elif isinstance(cmd, ast.Assert):
+                assert_site = (b, num.bool_regs[cmd.cond_name])
+        cmd_per_block.append(cmds)
+
+    cfg_per_block: list[list[Term]] = []
+    for s in range(n_blocks):
+        if s == entry:
+            cfg_per_block.append([])
+            continue
+        ins = [(p, cond) for (p, t, cond) in edges if t == s]
+        g_s = guard(s)
+        edge_terms = [mk_and2(guard(p), cond) for p, cond in ins]
+        pred_terms = [guard(p) for p, _ in ins]
+        cfg = [mk_imp(g_s, mk_or(edge_terms)), mk_imp(g_s, mk_or(pred_terms))]
+        cfg.extend(mk_imp(g_s, cl) for cl in amo_clauses(pred_terms))
+        cfg_per_block.append(cfg)
+
+    objective: list[Term] = []
+    if assert_site is not None:
+        a_b, ok_reg = assert_site
+        objective = [
+            mk_imp(exit_term, mk_and2(guard(a_b), mk_not(("varB", ok_reg)))),
+            exit_term,
+        ]
+
+    return cfg_per_block, cmd_per_block, objective
+
+
 @dataclass(frozen=True)
 class VcMismatch:
     kind: str  # "unexpected-assert" | "missing-assert"
