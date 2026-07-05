@@ -542,6 +542,64 @@ def vc_check(
         typer.echo("generated (not validated)")
 
 
+@app.command("ann-vc-check")
+def ann_vc_check(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    smt2: Path = typer.Argument(..., help="SMT-LIB VC produced by `ttac vcgen`."),
+    output: Path = typer.Option(
+        ..., "-o", "--output", help="Directory for the generated Lean project."
+    ),
+    name: str = typer.Option(None, "--name", help="Lean module name (default: from FILE)."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing output directory."),
+    build: bool = typer.Option(
+        True, "--build/--no-build", help="Run 'lake build' (the validation verdict)."
+    ),
+    kernel: bool = typer.Option(
+        False, "--kernel", help="Prove vc_ok by kernel `decide` instead of `native_decide`."
+    ),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Validate an SMT VC via the forward proof: a site-annotated AnnVC checked by `checkVCAnn_safe`."""
+    from .lean import write_vc_check_project
+    from .lean.naming import module_name_for
+    from .lean.vccheck import generate_ann_vc_check
+
+    if not smt2.is_file():
+        typer.echo(f"error: no such file: {smt2}", err=True)
+        raise typer.Exit(2)
+    program = _parse_or_exit(file)
+    module_name = name or module_name_for(file)
+    try:
+        res = generate_ann_vc_check(
+            program,
+            smt2.read_text(encoding="utf-8"),
+            module_name=module_name,
+            source=None if file == "-" else Path(file).name,
+            smt_source=smt2.name,
+            kernel=kernel,
+        )
+    except VcCheckError as exc:
+        for msg in exc.errors:
+            typer.echo(f"error: {msg}", err=True)
+        raise typer.Exit(1) from exc
+
+    try:
+        written = write_vc_check_project(res, output, force=force)
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    for path in written:
+        typer.echo(f"wrote: {path}")
+    _ = plain
+    if build:
+        _run_lake_build(output)
+        typer.echo("ann-vc-check: validated")
+    else:
+        typer.echo(f"next: cd {output} && lake exe cache get && lake build")
+        typer.echo("generated (not validated)")
+
+
 def _run_lake_build(output: Path, *, with_mathlib: bool = True) -> None:
     import shutil
     import subprocess

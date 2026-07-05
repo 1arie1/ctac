@@ -7,13 +7,21 @@ module shapes; the Lean `checkVCAnn` + `DiamondAnnVc` golden verify the
 checker itself.
 """
 
+import os
+import shutil
+import subprocess
+
 import pytest
+from typer.testing import CliRunner
 
 import ttac_fixtures as fx
 from ctac.ttac import parse_program
+from ctac.ttac.cli import app
 from ctac.ttac.errors import VcCheckError
 from ctac.ttac.lean.vccheck import generate_ann_vc_check
 from ctac.ttac.vcgen import generate_vc
+
+runner = CliRunner()
 
 
 def _ann(fixture=fx.SCALAR_DIAMOND, module_name="Diamond"):
@@ -70,3 +78,46 @@ def test_ann_rejects_alien_assert():
     with pytest.raises(VcCheckError) as exc:
         generate_ann_vc_check(program, smt2, module_name="P")
     assert any("not in any block generator" in e for e in exc.value.errors)
+
+
+def test_ann_vc_check_cli_generates(tmp_path):
+    ttac = tmp_path / "prog.ttac"
+    ttac.write_text(fx.SCALAR_DIAMOND)
+    smt2 = tmp_path / "vc.smt2"
+    smt2.write_text(generate_vc(parse_program(fx.SCALAR_DIAMOND)).smt_text)
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["ann-vc-check", str(ttac), str(smt2), "-o", str(out),
+         "--no-build", "--plain"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "generated (not validated)" in result.output
+    vc_files = list(out.glob("*/Vc.lean"))
+    assert vc_files, "no Vc.lean written"
+    assert "Ttac.Vc.AnnVC" in vc_files[0].read_text()
+    check_files = list(out.glob("*/Check.lean"))
+    assert "checkVCAnn_safe" in check_files[0].read_text()
+
+
+@pytest.mark.skipif(shutil.which("lake") is None, reason="lake not on PATH")
+@pytest.mark.skipif(
+    not os.environ.get("CTAC_LEAN_TESTS"), reason="set CTAC_LEAN_TESTS=1"
+)
+def test_lake_build_validates_ann_vc(tmp_path):
+    ttac = tmp_path / "prog.ttac"
+    ttac.write_text(fx.SCALAR_DIAMOND)
+    smt2 = tmp_path / "vc.smt2"
+    smt2.write_text(generate_vc(parse_program(fx.SCALAR_DIAMOND)).smt_text)
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["ann-vc-check", str(ttac), str(smt2), "-o", str(out),
+         "--no-build", "--plain"],
+    )
+    assert result.exit_code == 0, result.output
+    subprocess.run(["lake", "exe", "cache", "get"], cwd=out, check=True, timeout=1800)
+    build = subprocess.run(
+        ["lake", "build"], cwd=out, capture_output=True, text=True, timeout=1800
+    )
+    assert build.returncode == 0, build.stderr
