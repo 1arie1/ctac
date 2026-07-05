@@ -1,4 +1,4 @@
-import Ttac.Eval
+import Ttac.Vars
 
 /-!
 # VC representation and the expected-constraint generator
@@ -26,49 +26,6 @@ unsafe.
 -/
 
 namespace Ttac
-
-/-! ## Variable collectors (used by the use-checker and the congruence lemma) -/
-
-mutual
-  def IExp.intVars : IExp → List Nat
-    | .lit _ => []
-    | .var x => [x]
-    | .add a b | .sub a b | .mul a b | .div a b => a.intVars ++ b.intVars
-    | .ite c t e => c.intVars ++ t.intVars ++ e.intVars
-
-  def IExp.boolVars : IExp → List Nat
-    | .lit _ | .var _ => []
-    | .add a b | .sub a b | .mul a b | .div a b => a.boolVars ++ b.boolVars
-    | .ite c t e => c.boolVars ++ t.boolVars ++ e.boolVars
-
-  def BExp.intVars : BExp → List Nat
-    | .lit _ | .var _ | .blk _ => []
-    | .le a b | .lt a b | .eqI a b => a.intVars ++ b.intVars
-    | .eqB a b | .and a b | .or a b | .imp a b => a.intVars ++ b.intVars
-    | .not a => a.intVars
-    | .ite c t e => c.intVars ++ t.intVars ++ e.intVars
-
-  def BExp.boolVars : BExp → List Nat
-    | .lit _ | .blk _ => []
-    | .var c => [c]
-    | .le a b | .lt a b | .eqI a b => a.boolVars ++ b.boolVars
-    | .eqB a b | .and a b | .or a b | .imp a b => a.boolVars ++ b.boolVars
-    | .not a => a.boolVars
-    | .ite c t e => c.boolVars ++ t.boolVars ++ e.boolVars
-
-  def IExp.blkVars : IExp → List Nat
-    | .lit _ | .var _ => []
-    | .add a b | .sub a b | .mul a b | .div a b => a.blkVars ++ b.blkVars
-    | .ite c t e => c.blkVars ++ t.blkVars ++ e.blkVars
-
-  def BExp.blkVars : BExp → List Nat
-    | .lit _ | .var _ => []
-    | .blk b => [b]
-    | .le a b | .lt a b | .eqI a b => a.blkVars ++ b.blkVars
-    | .eqB a b | .and a b | .or a b | .imp a b => a.blkVars ++ b.blkVars
-    | .not a => a.blkVars
-    | .ite c t e => c.blkVars ++ t.blkVars ++ e.blkVars
-end
 
 namespace Vc
 

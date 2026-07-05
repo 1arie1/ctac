@@ -1,10 +1,12 @@
 import Ttac.Ast
 import Ttac.State
 import Ttac.Eval
+import Ttac.Vars
 import Ttac.Semantics
 import Ttac.Safety
 import Ttac.Vc
 import Ttac.VcCheck
+import Ttac.DefExt
 import Ttac.VcLemmas
 import Ttac.VcTrace
 import Ttac.VcReplay

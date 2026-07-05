@@ -1,21 +1,34 @@
+import Batteries.Data.List.Pairwise
+import Ttac.DefExt
 import Ttac.VcTrace
 
 /-!
-# The witness state
+# The witness as a definitional extension
 
 A failing execution's final state σ, with the guard component set from
 the visited-block list, satisfies every expected constraint except the
 *unguarded phi equations of unvisited joins* (their targets hold junk).
-The witness repairs exactly those: walk the blocks in program order and
-re-execute the phis of unvisited blocks against the accumulating state.
+Those equations are exactly a definition list in the sense of
+`Ttac.DefExt`: `witnessDefs` extracts them in program order, and this
+file discharges the generic lemma's two obligations for it -
 
-Guards live in their own `State.blks` component, written once by
-`setBlockVars` and never touched by repair (which only writes program
-registers) - so no disjointness side conditions are needed. SSA does
-the rest: repair writes only registers whose unique definition sits in
-an unvisited block, so every register with all defs in visited blocks
-keeps its σ value (`witness_agree_*`), and a repaired phi's right-hand
-side is never overwritten afterwards (`witness_phiI`/`witness_phiB`).
+- **ordering** (`orderedDefs_witnessDefs`): SSA gives pairwise-distinct
+  targets, and the phi-arm rule (every arm source is defined in a
+  strictly earlier block, `d ≤ p < b`) gives the no-later-read
+  condition; program order refines both to the list order.
+- **target inventory** (`intTarget_defAt`/`boolTarget_defAt`): a target
+  is precisely a register phi-defined in an unvisited block, which is
+  what the robustness instances in `VcSound` reason against.
+
+The witness itself is then just `applyDefs` over this list
+(`witness`); no bespoke replay machinery remains. Guards live in their
+own `State.blks` component, written once by `setBlockVars` and never
+touched by the extension (definitions only write program registers).
+
+The chain-selection lemmas at the bottom (`phiRhsI_select`/
+`phiRhsB_select`) are the semantic content of the phi constraint for
+*visited* joins - which ITE arm survives under the guard assignment -
+and are consumed by the robustness instance for visited phi equations.
 -/
 
 namespace Ttac
@@ -42,179 +55,6 @@ theorem setBlockVars_blk (P : Program) (V : List Nat) (σ : State)
 theorem setBlockVars_exit (P : Program) (V : List Nat) (σ : State) :
     (setBlockVars P V σ).blks P.blocks.length = true := by
   simp [setBlockVars]
-
-/-! ## Phi repair -/
-
-def repairCmd (P : Program) (s : State) : Cmd → State
-  | .phiI x arms => s.updI x (evalI s (Vc.phiRhsI P arms))
-  | .phiB c arms => s.updB c (evalB s (Vc.phiRhsB P arms))
-  | _ => s
-
-def repairCmds (P : Program) : List Cmd → State → State
-  | [], s => s
-  | c :: cs, s => repairCmds P cs (repairCmd P s c)
-
-def repairBlocks (P : Program) (V : List Nat) :
-    Nat → List Block → State → State
-  | _, [], s => s
-  | b, B :: Bs, s =>
-      repairBlocks P V (b + 1) Bs
-        (if b ∈ V then s else repairCmds P B.cmds s)
-
-def witness (P : Program) (V : List Nat) (σ : State) : State :=
-  repairBlocks P V 0 P.blocks (setBlockVars P V σ)
-
-/-! ## What repair leaves untouched -/
-
-theorem repairCmd_ints_ne {P : Program} {s : State} {c : Cmd}
-    {x : Nat} (h : cmdIntDef c ≠ some x) :
-    (repairCmd P s c).ints x = s.ints x := by
-  cases c <;> simp only [repairCmd, cmdIntDef] at h ⊢ <;>
-    first
-      | rfl
-      | exact State.updI_ints_of_ne s (fun heq => h (by rw [heq])) _
-
-theorem repairCmd_bools_ne {P : Program} {s : State} {c : Cmd}
-    {x : Nat} (h : cmdBoolDef c ≠ some x) :
-    (repairCmd P s c).bools x = s.bools x := by
-  cases c <;> simp only [repairCmd, cmdBoolDef] at h ⊢ <;>
-    first
-      | rfl
-      | exact State.updB_bools_of_ne s (fun heq => h (by rw [heq])) _
-
-theorem repairCmd_blks {P : Program} {s : State} {c : Cmd} :
-    (repairCmd P s c).blks = s.blks := by
-  cases c <;> rfl
-
-theorem repairCmds_ints_nodef {P : Program} {x : Nat} :
-    ∀ {cs : List Cmd} {s : State}, (∀ c ∈ cs, cmdIntDef c ≠ some x) →
-      (repairCmds P cs s).ints x = s.ints x
-  | [], _, _ => rfl
-  | c :: cs, s, h => by
-      rw [repairCmds, repairCmds_ints_nodef
-        (fun c' hc' => h c' (List.mem_cons_of_mem _ hc'))]
-      exact repairCmd_ints_ne (h c (List.mem_cons_self ..))
-
-theorem repairCmds_bools_nodef {P : Program} {x : Nat} :
-    ∀ {cs : List Cmd} {s : State}, (∀ c ∈ cs, cmdBoolDef c ≠ some x) →
-      (repairCmds P cs s).bools x = s.bools x
-  | [], _, _ => rfl
-  | c :: cs, s, h => by
-      rw [repairCmds, repairCmds_bools_nodef
-        (fun c' hc' => h c' (List.mem_cons_of_mem _ hc'))]
-      exact repairCmd_bools_ne (h c (List.mem_cons_self ..))
-
-theorem repairCmds_blks {P : Program} :
-    ∀ {cs : List Cmd} {s : State}, (repairCmds P cs s).blks = s.blks
-  | [], _ => rfl
-  | c :: cs, s => by
-      rw [repairCmds, repairCmds_blks, repairCmd_blks]
-
-theorem repairBlocks_ints_nodef {P : Program} {V : List Nat} {x : Nat} :
-    ∀ {Bs : List Block} {k : Nat} {s : State},
-      (∀ B ∈ Bs, ∀ c ∈ B.cmds, cmdIntDef c ≠ some x) →
-      (repairBlocks P V k Bs s).ints x = s.ints x
-  | [], _, _, _ => rfl
-  | B :: Bs, k, s, h => by
-      rw [repairBlocks, repairBlocks_ints_nodef
-        (fun B' hB' => h B' (List.mem_cons_of_mem _ hB'))]
-      split
-      · rfl
-      · exact repairCmds_ints_nodef (h B (List.mem_cons_self ..))
-
-theorem repairBlocks_bools_nodef {P : Program} {V : List Nat} {x : Nat} :
-    ∀ {Bs : List Block} {k : Nat} {s : State},
-      (∀ B ∈ Bs, ∀ c ∈ B.cmds, cmdBoolDef c ≠ some x) →
-      (repairBlocks P V k Bs s).bools x = s.bools x
-  | [], _, _, _ => rfl
-  | B :: Bs, k, s, h => by
-      rw [repairBlocks, repairBlocks_bools_nodef
-        (fun B' hB' => h B' (List.mem_cons_of_mem _ hB'))]
-      split
-      · rfl
-      · exact repairCmds_bools_nodef (h B (List.mem_cons_self ..))
-
-theorem repairBlocks_blks {P : Program} {V : List Nat} :
-    ∀ {Bs : List Block} {k : Nat} {s : State},
-      (repairBlocks P V k Bs s).blks = s.blks
-  | [], _, _ => rfl
-  | B :: Bs, k, s => by
-      rw [repairBlocks, repairBlocks_blks]
-      split
-      · rfl
-      · exact repairCmds_blks
-
-/-! ## Witness guard values -/
-
-theorem witness_blks {P : Program} {V : List Nat} {σ : State} :
-    (witness P V σ).blks = (setBlockVars P V σ).blks :=
-  repairBlocks_blks
-
-theorem witness_blk {P : Program} {V : List Nat} {σ : State}
-    {q : Nat} (hq : q < P.blocks.length) :
-    (witness P V σ).blks q = decide (q ∈ V) := by
-  rw [witness_blks, setBlockVars_blk _ _ _ hq]
-
-theorem witness_exit {P : Program} {V : List Nat} {σ : State} :
-    (witness P V σ).blks P.blocks.length = true := by
-  rw [witness_blks, setBlockVars_exit]
-
-/-! ## Agreement with σ -/
-
-/-- Visited-aware preservation: repair skips visited blocks, so a
-register with no int def in any *unvisited* block of the segment is
-untouched. Block list indices are program indices shifted by `k`. -/
-theorem repairBlocks_ints_visited {P : Program} {V : List Nat} {x : Nat} :
-    ∀ {Bs : List Block} {k : Nat} {s : State},
-      (∀ m B', Bs[m]? = some B' → (k + m) ∉ V →
-        ∀ c ∈ B'.cmds, cmdIntDef c ≠ some x) →
-      (repairBlocks P V k Bs s).ints x = s.ints x
-  | [], _, _, _ => rfl
-  | B :: Bs, k, s, h => by
-      rw [repairBlocks, repairBlocks_ints_visited (fun m B' hm hnv =>
-        h (m + 1) B' (by simpa using hm) (by
-          have : k + (m + 1) = k + 1 + m := by omega
-          rwa [this]))]
-      split
-      · rfl
-      · rename_i hkV
-        exact repairCmds_ints_nodef
-          (h 0 B rfl (by simpa using hkV))
-
-theorem repairBlocks_bools_visited {P : Program} {V : List Nat} {x : Nat} :
-    ∀ {Bs : List Block} {k : Nat} {s : State},
-      (∀ m B', Bs[m]? = some B' → (k + m) ∉ V →
-        ∀ c ∈ B'.cmds, cmdBoolDef c ≠ some x) →
-      (repairBlocks P V k Bs s).bools x = s.bools x
-  | [], _, _, _ => rfl
-  | B :: Bs, k, s, h => by
-      rw [repairBlocks, repairBlocks_bools_visited (fun m B' hm hnv =>
-        h (m + 1) B' (by simpa using hm) (by
-          have : k + (m + 1) = k + 1 + m := by omega
-          rwa [this]))]
-      split
-      · rfl
-      · rename_i hkV
-        exact repairCmds_bools_nodef
-          (h 0 B rfl (by simpa using hkV))
-
-/-- A register whose every definition sits in a visited block keeps its
-σ value (registers with no definition at all included). -/
-theorem witness_agree_int {P : Program} {V : List Nat} {σ : State}
-    {x : Nat} (hdefs : ∀ d j, IsDefAt P cmdIntDef x d j → d ∈ V) :
-    (witness P V σ).ints x = σ.ints x := by
-  rw [witness, repairBlocks_ints_visited, setBlockVars_ints]
-  intro m B' hm hnv c hc hdef
-  obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hc
-  exact hnv (by simpa using hdefs m j ⟨B', c, hm, hj, hdef⟩)
-
-theorem witness_agree_bool {P : Program} {V : List Nat} {σ : State}
-    {x : Nat} (hdefs : ∀ d j, IsDefAt P cmdBoolDef x d j → d ∈ V) :
-    (witness P V σ).bools x = σ.bools x := by
-  rw [witness, repairBlocks_bools_visited, setBlockVars_bools]
-  intro m B' hm hnv c hc hdef
-  obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hc
-  exact hnv (by simpa using hdefs m j ⟨B', c, hm, hj, hdef⟩)
 
 /-! ## Variable inventories of phi right-hand sides -/
 
@@ -370,260 +210,338 @@ theorem phiRhsB_boolVars {P : Program} {arms : PhiArms} :
   | nil => intro r hr; cases hr
   | cons a rest => exact phiChainB_boolVars a rest
 
-/-! ## Value of a repaired phi -/
+/-! ## The phi-arm rule, in dependence form
 
-theorem repairCmds_phiI {P : Program} {y : Nat} {arms : PhiArms} :
-    ∀ {cs : List Cmd} {i : Nat} {s : State}, cs[i]? = some (.phiI y arms) →
-      (∀ j c', cs[j]? = some c' → cmdIntDef c' = some y → j = i) →
-      (∀ c' ∈ cs, ∀ r, cmdIntDef c' = some r →
-        r ∉ (Vc.phiRhsI P arms).intVars) →
-      (repairCmds P cs s).ints y
-        = evalI (repairCmds P cs s) (Vc.phiRhsI P arms)
-  | [], i, s, hget, _, _ => by simp at hget
-  | c :: cs, i, s, hget, huniq, hint => by
-      cases i with
-      | zero =>
-          obtain rfl : c = .phiI y arms := by simpa using hget
-          have hy_nodef : ∀ c' ∈ cs, cmdIntDef c' ≠ some y := by
-            intro c' hc' hdef
-            obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hc'
-            have := huniq (j + 1) c' (by simpa using hj) hdef
-            omega
-          have hint_pres : ∀ r ∈ (Vc.phiRhsI P arms).intVars,
-              (repairCmds P cs (repairCmd P s (.phiI y arms))).ints r
-                = (repairCmd P s (.phiI y arms)).ints r := fun r hr =>
-            repairCmds_ints_nodef fun c' hc' hdef =>
-              hint c' (List.mem_cons_of_mem _ hc') r hdef hr
-          have hy_not : y ∉ (Vc.phiRhsI P arms).intVars :=
-            hint (.phiI y arms) (List.mem_cons_self ..) y (by simp [cmdIntDef])
-          have hrhs_upd : ∀ r ∈ (Vc.phiRhsI P arms).intVars,
-              (repairCmd P s (.phiI y arms)).ints r = s.ints r := by
-            intro r hr
-            simp only [repairCmd]
-            exact State.updI_ints_of_ne s
-              (fun h => hy_not (by rw [← h]; exact hr)) _
-          have hyval :
-              (repairCmds P cs (repairCmd P s (.phiI y arms))).ints y
-                = evalI s (Vc.phiRhsI P arms) := by
-            rw [repairCmds_ints_nodef hy_nodef]
-            simp [repairCmd]
-          rw [repairCmds, hyval]
-          refine (evalI_congr _ ?_ ?_ ?_).symm
-          · intro r hr
-            rw [hint_pres r hr, hrhs_upd r hr]
-          · intro r hr
-            exact absurd hr (by intro h; exact phiRhsI_boolVars r h)
-          · intro q _
-            rw [repairCmds_blks, repairCmd_blks]
-      | succ i' =>
-          rw [repairCmds]
-          exact repairCmds_phiI (by simpa using hget)
-            (fun j c' hj hdef => by
-              have := huniq (j + 1) c' (by simpa using hj) hdef
-              omega)
-            (fun c' hc' => hint c' (List.mem_cons_of_mem _ hc'))
+Every variable a phi right-hand side reads is defined strictly below
+the phi's block: the checker's arm-use rule gives `d ≤ p` and the phi
+shape gives `p < b`. This single fact drives both ordering obligations
+below. -/
 
-theorem repairCmds_phiB {P : Program} {y : Nat} {arms : PhiArms} :
-    ∀ {cs : List Cmd} {i : Nat} {s : State}, cs[i]? = some (.phiB y arms) →
-      (∀ j c', cs[j]? = some c' → cmdBoolDef c' = some y → j = i) →
-      (∀ c' ∈ cs, ∀ r, cmdBoolDef c' = some r →
-        r ∉ (Vc.phiRhsB P arms).boolVars) →
-      (repairCmds P cs s).bools y
-        = evalB (repairCmds P cs s) (Vc.phiRhsB P arms)
-  | [], i, s, hget, _, _ => by simp at hget
-  | c :: cs, i, s, hget, huniq, hbool => by
-      cases i with
-      | zero =>
-          obtain rfl : c = .phiB y arms := by simpa using hget
-          have hy_nodef : ∀ c' ∈ cs, cmdBoolDef c' ≠ some y := by
-            intro c' hc' hdef
-            obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hc'
-            have := huniq (j + 1) c' (by simpa using hj) hdef
-            omega
-          have hbool_pres : ∀ r ∈ (Vc.phiRhsB P arms).boolVars,
-              (repairCmds P cs (repairCmd P s (.phiB y arms))).bools r
-                = (repairCmd P s (.phiB y arms)).bools r := fun r hr =>
-            repairCmds_bools_nodef fun c' hc' hdef =>
-              hbool c' (List.mem_cons_of_mem _ hc') r hdef hr
-          have hy_not : y ∉ (Vc.phiRhsB P arms).boolVars :=
-            hbool (.phiB y arms) (List.mem_cons_self ..) y (by simp [cmdBoolDef])
-          have hrhs_upd : ∀ r ∈ (Vc.phiRhsB P arms).boolVars,
-              (repairCmd P s (.phiB y arms)).bools r = s.bools r := by
-            intro r hr
-            simp only [repairCmd]
-            exact State.updB_bools_of_ne s
-              (fun h => hy_not (by rw [← h]; exact hr)) _
-          have hyval :
-              (repairCmds P cs (repairCmd P s (.phiB y arms))).bools y
-                = evalB s (Vc.phiRhsB P arms) := by
-            rw [repairCmds_bools_nodef hy_nodef]
-            simp [repairCmd]
-          rw [repairCmds, hyval]
-          refine (evalB_congr _ ?_ ?_ ?_).symm
-          · intro r hr
-            exact absurd hr (by intro h; exact phiRhsB_intVars r h)
-          · intro r hr
-            rw [hbool_pres r hr, hrhs_upd r hr]
-          · intro q _
-            rw [repairCmds_blks, repairCmd_blks]
-      | succ i' =>
-          rw [repairCmds]
-          exact repairCmds_phiB (by simpa using hget)
-            (fun j c' hj hdef => by
-              have := huniq (j + 1) c' (by simpa using hj) hdef
-              omega)
-            (fun c' hc' => hbool c' (List.mem_cons_of_mem _ hc'))
-
-/-! ## Splitting the repair at a block -/
-
-theorem repairBlocks_append {P : Program} {V : List Nat} :
-    ∀ (l1 l2 : List Block) (k : Nat) (s : State),
-      repairBlocks P V k (l1 ++ l2) s
-        = repairBlocks P V (k + l1.length) l2 (repairBlocks P V k l1 s)
-  | [], l2, k, s => by simp [repairBlocks]
-  | B :: l1, l2, k, s => by
-      simp only [List.cons_append, repairBlocks]
-      rw [repairBlocks_append l1 l2 (k + 1)]
-      have hidx : k + (B :: l1).length = k + 1 + l1.length := by
-        simp [List.length_cons]
-        omega
-      rw [hidx]
-
-theorem list_split_getElem? {α : Type _} {l : List α} {i : Nat} {a : α}
-    (h : l[i]? = some a) : l = l.take i ++ a :: l.drop (i + 1) := by
-  obtain ⟨hi, hget⟩ := List.getElem?_eq_some_iff.mp h
-  conv_lhs => rw [← List.take_append_drop i l]
-  congr 1
-  rw [List.drop_eq_getElem_cons hi, hget]
-
-/-- The value of a phi in an *unvisited* block: the repair wrote it, and
-nothing after position `(b, i)` touches the target or the right-hand
-side's variables. -/
-theorem witness_phiI {P : Program} {V : List Nat} {σ : State}
-    (hssa : ssaOK P = true) (huse : usesOK P = true) (hphi : phiOK P = true)
-    {b : Nat} {B : Block} {i y : Nat}
-    {arms : PhiArms} (hB : P.block? b = some B)
-    (hc : B.cmds[i]? = some (.phiI y arms)) (hbV : b ∉ V) :
-    (witness P V σ).ints y
-      = evalI (witness P V σ) (Vc.phiRhsI P arms) := by
+theorem phi_srcI_lt {P : Program}
+    (huse : usesOK P = true) (hphi : phiOK P = true)
+    {b : Nat} {B : Block} {i y : Nat} {arms : PhiArms}
+    (hB : P.block? b = some B) (hc : B.cmds[i]? = some (.phiI y arms)) :
+    ∀ r ∈ (Vc.phiRhsI P arms).intVars,
+      ∀ d j, IsDefAt P cmdIntDef r d j → d < b := by
   have harms : phiArmsOK P b arms = true :=
     (phiOK_at hphi hB (List.mem_of_getElem? hc)).1 y arms rfl
   have hu := usesOK_cmd huse hB hc
   simp only [cmdUsesOK] at hu
-  have hsrc_lt : ∀ r ∈ (Vc.phiRhsI P arms).intVars,
-      ∀ d j, IsDefAt P cmdIntDef r d j → d < b := by
-    intro r hr d j hd
-    obtain ⟨q, hq⟩ := phiRhsI_intVars r hr
-    have hle := armUseOK_le (List.all_eq_true.mp hu (q, r) hq) d j hd
-    have := phiArm_lt harms hq
-    omega
-  have hy_def : IsDefAt P cmdIntDef y b i :=
-    ⟨B, _, hB, hc, by simp [cmdIntDef]⟩
-  have hw : witness P V σ
-      = repairBlocks P V (b + 1) (P.blocks.drop (b + 1))
-          (repairCmds P B.cmds
-            (repairBlocks P V 0 (P.blocks.take b)
-              (setBlockVars P V σ))) := by
-    have hblen :=
-      (List.getElem?_eq_some_iff.mp (show P.blocks[b]? = some B from hB)).1
-    have htake : (P.blocks.take b).length = b := by
-      rw [List.length_take]; omega
-    rw [witness]
-    conv_lhs => rw [list_split_getElem? (show P.blocks[b]? = some B from hB)]
-    rw [repairBlocks_append, htake, Nat.zero_add, repairBlocks, if_neg hbV]
-  set sm := repairCmds P B.cmds
-    (repairBlocks P V 0 (P.blocks.take b) (setBlockVars P V σ))
-    with hsm
-  have hrest_int : ∀ r, (∀ d j, IsDefAt P cmdIntDef r d j → d ≤ b) →
-      (repairBlocks P V (b + 1) (P.blocks.drop (b + 1)) sm).ints r
-        = sm.ints r := by
-    intro r hle
-    refine repairBlocks_ints_nodef ?_
-    intro B' hB' c' hc' hdef
-    obtain ⟨m, hm⟩ := List.mem_iff_getElem?.mp hB'
-    rw [List.getElem?_drop] at hm
-    obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hc'
-    have := hle _ _ ⟨B', c', hm, hj, hdef⟩
-    omega
-  have hmid : sm.ints y = evalI sm (Vc.phiRhsI P arms) := by
-    refine repairCmds_phiI hc ?_ ?_
-    · intro j c' hj hdef
-      exact (ssa_unique_int hssa hy_def ⟨B, c', hB, hj, hdef⟩).2
-    · intro c' hc' r hdef hr
-      obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hc'
-      have := hsrc_lt r hr b j ⟨B, c', hB, hj, hdef⟩
-      omega
-  rw [hw, hrest_int y (fun d j hd => by
-      have := (ssa_unique_int hssa hy_def hd).1
-      omega), hmid]
-  refine evalI_congr _
-    (fun r hr => (hrest_int r
-      (fun d j hd => Nat.le_of_lt (hsrc_lt r hr d j hd))).symm)
-    (fun r hr => absurd hr (by intro h; exact phiRhsI_boolVars r h))
-    (fun q _ => (congrFun repairBlocks_blks q).symm)
+  intro r hr d j hd
+  obtain ⟨q, hq⟩ := phiRhsI_intVars r hr
+  have hle := armUseOK_le (List.all_eq_true.mp hu (q, r) hq) d j hd
+  have := phiArm_lt harms hq
+  omega
 
-theorem witness_phiB {P : Program} {V : List Nat} {σ : State}
-    (hssa : ssaOK P = true) (huse : usesOK P = true) (hphi : phiOK P = true)
-    {b : Nat} {B : Block} {i y : Nat}
-    {arms : PhiArms} (hB : P.block? b = some B)
-    (hc : B.cmds[i]? = some (.phiB y arms)) (hbV : b ∉ V) :
-    (witness P V σ).bools y
-      = evalB (witness P V σ) (Vc.phiRhsB P arms) := by
+theorem phi_srcB_lt {P : Program}
+    (huse : usesOK P = true) (hphi : phiOK P = true)
+    {b : Nat} {B : Block} {i y : Nat} {arms : PhiArms}
+    (hB : P.block? b = some B) (hc : B.cmds[i]? = some (.phiB y arms)) :
+    ∀ r ∈ (Vc.phiRhsB P arms).boolVars,
+      ∀ d j, IsDefAt P cmdBoolDef r d j → d < b := by
   have harms : phiArmsOK P b arms = true :=
     (phiOK_at hphi hB (List.mem_of_getElem? hc)).2 y arms rfl
   have hu := usesOK_cmd huse hB hc
   simp only [cmdUsesOK] at hu
-  have hsrc_lt : ∀ r ∈ (Vc.phiRhsB P arms).boolVars,
-      ∀ d j, IsDefAt P cmdBoolDef r d j → d < b := by
-    intro r hr d j hd
-    obtain ⟨q, hq⟩ := phiRhsB_boolVars r hr
-    have hle := armUseOK_le (List.all_eq_true.mp hu (q, r) hq) d j hd
-    have := phiArm_lt harms hq
+  intro r hr d j hd
+  obtain ⟨q, hq⟩ := phiRhsB_boolVars r hr
+  have hle := armUseOK_le (List.all_eq_true.mp hu (q, r) hq) d j hd
+  have := phiArm_lt harms hq
+  omega
+
+/-! ## The unvisited-phi definition list -/
+
+/-- The definition a phi command contributes; `none` for anything else.
+The right-hand side is the *same* `phiRhsI`/`phiRhsB` term the expected
+phi constraint uses, so a definition's `toConstraint` is literally the
+constraint - `sat_extend`'s second disjunct needs no reasoning. -/
+def phiDef? (P : Program) : Cmd → Option DefExt.Def
+  | .phiI x arms => some (.defI x (Vc.phiRhsI P arms))
+  | .phiB x arms => some (.defB x (Vc.phiRhsB P arms))
+  | _ => none
+
+def phiDefs (P : Program) (cs : List Cmd) : List DefExt.Def :=
+  cs.filterMap (phiDef? P)
+
+def unvisitedPhiDefs (P : Program) (V : List Nat) :
+    Nat → List Block → List DefExt.Def
+  | _, [] => []
+  | b, B :: Bs =>
+      (if b ∈ V then [] else phiDefs P B.cmds)
+        ++ unvisitedPhiDefs P V (b + 1) Bs
+
+/-- The phi definitions of unvisited blocks, in program order. -/
+def witnessDefs (P : Program) (V : List Nat) : List DefExt.Def :=
+  unvisitedPhiDefs P V 0 P.blocks
+
+/-- The satisfying assignment built from a failing execution: σ, guards
+from the visited list, then the definitional extension over the
+unvisited phis. -/
+def witness (P : Program) (V : List Nat) (σ : State) : State :=
+  DefExt.applyDefs (witnessDefs P V) (setBlockVars P V σ)
+
+/-! ## Positions of extracted definitions -/
+
+/-- `d` is the definition extracted from the phi command at `(b, i)`. -/
+def PhiDefAt (P : Program) (d : DefExt.Def) (b i : Nat) : Prop :=
+  ∃ B c, P.block? b = some B ∧ B.cmds[i]? = some c ∧ phiDef? P c = some d
+
+theorem phiDef?_eq_some {P : Program} {c : Cmd} {d : DefExt.Def}
+    (h : phiDef? P c = some d) :
+    (∃ x arms, c = .phiI x arms ∧ d = .defI x (Vc.phiRhsI P arms))
+      ∨ (∃ x arms, c = .phiB x arms ∧ d = .defB x (Vc.phiRhsB P arms)) := by
+  cases c <;> simp only [phiDef?, Option.some.injEq, reduceCtorEq] at h
+  case phiI x arms => exact Or.inl ⟨x, arms, rfl, h.symm⟩
+  case phiB x arms => exact Or.inr ⟨x, arms, rfl, h.symm⟩
+
+theorem PhiDefAt.intTarget_defAt {P : Program} {d : DefExt.Def} {b i : Nat}
+    (h : PhiDefAt P d b i) {x : Nat} (hx : d.intTarget? = some x) :
+    IsDefAt P cmdIntDef x b i := by
+  obtain ⟨B, c, hB, hc, hd⟩ := h
+  rcases phiDef?_eq_some hd with ⟨y, arms, rfl, rfl⟩ | ⟨y, arms, rfl, rfl⟩
+  · obtain rfl : y = x := Option.some.inj hx
+    exact ⟨B, _, hB, hc, rfl⟩
+  · cases hx
+
+theorem PhiDefAt.boolTarget_defAt {P : Program} {d : DefExt.Def} {b i : Nat}
+    (h : PhiDefAt P d b i) {x : Nat} (hx : d.boolTarget? = some x) :
+    IsDefAt P cmdBoolDef x b i := by
+  obtain ⟨B, c, hB, hc, hd⟩ := h
+  rcases phiDef?_eq_some hd with ⟨y, arms, rfl, rfl⟩ | ⟨y, arms, rfl, rfl⟩
+  · cases hx
+  · obtain rfl : y = x := Option.some.inj hx
+    exact ⟨B, _, hB, hc, rfl⟩
+
+theorem PhiDefAt.rhsIntVars_lt {P : Program}
+    (huse : usesOK P = true) (hphi : phiOK P = true)
+    {d : DefExt.Def} {b i : Nat} (h : PhiDefAt P d b i) :
+    ∀ r ∈ d.rhsIntVars, ∀ e j, IsDefAt P cmdIntDef r e j → e < b := by
+  obtain ⟨B, c, hB, hc, hd⟩ := h
+  rcases phiDef?_eq_some hd with ⟨y, arms, rfl, rfl⟩ | ⟨y, arms, rfl, rfl⟩
+  · exact phi_srcI_lt huse hphi hB hc
+  · intro r hr
+    exact (phiRhsB_intVars r hr).elim
+
+theorem PhiDefAt.rhsBoolVars_lt {P : Program}
+    (huse : usesOK P = true) (hphi : phiOK P = true)
+    {d : DefExt.Def} {b i : Nat} (h : PhiDefAt P d b i) :
+    ∀ r ∈ d.rhsBoolVars, ∀ e j, IsDefAt P cmdBoolDef r e j → e < b := by
+  obtain ⟨B, c, hB, hc, hd⟩ := h
+  rcases phiDef?_eq_some hd with ⟨y, arms, rfl, rfl⟩ | ⟨y, arms, rfl, rfl⟩
+  · intro r hr
+    exact (phiRhsI_boolVars r hr).elim
+  · exact phi_srcB_lt huse hphi hB hc
+
+/-- No phi reads its own target: the right-hand side's variables are
+defined strictly below the phi's block, the target at it. -/
+theorem PhiDefAt.selfOK {P : Program}
+    (huse : usesOK P = true) (hphi : phiOK P = true)
+    {d : DefExt.Def} {b i : Nat} (h : PhiDefAt P d b i) :
+    DefExt.SelfOK d := by
+  constructor
+  · intro x hx hxin
+    have := h.rhsIntVars_lt huse hphi x hxin b i (h.intTarget_defAt hx)
     omega
-  have hy_def : IsDefAt P cmdBoolDef y b i :=
-    ⟨B, _, hB, hc, by simp [cmdBoolDef]⟩
-  have hw : witness P V σ
-      = repairBlocks P V (b + 1) (P.blocks.drop (b + 1))
-          (repairCmds P B.cmds
-            (repairBlocks P V 0 (P.blocks.take b)
-              (setBlockVars P V σ))) := by
-    have hblen :=
-      (List.getElem?_eq_some_iff.mp (show P.blocks[b]? = some B from hB)).1
-    have htake : (P.blocks.take b).length = b := by
-      rw [List.length_take]; omega
-    rw [witness]
-    conv_lhs => rw [list_split_getElem? (show P.blocks[b]? = some B from hB)]
-    rw [repairBlocks_append, htake, Nat.zero_add, repairBlocks, if_neg hbV]
-  set sm := repairCmds P B.cmds
-    (repairBlocks P V 0 (P.blocks.take b) (setBlockVars P V σ))
-    with hsm
-  have hrest_bool : ∀ r, (∀ d j, IsDefAt P cmdBoolDef r d j → d ≤ b) →
-      (repairBlocks P V (b + 1) (P.blocks.drop (b + 1)) sm).bools r
-        = sm.bools r := by
-    intro r hle
-    refine repairBlocks_bools_nodef ?_
-    intro B' hB' c' hc' hdef
-    obtain ⟨m, hm⟩ := List.mem_iff_getElem?.mp hB'
-    rw [List.getElem?_drop] at hm
-    obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hc'
-    have := hle _ _ ⟨B', c', hm, hj, hdef⟩
+  · intro x hx hxin
+    have := h.rhsBoolVars_lt huse hphi x hxin b i (h.boolTarget_defAt hx)
     omega
-  have hmid : sm.bools y = evalB sm (Vc.phiRhsB P arms) := by
-    refine repairCmds_phiB hc ?_ ?_
-    · intro j c' hj hdef
-      exact (ssa_unique_bool hssa hy_def ⟨B, c', hB, hj, hdef⟩).2
-    · intro c' hc' r hdef hr
-      obtain ⟨j, hj⟩ := List.mem_iff_getElem?.mp hc'
-      have := hsrc_lt r hr b j ⟨B, c', hB, hj, hdef⟩
+
+/-- Two phi definitions at lexicographically ordered positions satisfy
+the generic no-later-write condition: SSA makes the targets distinct,
+and the arm rule pins every right-hand-side variable strictly below the
+earlier position's block - where the later definition cannot write. -/
+theorem untouched_of_positions {P : Program}
+    (hssa : ssaOK P = true) (huse : usesOK P = true) (hphi : phiOK P = true)
+    {d d' : DefExt.Def} {b i b' i' : Nat}
+    (hlex : b < b' ∨ (b = b' ∧ i < i'))
+    (hd : PhiDefAt P d b i) (hd' : PhiDefAt P d' b' i') :
+    DefExt.Untouched d d' := by
+  constructor
+  · intro x hx'
+    have hdef' : IsDefAt P cmdIntDef x b' i' := hd'.intTarget_defAt hx'
+    constructor
+    · intro hx
+      obtain ⟨hb, hi⟩ := ssa_unique_int hssa (hd.intTarget_defAt hx) hdef'
       omega
-  rw [hw, hrest_bool y (fun d j hd => by
-      have := (ssa_unique_bool hssa hy_def hd).1
-      omega), hmid]
-  refine evalB_congr _
-    (fun r hr => absurd hr (by intro h; exact phiRhsB_intVars r h))
-    (fun r hr => (hrest_bool r
-      (fun d j hd => Nat.le_of_lt (hsrc_lt r hr d j hd))).symm)
-    (fun q _ => (congrFun repairBlocks_blks q).symm)
+    · intro hr
+      have := hd.rhsIntVars_lt huse hphi x hr b' i' hdef'
+      omega
+  · intro x hx'
+    have hdef' : IsDefAt P cmdBoolDef x b' i' := hd'.boolTarget_defAt hx'
+    constructor
+    · intro hx
+      obtain ⟨hb, hi⟩ := ssa_unique_bool hssa (hd.boolTarget_defAt hx) hdef'
+      omega
+    · intro hr
+      have := hd.rhsBoolVars_lt huse hphi x hr b' i' hdef'
+      omega
+
+/-! ## Membership in the definition list -/
+
+theorem phiDefs_defAt {P : Program} {b : Nat} {B : Block}
+    (hB : P.block? b = some B) {d : DefExt.Def}
+    (hd : d ∈ phiDefs P B.cmds) : ∃ i, PhiDefAt P d b i := by
+  rw [phiDefs, List.mem_filterMap] at hd
+  obtain ⟨c, hc, hcd⟩ := hd
+  obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hc
+  exact ⟨i, B, c, hB, hi, hcd⟩
+
+theorem unvisitedPhiDefs_defAt {P : Program} {V : List Nat} {d : DefExt.Def} :
+    ∀ {k : Nat} {Bs : List Block}, (∀ m, Bs[m]? = P.blocks[k + m]?) →
+      d ∈ unvisitedPhiDefs P V k Bs →
+      ∃ b, k ≤ b ∧ b ∉ V ∧ ∃ i, PhiDefAt P d b i
+  | _, [], _, hd => (List.not_mem_nil hd).elim
+  | k, B :: Bs', hBs, hd => by
+      rw [unvisitedPhiDefs, List.mem_append] at hd
+      rcases hd with hd | hd
+      · have hB : P.block? k = some B := by
+          have h0 := hBs 0
+          rw [List.getElem?_cons_zero] at h0
+          exact h0.symm
+        split at hd
+        · exact (List.not_mem_nil hd).elim
+        · rename_i hkV
+          obtain ⟨i, hAt⟩ := phiDefs_defAt hB hd
+          exact ⟨k, Nat.le_refl k, hkV, i, hAt⟩
+      · have hBs' : ∀ m, Bs'[m]? = P.blocks[(k + 1) + m]? := fun m => by
+          have h := hBs (m + 1)
+          rwa [List.getElem?_cons_succ,
+            show k + (m + 1) = (k + 1) + m by omega] at h
+        obtain ⟨b, hkb, hbV, hex⟩ := unvisitedPhiDefs_defAt hBs' hd
+        exact ⟨b, by omega, hbV, hex⟩
+
+theorem phiDefAt_mem_unvisited {P : Program} {V : List Nat}
+    {d : DefExt.Def} {b i : Nat}
+    (hAt : PhiDefAt P d b i) (hbV : b ∉ V) :
+    ∀ {k : Nat} {Bs : List Block}, (∀ m, Bs[m]? = P.blocks[k + m]?) →
+      k ≤ b → d ∈ unvisitedPhiDefs P V k Bs
+  | k, [], hBs, hkb => by
+      obtain ⟨B, c, hB, -, -⟩ := hAt
+      have hB' : P.blocks[b]? = some B := hB
+      have h := hBs (b - k)
+      rw [List.getElem?_nil, show k + (b - k) = b by omega, hB'] at h
+      cases h
+  | k, B' :: Bs', hBs, hkb => by
+      rw [unvisitedPhiDefs, List.mem_append]
+      by_cases hbk : b = k
+      · left
+        subst hbk
+        rw [if_neg hbV]
+        obtain ⟨B, c, hB, hc, hcd⟩ := hAt
+        have hB0 : P.block? b = some B' := by
+          have h0 := hBs 0
+          rw [List.getElem?_cons_zero] at h0
+          exact h0.symm
+        obtain rfl : B = B' := Option.some.inj (hB.symm.trans hB0)
+        rw [phiDefs, List.mem_filterMap]
+        exact ⟨c, List.mem_of_getElem? hc, hcd⟩
+      · right
+        have hBs' : ∀ m, Bs'[m]? = P.blocks[(k + 1) + m]? := fun m => by
+          have h := hBs (m + 1)
+          rwa [List.getElem?_cons_succ,
+            show k + (m + 1) = (k + 1) + m by omega] at h
+        exact phiDefAt_mem_unvisited hAt hbV hBs' (by omega)
+
+private theorem blocks_shift (P : Program) :
+    ∀ m, P.blocks[m]? = P.blocks[0 + m]? :=
+  fun m => by rw [Nat.zero_add]
+
+theorem witnessDefs_defAt {P : Program} {V : List Nat} {d : DefExt.Def}
+    (hd : d ∈ witnessDefs P V) : ∃ b, b ∉ V ∧ ∃ i, PhiDefAt P d b i := by
+  obtain ⟨b, -, hbV, hex⟩ := unvisitedPhiDefs_defAt (blocks_shift P) hd
+  exact ⟨b, hbV, hex⟩
+
+theorem phiDefAt_mem_witnessDefs {P : Program} {V : List Nat}
+    {d : DefExt.Def} {b i : Nat}
+    (hAt : PhiDefAt P d b i) (hbV : b ∉ V) : d ∈ witnessDefs P V :=
+  phiDefAt_mem_unvisited hAt hbV (blocks_shift P) (Nat.zero_le b)
+
+/-! ## The ordering obligation -/
+
+theorem pairwise_phiDefs {P : Program}
+    (hssa : ssaOK P = true) (huse : usesOK P = true) (hphi : phiOK P = true)
+    {b : Nat} {B : Block} (hB : P.block? b = some B) :
+    (phiDefs P B.cmds).Pairwise DefExt.Untouched := by
+  rw [phiDefs, List.pairwise_filterMap, List.pairwise_iff_get]
+  intro i j hij d hd d' hd'
+  have hci : B.cmds[i.1]? = some (B.cmds.get i) :=
+    List.getElem?_eq_getElem i.isLt
+  have hcj : B.cmds[j.1]? = some (B.cmds.get j) :=
+    List.getElem?_eq_getElem j.isLt
+  have hAt : PhiDefAt P d b i.1 := ⟨B, _, hB, hci, hd⟩
+  have hAt' : PhiDefAt P d' b j.1 := ⟨B, _, hB, hcj, hd'⟩
+  exact untouched_of_positions hssa huse hphi (Or.inr ⟨rfl, hij⟩) hAt hAt'
+
+theorem pairwise_unvisitedPhiDefs {P : Program} {V : List Nat}
+    (hssa : ssaOK P = true) (huse : usesOK P = true) (hphi : phiOK P = true) :
+    ∀ {k : Nat} {Bs : List Block}, (∀ m, Bs[m]? = P.blocks[k + m]?) →
+      (unvisitedPhiDefs P V k Bs).Pairwise DefExt.Untouched
+  | _, [], _ => List.Pairwise.nil
+  | k, B :: Bs', hBs => by
+      have hB : P.block? k = some B := by
+        have h0 := hBs 0
+        rw [List.getElem?_cons_zero] at h0
+        exact h0.symm
+      have hBs' : ∀ m, Bs'[m]? = P.blocks[(k + 1) + m]? := fun m => by
+        have h := hBs (m + 1)
+        rwa [List.getElem?_cons_succ,
+          show k + (m + 1) = (k + 1) + m by omega] at h
+      rw [unvisitedPhiDefs, List.pairwise_append]
+      refine ⟨?_, pairwise_unvisitedPhiDefs hssa huse hphi hBs', ?_⟩
+      · split
+        · exact List.Pairwise.nil
+        · exact pairwise_phiDefs hssa huse hphi hB
+      · intro d hd d' hd'
+        obtain ⟨b', hkb', -, i', hAt'⟩ := unvisitedPhiDefs_defAt hBs' hd'
+        split at hd
+        · exact (List.not_mem_nil hd).elim
+        · obtain ⟨i, hAt⟩ := phiDefs_defAt hB hd
+          exact untouched_of_positions hssa huse hphi
+            (Or.inl (by omega)) hAt hAt'
+
+/-- The unvisited phis form an ordered definition list: what your
+one-paragraph proof calls "acyclic with distinct left-hand sides". -/
+theorem orderedDefs_witnessDefs {P : Program} {V : List Nat}
+    (hssa : ssaOK P = true) (huse : usesOK P = true)
+    (hphi : phiOK P = true) :
+    DefExt.OrderedDefs (witnessDefs P V) := by
+  refine ⟨?_, pairwise_unvisitedPhiDefs hssa huse hphi (blocks_shift P)⟩
+  intro d hd
+  obtain ⟨b, -, i, hAt⟩ := witnessDefs_defAt hd
+  exact hAt.selfOK huse hphi
+
+/-! ## The target inventory
+
+The extension's write set `W`, characterized: exactly the registers
+phi-defined in unvisited blocks. The negative form is what the
+robustness instances use - a register whose every definition is in a
+visited block is outside `W`. -/
+
+theorem intTarget_defAt {P : Program} {V : List Nat} {x : Nat}
+    (hx : x ∈ DefExt.intTargets (witnessDefs P V)) :
+    ∃ b, b ∉ V ∧ ∃ i, IsDefAt P cmdIntDef x b i := by
+  obtain ⟨d, hd, htgt⟩ := DefExt.mem_intTargets.mp hx
+  obtain ⟨b, hbV, i, hAt⟩ := witnessDefs_defAt hd
+  exact ⟨b, hbV, i, hAt.intTarget_defAt htgt⟩
+
+theorem boolTarget_defAt {P : Program} {V : List Nat} {x : Nat}
+    (hx : x ∈ DefExt.boolTargets (witnessDefs P V)) :
+    ∃ b, b ∉ V ∧ ∃ i, IsDefAt P cmdBoolDef x b i := by
+  obtain ⟨d, hd, htgt⟩ := DefExt.mem_boolTargets.mp hx
+  obtain ⟨b, hbV, i, hAt⟩ := witnessDefs_defAt hd
+  exact ⟨b, hbV, i, hAt.boolTarget_defAt htgt⟩
+
+theorem not_intTarget_of_visited {P : Program} {V : List Nat} {x : Nat}
+    (h : ∀ b i, IsDefAt P cmdIntDef x b i → b ∈ V) :
+    x ∉ DefExt.intTargets (witnessDefs P V) := fun hx => by
+  obtain ⟨b, hbV, i, hdef⟩ := intTarget_defAt hx
+  exact hbV (h b i hdef)
+
+theorem not_boolTarget_of_visited {P : Program} {V : List Nat} {x : Nat}
+    (h : ∀ b i, IsDefAt P cmdBoolDef x b i → b ∈ V) :
+    x ∉ DefExt.boolTargets (witnessDefs P V) := fun hx => by
+  obtain ⟨b, hbV, i, hdef⟩ := boolTarget_defAt hx
+  exact hbV (h b i hdef)
 
 /-! ## Chain selection for visited phis -/
 
