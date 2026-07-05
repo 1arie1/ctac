@@ -35,8 +35,10 @@ diamond is safe under the small-step semantics (via `checkVCAnn_safe`). -/
 theorem annvc_implies_safe : Vc.AnnVC.Unsat annvc → prog.Safe :=
   checkVCAnn_safe annvc_ok
 
-/-- A tampered annotation (objective dropped) must be rejected. -/
-example : Vc.checkVCAnn prog { annvc with objective := [] } = false := by
+/-- A tampered annotation (a bogus constraint the encoder never emits) must be
+rejected. (Dropping constraints is a sound subset and is accepted, as with the
+flat `checkVC`.) -/
+example : Vc.checkVCAnn prog { annvc with objective := [.blk 42] } = false := by
   native_decide
 
 end TtacExamples.Diamond

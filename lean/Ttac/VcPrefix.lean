@@ -803,46 +803,56 @@ def AnnVC.Sat (w : State) (a : AnnVC) : Prop :=
 
 def AnnVC.Unsat (a : AnnVC) : Prop := ¬∃ w, a.Sat w
 
-/-- Local per-site validation: the program is well-formed, each block's buckets
-equal the encoder's generators, and the objective / map definitions match. A
-wrong annotation fails here — a completeness loss, never unsound. -/
+/-- Local per-site validation: the program is well-formed and every constraint
+filed under a block is one that block's generators actually emit (per-bucket
+*subset*, mirroring the flat `checkVC`'s subset check — real `ttac vcgen`
+output drops trivially-true terms). This validates the annotation's
+block-attribution; a mis-filed constraint fails the cheap local check — a
+completeness loss, never unsound. -/
 def checkVCAnn (P : Program) (a : AnnVC) : Bool :=
   wellFormed P
     && decide (a.perBlock.length = P.blocks.length)
     && (a.perBlock.zipIdx.all fun (bk, b) =>
-          decide (bk.cfg = cfgConstraintsFor P b)
+          bk.cfg.all (fun c => decide (c ∈ cfgConstraintsFor P b))
             && (match P.blocks[b]? with
-                | some B => decide (bk.cmds = B.cmds.map (cmdConstraints P b))
+                | some B => bk.cmds.flatten.all
+                    (fun c => decide (c ∈ (B.cmds.map (cmdConstraints P b)).flatten))
                 | none => false))
     && (match assertSites P with
-        | [(aB, _, okReg)] => decide (a.objective = objective P aB okReg)
+        | [(aB, _, okReg)] =>
+            a.objective.all (fun c => decide (c ∈ objective P aB okReg))
         | _ => false)
-    && decide (a.mapDefs = expectedMapDefs P)
+    && a.mapDefs.all (fun md => decide (md ∈ expectedMapDefs P))
 
-/-- What a passing `checkVCAnn` guarantees, decoded from the `&&` chain. -/
+/-- What a passing `checkVCAnn` guarantees, decoded from the `&&` chain: each
+bucket is a subset of its block's generators, the objective a subset of the
+objective, the map defs a subset of the expected ones. -/
 theorem checkVCAnn_true {P : Program} {a : AnnVC} (h : checkVCAnn P a = true) :
     wellFormed P = true
     ∧ a.perBlock.length = P.blocks.length
     ∧ (∀ bk b, (bk, b) ∈ a.perBlock.zipIdx →
-        bk.cfg = cfgConstraintsFor P b ∧
-        ∃ B, P.block? b = some B ∧ bk.cmds = B.cmds.map (cmdConstraints P b))
+        (∀ c ∈ bk.cfg, c ∈ cfgConstraintsFor P b) ∧
+        ∃ B, P.block? b = some B ∧
+          ∀ c ∈ bk.cmds.flatten, c ∈ (B.cmds.map (cmdConstraints P b)).flatten)
     ∧ (∃ aB iA okReg, assertSites P = [(aB, iA, okReg)]
-        ∧ a.objective = objective P aB okReg)
-    ∧ a.mapDefs = expectedMapDefs P := by
+        ∧ ∀ c ∈ a.objective, c ∈ objective P aB okReg)
+    ∧ (∀ md ∈ a.mapDefs, md ∈ expectedMapDefs P) := by
   unfold checkVCAnn at h
   rw [Bool.and_eq_true, Bool.and_eq_true, Bool.and_eq_true, Bool.and_eq_true] at h
   obtain ⟨⟨⟨⟨hwf, hlen⟩, hall⟩, hobj⟩, hmap⟩ := h
-  rw [decide_eq_true_eq] at hlen hmap
-  refine ⟨hwf, hlen, ?_, ?_, hmap⟩
+  rw [decide_eq_true_eq] at hlen
+  refine ⟨hwf, hlen, ?_, ?_,
+    fun md hmd => of_decide_eq_true (List.all_eq_true.mp hmap md hmd)⟩
   · intro bk b hmem
     have hb := List.all_eq_true.mp hall (bk, b) hmem
-    rw [Bool.and_eq_true, decide_eq_true_eq] at hb
-    refine ⟨hb.1, ?_⟩
+    rw [Bool.and_eq_true] at hb
+    refine ⟨fun c hc => of_decide_eq_true (List.all_eq_true.mp hb.1 c hc), ?_⟩
     rw [Program.block?]
     revert hb
     cases hbeq : P.blocks[b]? with
     | none => intro hb; simp at hb
-    | some B => intro hb; rw [decide_eq_true_eq] at hb; exact ⟨B, rfl, hb.2⟩
+    | some B => exact fun hb => ⟨B, rfl,
+        fun c hc => of_decide_eq_true (List.all_eq_true.mp hb.2 c hc)⟩
   · revert hobj
     cases hsig : assertSites P with
     | nil => intro hobj; simp at hobj
@@ -850,17 +860,17 @@ theorem checkVCAnn_true {P : Program} {a : AnnVC} (h : checkVCAnn P a = true) :
         cases rest with
         | nil =>
             obtain ⟨aB, iA, okReg⟩ := a0
-            intro hobj; rw [decide_eq_true_eq] at hobj
-            exact ⟨aB, iA, okReg, rfl, hobj⟩
+            exact fun hobj => ⟨aB, iA, okReg, rfl,
+              fun c hc => of_decide_eq_true (List.all_eq_true.mp hobj c hc)⟩
         | cons a1 rest' => intro hobj; simp at hobj
 
 /-- Every constraint the annotated VC denotes is one the encoder is entitled
-to emit (`expected P`): the per-site checks pin each bucket to its generator,
-so `flatten` is a permutation of `expected P` — membership suffices. -/
+to emit (`expected P`): each bucket is a subset of its block's generators, so
+`flatten` is a subset of `expected P`. -/
 theorem flatten_mem_expected {P : Program} {a : AnnVC}
     (h : checkVCAnn P a = true) {c : BExp} (hc : c ∈ a.flatten) :
     c ∈ expected P := by
-  obtain ⟨-, hlen, hblocks, ⟨aB, iA, okReg, hsig, hobjeq⟩, -⟩ := checkVCAnn_true h
+  obtain ⟨-, hlen, hblocks, ⟨aB, iA, okReg, hsig, hobjsub⟩, -⟩ := checkVCAnn_true h
   have hexp : expected P
       = (P.blocks.zipIdx.map fun (B, b) =>
           (B.cmds.map (cmdConstraints P b)).flatten).flatten
@@ -878,23 +888,19 @@ theorem flatten_mem_expected {P : Program} {a : AnnVC}
       List.mem_zipIdx_iff_getElem?.mpr hbidx
     have hblt : b < P.blocks.length := by
       have := (List.getElem?_eq_some_iff.mp hbidx).1; omega
-    obtain ⟨hcfg, B, hB, hcmds⟩ := hblocks bk b hmemz
+    obtain ⟨hcfgsub, B, hB, hcmdssub⟩ := hblocks bk b hmemz
     rw [List.mem_append] at hcL
     rcases hcL with hccfg | hccmds
-    · -- CFG bucket
-      rw [hcfg] at hccfg
-      refine List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inr ?_)))
+    · refine List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inr ?_)))
       rw [cfgConstraints_eq, List.mem_flatten]
       exact ⟨cfgConstraintsFor P b, List.mem_map.mpr
-        ⟨b, List.mem_range.mpr hblt, rfl⟩, hccfg⟩
-    · -- per-command bucket
-      rw [hcmds] at hccmds
-      refine List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inl ?_)))
+        ⟨b, List.mem_range.mpr hblt, rfl⟩, hcfgsub c hccfg⟩
+    · refine List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inl ?_)))
       rw [List.mem_flatten]
       exact ⟨(B.cmds.map (cmdConstraints P b)).flatten,
-        List.mem_map.mpr ⟨(B, b), List.mem_zipIdx_iff_getElem?.mpr hB, rfl⟩, hccmds⟩
-  · rw [hobjeq] at hc
-    exact List.mem_append.mpr (Or.inr hc)
+        List.mem_map.mpr ⟨(B, b), List.mem_zipIdx_iff_getElem?.mpr hB, rfl⟩,
+        hcmdssub c hccmds⟩
+  · exact List.mem_append.mpr (Or.inr (hobjsub c hc))
 
 end Vc
 
@@ -921,8 +927,7 @@ theorem checkVCAnn_sound {P : Program} {a : Vc.AnnVC}
       (annExpected_robust_or_def hone hssa hfwd hphi hamo hgf hdc huse
         hentV hhead hedge hfacts hlast)
       c (Vc.flatten_mem_expected hchk hc)
-  · rw [hmap]
-    have hall := DefExt.sat_extend_defs
+  · have hall := DefExt.sat_extend_defs
       (ds := (Vc.expectedMapDefs P).map fun md => (⟨.map, md.1, md.2⟩ : DefExt.Def))
       (orderedDefs_witnessDefs hssa huse hphi)
       (fun d hd => by
@@ -930,7 +935,7 @@ theorem checkVCAnn_sound {P : Program} {a : Vc.AnnVC}
         exact annExpectedMapDefs_robust_or_def hssa hfwd hphi hamo hgf hdc huse
           hentV hhead hedge hfacts md hmd)
     intro md hmd
-    exact hall _ (List.mem_map.mpr ⟨md, hmd, rfl⟩)
+    exact hall _ (List.mem_map.mpr ⟨md, hmap md hmd, rfl⟩)
 
 theorem checkVCAnn_safe {P : Program} {a : Vc.AnnVC}
     (hchk : Vc.checkVCAnn P a = true) (hunsat : a.Unsat) : P.Safe :=
