@@ -40,6 +40,12 @@ _DEEP = {
     "havocB": ".havoc .bool",
     "phiI": ".phi .int",
     "phiB": ".phi .bool",
+    "varM": ".var .map",
+    "select": ".select",
+    "store": ".store",
+    "assignM": ".assign .map",
+    "havocM": ".havoc .map",
+    "phiM": ".phi .map",
     "assume": ".assume",
     "assert": ".assert",
     "halt": ".halt",
@@ -57,13 +63,17 @@ def _header(source: str | None, *, tool: str = "ttac lean") -> str:
 
 
 def expr_ty(e: ast.Expr, types: dict[str, Ty]) -> Ty:
-    """Scalar-only structural expression type (input is validated)."""
+    """Structural expression type (input is validated)."""
     if isinstance(e, ast.Num):
         return Ty.INT
     if isinstance(e, ast.BoolLit):
         return Ty.BOOL
     if isinstance(e, ast.Var):
         return types[e.name]
+    if isinstance(e, ast.Load):
+        return Ty.INT
+    if isinstance(e, ast.Update):
+        return Ty.BYTEMAP
     if isinstance(e, ast.BinExpr):
         if e.op in ("+", "-", "*", "/"):
             return Ty.INT
@@ -82,11 +92,26 @@ def _nat_lit(n: int) -> str:
 # --- deep emitter ---
 
 
+def deep_mexpr(e: ast.Expr, num: Numbering, types: dict[str, Ty]) -> str:
+    if isinstance(e, ast.Var):
+        return f"({_DEEP['varM']} {num.map_regs[e.name]})"
+    if isinstance(e, ast.Update):
+        base = deep_mexpr(e.base, num, types)
+        idx = deep_iexpr(e.index, num, types)
+        val = deep_iexpr(e.value, num, types)
+        return f"({_DEEP['store']} {base} {idx} {val})"
+    raise TypeError(f"unsupported map expression {type(e).__name__}")
+
+
 def deep_iexpr(e: ast.Expr, num: Numbering, types: dict[str, Ty]) -> str:
     if isinstance(e, ast.Num):
         return f"({_DEEP['litI']} {_nat_lit(e.value)})"
     if isinstance(e, ast.Var):
         return f"({_DEEP['varI']} {num.int_regs[e.name]})"
+    if isinstance(e, ast.Load):
+        base = deep_mexpr(e.base, num, types)
+        idx = deep_iexpr(e.index, num, types)
+        return f"({_DEEP['select']} {base} {idx})"
     if isinstance(e, ast.BinExpr):
         lhs = deep_iexpr(e.lhs, num, types)
         rhs = deep_iexpr(e.rhs, num, types)
@@ -132,22 +157,32 @@ def deep_bexpr(e: ast.Expr, num: Numbering, types: dict[str, Ty]) -> str:
 
 def deep_cmd(c: ast.Cmd, num: Numbering, types: dict[str, Ty]) -> str:
     if isinstance(c, ast.Assign):
-        if types[c.target.name] is Ty.INT:
+        ty = types[c.target.name]
+        if ty is Ty.INT:
             return f"{_DEEP['assignI']} {num.int_regs[c.target.name]} " \
                    f"{deep_iexpr(c.rhs, num, types)}"
-        return f"{_DEEP['assignB']} {num.bool_regs[c.target.name]} " \
-               f"{deep_bexpr(c.rhs, num, types)}"
+        if ty is Ty.BOOL:
+            return f"{_DEEP['assignB']} {num.bool_regs[c.target.name]} " \
+                   f"{deep_bexpr(c.rhs, num, types)}"
+        return f"{_DEEP['assignM']} {num.map_regs[c.target.name]} " \
+               f"{deep_mexpr(c.rhs, num, types)}"
     if isinstance(c, ast.Havoc):
-        if types[c.target.name] is Ty.INT:
+        ty = types[c.target.name]
+        if ty is Ty.INT:
             return f"{_DEEP['havocI']} {num.int_regs[c.target.name]}"
-        return f"{_DEEP['havocB']} {num.bool_regs[c.target.name]}"
+        if ty is Ty.BOOL:
+            return f"{_DEEP['havocB']} {num.bool_regs[c.target.name]}"
+        return f"{_DEEP['havocM']} {num.map_regs[c.target.name]}"
     if isinstance(c, ast.Phi):
-        is_int = types[c.target.name] is Ty.INT
-        regs = num.int_regs if is_int else num.bool_regs
+        ty = types[c.target.name]
+        regs, ctor = {
+            Ty.INT: (num.int_regs, _DEEP["phiI"]),
+            Ty.BOOL: (num.bool_regs, _DEEP["phiB"]),
+            Ty.BYTEMAP: (num.map_regs, _DEEP["phiM"]),
+        }[ty]
         arms = ", ".join(
             f"({num.block_index[a.label]}, {regs[a.value]})" for a in c.arms
         )
-        ctor = _DEEP["phiI"] if is_int else _DEEP["phiB"]
         target = regs[c.target.name]
         return f"{ctor} {target} [{arms}]"
     if isinstance(c, ast.Assume):
@@ -176,13 +211,18 @@ def _name_map_comment(num: Numbering) -> list[str]:
             return "(none)"
         return ", ".join(f"{i} = {n}" for n, i in sorted(regs.items(), key=lambda kv: kv[1]))
 
-    return [
+    lines = [
         "/-!",
         f"int registers:  {row(num.int_regs)}",
         f"bool registers: {row(num.bool_regs)}",
+    ]
+    if num.map_regs:
+        lines.append(f"map registers:  {row(num.map_regs)}")
+    lines.extend([
         f"blocks:         {row(num.block_index)}",
         "-/",
-    ]
+    ])
+    return lines
 
 
 def deep_module(

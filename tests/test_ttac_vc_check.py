@@ -18,7 +18,11 @@ from ctac.ttac.lean.vc import (
     render_top,
     transpile_vc,
 )
-from ctac.ttac.lean.vc_expected import expected_vc, precheck_diff
+from ctac.ttac.lean.vc_expected import (
+    expected_map_defs,
+    expected_vc,
+    precheck_diff,
+)
 from ctac.ttac.vcgen import generate_vc
 
 runner = CliRunner()
@@ -56,7 +60,7 @@ def _transpile(body, decls=DECLS):
     smt = parse_smt2(f"{decls}(assert {body})\n(check-sat)\n")
     syms, errs = build_vc_symbols(program, numbering, types, smt)
     assert errs == []
-    asserts, errs = transpile_vc(smt, syms)
+    asserts, _map_defs, errs = transpile_vc(smt, syms)
     if errs:
         return None, errs
     return render_top(asserts[0].term), []
@@ -137,12 +141,20 @@ def test_sort_mismatch_rejected():
     assert any("bool register but declared Int" in e for e in errs)
 
 
-def test_declare_fun_rejected():
+def test_declare_fun_unknown_map_rejected():
+    # declare-fun is a bytemap declaration now; on a scalar program any
+    # such name is unknown, and non-(Int)Int shapes are rejected.
     program = parse_program(fx.SCALAR_DIAMOND)
     smt2 = "(declare-fun M (Int) Int)\n(assert true)\n(check-sat)\n"
     with pytest.raises(VcCheckError) as exc:
         generate_vc_check(program, smt2, module_name="P")
-    assert any("unsupported statement DeclareFun" in e for e in exc.value.errors)
+    assert any("unknown function 'M'" in e for e in exc.value.errors)
+    smt2 = "(declare-fun f (Int Int) Bool)\n(assert true)\n(check-sat)\n"
+    with pytest.raises(VcCheckError) as exc:
+        generate_vc_check(program, smt2, module_name="P")
+    assert any(
+        "only (Int) Int bytemap declarations" in e for e in exc.value.errors
+    )
 
 
 # --- program-side validation ---
@@ -274,10 +286,78 @@ def test_expected_mirror_matches_transpiled_multiset():
     program, numbering, types = _symbols(fx.SCALAR_DIAMOND)
     smt = parse_smt2(generate_vc(program).smt_text)
     syms, _ = build_vc_symbols(program, numbering, types, smt)
-    asserts, errs = transpile_vc(smt, syms)
+    asserts, map_defs, errs = transpile_vc(smt, syms)
     assert errs == []
     expected = expected_vc(program, numbering, types)
-    assert precheck_diff(asserts, expected) == ()
+    expected_defs = expected_map_defs(program, numbering, types)
+    assert precheck_diff(asserts, expected, map_defs, expected_defs) == ()
+
+
+# --- bytemaps ---
+
+
+def _bytemap_result(**kwargs):
+    program = parse_program(fx.BYTEMAP_PHI)
+    smt_text = generate_vc(program).smt_text
+    return generate_vc_check(
+        program, smt_text, module_name="BytemapPhi", **kwargs
+    ), smt_text
+
+
+def test_bytemap_phi_vc_lines_golden():
+    res, _ = _bytemap_result()
+    text = res.vc_text
+    # selects transpile inside scalar constraints
+    assert (".imp (.blk 3) (.eqI (.var .int 2) "
+            "(.select (.var .map 3) (.var .int 0)))," in text)
+    # stores and the map phi become mapDefs entries
+    assert "(1, .store (.var .map 0) (.var .int 0) (.var .int 1))," in text
+    assert "(2, .store (.var .map 0) (.var .int 0) (.var .int 1))," in text
+    assert "(3, .ite (.blk 1) (.var .map 1) (.var .map 2))]" in text
+    assert "def vc : Ttac.Vc.VC where" in text
+    # the map-phi AMO clause is a plain constraint
+    assert ".or (.not (.blk 1)) (.not (.blk 2))," in text
+
+
+def test_bytemap_precheck_clean():
+    res, _ = _bytemap_result()
+    assert res.mismatches == ()
+
+
+def test_scalar_program_empty_mapdefs():
+    res, _ = _diamond_result()
+    assert "mapDefs := []" in res.vc_text
+
+
+def test_tampered_store_caught_by_precheck():
+    program = parse_program(fx.BYTEMAP_PHI)
+    smt_text = generate_vc(program).smt_text
+    tampered = smt_text.replace(
+        "(define-fun M1 ((idx Int)) Int (ite (= idx i) v (M idx)))",
+        "(define-fun M1 ((idx Int)) Int (ite (= idx v) i (M idx)))",
+    )
+    assert tampered != smt_text
+    res = generate_vc_check(program, tampered, module_name="BytemapPhi")
+    kinds = {m.kind for m in res.mismatches}
+    assert "unexpected-map-def" in kinds
+
+
+def test_alias_define_fun_transpiles():
+    src = """\
+entry:
+  M := havoc
+  M2 := M
+  x := M2[0]
+  ok := x == x
+  assert ok
+  halt
+"""
+    program = parse_program(src)
+    res = generate_vc_check(
+        program, generate_vc(program).smt_text, module_name="Alias"
+    )
+    assert "(1, .var .map 0)" in res.vc_text
+    assert res.mismatches == ()
 
 
 def test_kernel_flag():
@@ -368,6 +448,50 @@ def test_lake_build_validates_diamond(tmp_path):
         ["lake", "build"], cwd=out, capture_output=True, text=True, timeout=1800
     )
     assert build.returncode == 0, build.stdout + build.stderr
+
+
+@pytest.mark.skipif(shutil.which("lake") is None, reason="lake not on PATH")
+@pytest.mark.skipif(not os.environ.get("CTAC_LEAN_TESTS"), reason="set CTAC_LEAN_TESTS=1")
+def test_lake_build_validates_bytemap_phi(tmp_path):
+    ttac = _write(tmp_path, fx.BYTEMAP_PHI)
+    smt_text = generate_vc(parse_program(fx.BYTEMAP_PHI)).smt_text
+    smt2 = tmp_path / "prog.smt2"
+    smt2.write_text(smt_text)
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["vc-check", ttac, str(smt2), "-o", str(out), "--no-build", "--plain"],
+    )
+    assert result.exit_code == 0
+    subprocess.run(["lake", "exe", "cache", "get"], cwd=out, check=True, timeout=1800)
+    build = subprocess.run(
+        ["lake", "build"], cwd=out, capture_output=True, text=True, timeout=1800
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+
+
+@pytest.mark.skipif(shutil.which("lake") is None, reason="lake not on PATH")
+@pytest.mark.skipif(not os.environ.get("CTAC_LEAN_TESTS"), reason="set CTAC_LEAN_TESTS=1")
+def test_lake_build_rejects_tampered_map_def(tmp_path):
+    ttac = _write(tmp_path, fx.BYTEMAP_PHI)
+    smt_text = generate_vc(parse_program(fx.BYTEMAP_PHI)).smt_text
+    smt2 = tmp_path / "bad.smt2"
+    smt2.write_text(smt_text.replace(
+        "(define-fun M1 ((idx Int)) Int (ite (= idx i) v (M idx)))",
+        "(define-fun M1 ((idx Int)) Int (ite (= idx v) i (M idx)))",
+    ))
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["vc-check", ttac, str(smt2), "-o", str(out), "--no-build",
+         "--no-precheck", "--plain"],
+    )
+    assert result.exit_code == 0
+    subprocess.run(["lake", "exe", "cache", "get"], cwd=out, check=True, timeout=1800)
+    build = subprocess.run(
+        ["lake", "build"], cwd=out, capture_output=True, text=True, timeout=1800
+    )
+    assert build.returncode != 0
 
 
 @pytest.mark.skipif(shutil.which("lake") is None, reason="lake not on PATH")

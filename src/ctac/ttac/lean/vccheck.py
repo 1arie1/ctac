@@ -17,8 +17,13 @@ from ctac.ttac.errors import VcCheckError
 from . import emit
 from .encode import validate_for_lean
 from .naming import Numbering, build_numbering
-from .vc import VcAssert, build_vc_symbols, render_top, transpile_vc
-from .vc_expected import VcMismatch, expected_vc, precheck_diff
+from .vc import VcAssert, VcMapDef, build_vc_symbols, render_top, transpile_vc
+from .vc_expected import (
+    VcMismatch,
+    expected_map_defs,
+    expected_vc,
+    precheck_diff,
+)
 
 
 @dataclass(frozen=True)
@@ -83,7 +88,8 @@ def _program_errors(program: ast.Program) -> list[str]:
 
 
 def _vc_module(
-    result_lines: list[str],
+    constraint_lines: list[str],
+    map_def_lines: list[str],
     module_name: str,
     numbering: Numbering,
     smt_source: str | None,
@@ -93,6 +99,10 @@ def _vc_module(
         f".blk {i} = {label}"
         for label, i in sorted(numbering.block_index.items(), key=lambda kv: kv[1])
     )
+    if map_def_lines:
+        map_defs = ["  mapDefs := [", *map_def_lines]
+    else:
+        map_defs = ["  mapDefs := []"]
     lines = [
         emit._header(smt_source, tool="ttac vc-check"),
         "import Ttac",
@@ -105,8 +115,10 @@ def _vc_module(
         f"guard atoms: {block_map}; .blk {n_blocks} = BLK_EXIT",
         "-/",
         "",
-        "def vc : List BExp := [",
-        *result_lines,
+        "def vc : Ttac.Vc.VC where",
+        "  constraints := [",
+        *constraint_lines,
+        *map_defs,
         "",
         f"end {module_name}.Vc",
         "",
@@ -155,7 +167,7 @@ def generate_vc_check(
     precheck: bool = True,
     kernel: bool = False,
 ) -> VcCheckResult:
-    pre = validate_for_lean(program)
+    pre = validate_for_lean(program, maps=True)
     errors = list(pre.errors) + _program_errors(program)
     if errors:
         raise VcCheckError(tuple(errors))
@@ -164,7 +176,7 @@ def generate_vc_check(
 
     smt = parse_smt2(smt2_source)
     syms, sym_errors = build_vc_symbols(program, numbering, pre.types, smt)
-    asserts, transpile_errors = transpile_vc(smt, syms)
+    asserts, map_defs, transpile_errors = transpile_vc(smt, syms)
     smt_errors = sym_errors + transpile_errors
     if smt_errors:
         raise VcCheckError(tuple(smt_errors))
@@ -172,16 +184,20 @@ def generate_vc_check(
     mismatches: tuple[VcMismatch, ...] = ()
     if precheck:
         expected = expected_vc(program, numbering, pre.types)
-        mismatches = precheck_diff(asserts, expected)
+        expected_defs = expected_map_defs(program, numbering, pre.types)
+        mismatches = precheck_diff(asserts, expected, map_defs, expected_defs)
 
     vc_lines = _render_vc_entries(asserts)
+    map_def_lines = _render_map_def_entries(map_defs)
     return VcCheckResult(
         module_name=module_name,
         deep_text=emit.deep_module(
             program, numbering, pre.types, module_name, source,
             tool="ttac vc-check",
         ),
-        vc_text=_vc_module(vc_lines, module_name, numbering, smt_source),
+        vc_text=_vc_module(
+            vc_lines, map_def_lines, module_name, numbering, smt_source
+        ),
         check_text=_check_module(module_name, kernel),
         root_text="\n".join([
             f"import {module_name}.Deep",
@@ -199,7 +215,17 @@ def _render_vc_entries(asserts: list[VcAssert]) -> list[str]:
     lines: list[str] = []
     last = len(asserts) - 1
     for i, a in enumerate(asserts):
-        lines.append(f"  -- line {a.line}: {a.source}")
+        lines.append(f"    -- line {a.line}: {a.source}")
         sep = "]" if i == last else ","
-        lines.append(f"  {render_top(a.term)}{sep}")
+        lines.append(f"    {render_top(a.term)}{sep}")
+    return lines
+
+
+def _render_map_def_entries(map_defs: list[VcMapDef]) -> list[str]:
+    lines: list[str] = []
+    last = len(map_defs) - 1
+    for i, md in enumerate(map_defs):
+        lines.append(f"    -- line {md.line}: {md.source}")
+        sep = "]" if i == last else ","
+        lines.append(f"    ({md.target}, {render_top(md.term)}){sep}")
     return lines

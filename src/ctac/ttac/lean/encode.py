@@ -69,16 +69,23 @@ def _expr_children(e: ast.Expr) -> tuple[ast.Expr, ...]:
         return (e.operand,)
     if isinstance(e, ast.IfExpr):
         return (e.cond, e.then, e.els)
+    if isinstance(e, ast.Load):
+        return (e.base, e.index)
+    if isinstance(e, ast.Update):
+        return (e.base, e.index, e.value)
     return ()
 
 
-def _bad_exprs(e: ast.Expr):
+def _bad_exprs(e: ast.Expr, *, maps: bool):
     """Yield offending non-scalar subexpressions (outermost only)."""
-    if isinstance(e, (*_BYTEMAP_EXPRS, *_REF_EXPRS, ast.HavocExpr)):
+    if isinstance(e, _BYTEMAP_EXPRS) and not maps:
+        yield e
+        return
+    if isinstance(e, (*_REF_EXPRS, ast.HavocExpr)):
         yield e
         return
     for child in _expr_children(e):
-        yield from _bad_exprs(child)
+        yield from _bad_exprs(child, maps=maps)
 
 
 def _expr_kind(e: ast.Expr) -> str:
@@ -89,7 +96,8 @@ def _expr_kind(e: ast.Expr) -> str:
     return "havoc expression"
 
 
-def _scalar_errors(program: ast.Program) -> list[str]:
+def _scalar_errors(program: ast.Program, *, maps: bool) -> list[str]:
+    fragment = "int, bool, and bytemap" if maps else "only int and bool"
     errors: list[str] = []
     for block in program.blocks:
         for idx, cmd in enumerate(block.commands):
@@ -111,16 +119,18 @@ def _scalar_errors(program: ast.Program) -> list[str]:
             elif isinstance(cmd, ast.Assume):
                 exprs = (cmd.cond,)
             for e in exprs:
-                for bad in _bad_exprs(e):
+                for bad in _bad_exprs(e, maps=maps):
                     errors.append(
                         f"{where}: {_expr_kind(bad)} '{expr_str(bad)}' "
-                        "is not supported by ttac lean v1 (scalars only)"
+                        "is not supported here"
                     )
+            bad_tys = (Ty.REF,) if maps else (Ty.BYTEMAP, Ty.REF)
             for target in targets:
-                if target.ty in (Ty.BYTEMAP, Ty.REF):
+                if target.ty in bad_tys:
                     errors.append(
                         f"{where}: register '{target.name}' is annotated "
-                        f"'{target.ty.value}'; ttac lean v1 supports only int and bool"
+                        f"'{target.ty.value}'; supported registers here are "
+                        f"{fragment}"
                     )
     return errors
 
@@ -152,7 +162,7 @@ def _phi_errors(program: ast.Program) -> list[str]:
     return errors
 
 
-def validate_for_lean(program: ast.Program) -> LeanPrecheck:
+def validate_for_lean(program: ast.Program, *, maps: bool = False) -> LeanPrecheck:
     errors: list[str] = []
 
     if not program.blocks or program.entry is None:
@@ -172,7 +182,7 @@ def validate_for_lean(program: ast.Program) -> LeanPrecheck:
                     f"block '{block.label}' jumps to undefined label '{target}'"
                 )
 
-    errors.extend(_scalar_errors(program))
+    errors.extend(_scalar_errors(program, maps=maps))
     errors.extend(_phi_errors(program))
 
     graph = to_digraph(program)
@@ -202,11 +212,13 @@ def validate_for_lean(program: ast.Program) -> LeanPrecheck:
         types = infer_types(program)
     except TtacTypeError as exc:
         errors.append(str(exc))
+    bad_tys = (Ty.REF,) if maps else (Ty.BYTEMAP, Ty.REF)
     for name in sorted(types):
-        if types[name] in (Ty.BYTEMAP, Ty.REF):
+        if types[name] in bad_tys:
+            fragment = "int, bool, and bytemap" if maps else "only int and bool"
             errors.append(
                 f"variable '{name}' has type {types[name].value}; "
-                "ttac lean v1 supports only int and bool registers"
+                f"supported registers here are {fragment}"
             )
 
     if acyclic:

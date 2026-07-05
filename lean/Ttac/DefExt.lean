@@ -192,6 +192,14 @@ guard, inside a disjunct that is not the witnessing one, ...). -/
 def Robust (W : Ty → Nat → Prop) (w : State) (c : BExp) : Prop :=
   ∀ w', Agrees W w w' → c.eval w' = true
 
+/-- Robustness of a *definition*: it holds in every state agreeing
+with `w` outside `W`. This is the map-definition analogue of `Robust`
+(a map equation is `Prop`-level, not a boolean constraint); a visited
+block's map definition is robust, an unvisited one is an extension
+entry. -/
+def RobustDef (W : Ty → Nat → Prop) (w : State) (d : Def) : Prop :=
+  ∀ w', Agrees W w w' → DefHolds w' d
+
 /-- The syntactic sufficient condition: a true constraint none of whose
 variables lies in `W` is robust. Constraints that need the semantic
 form are exactly those this bridge cannot handle. -/
@@ -224,6 +232,18 @@ theorem sat_extend {ψ : List BExp} {defs : List Def} {w : State}
   rcases hc c hcmem with hrob | ⟨d, hd, hdc⟩
   · exact hrob _ (agrees_applyDefs defs w)
   · exact (applyDefs_defHolds hord w d hd).toConstraint_eval hdc
+
+/-- The definitions half: a list of definitions each of which is robust
+at `w` or is itself an extension entry holds at the extension. -/
+theorem sat_extend_defs {ds defs : List Def} {w : State}
+    (hord : OrderedDefs defs)
+    (hc : ∀ d ∈ ds,
+      RobustDef (fun t x => (t, x) ∈ targets defs) w d ∨ d ∈ defs) :
+    ∀ d ∈ ds, DefHolds (applyDefs defs w) d := by
+  intro d hd
+  rcases hc d hd with hrob | hmem
+  · exact hrob _ (agrees_applyDefs defs w)
+  · exact applyDefs_defHolds hord w d hmem
 
 end DefExt
 

@@ -46,17 +46,19 @@ def vc : List BExp := [
   -- (assert BLK_EXIT)
   .blk 4]
 
-theorem vc_ok : checkVC prog vc = true := by native_decide
+theorem vc_ok : checkVC prog { constraints := vc } = true := by
+  native_decide
 
 /-- The full verified chain: if the VC is unsatisfiable, the diamond is
 safe under the small-step semantics. -/
-theorem vc_implies_safe : Vc.Unsat vc → prog.Safe :=
+theorem vc_implies_safe : Vc.Unsat { constraints := vc } → prog.Safe :=
   checkVC_safe vc_ok
 
 /-- A tampered constraint (flipped comparison) must be rejected. -/
 example :
     checkVC prog
-      [.imp (.blk 3) (.eqB (.var .bool 1) (.lt (.litI 0) (.var .int 3)))]
+      { constraints :=
+          [.imp (.blk 3) (.eqB (.var .bool 1) (.lt (.litI 0) (.var .int 3)))] }
       = false := by
   native_decide
 

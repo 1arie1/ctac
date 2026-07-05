@@ -194,10 +194,13 @@ def wellFormed (P : Program) : Bool :=
   singleAssertOK P && ssaOK P && forwardOK P && phiOK P && amoSideOK P
     && entryOK P && guardFreeOK P && domClosedOK P && usesOK P
 
-/-- The checker: well-formed program, and every VC constraint is one the
-bwd0 encoder is entitled to emit. Subset is the sound direction -
-duplicates and omissions in `vc` are harmless. -/
-def checkVC (P : Program) (vc : List BExp) : Bool :=
-  wellFormed P && vc.all fun c => decide (c ∈ Vc.expected P)
+/-- The checker: well-formed program, every VC constraint is one the
+bwd0 encoder is entitled to emit, and every map definition is one of
+the program's. Subset is the sound direction - duplicates and
+omissions in `vc` are harmless. -/
+def checkVC (P : Program) (vc : Vc.VC) : Bool :=
+  wellFormed P
+    && vc.constraints.all (fun c => decide (c ∈ Vc.expected P))
+    && vc.mapDefs.all (fun md => decide (md ∈ Vc.expectedMapDefs P))
 
 end Ttac

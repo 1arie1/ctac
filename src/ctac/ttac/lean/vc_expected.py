@@ -16,7 +16,7 @@ from ctac.ttac.ast import Ty
 
 from .emit import expr_ty
 from .naming import Numbering
-from .vc import Term, VcAssert, render_top
+from .vc import Term, VcAssert, VcMapDef, render_top
 
 TRUE: Term = ("litb", True)
 FALSE: Term = ("litb", False)
@@ -121,11 +121,30 @@ def mk_ite_b(c: Term, t: Term, e: Term) -> Term:
     return ("ite", c, t, e)
 
 
+def lower_mexpr(e: ast.Expr, num: Numbering, types: dict[str, Ty]) -> Term:
+    if isinstance(e, ast.Var):
+        return ("varM", num.map_regs[e.name])
+    if isinstance(e, ast.Update):
+        return (
+            "store",
+            lower_mexpr(e.base, num, types),
+            lower_iexpr(e.index, num, types),
+            lower_iexpr(e.value, num, types),
+        )
+    raise TypeError(f"unsupported map expression {type(e).__name__}")
+
+
 def lower_iexpr(e: ast.Expr, num: Numbering, types: dict[str, Ty]) -> Term:
     if isinstance(e, ast.Num):
         return ("litI", e.value)
     if isinstance(e, ast.Var):
         return ("varI", num.int_regs[e.name])
+    if isinstance(e, ast.Load):
+        return (
+            "select",
+            lower_mexpr(e.base, num, types),
+            lower_iexpr(e.index, num, types),
+        )
     if isinstance(e, ast.BinExpr):
         return (
             _BIN_I[e.op],
@@ -209,7 +228,10 @@ def expected_vc(
         g = guard(b)
         for cmd in block.commands:
             if isinstance(cmd, ast.Assign):
-                if types[cmd.target.name] is Ty.INT:
+                ty = types[cmd.target.name]
+                if ty is Ty.BYTEMAP:
+                    continue  # a map definition, not a boolean constraint
+                if ty is Ty.INT:
                     eq: Term = ("eqI", ("varI", num.int_regs[cmd.target.name]),
                                 lower_iexpr(cmd.rhs, num, types))
                 else:
@@ -219,15 +241,17 @@ def expected_vc(
             elif isinstance(cmd, ast.Assume):
                 out.append(mk_imp(g, lower_bexpr(cmd.cond, num, types)))
             elif isinstance(cmd, ast.Phi):
-                is_int = types[cmd.target.name] is Ty.INT
-                regs = num.int_regs if is_int else num.bool_regs
-                mk_ite = mk_ite_i if is_int else mk_ite_b
-                eq_op = "eqI" if is_int else "eqB"
-                var_tag = "varI" if is_int else "varB"
-                out.append(
-                    (eq_op, (var_tag, regs[cmd.target.name]),
-                     phi_rhs(cmd.arms, regs, mk_ite, var_tag))
-                )
+                ty = types[cmd.target.name]
+                if ty is not Ty.BYTEMAP:
+                    is_int = ty is Ty.INT
+                    regs = num.int_regs if is_int else num.bool_regs
+                    mk_ite = mk_ite_i if is_int else mk_ite_b
+                    eq_op = "eqI" if is_int else "eqB"
+                    var_tag = "varI" if is_int else "varB"
+                    out.append(
+                        (eq_op, (var_tag, regs[cmd.target.name]),
+                         phi_rhs(cmd.arms, regs, mk_ite, var_tag))
+                    )
                 if len(cmd.arms) >= 2:
                     out.extend(amo_clauses(
                         [guard(num.block_index[a.label]) for a in cmd.arms]
@@ -255,14 +279,51 @@ def expected_vc(
     return out
 
 
+def expected_map_defs(
+    program: ast.Program, num: Numbering, types: dict[str, Ty]
+) -> list[tuple[int, Term]]:
+    """Mirror of ``Ttac.Vc.expectedMapDefs``: one entry per map
+    assignment (store/alias, lowered) and per map phi (the same folded
+    ITE chain the boolean phi constraint uses)."""
+    entry = num.entry_index
+
+    def guard(b: int) -> Term:
+        return TRUE if b == entry else ("blk", b)
+
+    out: list[tuple[int, Term]] = []
+    for block in program.blocks:
+        for cmd in block.commands:
+            if (
+                isinstance(cmd, (ast.Assign, ast.Phi))
+                and types[cmd.target.name] is Ty.BYTEMAP
+            ):
+                target = num.map_regs[cmd.target.name]
+                if isinstance(cmd, ast.Assign):
+                    out.append((target, lower_mexpr(cmd.rhs, num, types)))
+                else:
+                    chain: Term = ("varM", num.map_regs[cmd.arms[-1].value])
+                    for arm in reversed(cmd.arms[:-1]):
+                        chain = mk_ite_i(
+                            guard(num.block_index[arm.label]),
+                            ("varM", num.map_regs[arm.value]),
+                            chain,
+                        )
+                    out.append((target, chain))
+    return out
+
+
 @dataclass(frozen=True)
 class VcMismatch:
     kind: str  # "unexpected-assert" | "missing-assert"
+    #          | "unexpected-map-def" | "missing-map-def"
     detail: str
 
 
 def precheck_diff(
-    actual: list[VcAssert], expected: list[Term]
+    actual: list[VcAssert],
+    expected: list[Term],
+    actual_map_defs: list[VcMapDef] = (),
+    expected_defs: list[tuple[int, Term]] = (),
 ) -> tuple[VcMismatch, ...]:
     """Multiset diff of rendered constraint strings (diagnostic only)."""
     expected_counts = Counter(render_top(t) for t in expected)
@@ -284,4 +345,22 @@ def precheck_diff(
             continue  # encoder-dropped (folded-away) constraints
         if seen[key] == 0:
             mismatches.append(VcMismatch(kind="missing-assert", detail=key))
+
+    expected_def_counts = Counter(
+        (target, render_top(t)) for target, t in expected_defs
+    )
+    seen_defs: Counter[tuple[int, str]] = Counter()
+    for md in actual_map_defs:
+        key = (md.target, render_top(md.term))
+        seen_defs[key] += 1
+        if key not in expected_def_counts:
+            mismatches.append(VcMismatch(
+                kind="unexpected-map-def",
+                detail=f"line {md.line}: {md.source}",
+            ))
+    for key in expected_def_counts:
+        if seen_defs[key] == 0:
+            mismatches.append(VcMismatch(
+                kind="missing-map-def", detail=f"map {key[0]}: {key[1]}"
+            ))
     return tuple(mismatches)

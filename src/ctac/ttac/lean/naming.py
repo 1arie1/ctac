@@ -1,6 +1,6 @@
 """Register numbering and Lean-identifier naming for the Lean emitters.
 
-The deep embedding numbers int and bool registers in *separate*
+The deep embedding numbers int, bool, and map registers in *separate*
 namespaces (first-definition order) and refers to blocks by their index
 in program order. The shallow embedding reuses the source names,
 sanitized against Lean keywords and collisions.
@@ -21,6 +21,7 @@ from ctac.ttac.ast import Ty
 class Numbering:
     int_regs: dict[str, int]
     bool_regs: dict[str, int]
+    map_regs: dict[str, int]
     block_index: dict[str, int]
     entry_index: int
 
@@ -28,10 +29,12 @@ class Numbering:
 def build_numbering(program: ast.Program, types: dict[str, Ty]) -> Numbering:
     int_regs: dict[str, int] = {}
     bool_regs: dict[str, int] = {}
+    map_regs: dict[str, int] = {}
+    by_ty = {Ty.INT: int_regs, Ty.BOOL: bool_regs, Ty.BYTEMAP: map_regs}
     for block in program.blocks:
         for cmd in block.commands:
             for target in cmd_defs(cmd):
-                regs = int_regs if types[target.name] is Ty.INT else bool_regs
+                regs = by_ty[types[target.name]]
                 if target.name not in regs:
                     regs[target.name] = len(regs)
     block_index = {b.label: i for i, b in enumerate(program.blocks)}
@@ -39,6 +42,7 @@ def build_numbering(program: ast.Program, types: dict[str, Ty]) -> Numbering:
     return Numbering(
         int_regs=int_regs,
         bool_regs=bool_regs,
+        map_regs=map_regs,
         block_index=block_index,
         entry_index=block_index[program.entry],
     )

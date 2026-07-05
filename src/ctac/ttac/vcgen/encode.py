@@ -136,9 +136,15 @@ def _emit_command(vc, b, lower, sorts, guard, block_label, cmd) -> None:
     elif isinstance(cmd, ast.Phi):
         name = cmd.target.name
         if sorts.get(name) == "bytemap":
-            raise VcGenError("bytemap phi is not supported by vcgen v1")
-        cases = [(guard(arm.label), lower.lower_scalar(ast.Var(arm.value))) for arm in cmd.arms]
-        vc.dynamic_def(vc.const(name, lower.sort_of(name)), cases, guarded=False)
+            vc.bytemap.phi(
+                name,
+                [(guard(arm.label), lower.lower_map(ast.Var(arm.value))) for arm in cmd.arms],
+            )
+        else:
+            cases = [
+                (guard(arm.label), lower.lower_scalar(ast.Var(arm.value))) for arm in cmd.arms
+            ]
+            vc.dynamic_def(vc.const(name, lower.sort_of(name)), cases, guarded=False)
     elif isinstance(cmd, ast.Assume):
         b.assume(lower.lower_bool(cmd.cond))
     else:

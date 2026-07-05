@@ -153,6 +153,33 @@ entry:
   halt
 """
 
+# docs/vc/examples/safe_bytemap_phi.ttac - stores on both branches, a
+# bytemap phi at the join, select + assert; mirrors the golden
+# lean/TtacExamples/BytemapVc.lean pair.
+BYTEMAP_PHI = """\
+entry:
+  M := havoc
+  i := havoc
+  v := havoc
+  c := havoc
+  if c goto left else right
+
+left:
+  M1 := M[i := v]
+  goto join
+
+right:
+  M2 := M[i := v]
+  goto join
+
+join:
+  M3 := phi [left: M1, right: M2]
+  x := M3[i]
+  ok := x == v
+  assert ok
+  halt
+"""
+
 # Not from docs/vc - purpose-built for the ua transform tests.
 
 # Two sequential asserts in one block (merge example).

@@ -11,6 +11,7 @@ and the solver finds a counterexample.
 | `safe_core.ttac` | unsat | branches, `assume`, an assert that only runs on a feasible path |
 | `safe_scalar_diamond.ttac` | unsat | scalar-only diamond (havoc, branch, phi); the `ttac lean` v1 fragment |
 | `safe_bytemap.ttac` | unsat | bytemap store-then-load (`M[i:=v]`, `M[i]`) |
+| `safe_bytemap_phi.ttac` | unsat | bytemap stores on both branches merged by a bytemap phi |
 | `safe_borrow_mut.ttac` | unsat | mutable borrow + `put_ref`/`release` (references) |
 | `unsafe_assert.ttac` | sat | a plain assertion that need not hold |
 | `unsafe_bytemap.ttac` | sat | reading havoced memory |
@@ -76,10 +77,11 @@ survive regeneration). `--build` runs the lake build directly.
 project is pure core Lean (no `Ttac` library, no mathlib) and builds in
 under a second.
 
-v1 accepts only the scalar fragment: `int`/`bool` registers, pure SSA
-(phi fine, no dynamic definitions), loop-free CFG, no use-before-def.
-Bytemaps and references are rejected, so of the examples in this
-directory only `safe_scalar_diamond.ttac` is inside the fragment. Its
+`ttac lean` accepts the scalar fragment: `int`/`bool` registers, pure
+SSA (phi fine, no dynamic definitions), loop-free CFG, no
+use-before-def. Bytemaps and references are rejected (the shallow
+embedding has no map story yet), so of the examples in this directory
+only `safe_scalar_diamond.ttac` is inside the fragment. Its
 hand-written golden twin is `lean/TtacExamples/Diamond.lean` (same
 program, shallow safety theorem proved).
 
@@ -111,7 +113,21 @@ pinned by golden tests. A Python-side precheck (`--no-precheck` to
 skip) diagnoses mismatches with exact line numbers before the build;
 the build stays authoritative.
 
-Same input fragment as `ttac lean`, plus: exactly one assert (run
+Unlike `ttac lean`, `vc-check` also accepts **bytemaps** — stores,
+selects, aliases, and bytemap phis. The encoder's `define-fun`s (a
+store's pointwise ite, an alias, a phi's merge over predecessor
+guards) transpile to first-class map definitions checked and proved
+alongside the boolean constraints:
+
+```
+ttac vcgen safe_bytemap_phi.ttac -o b.smt2
+ttac vc-check safe_bytemap_phi.ttac b.smt2 -o out/bcheck
+```
+
+Its hand-transcribed golden twin is `lean/TtacExamples/BytemapVc.lean`.
+
+Fragment: `int`/`bool`/`bytemap` registers, pure SSA, loop-free,
+no use-before-def, references desugared; exactly one assert (run
 `ttac ua --strategy merge` first), the assert last in its block, blocks
 in topological source order, every block reachable. bwd0 encoding only.
 

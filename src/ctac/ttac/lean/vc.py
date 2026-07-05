@@ -21,6 +21,8 @@ from ctac.solver.smt2 import (
     CheckSat,
     Comment,
     DeclareConst,
+    DeclareFun,
+    DefineFun,
     List_,
     SetLogic,
     SetOption,
@@ -34,7 +36,8 @@ from ctac.ttac.ast import Ty
 from .naming import Numbering
 
 # Term = ("litI", int) | ("litb", bool) | ("varI", int) | ("varB", int)
-#      | ("blk", int) | (op, Term, ...)
+#      | ("varM", int) | ("blk", int) | (op, Term, ...)
+# where op includes "select" (map read) and "store" (map update).
 Term = tuple
 
 _INT_OPS = {"+": "add", "-": "sub", "*": "mul", "div": "div"}
@@ -54,6 +57,8 @@ def render(t: Term) -> str:
         return f"(.var .int {t[1]})"
     if kind == "varB":
         return f"(.var .bool {t[1]})"
+    if kind == "varM":
+        return f"(.var .map {t[1]})"
     if kind == "blk":
         return f"(.blk {t[1]})"
     args = " ".join(render(a) for a in t[1:])
@@ -104,6 +109,37 @@ def build_vc_symbols(
 
     sorts: dict[str, Ty] = {}
     for stmt in smt.statements:
+        if isinstance(stmt, (DeclareFun, DefineFun)):
+            name = stmt.name
+            param_sorts = (
+                stmt.param_sorts
+                if isinstance(stmt, DeclareFun)
+                else [p.sort_node for p in stmt.params]
+            )
+            shape_ok = (
+                len(param_sorts) == 1
+                and isinstance(param_sorts[0], Atom)
+                and param_sorts[0].text == "Int"
+                and isinstance(stmt.ret_sort_node, Atom)
+                and stmt.ret_sort_node.text == "Int"
+            )
+            if not shape_ok:
+                errors.append(
+                    f"{'declare' if isinstance(stmt, DeclareFun) else 'define'}"
+                    f"-fun '{name}': only (Int) Int bytemap "
+                    "declarations are supported"
+                )
+                continue
+            if name in sorts:
+                errors.append(f"duplicate declaration '{name}'")
+                continue
+            if name not in numbering.map_regs:
+                errors.append(
+                    f"unknown function '{name}': not a program bytemap"
+                )
+                continue
+            sorts[name] = Ty.BYTEMAP
+            continue
         if not isinstance(stmt, DeclareConst):
             continue
         name = stmt.name
@@ -149,23 +185,28 @@ def build_vc_symbols(
 _IGNORED_STMTS = (Comment, SetLogic, SetOption, CheckSat)
 
 
-def triage_statements(smt: Smt2File) -> tuple[list[Assert], list[str]]:
+def triage_statements(
+    smt: Smt2File,
+) -> tuple[list[Assert], list[DefineFun], list[str]]:
     asserts: list[Assert] = []
+    defuns: list[DefineFun] = []
     errors: list[str] = []
     for stmt in smt.statements:
         if isinstance(stmt, Assert):
             asserts.append(stmt)
-        elif isinstance(stmt, (DeclareConst, *_IGNORED_STMTS)):
+        elif isinstance(stmt, DefineFun):
+            defuns.append(stmt)
+        elif isinstance(stmt, (DeclareConst, DeclareFun, *_IGNORED_STMTS)):
             continue
         else:
             kind = type(stmt).__name__
             errors.append(
-                f"unsupported statement {kind}: vc-check handles scalar "
-                "declare-const/assert VCs only (bytemap/UF VCs are out of scope)"
+                f"unsupported statement {kind}: vc-check handles "
+                "declare-const/declare-fun/define-fun/assert VCs only"
             )
     if not asserts:
         errors.append("smt2 file contains no asserts")
-    return asserts, errors
+    return asserts, defuns, errors
 
 
 def _sort_of(node: SexprNode, syms: VcSymbols, src: str) -> Ty:
@@ -183,6 +224,8 @@ def _sort_of(node: SexprNode, syms: VcSymbols, src: str) -> Ty:
     if isinstance(node, List_):
         head = node.head_text
         if head in _INT_OPS:
+            return Ty.INT
+        if syms.sorts.get(head) is Ty.BYTEMAP:
             return Ty.INT
         if head in ("<=", "<", "=", "and", "or", "not", "=>"):
             return Ty.BOOL
@@ -242,6 +285,17 @@ def _int_term(node: SexprNode, syms: VcSymbols, src: str) -> Term:
                 _bool_term(node.children[1], syms, src),
                 _int_term(node.children[2], syms, src),
                 _int_term(node.children[3], syms, src),
+            )
+        if syms.sorts.get(head) is Ty.BYTEMAP:
+            if len(args) != 1:
+                raise TranspileError(
+                    f"bytemap '{head}' expects 1 index at {_at(src, node)}",
+                    node.span,
+                )
+            return (
+                "select",
+                ("varM", syms.numbering.map_regs[head]),
+                _int_term(args[0], syms, src),
             )
     raise TranspileError(
         f"unsupported Int expression at {_at(src, node)}", node.span
@@ -336,6 +390,51 @@ def _bool_term(node: SexprNode, syms: VcSymbols, src: str) -> Term:
     )
 
 
+def _map_term(node: SexprNode, syms: VcSymbols, src: str, param: str) -> Term:
+    """A define-fun body as a map-level term in one bound Int variable:
+    ``(M param)`` is the map itself, an ite on ``(= param i)`` is a
+    store, and an ite whose condition ignores ``param`` is a pointwise
+    merge (a map phi)."""
+    if isinstance(node, List_):
+        head = node.head_text
+        args = node.children[1:]
+        if syms.sorts.get(head) is Ty.BYTEMAP:
+            if (
+                len(args) == 1
+                and isinstance(args[0], Atom)
+                and args[0].text == param
+            ):
+                return ("varM", syms.numbering.map_regs[head])
+            raise TranspileError(
+                f"bytemap '{head}' must be applied to the bound parameter "
+                f"at {_at(src, node)}", node.span,
+            )
+        if head == "ite" and len(args) == 3:
+            cond, then_, else_ = args
+            if (
+                isinstance(cond, List_)
+                and cond.head_text == "="
+                and len(cond.children) == 3
+                and isinstance(cond.children[1], Atom)
+                and cond.children[1].text == param
+            ):
+                return (
+                    "store",
+                    _map_term(else_, syms, src, param),
+                    _int_term(cond.children[2], syms, src),
+                    _int_term(then_, syms, src),
+                )
+            return (
+                "ite",
+                _bool_term(cond, syms, src),
+                _map_term(then_, syms, src, param),
+                _map_term(else_, syms, src, param),
+            )
+    raise TranspileError(
+        f"unsupported map definition body at {_at(src, node)}", node.span
+    )
+
+
 @dataclass(frozen=True)
 class VcAssert:
     term: Term
@@ -343,11 +442,27 @@ class VcAssert:
     line: int
 
 
+@dataclass(frozen=True)
+class VcMapDef:
+    target: int  # map register number
+    term: Term
+    source: str
+    line: int
+
+
+def _snippet(src: str, span: tuple[int, int]) -> str:
+    snippet = " ".join(src[span[0]:span[1]].split())
+    if len(snippet) > 100:
+        snippet = snippet[:97] + "..."
+    return snippet
+
+
 def transpile_vc(
     smt: Smt2File, syms: VcSymbols
-) -> tuple[list[VcAssert], list[str]]:
-    asserts, errors = triage_statements(smt)
+) -> tuple[list[VcAssert], list[VcMapDef], list[str]]:
+    asserts, defuns, errors = triage_statements(smt)
     out: list[VcAssert] = []
+    map_defs: list[VcMapDef] = []
     src = smt.source
     for stmt in asserts:
         try:
@@ -355,10 +470,45 @@ def transpile_vc(
         except TranspileError as exc:
             errors.append(str(exc))
             continue
-        snippet = " ".join(src[stmt.span[0]:stmt.span[1]].split())
-        if len(snippet) > 100:
-            snippet = snippet[:97] + "..."
         out.append(
-            VcAssert(term=term, source=snippet, line=_line_col(src, stmt.span[0])[0])
+            VcAssert(
+                term=term,
+                source=_snippet(src, stmt.span),
+                line=_line_col(src, stmt.span[0])[0],
+            )
         )
-    return out, errors
+    for stmt in defuns:
+        line = _line_col(src, stmt.span[0])[0]
+        shape_ok = (
+            len(stmt.params) == 1
+            and isinstance(stmt.params[0].sort_node, Atom)
+            and stmt.params[0].sort_node.text == "Int"
+            and isinstance(stmt.ret_sort_node, Atom)
+            and stmt.ret_sort_node.text == "Int"
+        )
+        if not shape_ok:
+            errors.append(
+                f"define-fun '{stmt.name}' at line {line}: only "
+                "((idx Int)) Int bytemap definitions are supported"
+            )
+            continue
+        if stmt.name not in syms.numbering.map_regs:
+            errors.append(
+                f"define-fun '{stmt.name}' at line {line}: not a program "
+                "bytemap"
+            )
+            continue
+        try:
+            term = _map_term(stmt.body, syms, src, stmt.params[0].name)
+        except TranspileError as exc:
+            errors.append(str(exc))
+            continue
+        map_defs.append(
+            VcMapDef(
+                target=syms.numbering.map_regs[stmt.name],
+                term=term,
+                source=_snippet(src, stmt.span),
+                line=line,
+            )
+        )
+    return out, map_defs, errors

@@ -1,3 +1,4 @@
+import Ttac.DefExt
 import Ttac.Vars
 
 /-!
@@ -211,6 +212,56 @@ def phiRhs (P : Program) (t : Ty) (arms : PhiArms) : Exp t :=
   | [] => .var t 0
   | a :: r => phiChain P t a r
 
+/-! ## Unguarded definitions
+
+Two command shapes contribute *unguarded* defining equations to the VC:
+phis (of any sort - the ITE chain over predecessor guards) and map
+assignments (the encoder emits stores and aliases as global
+`define-fun`s, never block-guarded). These are exactly the definitional
+extensions of the soundness proof: `unguardedDef?` is shared between
+the expected set below and the witness construction in `VcReplay`, so
+satisfaction is by construction. -/
+
+def unguardedDef? (P : Program) : Cmd → Option DefExt.Def
+  | .phi t x arms => some ⟨t, x, phiRhs P t arms⟩
+  | .assign .map x e => some ⟨.map, x, lower e⟩
+  | _ => none
+
+/-- The map-sorted defining equations, as the VC carries them. Scalar
+phi equations are boolean constraints (`cmdConstraints`); map
+definitions have no boolean form (no map equality operator) and are
+checked as first-class definitions instead. -/
+def cmdMapDef? (P : Program) : Cmd → Option (Nat × MExp)
+  | .assign .map x e => some (x, lower e)
+  | .phi .map x arms => some (x, phiRhs P .map arms)
+  | _ => none
+
+theorem cmdMapDef?_unguarded {P : Program} {c : Cmd} {x : Nat} {rhs : MExp}
+    (h : cmdMapDef? P c = some (x, rhs)) :
+    unguardedDef? P c = some ⟨.map, x, rhs⟩ := by
+  cases c with
+  | assign t y e =>
+      cases t with
+      | map =>
+          obtain ⟨rfl, rfl⟩ := Prod.mk.injEq .. |>.mp (Option.some.inj h)
+          rfl
+      | int => cases h
+      | bool => cases h
+  | phi t y arms =>
+      cases t with
+      | map =>
+          obtain ⟨rfl, rfl⟩ := Prod.mk.injEq .. |>.mp (Option.some.inj h)
+          rfl
+      | int => cases h
+      | bool => cases h
+  | havoc t y => cases h
+  | assume φ => cases h
+  | assert r => cases h
+
+/-- Every map definition the encoder is entitled to emit for `P`. -/
+def expectedMapDefs (P : Program) : List (Nat × MExp) :=
+  (P.blocks.map fun B => B.cmds.filterMap (cmdMapDef? P)).flatten
+
 /-! ## The expected constraint set -/
 
 /-- The constraint a command's boolean fact contributes:
@@ -268,11 +319,24 @@ def expected (P : Program) : List BExp :=
         ++ cfgConstraints P ++ objective P aB okReg
   | _ => []
 
-/-! ## Satisfaction -/
+/-! ## The VC and its satisfaction
 
-def Sat (w : State) (vc : List BExp) : Prop := ∀ c ∈ vc, c.eval w = true
+A transpiled VC has two parts: the boolean constraints (the smt2
+asserts) and the map definitions (the smt2 `define-fun`s, read as
+defining equations). Map definitions are satisfied at the `Prop` level
+- pointwise equality of `Int → Int` denotations - never Bool-decided;
+the *checker* only compares them structurally. -/
 
-def Unsat (vc : List BExp) : Prop := ¬∃ w, Sat w vc
+structure VC where
+  constraints : List BExp
+  mapDefs : List (Nat × MExp) := []
+deriving Repr, DecidableEq
+
+def Sat (w : State) (vc : VC) : Prop :=
+  (∀ c ∈ vc.constraints, c.eval w = true)
+    ∧ ∀ md ∈ vc.mapDefs, w.regs .map md.1 = md.2.eval w
+
+def Unsat (vc : VC) : Prop := ¬∃ w, Sat w vc
 
 end Vc
 

@@ -183,6 +183,42 @@ theorem mem_factConstraints {P : Program} {b : Nat} {cmd : Cmd} {c : BExp}
     exact ⟨f, hf, rfl⟩
   · cases h
 
+theorem mem_expectedMapDefs {P : Program} {md : Nat × MExp}
+    (h : md ∈ Vc.expectedMapDefs P) :
+    ∃ (b : Nat) (B : Block) (i : Nat) (c : Cmd),
+      P.block? b = some B ∧ B.cmds[i]? = some c
+        ∧ Vc.cmdMapDef? P c = some md := by
+  simp only [Vc.expectedMapDefs, List.mem_flatten, List.mem_map] at h
+  obtain ⟨L, ⟨B, hBmem, rfl⟩, hin⟩ := h
+  rw [List.mem_filterMap] at hin
+  obtain ⟨c, hc, hcd⟩ := hin
+  obtain ⟨b, hb⟩ := List.mem_iff_getElem?.mp hBmem
+  obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hc
+  exact ⟨b, B, i, c, hb, hi, hcd⟩
+
+theorem cmdMapDef?_eq_some {P : Program} {c : Cmd} {x : Nat} {rhs : MExp}
+    (h : Vc.cmdMapDef? P c = some (x, rhs)) :
+    (∃ e, c = .assign .map x e ∧ rhs = Vc.lower e)
+      ∨ (∃ arms, c = .phi .map x arms ∧ rhs = Vc.phiRhs P .map arms) := by
+  cases c with
+  | assign t y e =>
+      cases t with
+      | map =>
+          obtain ⟨rfl, rfl⟩ := Prod.mk.injEq .. |>.mp (Option.some.inj h)
+          exact Or.inl ⟨e, rfl, rfl⟩
+      | int => cases h
+      | bool => cases h
+  | phi t y arms =>
+      cases t with
+      | map =>
+          obtain ⟨rfl, rfl⟩ := Prod.mk.injEq .. |>.mp (Option.some.inj h)
+          exact Or.inr ⟨arms, rfl, rfl⟩
+      | int => cases h
+      | bool => cases h
+  | havoc t y => cases h
+  | assume φ => cases h
+  | assert r => cases h
+
 theorem mem_cmdConstraints {P : Program} {b : Nat} {cmd : Cmd} {c : BExp}
     (h : c ∈ Vc.cmdConstraints P b cmd) :
     c ∈ Vc.factConstraints P b cmd
@@ -284,9 +320,10 @@ definitions are confined to visited blocks keeps its σ value
 (primitively, or through a dominator of a visited block). Robustness
 proofs consume this interface and never see `Agrees` itself. -/
 
-theorem robust_intro {P : Program} {V : List Nat} {σ : State} {c : BExp}
+theorem agrees_facts {P : Program} {V : List Nat} {σ : State}
     (hentryV : P.entry ∈ V)
     (hdomV : ∀ v ∈ V, ∀ d, d ∈ domOf P v → d ∈ V)
+    {motive : State → Prop}
     (h : ∀ w' : State,
       (∀ q, q < P.blocks.length → w'.blks q = decide (q ∈ V)) →
       w'.blks P.blocks.length = true →
@@ -297,9 +334,11 @@ theorem robust_intro {P : Program} {V : List Nat} {σ : State} {c : BExp}
       (∀ v ∈ V, ∀ (t : Ty) (x : Nat),
         (∀ d j, IsDefAt P (t, x) d j → d = v ∨ d ∈ domOf P v) →
         w'.regs t x = σ.regs t x) →
-      c.eval w' = true) :
-    DefExt.Robust (fun t x => (t, x) ∈ DefExt.targets (witnessDefs P V))
-      (setBlockVars P V σ) c := by
+      motive w') :
+    ∀ w', DefExt.Agrees
+        (fun t x => (t, x) ∈ DefExt.targets (witnessDefs P V))
+        (setBlockVars P V σ) w' →
+      motive w' := by
   intro w' hag'
   obtain ⟨areg, ablk⟩ := hag'
   have hblk : ∀ q, q < P.blocks.length → w'.blks q = decide (q ∈ V) :=
@@ -315,6 +354,43 @@ theorem robust_intro {P : Program} {V : List Nat} {σ : State} {c : BExp}
     rcases hd d j hdj with rfl | hdm
     · exact hv
     · exact hdomV v hv d hdm
+
+theorem robust_intro {P : Program} {V : List Nat} {σ : State} {c : BExp}
+    (hentryV : P.entry ∈ V)
+    (hdomV : ∀ v ∈ V, ∀ d, d ∈ domOf P v → d ∈ V)
+    (h : ∀ w' : State,
+      (∀ q, q < P.blocks.length → w'.blks q = decide (q ∈ V)) →
+      w'.blks P.blocks.length = true →
+      (∀ q, q < P.blocks.length →
+        (Vc.guardOf P q).eval w' = decide (q ∈ V)) →
+      (∀ (t : Ty) (x : Nat), (∀ d j, IsDefAt P (t, x) d j → d ∈ V) →
+        w'.regs t x = σ.regs t x) →
+      (∀ v ∈ V, ∀ (t : Ty) (x : Nat),
+        (∀ d j, IsDefAt P (t, x) d j → d = v ∨ d ∈ domOf P v) →
+        w'.regs t x = σ.regs t x) →
+      c.eval w' = true) :
+    DefExt.Robust (fun t x => (t, x) ∈ DefExt.targets (witnessDefs P V))
+      (setBlockVars P V σ) c :=
+  agrees_facts hentryV hdomV h
+
+theorem robustDef_intro {P : Program} {V : List Nat} {σ : State}
+    {d : DefExt.Def}
+    (hentryV : P.entry ∈ V)
+    (hdomV : ∀ v ∈ V, ∀ dd, dd ∈ domOf P v → dd ∈ V)
+    (h : ∀ w' : State,
+      (∀ q, q < P.blocks.length → w'.blks q = decide (q ∈ V)) →
+      w'.blks P.blocks.length = true →
+      (∀ q, q < P.blocks.length →
+        (Vc.guardOf P q).eval w' = decide (q ∈ V)) →
+      (∀ (t : Ty) (x : Nat), (∀ e j, IsDefAt P (t, x) e j → e ∈ V) →
+        w'.regs t x = σ.regs t x) →
+      (∀ v ∈ V, ∀ (t : Ty) (x : Nat),
+        (∀ e j, IsDefAt P (t, x) e j → e = v ∨ e ∈ domOf P v) →
+        w'.regs t x = σ.regs t x) →
+      DefExt.DefHolds w' d) :
+    DefExt.RobustDef (fun t x => (t, x) ∈ DefExt.targets (witnessDefs P V))
+      (setBlockVars P V σ) d :=
+  agrees_facts hentryV hdomV h
 
 /-- The ONE guarded-fact case: the constraint of any command with a
 `factB` entry is robust. Unvisited block: the guard is false in every
@@ -349,6 +425,68 @@ theorem robust_cmd_fact {P : Program} {σ : State} {V : List Nat}
   · rw [Bool.or_eq_true]; left
     rw [hguard b hblt]
     simp [hbV]
+
+/-- A visited phi's defining equation holds in every agreeing state,
+sort-generically: the target and the selected arm's source keep their
+σ values (SSA + dominance), and the ITE chain selects the actual
+predecessor's arm (`visited_amo` uniqueness). Consumed by the boolean
+phi constraint (through `toConstraint_eval`) and by map-phi
+definitions - the same fact, two renderings. -/
+theorem visited_phi_defHolds {P : Program} {σ : State} {V : List Nat}
+    (hssa : ssaOK P = true) (hfwd : forwardOK P = true)
+    (hphi : phiOK P = true) (hamo : amoSideOK P = true)
+    (huse : usesOK P = true)
+    (hedge : Chained (EdgeTaken P σ) V) (hentryV : P.entry ∈ V)
+    (hdomV : ∀ v ∈ V, ∀ d, d ∈ domOf P v → d ∈ V)
+    (hfacts : ∀ v ∈ V, ∀ (B : Block) (i : Nat) (c' : Cmd),
+      P.block? v = some B → B.cmds[i]? = some c' →
+      ∃ prev : Option Nat, CmdFact σ prev c'
+        ∧ ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P σ p v)
+    {b : Nat} {B : Block} {i : Nat} {t : Ty} {y : Nat} {arms : PhiArms}
+    (hbV : b ∈ V) (hB : P.block? b = some B)
+    (hci : B.cmds[i]? = some (.phi t y arms))
+    (hblt : b < P.blocks.length)
+    {w' : State}
+    (hblk : ∀ q, q < P.blocks.length → w'.blks q = decide (q ∈ V))
+    (hag : ∀ (u : Ty) (x : Nat),
+      (∀ d j, IsDefAt P (u, x) d j → d ∈ V) → w'.regs u x = σ.regs u x) :
+    DefExt.DefHolds w' ⟨t, y, Vc.phiRhs P t arms⟩ := by
+  have harms : phiArmsOK P b arms = true :=
+    phiOK_at hphi hB (List.mem_of_getElem? hci)
+  have harm_lt : ∀ x ∈ arms, x.1 < P.blocks.length := by
+    intro a ha
+    have := phiArm_lt harms (show (a.1, a.2) ∈ arms by simpa using ha)
+    omega
+  have hu := usesOK_cmd huse hB hci
+  simp only [cmdUsesOK] at hu
+  obtain ⟨prev, hfact, hpred⟩ := hfacts b hbV B i _ hB hci
+  simp only [CmdFact] at hfact
+  obtain ⟨p, src, rfl, harm, hσy⟩ := hfact
+  obtain ⟨hpV, hEdge⟩ := hpred p rfl
+  have hpP : p ∈ predsOf P b := by
+    obtain ⟨cond, hcond, -⟩ := hEdge.edge_cond
+    exact mem_predsOf.mpr ⟨cond, hcond⟩
+  have hwy : w'.regs t y = σ.regs t y := by
+    refine hag t y fun d j hdj => ?_
+    obtain ⟨rfl, -⟩ := ssa_unique hssa
+      ⟨B, _, hB, hci, by simp [Cmd.def?]⟩ hdj
+    exact hbV
+  have huniq : ∀ x ∈ arms, x.1 ∈ V → x.1 = p := by
+    intro a ha haV
+    have haP : a.1 ∈ predsOf P b :=
+      phiArm_pred harms (show (a.1, a.2) ∈ arms by simpa using ha)
+    by_cases hap : a.1 = p
+    · exact hap
+    · exact visited_amo hfwd hamo hedge hblt
+        (two_mem_le_length haP hpP hap) haV haP hpV hpP
+  have hsel : (Vc.phiRhs P t arms).eval w' = w'.regs t src :=
+    phiRhs_select hblk hentryV harm hpV harm_lt huniq
+  have hwsrc : w'.regs t src = σ.regs t src := by
+    refine hag t src fun d j hdj => ?_
+    have harmuse := List.all_eq_true.mp hu (p, src) (lookup_mem harm)
+    exact hdomV p hpV d (armUseOK_dom harmuse d j hdj)
+  show w'.regs t y = (Vc.phiRhs P t arms).eval w'
+  rw [hwy, hσy, ← hwsrc, ← hsel]
 
 /-! ## The main case analysis -/
 
@@ -410,49 +548,16 @@ theorem expected_robust_or_def {P : Program} {σ : State} {V : List Nat}
       exact ⟨prev, hfact⟩
     · -- phi
       have harms : phiArmsOK P b arms = true := phiOK_at hphi hB hcmdmem
-      have harm_lt : ∀ x ∈ arms, x.1 < P.blocks.length := by
-        intro a ha
-        have := phiArm_lt harms (show (a.1, a.2) ∈ arms by simpa using ha)
-        omega
       rcases hshape with heq | ⟨hlen2, hcamo⟩
       · -- the phi equation, sort-generically
         by_cases hbV : b ∈ V
         · refine Or.inl (robust_intro hentryV hdomV
             fun w' hblk _hexit _hguard hag _hdom => ?_)
-          have hu := usesOK_cmd huse hB hci
-          simp only [cmdUsesOK] at hu
-          obtain ⟨prev, hfact, hpred⟩ := hfacts b hbV B i _ hB hci
-          simp only [CmdFact] at hfact
-          obtain ⟨p, src, rfl, harm, hσy⟩ := hfact
-          obtain ⟨hpV, hEdge⟩ := hpred p rfl
-          have hpP : p ∈ predsOf P b := by
-            obtain ⟨cond, hcond, -⟩ := hEdge.edge_cond
-            exact mem_predsOf.mpr ⟨cond, hcond⟩
-          have hwy : w'.regs t y = σ.regs t y := by
-            refine hag t y fun d j hdj => ?_
-            obtain ⟨rfl, -⟩ := ssa_unique hssa
-              ⟨B, _, hB, hci, by simp [Cmd.def?]⟩ hdj
-            exact hbV
-          have huniq : ∀ x ∈ arms, x.1 ∈ V → x.1 = p := by
-            intro a ha haV
-            have haP : a.1 ∈ predsOf P b :=
-              phiArm_pred harms (show (a.1, a.2) ∈ arms by simpa using ha)
-            by_cases hap : a.1 = p
-            · exact hap
-            · exact visited_amo hfwd hamo hedge hblt
-                (two_mem_le_length haP hpP hap) haV haP hpV hpP
-          have hsel : (Vc.phiRhs P t arms).eval w' = w'.regs t src :=
-            phiRhs_select hblk hentryV harm hpV harm_lt huniq
-          have hwsrc : w'.regs t src = σ.regs t src := by
-            refine hag t src fun d j hdj => ?_
-            have harmuse := List.all_eq_true.mp hu (p, src) (lookup_mem harm)
-            exact hdomV p hpV d (armUseOK_dom harmuse d j hdj)
-          have hyeq : DefExt.DefHolds w' ⟨t, y, Vc.phiRhs P t arms⟩ := by
-            show w'.regs t y = (Vc.phiRhs P t arms).eval w'
-            rw [hwy, hσy, ← hwsrc, ← hsel]
-          exact hyeq.toConstraint_eval heq
+          exact (visited_phi_defHolds hssa hfwd hphi hamo huse hedge
+            hentryV hdomV hfacts hbV hB hci hblt hblk hag).toConstraint_eval
+            heq
         · exact Or.inr ⟨⟨t, y, Vc.phiRhs P t arms⟩,
-            phiDefAt_mem_witnessDefs ⟨B, _, hB, hci, rfl⟩ hbV, heq⟩
+            witnessDefAt_mem_witnessDefs ⟨B, _, hB, hci, rfl⟩ hbV, heq⟩
       · -- the at-most-one clauses
         obtain ⟨g1, g2, hg1, hg2, hne, rfl⟩ := Vc.mem_amoClauses hcamo
         rw [List.mem_map] at hg1 hg2
@@ -605,6 +710,71 @@ theorem expected_robust_or_def {P : Program} {σ : State} {V : List Nat}
         exact hexit
       · cases hc''
 
+/-- Every expected map definition is either robust (visited block:
+established by the execution) or is itself an extension entry
+(unvisited block). The two rows share `visited_phi_defHolds` and the
+dominated-uses argument with the scalar cases. -/
+theorem expectedMapDefs_robust_or_def {P : Program} {σ : State}
+    {V : List Nat}
+    (hone : singleAssertOK P = true) (hssa : ssaOK P = true)
+    (hfwd : forwardOK P = true) (hphi : phiOK P = true)
+    (hamo : amoSideOK P = true) (hgf : guardFreeOK P = true)
+    (hdc : domClosedOK P = true) (huse : usesOK P = true)
+    (hS : Suffix P σ P.entry 0 none V) :
+    ∀ md ∈ Vc.expectedMapDefs P,
+      DefExt.RobustDef
+          (fun t x => (t, x) ∈ DefExt.targets (witnessDefs P V))
+          (setBlockVars P V σ) ⟨.map, md.1, md.2⟩
+        ∨ (⟨.map, md.1, md.2⟩ : DefExt.Def) ∈ witnessDefs P V := by
+  have hedge := hS.chain_edge
+  have hhead := hS.head
+  have hentryV : P.entry ∈ V := by
+    cases V with
+    | nil => cases hhead
+    | cons v0 rest =>
+        obtain rfl := Option.some.inj hhead
+        exact List.mem_cons_self ..
+  have hdomV := dom_visited hdc hfwd hedge hhead
+  have hfacts := facts_of_suffix hone hS
+  intro md hmd
+  obtain ⟨b, B, i, c, hB, hci, hcd⟩ := mem_expectedMapDefs hmd
+  have hblt : b < P.blocks.length := (List.getElem?_eq_some_iff.mp hB).1
+  by_cases hbV : b ∈ V
+  · refine Or.inl (robustDef_intro hentryV hdomV
+      fun w' hblk _hexit _hguard hag hdom => ?_)
+    obtain ⟨x, rhs⟩ := md
+    rcases cmdMapDef?_eq_some hcd with ⟨e, rfl, rfl⟩ | ⟨arms, rfl, rfl⟩
+    · -- store / alias assignment
+      obtain ⟨prev, hfact, -⟩ := hfacts b hbV B i _ hB hci
+      simp only [CmdFact] at hfact
+      have hu := usesOK_cmd huse hB hci
+      simp only [cmdUsesOK] at hu
+      have hgfc := guardFree_at hgf (List.mem_of_getElem? hB)
+        (List.mem_of_getElem? hci)
+      simp only [cmdGuardFree, List.isEmpty_iff] at hgfc
+      have hwx : w'.regs .map x = σ.regs .map x := by
+        refine hag .map x fun d j hdj => ?_
+        obtain ⟨rfl, -⟩ := ssa_unique hssa
+          ⟨B, _, hB, hci, by simp [Cmd.def?]⟩ hdj
+        exact hbV
+      have hevals : (Vc.lower e).eval w' = (Vc.lower e).eval σ := by
+        refine eval_congr _ ?_ ?_
+        · intro p hp
+          exact hdom b hbV p.1 p.2
+            (useOK_dom (List.all_eq_true.mp hu p (lower_vars e p hp)))
+        · intro q hq
+          have := lower_blkVars e q hq
+          rw [hgfc] at this
+          cases this
+      show w'.regs .map x = (Vc.lower e).eval w'
+      rw [hwx, hevals, Vc.eval_lower]
+      exact hfact
+    · -- map phi
+      exact visited_phi_defHolds hssa hfwd hphi hamo huse hedge hentryV
+        hdomV hfacts hbV hB hci hblt hblk hag
+  · exact Or.inr (witnessDefAt_mem_witnessDefs
+      ⟨B, c, hB, hci, Vc.cmdMapDef?_unguarded hcd⟩ hbV)
+
 /-! ## Assembly -/
 
 theorem expected_sat {P : Program} {σ : State} {V : List Nat}
@@ -617,26 +787,49 @@ theorem expected_sat {P : Program} {σ : State} {V : List Nat}
   DefExt.sat_extend (orderedDefs_witnessDefs hssa huse hphi)
     (expected_robust_or_def hone hssa hfwd hphi hamo hgf hdc huse hS)
 
+theorem expectedMapDefs_sat {P : Program} {σ : State} {V : List Nat}
+    (hone : singleAssertOK P = true) (hssa : ssaOK P = true)
+    (hfwd : forwardOK P = true) (hphi : phiOK P = true)
+    (hamo : amoSideOK P = true) (hgf : guardFreeOK P = true)
+    (hdc : domClosedOK P = true) (huse : usesOK P = true)
+    (hS : Suffix P σ P.entry 0 none V) :
+    ∀ md ∈ Vc.expectedMapDefs P,
+      (witness P V σ).regs .map md.1 = md.2.eval (witness P V σ) := by
+  have hall := DefExt.sat_extend_defs
+    (ds := (Vc.expectedMapDefs P).map fun md =>
+      (⟨.map, md.1, md.2⟩ : DefExt.Def))
+    (orderedDefs_witnessDefs hssa huse hphi)
+    (fun d hd => by
+      obtain ⟨md, hmd, rfl⟩ := List.mem_map.mp hd
+      exact expectedMapDefs_robust_or_def hone hssa hfwd hphi hamo hgf
+        hdc huse hS md hmd)
+  intro md hmd
+  exact hall _ (List.mem_map.mpr ⟨md, hmd, rfl⟩)
+
 /-! ## Soundness -/
 
-theorem checkVC_sound {P : Program} {vc : List BExp}
+theorem checkVC_sound {P : Program} {vc : Vc.VC}
     (hchk : checkVC P vc = true) {s0 σ : State}
     (hrun : Steps P (Config.init P s0) (.failed σ)) :
     ∃ w, Vc.Sat w vc := by
   rw [checkVC, Bool.and_eq_true] at hchk
-  obtain ⟨hwf, hmem⟩ := hchk
+  obtain ⟨hchk1, hmdefs⟩ := hchk
+  rw [Bool.and_eq_true] at hchk1
+  obtain ⟨hwf, hmem⟩ := hchk1
   rw [wellFormed] at hwf
   simp only [Bool.and_eq_true] at hwf
   obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphi⟩, hamo⟩, hentry⟩, hgf⟩, hdc⟩, huse⟩ := hwf
   obtain ⟨V, hS⟩ := suffix_of_steps hfwd hssa huse hphi hone hrun rfl
-  refine ⟨witness P V σ, fun c hc => ?_⟩
-  exact expected_sat hone hssa hfwd hphi hamo hgf hdc huse hS c
-    (of_decide_eq_true (List.all_eq_true.mp hmem c hc))
+  refine ⟨witness P V σ, fun c hc => ?_, fun md hmd => ?_⟩
+  · exact expected_sat hone hssa hfwd hphi hamo hgf hdc huse hS c
+      (of_decide_eq_true (List.all_eq_true.mp hmem c hc))
+  · exact expectedMapDefs_sat hone hssa hfwd hphi hamo hgf hdc huse hS md
+      (of_decide_eq_true (List.all_eq_true.mp hmdefs md hmd))
 
 /-- If `checkVC` accepts and the VC is unsatisfiable, the program is
 safe: every model of the expected constraint set is refuted, so no
 failing execution can exist. -/
-theorem checkVC_safe {P : Program} {vc : List BExp}
+theorem checkVC_safe {P : Program} {vc : Vc.VC}
     (hchk : checkVC P vc = true) (hunsat : Vc.Unsat vc) : P.Safe :=
   fun ⟨_s0, _σ, hrun⟩ => hunsat (checkVC_sound hchk hrun)
 

@@ -98,8 +98,10 @@ def _errors(src):
 
 
 def test_validate_rejects_bytemap_program():
+    # `ttac lean` (shallow embedding) still rejects bytemaps; only
+    # `ttac vc-check` accepts them (validate_for_lean(maps=True)).
     errs = _errors(fx.CORE)
-    assert any("scalars only" in e for e in errs)
+    assert any("bytemap expression" in e for e in errs)
     assert any("bytemap" in e for e in errs)
 
 
@@ -163,8 +165,8 @@ entry:
 """
     errs = _errors(src)
     assert len(errs) >= 2
+    assert any("bytemap" in e for e in errs)
     assert any("undefined label" in e for e in errs)
-    assert any("scalars only" in e for e in errs)
 
 
 def test_generate_raises_with_all_errors():
@@ -309,7 +311,7 @@ def test_cli_validation_failure(tmp_path):
         app, ["lean", _write(tmp_path, fx.CORE), "-o", str(tmp_path / "out"), "--plain"]
     )
     assert result.exit_code == 1
-    assert "scalars only" in result.output
+    assert "bytemap" in result.output
 
 
 def test_cli_stdin(tmp_path):
