@@ -2,7 +2,10 @@
 #import themes.simple: *
 #import "common.typ": *
 
-#show: simple-theme.with(aspect-ratio: "16-9")
+#show: simple-theme.with(
+  aspect-ratio: "16-9",
+  config-common(horizontal-line-to-pagebreak: false),
+)
 #show raw.where(lang: "tac"): it => tac-code(
   it.text,
   font: "Consolas for Powerline",
@@ -31,6 +34,10 @@ After preprocessing:
 - phi nodes become ordinary `ite` definitions
 - cone-of-influence reduction is just data-flow slicing
 
+#v(0.25cm)
+#text(fill: muted, size: 16pt)[SeaHorn kept the CFG in the formula;
+Boogie compiled it into recursion; SeaBMC makes it *disappear*.]
+
 == Gated SSA
 
 A gamma node is a value-level merge:
@@ -45,49 +52,24 @@ It means:
   $ x := "ite"(g, x_t, x_f) $
 ]
 
-Unlike a phi node, `gamma` mentions a Boolean program expression, not a
+Unlike a phi node, `gamma` mentions a Boolean *program expression*, not a
 predecessor block name.
 
-== SSA Diamond
+== From Phi To Gamma
 
-```tac
-entry:
-  x := havoc
-  y := havoc
-  c := x < y
-  if c goto left else right
+The branch condition `c` already decides the incoming region — let the
+merge switch on *it*:
 
-left:
-  a_left := x + 1
-  goto join
+#diamond-cfg-full(
+  phi-style: "ite",
+  t-label: $c$, f-label: $not c$,
+  join-note: [was: #text(font: "Menlo", size: 11pt)[a := phi \[left: a_left, right: a_right\]]],
+)
 
-right:
-  a_right := y + 1
-  goto join
-
-join:
-  a := phi [left: a_left, right: a_right]
-```
-
-== GSSA Diamond
-
-The branch condition `c` selects the incoming region.
-
-```tac
-join:
-  a := gamma(c, a_left, a_right)
-  ok := a > 0
-  goto exit
-```
-
-After desugaring:
-
-```tac
-join:
-  a := ite(c, a_left, a_right)
-  ok := a > 0
-  goto exit
-```
+#v(0.2cm)
+`a := gamma(c, a_left, a_right)` desugars to
+`a := ite(c, a_left, a_right)` — an ordinary SSA definition. No CFG
+predicate needed to explain the merge.
 
 == Flat VC
 
@@ -113,9 +95,25 @@ For the diamond:
   $
 ]
 
+#v(0.2cm)
+No block variables, no CFG constraints. The only trace of control flow
+is the ITE guard in the definition of `a`.
+
+== Control Dependence
+
+#align(center)[#image("../sections/control-dependence.svg", width: 62%)]
+
+#compact-list[
+- $d$ *postdominates* $b$: every path $b arrow.r$ `exit` passes through $d$.
+- $b_1$ is *control-dependent* on branch $b_2$: some successor of $b_2$
+  forces a later visit to $b_1$, while $b_1$ does not postdominate $b_2$
+  itself — the branch genuinely decides.
+]
+
 == Gate Construction
 
-For each block `b`, compute a Boolean expression `gate(b)`:
+For each block $b$, compute a Boolean expression `gate(b)` over *program*
+branch conditions:
 
 #logic-box[
   $
@@ -125,33 +123,60 @@ For each block `b`, compute a Boolean expression `gate(b)`:
   $
 ]
 
-`ctrl(b)` contains controlling branch blocks. `orient(c,b)` is the branch
-condition or its negation, depending on which successor reaches `b`.
+- `ctrl(b)`: branch blocks $b$ is control-dependent on
+  (empty #sym.arrow.r $"gate"(b) = top$).
+- `orient(c,b)`: the branch condition of $c$, or its negation, depending
+  on which successor reaches $b$.
 
-== Control Dependence
+In a structured diamond: $"gate"("left") = c$, $"gate"("right") = not c$.
 
-#align(center)[#image("../sections/control-dependence.svg", width: 82%)]
+== The Hidden Blow-Up
 
-A block is control-dependent on a branch when one successor forces a later visit
-to the block, while another successor can bypass it.
+`gate` is recursive. Substituted textually into every use, shared
+control structure is *copied*:
+
+#logic-box[
+  #set text(size: 14.5pt)
+  $
+    "gate"(c) &= (p and r) or (q and s) \
+    "gate"(d) &= (q and t) or (#text(fill: rgb("#b91c1c"))[$(p and r) or (q and s)$] and u) \
+    "gate"(e) &= (#text(fill: rgb("#b91c1c"))[$(p and r) or (q and s)$] and v) or
+      ((q and t) or (#text(fill: rgb("#b91c1c"))[$(p and r) or (q and s)$] and u) and w)
+  $
+]
+
+Every level repeats its ancestors; every gamma that uses $"gate"(e)$
+repeats the whole tree again — *exponential* in the DAG depth.
 
 == Materialized Gates
 
-Expanding every gate at every use can duplicate shared control structure.
-
-Materialized gates introduce ordinary SSA Boolean definitions:
+Name each gate as an ordinary Boolean SSA definition, and let gammas
+refer to the names:
 
 #logic-box[
   $
     G_"entry" &:= top \
-    G_b &:= or_(c in "ctrl"(b)) (G_c and "orient"(c,b)) \
-    x &:= gamma(G_p, v_p, v_q)
+    G_b &:= or_(c in "ctrl"(b)) (G_c and "orient"(c,b))
   $
 ]
 
-The VC remains CFG-free; gates are just definitions.
+For the blow-up example:
 
-== Shared Gate Example
+#logic-box[
+  #set text(size: 14.5pt)
+  $
+    G_c := (G_a and r) or (G_b and s) quad quad
+    G_d := (G_b and t) or (G_c and u) quad quad
+    G_e := (G_c and v) or (G_d and w)
+  $
+]
+
+The DAG is represented once — *linear* in gates plus uses. The VC stays
+CFG-free: gates are just definitions.
+
+== Materialized Gates In The Program
+
+Gates are just definitions; the VC stays CFG-free:
 
 ```tac
 gate_a := p
@@ -167,44 +192,109 @@ join2:
   y := ite(gate_d, y_d, ite(gate_e, y_e, y_other))
 ```
 
-The shared control-dependence DAG is represented once.
+`join1` and `join2` share the same control-dependence DAG — it appears
+once, not once per merge.
 
 == Thin GSSA
 
-Thin GSSA uses only direct control-dependence controllers.
-
-#align(center)[#image("../sections/thin-gssa.svg", width: 82%)]
-
-For a direct controller `c` of block `b`:
+Materialization stops the copying, but gates can still enumerate every
+path from `entry`. *Thin GSSA* switches only on the *direct*
+control-dependence controllers:
 
 #align(center)[
   $ K_(c,b) = G_c and "orient"(c,b) $
 ]
 
-The `G_c` factor prevents unreachable branch conditions from selecting values.
+#v(0.2cm)
 
-== Thin Example CFG
+Why the $G_c$ factor? SSA variables are *total* in the formula:
 
-#align(center)[#image("../sections/thin-gssa-example-cfg.svg", width: 82%)]
+#question-box[
+  If controller block $c$ is never reached, its branch condition still
+  has a model value. Switching on the condition alone lets an
+  *unreachable* branch select the merge value.
+]
 
-The outer branch selects the region feeding `n`; local branches only compute
-values inside each region.
+$G_c$ says "controller $c$ itself is reached" — dead branch conditions
+cannot fire a case.
 
-== Thin Example: Final Form
+== The Fallback: false And undef
 
-```tac
-a_join:
-  v_a := ite(c2, v_x, v_a0)
+If no direct-controller case fires, execution does not reach $b$:
 
-b_join:
-  v_b := ite(c3, v_y, v_b0)
+#compact-list[
+- For the *reachability gate* $G_b$, the fallback is `false` — not
+  reached means not reached.
+- For a *value* merge in $b$, the fallback is `undef`: a fresh,
+  unconstrained symbol of the right type. The value is unobservable
+  when $b$ is not reached — any value will do.
+]
 
-n:
-  v := ite(c1, v_a, v_b)
-```
+#align(center)[#image("../sections/thin-gssa.svg", width: 50%)]
 
-The final phi at `n` depends only on the region selector `c1`, not on the local
-branch choices `c2` and `c3`.
+== Thin GSSA, Derived
+
+#align(center)[#image("../sections/thin-gssa-example-cfg.svg", width: 58%)]
+
+The outer branch `c1` selects the region feeding `n`; the local branches
+`c2`, `c3` only compute values *inside* each region.
+
+== Thin GSSA, Derived: Three Steps
+
+#alternatives[
+  *Step 1 — regular GSSA*: each phi uses the full path condition of its
+  predecessor:
+
+  ```tac
+  a_join:
+    v_a := gamma(c1 and c2, v_x, gamma(c1 and not c2, v_a0, undef))
+
+  b_join:
+    v_b := gamma(not c1 and c3, v_y,
+           gamma(not c1 and not c3, v_b0, undef))
+
+  n:
+    v := gamma(c1, v_a, gamma(not c1, v_b, undef))
+  ```
+
+  Every gate repeats the outer condition `c1`.
+][
+  *Step 2 — drop dead fallbacks*: the program is SESE, so execution
+  reaching a join arrives from exactly one predecessor — complete
+  two-way choices never select `undef`:
+
+  ```tac
+  a_join:
+    v_a := gamma(c2, v_x, gamma(not c2, v_a0, undef))
+
+  b_join:
+    v_b := gamma(c3, v_y, gamma(not c3, v_b0, undef))
+
+  n:
+    v := gamma(c1, v_a, v_b)
+  ```
+
+  The local gates no longer mention `c1` — the *direct* controller is
+  enough.
+][
+  *Step 3 — thin form*, after collapsing the two-way choices and
+  desugaring gamma:
+
+  ```tac
+  a_join:
+    v_a := ite(c2, v_x, v_a0)
+
+  b_join:
+    v_b := ite(c3, v_y, v_b0)
+
+  n:
+    v := ite(c1, v_a, v_b)
+  ```
+
+  The final merge at `n` depends *only* on the region selector `c1`;
+  each local ITE depends only on its own branch. Path conditions never
+  materialize.
+]
 
 == Cone Of Influence
 
@@ -233,3 +323,37 @@ exit:
 
 `junk` is dropped because it is not used by `ok`, the exit assumption, or a
 retained gate.
+
+#v(0.2cm)
+A branch that gates no retained value simply vanishes from the formula.
+
+== Three Encodings, One Diamond
+
+#{
+  set text(size: 15pt)
+  table(
+    columns: (auto, 1fr, 1fr, 1fr),
+    stroke: 0.5pt + rgb("#cbd5e1"),
+    inset: 7pt,
+    table.header([], [*SeaHorn* (03)], [*Boogie* (04)], [*SeaBMC* (05)]),
+    [control flow], [explicit: $bb_i$ variables + path constraints],
+      [recursion: backward $"ok"_i$ equations],
+      [compiled away: gates as data],
+    [program form], [SSA], [DSA], [SSA #sym.arrow.r gated SSA],
+    [joins], [PHI edge implications / ITE], [DSA edge definitions],
+      [gamma over branch conditions],
+    [formula shape], [flat conjunction], [nested implications],
+      [flat conjunction, CFG-free],
+    [solver lever], [top-level equalities, Boolean propagation on $bb_i$],
+      [assertions and assumes for free],
+      [substitution and slicing everywhere],
+    [watch out for], [critical edges, merge exclusivity, unguarded facts],
+      [exclusivity for phi/ITE extensions],
+      [gate blow-up without materialization],
+  )
+}
+
+#v(0.2cm)
+#text(fill: muted, size: 15pt)[ctac's default encoder (`sea_vc`) is
+SeaHorn-style — block variables over DSA — with the guarded/unguarded
+and merge-shape choices exposed as flags.]

@@ -1,8 +1,11 @@
 #import "@preview/touying:0.7.4": *
 #import themes.simple: *
-#import "../sections/tac-code.typ": tac-code
+#import "common.typ": *
 
-#show: simple-theme.with(aspect-ratio: "16-9")
+#show: simple-theme.with(
+  aspect-ratio: "16-9",
+  config-common(horizontal-line-to-pagebreak: false),
+)
 
 #show raw.where(lang: "tac"): it => tac-code(
   it.text,
@@ -14,19 +17,10 @@
 #set text(font: "Verdana", size: 18pt)
 #set par(justify: false)
 
-#let muted = rgb("#475569")
-
-#let two-col(left, right) = grid(
-  columns: (1fr, 1fr),
-  gutter: 0.7cm,
-  left,
-  right,
-)
-
 #title-slide[
   #text(size: 46pt, weight: "bold")[Tiny TAC]
   #v(0.2cm)
-  #text(size: 30pt)[Syntax And Semantics]
+  #text(size: 30pt)[Syntax, Semantics, Demo]
 ]
 
 == Tiny TAC
@@ -125,26 +119,40 @@ stores `v`.
 
 == Blocks And Control
 
-Unstructured basic blocks. Branches are terminators.
+A complete program — `safe_core.ttac`, the running example of this deck:
 
-```tac
-entry:
-  x := havoc
-  y := havoc
-  c := x < y
-  if c goto ok else bad
+#two-col(columns: (1.25fr, 1fr))[
+  ```tac
+  entry:
+    M := havoc
+    i := havoc
+    limit := havoc
+    x := M[i]
+    y := x + 1
+    M2 := M[i := y]
+    c := y <= limit
+    if c goto ok else bad
 
-ok:
-  assert c
-  goto exit
+  ok:
+    assert c
+    goto exit
+  ```
+][
+  ```tac
+  bad:
+    assume not c
+    halt
 
-bad:
-  assume not c
-  halt
+  exit:
+    halt
+  ```
 
-exit:
-  halt
-```
+  #v(0.2cm)
+  Unstructured basic blocks; branches are terminators and branch on a
+  *named* bool register.
+
+  The assert in `ok` only runs on the `c`-true path.
+]
 
 == Phi Nodes
 
@@ -167,19 +175,72 @@ J:
 - Enter from `L`: `x := xl`
 - Enter from `R`: `x := xr`
 
-== Semantic Contract
+== Demo: First Look At A Program
 
-A `ttac` execution follows the expected operational semantics:
+`ttac stats` reads the surface — commands, types, memory capability:
 
-- assignment updates the destination register
-- havoc chooses an arbitrary value of the destination type
-- assume filters executions
-- assert fails when its named condition is false
-- terminators choose the next block
+#term-box[
+  #sh[ttac stats safe_core.ttac --plain]
+  #out[overview.blocks: 4 #h(3.2em) overview.commands: 9]
+  #out[command_kinds.Assign: 4 #h(1em) Havoc: 3 #h(1em) Assert: 1 #h(1em) Assume: 1]
+  #out[types.int: 4 #h(5.1em) types.bool: 1 #h(1em) types.bytemap: 2]
+  #out[memory.capability: bytemap-rw #h(1em) loads: 1 #h(1em) updates: 1]
+  #out[shape.asserts: 1]
+]
 
-#v(0.35cm)
-VC generation is bug-oriented:
+#v(0.3cm)
+Four blocks, one assert, read-write bytemap use — matches the program
+on the previous slide.
+
+== Demo: Semantics, Executed
+
+The interpreter *is* the operational semantics. Zero-havoc run:
+
+#term-box[
+  #sh[ttac run safe_core.ttac --trace]
+  #hi[status: done (finished) #h(2em) assert_ok: 0 #h(2em) assert_fail: 0]
+  #out[entry:]
+  #out[#h(1.2em) M := havoc #h(6.2em) \# havoc bytemap]
+  #out[#h(1.2em) i := havoc  = 0]
+  #out[#h(1.2em) limit := havoc  = 0]
+  #out[#h(1.2em) x := M\[i\]  = 0 #h(4.6em) \# M\[0\]]
+  #out[#h(1.2em) y := x + 1  = 1]
+  #out[#h(1.2em) M2 := M\[i := y\] #h(3.4em) \# M\[0 := 1\]]
+  #out[#h(1.2em) c := y \<= limit  = false]
+  #out[#h(1.2em) if c goto ok else bad #h(1em) \# c=false -> bad]
+  #out[bad:]
+  #out[#h(1.2em) assume not c #h(4.6em) \# assume: true]
+  #out[#h(1.2em) halt]
+]
+
+#pause
+#v(0.2cm)
+Havoc defaulted to `0`, so `c` is false and execution takes the `bad`
+path — the assert never runs. One execution, not all of them.
+
+== Demo: Asking About All Executions
+
+`assert c` in block `ok` — can it *ever* fail?
+
+#term-box[
+  #sh[ttac vcgen safe_core.ttac --solve]
+  #hi[unsat]
+]
+
+#v(0.2cm)
+#unsat-chip #h(0.4em) no execution reaches `ok` with `c` false — the
+branch guard protects the assert on *every* path.
+
+#pause
+#v(0.4cm)
+
+That is the VCGen contract, seen end to end:
 
 #align(center)[
   $ "VCGen"(P) " is satisfiable " <=> P " has an assertion-failure execution" $
+]
+
+#v(0.2cm)
+#text(fill: muted, size: 16pt)[
+  Interpreter: one chosen execution. Solver: a question over all of them.
 ]

@@ -2,7 +2,10 @@
 #import themes.simple: *
 #import "common.typ": *
 
-#show: simple-theme.with(aspect-ratio: "16-9")
+#show: simple-theme.with(
+  aspect-ratio: "16-9",
+  config-common(horizontal-line-to-pagebreak: false),
+)
 #show raw.where(lang: "tac"): it => tac-code(
   it.text,
   font: "Consolas for Powerline",
@@ -29,6 +32,33 @@ Plan:
 - model a reference as an explicit value
 - lower borrow commands to ordinary assignments, map reads, map writes, and assumes
 - run the existing Tiny TAC VCGen
+
+== The Puzzle This Deck Solves
+
+#two-col(columns: (1.15fr, 1fr))[
+  ```tac
+  entry:
+    M := havoc
+    i := havoc
+    r, M2 := borrow_mut M[i]
+    r2 := put_ref r, 7
+    release r2
+    x := M2[i]
+    ok := x == 7
+    assert ok
+    halt
+  ```
+][
+  `borrow_mut` returns the reference *and* the continuation memory `M2`
+  — in SSA, before any write through `r` has happened.
+
+  #question-box[
+    `x` is read from `M2`, which was created *before* the `7` was
+    written. Why should `assert ok` hold?
+  ]
+
+  The answer is the trick of this deck.
+]
 
 == Reference Types
 
@@ -63,6 +93,10 @@ Symbolically, a reference carries:
 The `promise` field is unused for constant references, but keeping one shape
 makes the lowering uniform.
 
+#v(0.15cm)
+#text(fill: muted, size: 16pt)[Record syntax is sugar for the lowering
+only — Tiny TAC itself has no tuples.]
+
 == Borrow Commands
 
 ```text
@@ -78,25 +112,6 @@ release r
 Mutable borrowing returns both the reference and a continuation memory.
 Mutable reborrowing returns the child reference and the resumed parent
 reference.
-
-== Direct Borrow Example
-
-```tac
-entry:
-  M := havoc
-  i := havoc
-  p := borrow M[i]
-  x := get_ref p
-  release p
-  q, M2 := borrow_mut M[i]
-  q2 := put_ref q, (x + 1)
-  release q2
-  ok := M2[i] == x + 1
-  assert ok
-```
-
-This reads through a constant reference, then updates the same location through
-a mutable reference.
 
 == Lowering: Direct Borrows
 
@@ -130,6 +145,10 @@ a mutable reference.
   M2 := M[i := r.promise]
   ```
 ]
+
+#v(0.2cm)
+The continuation memory is written *now*, with a havoc'd `promise` —
+a bet on the future final value.
 
 == Lowering: Use And Release
 
@@ -167,7 +186,11 @@ a mutable reference.
   ```
 ]
 
-== Mutable Borrow Lowered
+#v(0.2cm)
+`release` is where the bet is settled: the value observed at the end
+*is* the promised value.
+
+== The Puzzle, Lowered
 
 ```tac
 entry:
@@ -182,6 +205,9 @@ entry:
   assert ok
 ```
 
+Only ordinary assignments, a map store, and an assume — existing VCGen
+applies unchanged.
+
 == Why It Proves
 
 #logic-box[
@@ -193,13 +219,41 @@ entry:
   $
 ]
 
-Therefore:
+#pause
+Chaining the last three equalities:
 
 #align(center)[
   $ "promise"(r) = 7 $
 ]
 
-So the continuation memory `M2` stores `7` at address `i`.
+So `M2` — written back at borrow time — stores `7` at address `i`, and
+`x == 7` follows. The havoc'd promise was *forced* by the release
+assumption.
+
+== Demo: The Whole Pipeline
+
+Desugaring is a `ttac -> ttac` pass; the VC core never sees a reference:
+
+#term-box[
+  #sh[ttac desugar safe_borrow_mut.ttac | ttac vcgen - --solve]
+  #hi[unsat]
+  #sh[ttac desugar unsafe_borrow_mut.ttac | ttac vcgen - --solve]
+  #hi[sat]
+]
+
+#pause
+#v(0.25cm)
+
+One more thing the semantics tells us — forward execution *cannot* run
+a borrow program:
+
+#term-box[
+  #sh[ttac run safe_borrow_mut.ttac]
+  #hi[status: stopped (assume failed in block entry)]
+]
+
+The interpreter cannot guess the promise. Only the solver — choosing
+all values at once — can. That is what makes it a *prophecy*.
 
 == Mutable Reborrow
 
@@ -225,6 +279,10 @@ r2 := { addr: r.addr, value: q.promise, promise: r.promise }
 When `q` is released, it updates `r2.value`. When `r2` is released, it updates
 the original memory promise.
 
+#v(0.2cm)
+The same trick, nested: the parent's resumed view starts at the child's
+*promise*.
+
 == Reborrow Facts
 
 #logic-box[
@@ -238,20 +296,32 @@ the original memory promise.
   $
 ]
 
-The final release implies `promise(r) = 8`, so `M2[i] == 8`.
+The final release implies `promise(r) = 8`, so `M2[i] == 8` — the write
+through the child is visible to the parent, and the parent's final
+write wins.
 
-== Prophecy Variable
+== Prophecy Variables
 
-The `promise` field is a prophecy-style value:
+The `promise` field is a *prophecy variable*:
 
 - chosen nondeterministically at borrow time
 - constrained later at release time
 - already written into the continuation memory
 
-#v(0.25cm)
+#v(0.3cm)
 
-This is the RustHorn idea adapted to a low-level memory setting: future borrow
-effects are represented by values in the current formula.
+Lineage:
+
+#compact-list[
+- Abadi and Lamport, _The Existence of Refinement Mappings_ (1991) —
+  prophecy variables for refinement proofs.
+- Matsushita, Tsukada, Kobayashi, _RustHorn: CHC-based Verification for
+  Rust Programs_ (2020) — mutable borrows as (current, final) value
+  pairs, no memory model.
+- Priya and Gurfinkel, _Ownership in low-level intermediate
+  representation_ (FMCAD 2024) — the idea in a BMC setting, mixed with
+  an address-map memory model. Tiny TAC follows this pattern.
+]
 
 == VCGen Boundary
 
@@ -263,5 +333,26 @@ After lowering, VCGen only sees ordinary Tiny TAC:
 - assertions
 - havoc values
 
-Borrow well-formedness remains a separate side condition or a separate set of
-verification obligations.
+#v(0.25cm)
+
+Borrow *well-formedness* (liveness, exclusivity, reborrow lifetimes) is a
+separate side condition — checked before VCGen, or encoded as extra
+obligations. Candidate disciplines: Stacked Borrows, Tree Borrows.
+
+== Open Extensions
+
+#compact-list[
+- *Finite-region borrows* — borrow a byte range, not a single cell:
+  base + size + per-word value/promise. Question: keeping the encoding
+  compact.
+- *Reference shadow memory* — store references in memory via ghostmap
+  shadows for addr/value/promise/permission. Question: which metadata
+  must be shadowed, and how shadows stay synchronized.
+- *Reference semantics and well-formedness* — pick a borrow model
+  (Stacked/Tree Borrows), state the rules, decide: reject before VCGen
+  or encode as obligations.
+]
+
+#v(0.3cm)
+Each is small enough to state independently, but substantial enough to
+be a useful project.

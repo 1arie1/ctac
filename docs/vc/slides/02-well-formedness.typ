@@ -2,7 +2,10 @@
 #import themes.simple: *
 #import "common.typ": *
 
-#show: simple-theme.with(aspect-ratio: "16-9")
+#show: simple-theme.with(
+  aspect-ratio: "16-9",
+  config-common(horizontal-line-to-pagebreak: false),
+)
 #show raw.where(lang: "tac"): it => tac-code(
   it.text,
   font: "Consolas for Powerline",
@@ -30,6 +33,10 @@ Well-formedness records the shape expected by each VCGen style:
 - definition discipline: SSA or DSA
 - assertion discipline: single final failure query
 - join discipline: phi nodes or edge-local dynamic definitions
+
+#v(0.3cm)
+#text(fill: muted)[Each form on the next slides is a *contract with a
+specific encoder* — watch the "consumed by" notes.]
 
 == CFG Vocabulary
 
@@ -70,6 +77,9 @@ A program is *single-entry single-exit* when:
   $
 ]
 
+#v(0.25cm)
+#text(fill: accent, size: 16pt)[Consumed by: every encoder in this series.]
+
 == SSA
 
 Static single assignment:
@@ -90,6 +100,9 @@ right:
 join:
   x := phi [left: x_left, right: x_right]
 ```
+
+#text(fill: accent, size: 16pt)[Consumed by: SeaHorn-style (deck 03) and
+SeaBMC-style (deck 05).]
 
 == DSA
 
@@ -112,6 +125,8 @@ join:
 
 The two assignments to `x` are allowed because they occur in sibling
 predecessors, immediately before the join.
+
+#text(fill: accent, size: 16pt)[Consumed by: Boogie-style (deck 04).]
 
 == SSA To DSA
 
@@ -139,6 +154,7 @@ predecessors, immediately before the join.
 
 #v(0.2cm)
 DSA can be read as placing the merge assignment on the incoming CFG edge.
+The reverse direction collects sibling dynamic assignments into a phi.
 
 == SASA
 
@@ -153,10 +169,54 @@ exit:
 
 #v(0.25cm)
 
-- exactly one `assume`
-- exactly one `assert`
+- exactly one `assume`, exactly one `assert`, both in `exit`
 - `pre` accumulates path assumptions
 - `post` summarizes assertion obligations
+
+#v(0.25cm)
+#text(fill: accent, size: 16pt)[Consumed by: every encoder — the failure
+query lives in one place.]
+
+== Reducing To SASA
+
+Scattered assumes feed `pre`; scattered asserts conjoin into `post`:
+
+#two-col[
+  Before — two asserts, one assume:
+
+  ```tac
+  entry:
+    x := havoc
+    assume x > 0
+    c1 := x > 0
+    assert c1
+    y := x + 1
+    c2 := y > 1
+    assert c2
+    halt
+  ```
+][
+  After — one query at `exit`:
+
+  ```tac
+  entry:
+    x := havoc
+    c1 := x > 0
+    y := x + 1
+    c2 := y > 1
+    post := c1 and c2
+    goto exit
+
+  exit:
+    assume x > 0
+    assert post
+    halt
+  ```
+]
+
+#text(fill: muted, size: 15pt)[If either assert fails, `post` is false —
+the failure is preserved. Ordering subtleties are why this is
+*preprocessing*, done once, before any encoder runs.]
 
 == Safety Query
 
@@ -171,3 +231,27 @@ The VC asks for the negation:
 #align(center)[
   $ exists xi. "entry-to-exit"(xi) and "pre"(xi) and not "post"(xi) $
 ]
+
+#v(0.35cm)
+
+== Which Encoder Wants Which Form
+
+#{
+  set text(size: 16pt)
+  table(
+    columns: (auto, 1fr, 1fr),
+    stroke: 0.5pt + rgb("#cbd5e1"),
+    inset: 8pt,
+    table.header(
+      [*Form*], [*What it fixes*], [*Consumed by*],
+    ),
+    [SESE], [CFG shape: no dead regions, one normal exit], [all three encoders],
+    [SSA], [one definition per register; merges at phis], [SeaHorn (03), SeaBMC (05)],
+    [DSA], [merges as edge-local sibling assignments], [Boogie (04)],
+    [SASA], [one final `assume pre; assert post` query], [all three encoders],
+  )
+}
+
+#v(0.3cm)
+The conversions (SSA #sym.arrow.l.r DSA, fold-to-SASA) are semantic
+preprocessing — encoder choice starts *after* them.
