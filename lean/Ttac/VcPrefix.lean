@@ -169,6 +169,97 @@ theorem head_eq_entry {P : Program} {σ : State} (hentry : entryOK P = true)
       simp only [List.head?_cons, Option.some.injEq]
       omega
 
+/-- The forward *write step*, factored once: given the trace facts before a
+register write at `(b, pc)` and the new command's own coverage fact `hnew`,
+the trace facts hold after it. All the preservation — the edge chain
+(`chained_edgeTaken_upd`), the current-block entry edge, and every earlier
+command's fact (`cmdFact_freeze`) — happens here, so the `assign`/`havoc`/`phi`
+cases only supply `hnew`. This is "the step is simple," made literal. -/
+theorem forwardTrace_write {P : Program} (hssa : ssaOK P = true)
+    (huse : usesOK P = true) (hfwd : forwardOK P = true) (hphi : phiOK P = true)
+    {b pc : Nat} {prev : Option Nat} {s : State} {B : Block} {t : Ty} {y : Nat}
+    {cmd0 : Cmd} (v : t.denote)
+    (hB : P.block? b = some B) (hc0 : B.cmds[pc]? = some cmd0)
+    (hydef : IsDefAt P (t, y) b pc)
+    {V : List Nat} (hentV : P.entry ∈ V) (hgl : V.getLast? = some b)
+    (hmax : ∀ q ∈ V, q ≤ b) (hedge : Chained (EdgeTaken P s) V)
+    (hpe : ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P s p b)
+    (hfacts : ∀ v' i Bv c', P.block? v' = some Bv → Bv.cmds[i]? = some c' →
+      v' ∈ V → posLt (v', i) (b, pc) = true → (∀ r, c' ≠ .assert r) →
+      ∃ prevv, CmdFact s prevv c'
+        ∧ ∀ p, prevv = some p → p ∈ V ∧ EdgeTaken P s p v')
+    (hnew : CmdFact (s.upd t y v) prev cmd0) :
+    ∃ V' : List Nat, P.entry ∈ V' ∧ V'.getLast? = some b ∧ (∀ q ∈ V', q ≤ b)
+      ∧ Chained (EdgeTaken P (s.upd t y v)) V'
+      ∧ (∀ p, prev = some p → p ∈ V' ∧ EdgeTaken P (s.upd t y v) p b)
+      ∧ (∀ v' i Bv c', P.block? v' = some Bv → Bv.cmds[i]? = some c' →
+          v' ∈ V' → posLt (v', i) (b, pc + 1) = true → (∀ r, c' ≠ .assert r) →
+          ∃ prevv, CmdFact (s.upd t y v) prevv c'
+            ∧ ∀ p, prevv = some p → p ∈ V' ∧ EdgeTaken P (s.upd t y v) p v') := by
+  have hpe' : ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P (s.upd t y v) p b :=
+    fun p hp => ⟨(hpe p hp).1,
+      edgeTaken_freeze huse (hpe p hp).2 ((hpe p hp).2.lt hfwd) hydef _⟩
+  refine ⟨V, hentV, hgl, hmax,
+    chained_edgeTaken_upd huse hfwd hydef _ hmax hedge, hpe', ?_⟩
+  intro v' i Bv c' hBv hci hvV hlt hna
+  rcases show posLt (v', i) (b, pc) = true ∨ (v' = b ∧ i = pc) by
+    simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at hlt ⊢
+    omega with hold | ⟨rfl, rfl⟩
+  · obtain ⟨prevv, hcf, hec⟩ := hfacts v' i Bv c' hBv hci hvV hold hna
+    exact ⟨prevv, cmdFact_freeze hssa huse hphi hBv hci hold hydef _ hcf,
+      fun p hp => ⟨(hec p hp).1, edgeTaken_freeze huse (hec p hp).2
+        (Nat.lt_of_lt_of_le ((hec p hp).2.lt hfwd) (hmax v' hvV)) hydef _⟩⟩
+  · obtain rfl := Option.some.inj (hBv.symm.trans hB)
+    obtain rfl := Option.some.inj (hci.symm.trans hc0)
+    exact ⟨prev, hnew, hpe'⟩
+
+/-- The forward *block-entry step*, factored once: taking the edge `b → tgt`
+appends `tgt` to the visited list, extends the chain, and re-files the earlier
+facts. The `goto`/`ifTrue`/`ifFalse` cases only supply the edge. -/
+theorem forwardTrace_enter {P : Program}
+    {b tgt : Nat} {s : State} {B : Block}
+    (hB : P.block? b = some B) (hlt' : b < tgt) (hEdge : EdgeTaken P s b tgt)
+    {V : List Nat} (hentV : P.entry ∈ V) (hgl : V.getLast? = some b)
+    (hmax : ∀ q ∈ V, q ≤ b) (hedge : Chained (EdgeTaken P s) V)
+    (hfacts : ∀ v' i Bv c', P.block? v' = some Bv → Bv.cmds[i]? = some c' →
+      v' ∈ V → posLt (v', i) (b, B.cmds.length) = true → (∀ r, c' ≠ .assert r) →
+      ∃ prevv, CmdFact s prevv c'
+        ∧ ∀ p, prevv = some p → p ∈ V ∧ EdgeTaken P s p v') :
+    ∃ V' : List Nat, P.entry ∈ V' ∧ V'.getLast? = some tgt ∧ (∀ q ∈ V', q ≤ tgt)
+      ∧ Chained (EdgeTaken P s) V'
+      ∧ (∀ p, some b = some p → p ∈ V' ∧ EdgeTaken P s p tgt)
+      ∧ (∀ v' i Bv c', P.block? v' = some Bv → Bv.cmds[i]? = some c' →
+          v' ∈ V' → posLt (v', i) (tgt, 0) = true → (∀ r, c' ≠ .assert r) →
+          ∃ prevv, CmdFact s prevv c'
+            ∧ ∀ p, prevv = some p → p ∈ V' ∧ EdgeTaken P s p v') := by
+  refine ⟨V ++ [tgt], List.mem_append.mpr (Or.inl hentV), by simp,
+    fun q hq => (List.mem_append.mp hq).elim
+      (fun h => Nat.le_of_lt (Nat.lt_of_le_of_lt (hmax q h) hlt'))
+      (fun h => Nat.le_of_eq (List.mem_singleton.mp h)),
+    chained_append_single hedge (fun z hz => by
+      obtain rfl : z = b := Option.some.inj (hz.symm.trans hgl); exact hEdge),
+    ?_, ?_⟩
+  · intro q hq
+    obtain rfl := Option.some.inj hq
+    exact ⟨List.mem_append.mpr (Or.inl (List.mem_of_getLast? hgl)), hEdge⟩
+  · intro v' i Bv c' hBv hci hvV hlt hna
+    have hlt2 : v' < tgt := by
+      simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at hlt; omega
+    have hv'V : v' ∈ V := (List.mem_append.mp hvV).elim id (fun h => by
+      simp only [List.mem_singleton] at h; exact absurd (h ▸ hlt2) (Nat.lt_irrefl _))
+    have hile : i < Bv.cmds.length := (List.getElem?_eq_some_iff.mp hci).1
+    have hv'b : v' ≤ b := hmax v' hv'V
+    have hpos : posLt (v', i) (b, B.cmds.length) = true := by
+      have hBvB : v' = b → Bv = B := fun hh => by
+        rw [hh] at hBv; exact Option.some.inj (hBv.symm.trans hB)
+      simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+      rcases Nat.lt_or_eq_of_le hv'b with hh | rfl
+      · exact Or.inl hh
+      · exact Or.inr ⟨rfl, by rw [hBvB rfl] at hile; exact hile⟩
+    obtain ⟨prevv, hcf, hec⟩ := hfacts v' i Bv c' hBv hci hv'V hpos hna
+    exact ⟨prevv, hcf,
+      fun p hp => ⟨List.mem_append.mpr (Or.inl (hec p hp).1), (hec p hp).2⟩⟩
+
 /-! ## The forward trace: structural facts by prefix induction
 
 The forward replacement for `suffix_of_steps` + `chain_edge` +
@@ -208,85 +299,42 @@ theorem forwardTrace {P : Program} (hssa : ssaOK P = true)
           obtain ⟨rfl, rfl, rfl, rfl⟩ := Config.running.inj heq
           obtain ⟨V, hentV, hgl, hmax, hedge, hpe, hfacts⟩ := ih rfl
           have hydef : IsDefAt P (t, y) b pc := ⟨B, _, hB, hc, rfl⟩
-          have hpe' : ∀ p, prev = some p →
-              p ∈ V ∧ EdgeTaken P (s.upd t y (e.eval s)) p b := fun p hp =>
-            ⟨(hpe p hp).1, edgeTaken_freeze huse (hpe p hp).2 ((hpe p hp).2.lt hfwd) hydef _⟩
-          refine ⟨V, hentV, hgl, hmax,
-            chained_edgeTaken_upd huse hfwd hydef _ hmax hedge, hpe', ?_⟩
-          intro v i Bv c' hBv hci hvV hlt hna
-          rcases show posLt (v, i) (b, pc) = true ∨ (v = b ∧ i = pc) by
-            simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at hlt ⊢
-            omega with hold | ⟨rfl, rfl⟩
-          · obtain ⟨prevv, hcf, hec⟩ := hfacts v i Bv c' hBv hci hvV hold hna
-            exact ⟨prevv, cmdFact_freeze hssa huse hphi hBv hci hold hydef _ hcf,
-              fun p hp => ⟨(hec p hp).1, edgeTaken_freeze huse (hec p hp).2
-                (Nat.lt_of_lt_of_le ((hec p hp).2.lt hfwd) (hmax v hvV)) hydef _⟩⟩
-          · obtain rfl := Option.some.inj (hBv.symm.trans hB)
-            obtain rfl := Option.some.inj (hci.symm.trans hc)
-            refine ⟨prev, ?_, hpe'⟩
-            have hu := usesOK_cmd huse hB hc
-            simp only [cmdUsesOK] at hu
-            have hev : e.eval (s.upd t y (e.eval s)) = e.eval s :=
-              eval_congr e (fun p hp => State.upd_regs_of_ne s (fun heqp => by
-                obtain ⟨rfl, rfl⟩ := Prod.mk.injEq .. |>.mp heqp
-                exact defsBefore_no_def_here hydef (expUsesOK_before hu _ hp)) _)
-                (fun q _ => by rw [State.upd_blks])
-            simp only [CmdFact, State.upd_regs_self, hev]
+          refine forwardTrace_write hssa huse hfwd hphi (e.eval s) hB hc hydef
+            hentV hgl hmax hedge hpe hfacts ?_
+          have hu := usesOK_cmd huse hB hc
+          simp only [cmdUsesOK] at hu
+          have hev : e.eval (s.upd t y (e.eval s)) = e.eval s :=
+            eval_congr e (fun p hp => State.upd_regs_of_ne s (fun heqp => by
+              obtain ⟨rfl, rfl⟩ := Prod.mk.injEq .. |>.mp heqp
+              exact defsBefore_no_def_here hydef (expUsesOK_before hu _ hp)) _)
+              (fun q _ => by rw [State.upd_blks])
+          simp only [CmdFact, State.upd_regs_self, hev]
       | @havoc b pc prev s B t y v hB hc =>
           intro b2 pc2 prev2 s2 heq
           obtain ⟨rfl, rfl, rfl, rfl⟩ := Config.running.inj heq
           obtain ⟨V, hentV, hgl, hmax, hedge, hpe, hfacts⟩ := ih rfl
-          have hydef : IsDefAt P (t, y) b pc := ⟨B, _, hB, hc, rfl⟩
-          have hpe' : ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P (s.upd t y v) p b :=
-            fun p hp => ⟨(hpe p hp).1, edgeTaken_freeze huse (hpe p hp).2
-              ((hpe p hp).2.lt hfwd) hydef _⟩
-          refine ⟨V, hentV, hgl, hmax,
-            chained_edgeTaken_upd huse hfwd hydef _ hmax hedge, hpe', ?_⟩
-          intro v' i Bv c' hBv hci hvV hlt hna
-          rcases show posLt (v', i) (b, pc) = true ∨ (v' = b ∧ i = pc) by
-            simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at hlt ⊢
-            omega with hold | ⟨rfl, rfl⟩
-          · obtain ⟨prevv, hcf, hec⟩ := hfacts v' i Bv c' hBv hci hvV hold hna
-            exact ⟨prevv, cmdFact_freeze hssa huse hphi hBv hci hold hydef _ hcf,
-              fun p hp => ⟨(hec p hp).1, edgeTaken_freeze huse (hec p hp).2
-                (Nat.lt_of_lt_of_le ((hec p hp).2.lt hfwd) (hmax v' hvV)) hydef _⟩⟩
-          · obtain rfl := Option.some.inj (hBv.symm.trans hB)
-            obtain rfl := Option.some.inj (hci.symm.trans hc)
-            exact ⟨prev, trivial, hpe'⟩
+          exact forwardTrace_write hssa huse hfwd hphi v hB hc
+            ⟨B, _, hB, hc, rfl⟩ hentV hgl hmax hedge hpe hfacts trivial
       | @phi b pc p s B t y arms src hB hc harm =>
           intro b2 pc2 prev2 s2 heq
           obtain ⟨rfl, rfl, rfl, rfl⟩ := Config.running.inj heq
           obtain ⟨V, hentV, hgl, hmax, hedge, hpe, hfacts⟩ := ih rfl
           have hydef : IsDefAt P (t, y) b pc := ⟨B, _, hB, hc, rfl⟩
-          have hpe' : ∀ q, (some p) = some q →
-              q ∈ V ∧ EdgeTaken P (s.upd t y (s.regs t src)) q b := fun q hq =>
-            ⟨(hpe q hq).1, edgeTaken_freeze huse (hpe q hq).2 ((hpe q hq).2.lt hfwd) hydef _⟩
-          refine ⟨V, hentV, hgl, hmax,
-            chained_edgeTaken_upd huse hfwd hydef _ hmax hedge, hpe', ?_⟩
-          intro v' i Bv c' hBv hci hvV hlt hna
-          rcases show posLt (v', i) (b, pc) = true ∨ (v' = b ∧ i = pc) by
-            simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at hlt ⊢
-            omega with hold | ⟨rfl, rfl⟩
-          · obtain ⟨prevv, hcf, hec⟩ := hfacts v' i Bv c' hBv hci hvV hold hna
-            exact ⟨prevv, cmdFact_freeze hssa huse hphi hBv hci hold hydef _ hcf,
-              fun q hq => ⟨(hec q hq).1, edgeTaken_freeze huse (hec q hq).2
-                (Nat.lt_of_lt_of_le ((hec q hq).2.lt hfwd) (hmax v' hvV)) hydef _⟩⟩
-          · obtain rfl := Option.some.inj (hBv.symm.trans hB)
-            obtain rfl := Option.some.inj (hci.symm.trans hc)
-            refine ⟨some p, ?_, hpe'⟩
-            have hu := usesOK_cmd huse hB hc
-            simp only [cmdUsesOK] at hu
-            have harms := phiOK_at hphi hB (List.mem_of_getElem? hc)
-            have hsrcne : (t, src) ≠ (t, y) := by
-              rintro heqp
-              obtain ⟨-, rfl⟩ := Prod.mk.injEq .. |>.mp heqp
-              have hle := armUseOK_le
-                (List.all_eq_true.mp hu (p, src) (lookup_mem harm)) _ _ hydef
-              have hpv := phiArm_lt harms (lookup_mem harm)
-              omega
-            simp only [CmdFact]
-            exact ⟨p, src, rfl, harm, by
-              rw [State.upd_regs_self, State.upd_regs_of_ne s hsrcne]⟩
+          refine forwardTrace_write hssa huse hfwd hphi (s.regs t src) hB hc hydef
+            hentV hgl hmax hedge hpe hfacts ?_
+          have hu := usesOK_cmd huse hB hc
+          simp only [cmdUsesOK] at hu
+          have harms := phiOK_at hphi hB (List.mem_of_getElem? hc)
+          have hsrcne : (t, src) ≠ (t, y) := by
+            rintro heqp
+            obtain ⟨-, rfl⟩ := Prod.mk.injEq .. |>.mp heqp
+            have hle := armUseOK_le
+              (List.all_eq_true.mp hu (p, src) (lookup_mem harm)) _ _ hydef
+            have hpv := phiArm_lt harms (lookup_mem harm)
+            omega
+          simp only [CmdFact]
+          exact ⟨p, src, rfl, harm, by
+            rw [State.upd_regs_self, State.upd_regs_of_ne s hsrcne]⟩
       | @assume b pc prev s B φ hB hc hcond =>
           intro b2 pc2 prev2 s2 heq
           obtain ⟨rfl, rfl, rfl, rfl⟩ := Config.running.inj heq
@@ -320,112 +368,28 @@ theorem forwardTrace {P : Program} (hssa : ssaOK P = true)
           intro b2 pc2 prev2 s2 heq
           obtain ⟨hbeq, rfl, rfl, rfl⟩ := Config.running.inj heq
           subst b2
-          obtain ⟨V, hentV, hgl, hmax, hedge, hpe, hfacts⟩ := ih rfl
-          have hlt' : b < tgt :=
+          obtain ⟨V, hentV, hgl, hmax, hedge, -, hfacts⟩ := ih rfl
+          exact forwardTrace_enter hB
             (forward_target hfwd hB (by rw [hterm]; exact List.mem_singleton.mpr rfl)).1
-          have hEdge : EdgeTaken P s b tgt := ⟨B, hB, Or.inl hterm⟩
-          refine ⟨V ++ [tgt], List.mem_append.mpr (Or.inl hentV), ?_, ?_, ?_, ?_, ?_⟩
-          · simp
-          · intro q hq
-            rcases List.mem_append.mp hq with h | h
-            · exact Nat.le_of_lt (Nat.lt_of_le_of_lt (hmax q h) hlt')
-            · exact Nat.le_of_eq (List.mem_singleton.mp h)
-          · exact chained_append_single hedge (fun z hz => by
-              obtain rfl : z = b := Option.some.inj (hz.symm.trans hgl); exact hEdge)
-          · intro q hq
-            obtain rfl := Option.some.inj hq
-            exact ⟨List.mem_append.mpr (Or.inl (List.mem_of_getLast? hgl)), hEdge⟩
-          · intro v' i Bv c' hBv hci hvV hlt hna
-            have hlt2 : v' < tgt := by
-              simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at hlt; omega
-            have hv'V : v' ∈ V := (List.mem_append.mp hvV).elim id (fun h => by
-              simp only [List.mem_singleton] at h; exact absurd (h ▸ hlt2) (Nat.lt_irrefl _))
-            have hile : i < Bv.cmds.length := (List.getElem?_eq_some_iff.mp hci).1
-            have hv'b : v' ≤ b := hmax v' hv'V
-            have hpos : posLt (v', i) (b, B.cmds.length) = true := by
-              have hBvB : v' = b → Bv = B := fun hh => by
-                rw [hh] at hBv; exact Option.some.inj (hBv.symm.trans hB)
-              simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-              rcases Nat.lt_or_eq_of_le hv'b with hh | rfl
-              · exact Or.inl hh
-              · exact Or.inr ⟨rfl, by rw [hBvB rfl] at hile; exact hile⟩
-            obtain ⟨prevv, hcf, hec⟩ := hfacts v' i Bv c' hBv hci hv'V hpos hna
-            exact ⟨prevv, hcf,
-              fun p hp => ⟨List.mem_append.mpr (Or.inl (hec p hp).1), (hec p hp).2⟩⟩
+            ⟨B, hB, Or.inl hterm⟩ hentV hgl hmax hedge hfacts
       | @ifTrue b prev s B r tgt el hB hterm hcond =>
           intro b2 pc2 prev2 s2 heq
           obtain ⟨hbeq, rfl, rfl, rfl⟩ := Config.running.inj heq
           subst b2
-          obtain ⟨V, hentV, hgl, hmax, hedge, hpe, hfacts⟩ := ih rfl
-          have hlt' : b < tgt :=
+          obtain ⟨V, hentV, hgl, hmax, hedge, -, hfacts⟩ := ih rfl
+          exact forwardTrace_enter hB
             (forward_target hfwd hB (by rw [hterm]; simp [termTargets])).1
-          have hEdge : EdgeTaken P s b tgt :=
             ⟨B, hB, Or.inr ⟨r, tgt, el, hterm, Or.inl ⟨rfl, hcond⟩⟩⟩
-          refine ⟨V ++ [tgt], List.mem_append.mpr (Or.inl hentV), ?_, ?_, ?_, ?_, ?_⟩
-          · simp
-          · intro q hq
-            rcases List.mem_append.mp hq with h | h
-            · exact Nat.le_of_lt (Nat.lt_of_le_of_lt (hmax q h) hlt')
-            · exact Nat.le_of_eq (List.mem_singleton.mp h)
-          · exact chained_append_single hedge (fun z hz => by
-              obtain rfl : z = b := Option.some.inj (hz.symm.trans hgl); exact hEdge)
-          · intro q hq
-            obtain rfl := Option.some.inj hq
-            exact ⟨List.mem_append.mpr (Or.inl (List.mem_of_getLast? hgl)), hEdge⟩
-          · intro v' i Bv c' hBv hci hvV hlt hna
-            have hlt2 : v' < tgt := by
-              simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at hlt; omega
-            have hv'V : v' ∈ V := (List.mem_append.mp hvV).elim id (fun h => by
-              simp only [List.mem_singleton] at h; exact absurd (h ▸ hlt2) (Nat.lt_irrefl _))
-            have hile : i < Bv.cmds.length := (List.getElem?_eq_some_iff.mp hci).1
-            have hv'b : v' ≤ b := hmax v' hv'V
-            have hpos : posLt (v', i) (b, B.cmds.length) = true := by
-              have hBvB : v' = b → Bv = B := fun hh => by
-                rw [hh] at hBv; exact Option.some.inj (hBv.symm.trans hB)
-              simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-              rcases Nat.lt_or_eq_of_le hv'b with hh | rfl
-              · exact Or.inl hh
-              · exact Or.inr ⟨rfl, by rw [hBvB rfl] at hile; exact hile⟩
-            obtain ⟨prevv, hcf, hec⟩ := hfacts v' i Bv c' hBv hci hv'V hpos hna
-            exact ⟨prevv, hcf,
-              fun p hp => ⟨List.mem_append.mpr (Or.inl (hec p hp).1), (hec p hp).2⟩⟩
+            hentV hgl hmax hedge hfacts
       | @ifFalse b prev s B r th tgt hB hterm hcond =>
           intro b2 pc2 prev2 s2 heq
           obtain ⟨hbeq, rfl, rfl, rfl⟩ := Config.running.inj heq
           subst b2
-          obtain ⟨V, hentV, hgl, hmax, hedge, hpe, hfacts⟩ := ih rfl
-          have hlt' : b < tgt :=
+          obtain ⟨V, hentV, hgl, hmax, hedge, -, hfacts⟩ := ih rfl
+          exact forwardTrace_enter hB
             (forward_target hfwd hB (by rw [hterm]; simp [termTargets])).1
-          have hEdge : EdgeTaken P s b tgt :=
             ⟨B, hB, Or.inr ⟨r, th, tgt, hterm, Or.inr ⟨rfl, hcond⟩⟩⟩
-          refine ⟨V ++ [tgt], List.mem_append.mpr (Or.inl hentV), ?_, ?_, ?_, ?_, ?_⟩
-          · simp
-          · intro q hq
-            rcases List.mem_append.mp hq with h | h
-            · exact Nat.le_of_lt (Nat.lt_of_le_of_lt (hmax q h) hlt')
-            · exact Nat.le_of_eq (List.mem_singleton.mp h)
-          · exact chained_append_single hedge (fun z hz => by
-              obtain rfl : z = b := Option.some.inj (hz.symm.trans hgl); exact hEdge)
-          · intro q hq
-            obtain rfl := Option.some.inj hq
-            exact ⟨List.mem_append.mpr (Or.inl (List.mem_of_getLast? hgl)), hEdge⟩
-          · intro v' i Bv c' hBv hci hvV hlt hna
-            have hlt2 : v' < tgt := by
-              simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at hlt; omega
-            have hv'V : v' ∈ V := (List.mem_append.mp hvV).elim id (fun h => by
-              simp only [List.mem_singleton] at h; exact absurd (h ▸ hlt2) (Nat.lt_irrefl _))
-            have hile : i < Bv.cmds.length := (List.getElem?_eq_some_iff.mp hci).1
-            have hv'b : v' ≤ b := hmax v' hv'V
-            have hpos : posLt (v', i) (b, B.cmds.length) = true := by
-              have hBvB : v' = b → Bv = B := fun hh => by
-                rw [hh] at hBv; exact Option.some.inj (hBv.symm.trans hB)
-              simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq]
-              rcases Nat.lt_or_eq_of_le hv'b with hh | rfl
-              · exact Or.inl hh
-              · exact Or.inr ⟨rfl, by rw [hBvB rfl] at hile; exact hile⟩
-            obtain ⟨prevv, hcf, hec⟩ := hfacts v' i Bv c' hBv hci hv'V hpos hna
-            exact ⟨prevv, hcf,
-              fun p hp => ⟨List.mem_append.mpr (Or.inl (hec p hp).1), (hec p hp).2⟩⟩
+            hentV hgl hmax hedge hfacts
 
 /-- **From a failing execution to the structural facts**, forward. Splits off
 the final `assertFalse` step and runs `forwardTrace` on the prefix, packaging
