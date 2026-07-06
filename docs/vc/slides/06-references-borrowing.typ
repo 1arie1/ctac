@@ -15,6 +15,67 @@
 #set text(font: "Verdana", size: 18pt)
 #set par(justify: false)
 
+// Code block with selected lines highlighted (for the side-by-side
+// desugaring build).
+#let hl-fill = rgb("#fef3c7")
+#let hl-code(lines, hl: (), size: 12pt) = block(
+  fill: rgb("#f8fafc"),
+  stroke: 0.6pt + rgb("#dbe3ee"),
+  radius: 3pt,
+  inset: (x: 8pt, y: 7pt),
+  width: 100%,
+)[
+  #set text(font: "Menlo", size: size, fill: rgb("#1e293b"))
+  #set par(leading: 0.42em)
+  #for (idx, l) in lines.enumerate() {
+    if hl.contains(idx) {
+      box(fill: hl-fill, width: 100%, inset: (x: 3pt, y: 1.5pt), radius: 2pt)[#l]
+    } else {
+      box(width: 100%, inset: (x: 3pt, y: 1.5pt))[#l]
+    }
+    linebreak()
+  }
+]
+
+#let orig-lines = (
+  "entry:",
+  "  M := havoc",
+  "  i := havoc",
+  "  r, M2 := borrow_mut M[i]",
+  "  r2 := put_ref r, 7",
+  "  release r2",
+  "  x := M2[i]",
+  "  ok := x == 7",
+  "  assert ok",
+)
+
+#let lowered-lines = (
+  "entry:",
+  "  M := havoc",
+  "  i := havoc",
+  "  r := { addr: i, value: M[i],",
+  "         promise: havoc }",
+  "  M2 := M[i := r.promise]",
+  "  r2 := { addr: r.addr, value: 7,",
+  "          promise: r.promise }",
+  "  assume r2.value == r2.promise",
+  "  x := M2[i]",
+  "  ok := x == 7",
+  "  assert ok",
+)
+
+#let side-by-side(orig-hl, low-hl, caption) = {
+  two-col[
+    Original:
+    #hl-code(orig-lines, hl: orig-hl)
+  ][
+    Desugared:
+    #hl-code(lowered-lines, hl: low-hl)
+  ]
+  v(0.15cm)
+  caption
+}
+
 #title-slide[
   #text(size: 44pt, weight: "bold")[VC Generation]
   #v(0.2cm)
@@ -29,9 +90,10 @@ Extend Tiny TAC with references without adding a new VCGen core.
 
 Plan:
 
-- model a reference as an explicit value
-- lower borrow commands to ordinary assignments, map reads, map writes, and assumes
-- run the existing Tiny TAC VCGen
+- say what borrow commands *mean* as executions
+- find the one place where that meaning fights SSA
+- solve it with a value chosen from the future — a *prophecy*
+- lower borrows to ordinary Tiny TAC and reuse the existing VCGen
 
 == The Puzzle This Deck Solves
 
@@ -57,7 +119,7 @@ Plan:
     written. Why should `assert ok` hold?
   ]
 
-  The answer is the trick of this deck.
+  By the end of the deck this will be obvious.
 ]
 
 == Reference Types
@@ -74,29 +136,6 @@ The main case is a reference to an integer cell:
   $ r : "&int" quad q : "&mut int" $
 ]
 
-== Reference Triple
-
-Symbolically, a reference carries:
-
-#logic-box[
-  $
-    r = { "addr": i, "value": v, "promise": p }
-  $
-]
-
-#compact-list[
-- `addr`: location pointed to by the reference
-- `value`: current value observed through the reference
-- `promise`: value that will be committed on release
-]
-
-The `promise` field is unused for constant references, but keeping one shape
-makes the lowering uniform.
-
-#v(0.15cm)
-#text(fill: muted, size: 16pt)[Record syntax is sugar for the lowering
-only — Tiny TAC itself has no tuples.]
-
 == Borrow Commands
 
 ```text
@@ -112,6 +151,126 @@ release r
 Mutable borrowing returns both the reference and a continuation memory.
 Mutable reborrowing returns the child reference and the resumed parent
 reference.
+
+#v(0.2cm)
+That is the syntax. Before any encoding: what do these commands *do*?
+
+== What Borrowing Means
+
+Read `r, M2 := borrow_mut M[i]` as a *loan* of slot `i`:
+
+#compact-list[
+- while the loan lives, `r` is the only way to touch slot `i`
+- `get_ref r` reads the loaned view; `put_ref r, v` overwrites it
+  (returning a fresh reference, to stay in SSA)
+- `release` ends the loan: the *last value written* through the
+  reference is committed back to memory
+- `M2` names the memory *after the loan ends* — the rest of the
+  program reads memory through `M2`
+]
+
+#v(0.25cm)
+#logic-box[
+  `M2` is *named* at borrow time, but its content at `i` is
+  *determined* at release time.
+]
+
+That temporal gap is the entire difficulty of this deck.
+
+== The Puzzle, Executed
+
+Run the loan semantics forward over the puzzle program:
+
+#{
+  set text(size: 16pt)
+  table(
+    columns: (auto, 1fr, 1fr),
+    stroke: 0.5pt + rgb("#cbd5e1"),
+    inset: 7pt,
+    table.header([*after command*], [*view through the borrow*], [*`M2[i]`*]),
+    [`r, M2 := borrow_mut M[i]`], [`r` sees `M[i]`],
+      [*?* — committed at release],
+    [`r2 := put_ref r, 7`], [`r2` sees `7`], [*?*],
+    [`release r2`], [loan ends, `7` is committed], [`7`],
+    [`x := M2[i]`], [—], [`7`, so `x = 7` and `ok` holds],
+  )
+}
+
+#v(0.25cm)
+Execution is fine: time flows forward, and the *?* resolves before
+anyone reads it. But an SSA definition of `M2` cannot wait — it needs
+a value for slot `i` *at borrow time*.
+
+== A Guess That Must Come True
+
+Forget references. Tiny TAC can already talk about the future:
+
+#two-col(columns: (1.05fr, 1fr))[
+  ```tac
+  entry:
+    guess := havoc
+    double := guess * 2
+    answer := 7
+    assume guess == answer
+    ok := double == 14
+    assert ok
+  ```
+][
+  `double` is computed from `guess` *before* `answer` exists.
+
+  #question-box[
+    Is `assert ok` provable? `guess` is an arbitrary integer...
+  ]
+]
+
+#pause
+*Yes — UNSAT.* The `assume` discards every run whose guess was wrong.
+In all surviving runs `guess = 7`, so `double = 14` — as if `double`
+had been computed from the future value all along.
+
+== Why The Guess Trick Is Sound
+
+#compact-list[
+- *havoc* = fork one run per possible future value of `guess`
+- *assume* = at the moment the future arrives, kill every run where
+  the guess disagrees
+- for each real execution, *exactly one* guess survives — the correct
+  one
+]
+
+#v(0.25cm)
+
+So the program with (`havoc` now + `assume` later) has *the same
+observable behaviors* as one where the value magically arrived early:
+no behavior lost, none invented.
+
+#v(0.25cm)
+
+This is a *prophecy variable*. The formula is timeless — a constraint
+placed late reaches every use placed early. Only forward execution
+finds prophecies strange (it would have to guess).
+
+== Reference Triple
+
+Now the borrow encoding writes itself. A reference is a triple:
+
+#logic-box[
+  $
+    r = { "addr": i, "value": v, "promise": p }
+  $
+]
+
+#compact-list[
+- `addr`: the loaned location
+- `value`: what the reference *currently sees*
+- `promise`: the prophecy — a guess of the value the loan will commit
+  at release
+]
+
+#v(0.2cm)
+`promise` is exactly the `guess` from the previous slide, one per
+borrow: havoc'd when the loan starts, settled when it ends. Constant
+references never use theirs, but one shape keeps the lowering uniform.
 
 == Lowering: Direct Borrows
 
@@ -147,8 +306,8 @@ reference.
 ]
 
 #v(0.2cm)
-The continuation memory is written *now*, with a havoc'd `promise` —
-a bet on the future final value.
+The continuation memory is defined *now*, at slot `i`, with the
+prophecy — the SSA gap is closed by the guess.
 
 == Lowering: Use And Release
 
@@ -187,26 +346,40 @@ a bet on the future final value.
 ]
 
 #v(0.2cm)
-`release` is where the bet is settled: the value observed at the end
-*is* the promised value.
+`release` is the `assume` of the guess trick: the value observed at
+the end of the loan *is* the promised value.
 
-== The Puzzle, Lowered
+== Original And Desugared, Side By Side
 
-```tac
-entry:
-  M := havoc
-  i := havoc
-  r := { addr: i, value: M[i], promise: havoc }
-  M2 := M[i := r.promise]
-  r2 := { addr: r.addr, value: 7, promise: r.promise }
-  assume r2.value == r2.promise
-  x := M2[i]
-  ok := x == 7
-  assert ok
-```
-
-Only ordinary assignments, a map store, and an assume — existing VCGen
-applies unchanged.
+#alternatives[
+  #side-by-side(
+    (3,), (3, 4, 5),
+    [*The borrow* becomes three facts: observe the current value, havoc
+    the promise, and store the promise into the continuation memory —
+    the future is written into `M2` on day one.],
+  )
+][
+  #side-by-side(
+    (4,), (6, 7),
+    [*The write* produces a fresh view whose `value` is `7`. The
+    promise rides along unchanged — the guess is about the *final*
+    committed value, whoever writes it.],
+  )
+][
+  #side-by-side(
+    (5,), (8,),
+    [*The release* settles the guess: the last observed value equals
+    the promise. From here on, every run that survives has
+    `r.promise = 7`.],
+  )
+][
+  #side-by-side(
+    (6, 7, 8), (9, 10, 11),
+    [*The tail is untouched.* `M2[i]` already contains the — now
+    settled — promise, so `x = 7`. Only ordinary assignments, a store,
+    and an assume remain: existing VCGen applies unchanged.],
+  )
+]
 
 == Why It Proves
 
@@ -244,16 +417,17 @@ Desugaring is a `ttac -> ttac` pass; the VC core never sees a reference:
 #pause
 #v(0.25cm)
 
-One more thing the semantics tells us — forward execution *cannot* run
-a borrow program:
+And the prediction from the guess-trick slide — forward execution
+*cannot* run a borrow program:
 
 #term-box[
   #sh[ttac run safe_borrow_mut.ttac]
   #hi[status: stopped (assume failed in block entry)]
 ]
 
-The interpreter cannot guess the promise. Only the solver — choosing
-all values at once — can. That is what makes it a *prophecy*.
+The interpreter picks a value for the havoc'd promise and dies at the
+release `assume`. Only the solver — choosing all values at once —
+threads the prophecy.
 
 == Mutable Reborrow
 
@@ -266,8 +440,9 @@ r3 := put_ref r2, 8
 release r3
 ```
 
-`q` borrows through `r`. After `q` is released, `r2` resumes the parent
-reference and can overwrite the final promised value.
+`q` borrows through `r`: a loan of a loan. While `q` lives, `r` is
+suspended; after `q` is released, `r2` resumes the parent reference
+and can overwrite the final promised value.
 
 == Reborrow Lowering
 
@@ -276,12 +451,14 @@ q := { addr: r.addr, value: r.value, promise: havoc }
 r2 := { addr: r.addr, value: q.promise, promise: r.promise }
 ```
 
-When `q` is released, it updates `r2.value`. When `r2` is released, it updates
-the original memory promise.
+Two prophecies now: `q.promise` guesses what the *child* loan commits;
+the parent's resumed view `r2` starts at exactly that guess. `r2`
+keeps the original promise — the outer loan still owes memory its
+final value.
 
 #v(0.2cm)
-The same trick, nested: the parent's resumed view starts at the child's
-*promise*.
+Releasing `q` settles the inner guess; releasing `r2` settles the
+outer one.
 
 == Reborrow Facts
 
@@ -296,32 +473,30 @@ The same trick, nested: the parent's resumed view starts at the child's
   $
 ]
 
-The final release implies `promise(r) = 8`, so `M2[i] == 8` — the write
-through the child is visible to the parent, and the parent's final
-write wins.
+The inner release forces `promise(q) = 7`, so `r2` resumes seeing `7`.
+The outer release forces `promise(r) = 8` — the parent's final write
+wins, and `M2[i] == 8`.
 
-== Prophecy Variables
+== Prophecy Variables: The Name And The History
 
-The `promise` field is a *prophecy variable*:
-
-- chosen nondeterministically at borrow time
-- constrained later at release time
-- already written into the continuation memory
-
-#v(0.3cm)
-
-Lineage:
+What we built has a name and a literature:
 
 #compact-list[
 - Abadi and Lamport, _The Existence of Refinement Mappings_ (1991) —
-  prophecy variables for refinement proofs.
+  prophecy variables: auxiliary values chosen nondeterministically now,
+  constrained by the future, without changing observable behavior.
 - Matsushita, Tsukada, Kobayashi, _RustHorn: CHC-based Verification for
-  Rust Programs_ (2020) — mutable borrows as (current, final) value
-  pairs, no memory model.
+  Rust Programs_ (2020) — a mutable borrow *is* a (current, final)
+  value pair; no memory model needed for safe Rust.
 - Priya and Gurfinkel, _Ownership in low-level intermediate
-  representation_ (FMCAD 2024) — the idea in a BMC setting, mixed with
-  an address-map memory model. Tiny TAC follows this pattern.
+  representation_ (FMCAD 2024) — the same idea in a BMC setting, mixed
+  with an address-map memory model. Tiny TAC follows this pattern.
 ]
+
+#v(0.2cm)
+The `promise` field is RustHorn's "final value", made to coexist with
+explicit bytemaps: the borrow writes it into the continuation memory,
+the release proves it right.
 
 == VCGen Boundary
 
