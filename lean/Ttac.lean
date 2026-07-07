@@ -15,3 +15,4 @@ import Ttac.VcPrefix
 import Ttac.VcCfgPath
 import Ttac.VcDenot
 import Ttac.VcWeaken
+import Ttac.VcAdequacy

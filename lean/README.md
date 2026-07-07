@@ -142,6 +142,20 @@ lemma, and the proof layers never mention individual operators.
   row) in the VC syntax. Soundness composes through `DenotSound`:
   `denotSound_of_checkVCW` and `checkVCW_safe_denot`. Strictly
   generalizes `checkVC`'s admission (membership = the reflexivity row).
+- `Ttac/VcAdequacy.lean` — the adequacy proof: an operational failure
+  reaches EXIT denotationally (`adequacy : wellFormed P → Adequacy P`).
+  The seed is the final operational state σ; *clean* registers (every
+  fold-writing definition site visited) agree with σ through the whole
+  fold — the site's `CmdFact` gives the operational equation and its
+  reads are dominated-hence-visited-hence-clean (`dom_visited`; the
+  no-leak fact, and where the dominator table earns its keep in the
+  denotational story) — and guards match visitedness below the fail
+  block (a visited predecessor's edge to an unvisited block cannot be
+  the taken one: taken edges are unique). Blocks above the fail block
+  may activate spuriously (its terminator never ran) and nothing below
+  reads them. Closes the operational chain: `checkVCW_safe` and
+  `checkVC_safe_via_denot` — the `checkVC_safe` statement by a fully
+  independent path, no `DefExt`, no witness construction.
 - `TtacExamples/Diamond.lean` — golden deep + shallow embeddings of the
   scalar diamond, shallow safety theorem proved. The Python test suite
   pins the emitter against these shapes; keep them in sync.
