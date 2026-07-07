@@ -136,12 +136,12 @@ In a structured diamond: $"gate"("left") = c$, $"gate"("right") = not c$.
 control structure is *copied*:
 
 #logic-box[
-  #set text(size: 14.5pt)
+  #set text(size: 14pt)
   $
     "gate"(c) &= (p and r) or (q and s) \
-    "gate"(d) &= (q and t) or (#text(fill: rgb("#b91c1c"))[$(p and r) or (q and s)$] and u) \
-    "gate"(e) &= (#text(fill: rgb("#b91c1c"))[$(p and r) or (q and s)$] and v) or
-      ((q and t) or (#text(fill: rgb("#b91c1c"))[$(p and r) or (q and s)$] and u) and w)
+    "gate"(d) &= (q and t) or (#text(fill: rgb("#b91c1c"))[$((p and r) or (q and s))$] and u) \
+    "gate"(e) &= (#text(fill: rgb("#b91c1c"))[$((p and r) or (q and s))$] and v) or
+      (((q and t) or (#text(fill: rgb("#b91c1c"))[$((p and r) or (q and s))$] and u)) and w)
   $
 ]
 
