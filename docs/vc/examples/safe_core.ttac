@@ -16,7 +16,7 @@ ok:
 
 bad:
   assume not c
-  halt
+  goto exit
 
 exit:
   halt

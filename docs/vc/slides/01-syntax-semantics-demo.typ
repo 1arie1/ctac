@@ -143,7 +143,7 @@ A complete program — `safe_core.ttac`, the running example of this deck:
   ```tac
   bad:
     assume not c
-    halt
+    goto exit
 
   exit:
     halt
@@ -153,7 +153,8 @@ A complete program — `safe_core.ttac`, the running example of this deck:
   Unstructured basic blocks; branches are terminators and branch on a
   *named* bool register.
 
-  The assert in `ok` only runs on the `c`-true path.
+  Both branches rejoin at `exit` — every block is on an entry-to-exit
+  path. The assert in `ok` only runs on the `c`-true path.
 ]
 
 == Phi Nodes
@@ -212,7 +213,9 @@ The interpreter *is* the operational semantics. Zero-havoc run:
   #out[#h(1.2em) if c goto ok else bad #h(1em) \# c=false -> bad]
   #out[bad:]
   #out[#h(1.2em) assume not c #h(4.6em) \# assume: true]
-  #out[#h(1.2em) halt]
+  #out[#h(1.2em) goto exit #h(6.4em) \# -> exit]
+  #out[exit:]
+  #out[#h(1.2em) halt #h(9.4em) \# halt]
 ]
 
 #pause

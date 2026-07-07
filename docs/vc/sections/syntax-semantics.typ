@@ -148,14 +148,16 @@ ok:
 
 bad:
   assume not c
-  halt
+  goto exit
 
 exit:
   halt
 ```
 
 The conditional branch is the terminator of `entry`; the assertion in `ok`
-refers to the named bool register `c`.
+refers to the named bool register `c`. Both branches rejoin at `exit`, so
+every block lies on an entry-to-exit path — the SESE shape required in the
+next section.
 
 == Semantic Intuition
 
