@@ -86,9 +86,9 @@ def vc : Vc.VC where
 theorem vc_ok : checkVC prog vc = true := by native_decide
 
 /-- The full verified chain: if the VC is unsatisfiable, the program is
-safe under the small-step semantics. -/
+safe under the small-step semantics (denotational route). -/
 theorem vc_implies_safe : Vc.Unsat vc → prog.Safe :=
-  checkVC_safe vc_ok
+  checkVC_safe_via_denot vc_ok
 
 /-- A tampered store (index and value swapped) must be rejected. -/
 example :

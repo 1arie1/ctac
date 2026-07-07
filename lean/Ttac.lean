@@ -6,11 +6,9 @@ import Ttac.Semantics
 import Ttac.Safety
 import Ttac.Vc
 import Ttac.VcCheck
-import Ttac.DefExt
 import Ttac.VcLemmas
 import Ttac.VcTrace
-import Ttac.VcReplay
-import Ttac.VcSound
+import Ttac.VcFacts
 import Ttac.VcPrefix
 import Ttac.VcCfgPath
 import Ttac.VcDenot

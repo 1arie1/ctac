@@ -41,10 +41,9 @@ lemma, and the proof layers never mention individual operators.
   Lean mirrors of the Python encoder's constant folds (`mkImp`,
   `mkOr`, `amoClauses`, ...), the lowering mirror, phi right-hand
   sides, `Vc.Sat`/`Vc.Unsat`. Per-command constraints are table-driven
-  via `Cmd.factB` (`factConstraints`); phis and map assignments
-  contribute *unguarded definitions* (`unguardedDef?` — shared with
-  the witness construction; map definitions are the encoder's
-  `define-fun`s, satisfied as `Prop`-level function equalities).
+  via `Cmd.factB` (`factConstraints`); phi equations are unguarded,
+  and map definitions are the encoder's `define-fun`s, satisfied as
+  `Prop`-level function equalities.
 - `Ttac/VcCheck.lean` — `checkVC`: decidable well-formedness (single
   assert last-in-block, pure SSA, forward edges, phi shape, the
   critical-edge side condition, guard-free program expressions, a
@@ -53,57 +52,39 @@ lemma, and the proof layers never mention individual operators.
   plus per-constraint and per-map-definition membership in the
   expected sets. Definition and use checks run uniformly over
   `(sort, register)` pairs via `Cmd.def?` and `Exp.vars`.
-- `Ttac/DefExt.lean` — the generic definitional-extension lemma,
-  independent of any encoding: a state satisfying ψ *robustly*
-  (invariant under changes to a register set `W`), extended by an
-  ordered definition list with targets in `W`, satisfies ψ ∧ EQ
-  (`sat_extend`). Robustness is semantic, not syntactic
-  non-occurrence; the syntactic form survives as the bridge
-  `robust_of_avoids`.
-- `Ttac/VcLemmas.lean` / `VcTrace.lean` / `VcReplay.lean` /
-  `VcSound.lean` — the soundness proof, factored along the extension:
-  a failing execution abstracts to a `Suffix` of final-state facts
-  (`VcTrace`; one stability lemma over `(sort, register)` pairs, one
-  case per command kind, and the effect-table law
-  `CmdFact.factB_eval`); the unvisited-phi equations form an ordered
-  definition list (`VcReplay` — the *unguarded definitions* of
-  unvisited blocks: phis of any sort and map assignments; SSA gives
-  distinct targets, dominated uses the lexicographic ordering); every
-  other expected constraint and every visited map definition is
-  robust with respect to those targets (`VcSound` — every `factB`
-  command shares the ONE `robust_cmd_fact` case, and the visited-phi
-  fact `visited_phi_defHolds` serves boolean phi constraints and map
-  phis alike); `sat_extend`/`sat_extend_defs` close both halves at
-  the witness. Main results, all sorry-free: `checkVC_sound` (failing
-  execution ⇒ VC satisfiable) and `checkVC_safe` (`checkVC` accepts ∧
-  VC unsat ⇒ `Program.Safe`).
-- `Ttac/VcPrefix.lean` — an independent *forward* (prefix-induction)
-  soundness proof, parallel to `VcSound`. Instead of the backward
-  `Suffix`, `forwardTrace` does one induction over the execution prefix
-  (the `ReflTransGen` tail recursor), producing the visited list in
-  execution order, the taken-edge chain, and per-command facts — with a
-  local per-step SSA freeze (`cmdFact_freeze`/`edgeTaken_freeze`) rather
-  than a global stability lemma, and no transfer to a final state.
-  `forwardStructural` splits off the failing `assertFalse` step and
-  packages this into the structural facts the *encoding-generic* leaves
-  (`robust_cmd_fact`, `visited_phi_defHolds`, `visited_amo`,
-  `dom_visited`, `sat_extend`) consume — those are shared verbatim with
-  `VcSound`. The VC is a site-annotated, per-block bucketed `Vc.AnnVC`
-  validated locally by `Vc.checkVCAnn` against the encoder's own
-  generators (a wrong annotation fails the cheap local check — a
-  completeness loss, never unsound). Main results, sorry-free:
-  `checkVCAnn_sound` and `checkVCAnn_safe`, the forward analogues of
-  `checkVC_sound`/`checkVC_safe`.
+- `Ttac/VcLemmas.lean` — evaluation lemmas for the fold constructors
+  (`eval_mkImp`, `eval_mkOr`, `eval_mkIte`, ...) and the
+  semantics-preservation of the lowering mirror (`eval_lower`).
+- `Ttac/VcTrace.lean` — the Prop layer over the Bool well-formedness
+  checks: definition sites and position order (`IsDefAt`,
+  `DefsBefore`, `ssa_unique`), the visited chain (`Chained`,
+  `EdgeTaken`, ordering, `visited_amo`), per-command final-state facts
+  (`CmdFact`, `CmdFact.factB_eval`), the single-assert shape, and the
+  dominator bridges (`dom_visited`).
+- `Ttac/VcFacts.lean` — shared characterization lemmas: bridges from
+  the well-formedness checks (`useOK_dom`, `guardFree_at`,
+  `guard_eval`, `edge_cond_vars`), constraint-shape characterizations
+  (`mem_cmdConstraints`, `mem_expectedMapDefs`, ...), and the variable
+  inventories of the fold constructors and phi right-hand sides
+  (`phiChain_vars`, `phi_src_lt`).
+- `Ttac/VcPrefix.lean` — the operational-facts producer and the
+  annotated VC. `forwardTrace`/`forwardStructural` reduce a failing
+  execution, by one forward induction over the prefix, to structural
+  facts (visited list in execution order, taken-edge chain,
+  per-command `CmdFact`s) with a local per-step SSA freeze
+  (`cmdFact_freeze`/`edgeTaken_freeze`) — no global stability.
+  `VcAdequacy` consumes these to seed the denotational fold. Also
+  home to `Vc.AnnVC`, the site-tagged VC the untrusted annotator
+  emits, and `cfgConstraintsFor`, the per-block CFG generator.
 - `Ttac/VcCfgPath.lean` — the CFG constraints and the guarded command
   facts discharged against *any* state whose guards are the
   reachability valuation of a real forward path
-  (`cfgConstraints_sat` / `factConstraints_sat`). No `domClosedOK`, no
-  `usesOK`, no `DefExt`, no `Robust` in the signatures: the dominator
-  table in `VcSound`/`VcPrefix` exists only to freeze registers across
-  the `Robust` witness class, and against one concrete path state
-  there is no class to freeze across.
-- `Ttac/VcDenot.lean` — a third, *denotational* soundness proof.
-  `denot P s0` executes every block in index order (inactive blocks
+  (`cfgConstraints_sat` / `factConstraints_sat`). No dominator table
+  in the signatures: against one concrete path state an edge condition
+  is simply true and a command fact simply holds — there is no
+  quantified witness class to freeze registers across.
+- `Ttac/VcDenot.lean` — the denotational semantics and the soundness
+  proof. `denot P s0` executes every block in index order (inactive blocks
   are identity except phis, which always compute the guard-selected
   `phiRhs` — so the unguarded phi equations hold by construction);
   guards fold in `assume`-feasibility (`reach ∧ assumesOK`: active
@@ -123,10 +104,10 @@ lemma, and the proof layers never mention individual operators.
   looser certificates (a per-site weakening table) can be added
   without touching soundness. Main results, sorry-free: `denot_sat`
   and `checkVC_safe_denot` (`checkVC` accepts ∧ VC unsat ⇒
-  `Safe_denot`) — the proof never mentions `DefExt`, the dominator
-  table, or a witness construction. `Adequacy` (operational failure ⇒
-  denotational EXIT reached) is the deliberately factored-out bridge
-  to `Program.Safe` (`safe_of_safe_denot`).
+  `Safe_denot`) — the proof never constructs a witness and never
+  consults the dominator table. `Adequacy` (operational failure ⇒
+  denotational EXIT reached) is the factored-out bridge to
+  `Program.Safe` (`safe_of_safe_denot`), proven in `VcAdequacy`.
 - `Ttac/VcWeaken.lean` — the weakening-table admission checker.
   `checkVC` admits a constraint only byte-identical to `expected P`, so
   every encoder fold must be mirrored exactly; `checkVCW` instead
@@ -162,7 +143,7 @@ lemma, and the proof layers never mention individual operators.
   may activate spuriously (its terminator never ran) and nothing below
   reads them. Closes the operational chain: `checkVCW_safe` and
   `checkVC_safe_via_denot` — the `checkVC_safe` statement by a fully
-  independent path, no `DefExt`, no witness construction.
+  independent path, with no witness construction.
 - `TtacExamples/Diamond.lean` — golden deep + shallow embeddings of the
   scalar diamond, shallow safety theorem proved. The Python test suite
   pins the emitter against these shapes; keep them in sync.
@@ -175,7 +156,7 @@ lemma, and the proof layers never mention individual operators.
   encoder's `define-fun`s as `mapDefs`; pins the map side of the
   mirror (and rejects a tampered store).
 - `TtacExamples/DiamondAnnVc.lean` — the diamond's annotated VC
-  (`Vc.AnnVC`) accepted by `checkVCAnn` via `native_decide`, threaded
+  (`Vc.AnnVC`) accepted by `checkVCWAnn` via `native_decide`, threaded
   through `checkVCAnn_safe` (and a tampered annotation rejected);
   confirms the forward checker accepts a real program's buckets.
 

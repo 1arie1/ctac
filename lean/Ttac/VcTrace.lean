@@ -6,17 +6,15 @@ import Ttac.Safety
 /-!
 # Execution-trace structure
 
-The Prop layer over the Bool well-formedness checks, the register
-stability lemma (SSA registers keep their value to the final state),
-and the `Suffix` abstraction: a failing execution reduced to
-final-state facts per visited block.
+The Prop layer over the Bool well-formedness checks: definition sites
+and position order, the visited chain (`Chained`/`EdgeTaken` and its
+ordering and at-most-one facts), per-command final-state facts
+(`CmdFact` and the effect-table law `CmdFact.factB_eval`), the
+single-assert shape, and the dominator bridges (`dom_visited`).
 
 Everything is sort-generic: definition sites are `(Ty × Nat)` pairs
-read off the effect table `Cmd.def?`, stability is one lemma, and the
-per-command content of `Suffix`/`suffix_of_steps` is one case per
-command *kind*. The effect-table law `CmdFact.factB_eval` connects a
-command's coverage fact to its `factB` entry - the single bridge the
-guarded-fact robustness case consumes.
+read off the effect table `Cmd.def?`, and the per-command content is
+one case per command *kind*.
 -/
 
 namespace Ttac
@@ -63,14 +61,6 @@ theorem posLt_next_block {q : Pos} {b i b' : Nat} (hb : b < b')
 
 theorem posLt_irrefl (p : Pos) : posLt p p = false := by
   simp [posLt]
-
-theorem defsBefore_succ {P : Program} {tx : Ty × Nat} {b i : Nat}
-    (h : DefsBefore P tx (b, i)) : DefsBefore P tx (b, i + 1) :=
-  fun d j hd => posLt_succ (h d j hd)
-
-theorem defsBefore_next_block {P : Program} {tx : Ty × Nat} {b i b' : Nat}
-    (hb : b < b') (h : DefsBefore P tx (b, i)) : DefsBefore P tx (b', 0) :=
-  fun d j hd => posLt_next_block hb (h d j hd)
 
 /-! ## Bridges from the Bool well-formedness checks -/
 
@@ -133,114 +123,6 @@ theorem usesOK_term {P : Program} (huse : usesOK P = true) {b B}
   have := List.all_eq_true.mp huse (B, b) (List.mem_zipIdx_iff_getElem?.mpr hB)
   rw [Bool.and_eq_true] at this
   exact this.2
-
-/-! ## Terminal configurations -/
-
-theorem no_step_done {P : Program} {s : State} {c : Config}
-    (h : Step P (.done s) c) : False := nomatch h
-
-theorem no_step_failed {P : Program} {s : State} {c : Config}
-    (h : Step P (.failed s) c) : False := nomatch h
-
-theorem steps_failed_eq {P : Program} {s σ : State}
-    (h : Steps P (.failed s) (.failed σ)) : s = σ := by
-  rcases h.cases_head with heq | ⟨c, hstep, _⟩
-  · exact Config.failed.inj heq
-  · exact absurd hstep no_step_failed
-
-theorem steps_done_not_failed {P : Program} {s σ : State}
-    (h : Steps P (.done s) (.failed σ)) : False := by
-  rcases h.cases_head with heq | ⟨c, hstep, _⟩
-  · cases heq
-  · exact no_step_done hstep
-
-/-! ## Stability
-
-Once a register's every definition lies strictly before the current
-position, its value survives to the final state - the execution can
-only move forward (forward edges), and SSA means nobody writes it
-again. One lemma over `(sort, register)` pairs; the write cases are
-one `Step` constructor per command kind. -/
-
-theorem stable {P : Program} (hfwd : forwardOK P = true) {σ : State}
-    {c : Config} (h : Steps P c (.failed σ)) :
-    ∀ {b pc prev s} {tx : Ty × Nat}, c = .running b pc prev s →
-      DefsBefore P tx (b, pc) → σ.regs tx.1 tx.2 = s.regs tx.1 tx.2 := by
-  induction h using Relation.ReflTransGen.head_induction_on with
-  | refl => intro b pc prev s tx heq; cases heq
-  | head hstep hrest ih =>
-      intro b pc prev s tx heq hdefs
-      subst heq
-      cases hstep with
-      | @assign _ _ _ _ B t y e hB hc =>
-          have hne : tx ≠ (t, y) := fun heq =>
-            defsBefore_no_def_here ⟨B, _, hB, hc, by simp [Cmd.def?, heq]⟩
-              hdefs
-          rw [ih rfl (defsBefore_succ hdefs)]
-          exact State.upd_regs_of_ne s hne _
-      | @havoc _ _ _ _ B t y v hB hc =>
-          have hne : tx ≠ (t, y) := fun heq =>
-            defsBefore_no_def_here ⟨B, _, hB, hc, by simp [Cmd.def?, heq]⟩
-              hdefs
-          rw [ih rfl (defsBefore_succ hdefs)]
-          exact State.upd_regs_of_ne s hne _
-      | @phi _ _ _ _ B t y arms src hB hc harm =>
-          have hne : tx ≠ (t, y) := fun heq =>
-            defsBefore_no_def_here ⟨B, _, hB, hc, by simp [Cmd.def?, heq]⟩
-              hdefs
-          rw [ih rfl (defsBefore_succ hdefs)]
-          exact State.upd_regs_of_ne s hne _
-      | assume hB hc hcond =>
-          exact ih rfl (defsBefore_succ hdefs)
-      | assertTrue hB hc hcond =>
-          exact ih rfl (defsBefore_succ hdefs)
-      | assertFalse hB hc hcond =>
-          rw [steps_failed_eq hrest]
-      | halt hB hterm =>
-          exact absurd hrest steps_done_not_failed
-      | @goto _ _ _ B b' hB hterm =>
-          have hlt : b < b' :=
-            (forward_target hfwd hB (by rw [hterm]; exact List.mem_singleton.mpr rfl)).1
-          exact ih rfl (defsBefore_next_block hlt hdefs)
-      | @ifTrue _ _ _ B d t e hB hterm hcond =>
-          have hlt : b < t :=
-            (forward_target hfwd hB (by rw [hterm]; simp [termTargets])).1
-          exact ih rfl (defsBefore_next_block hlt hdefs)
-      | @ifFalse _ _ _ B d t e hB hterm hcond =>
-          have hlt : b < e :=
-            (forward_target hfwd hB (by rw [hterm]; simp [termTargets])).1
-          exact ih rfl (defsBefore_next_block hlt hdefs)
-
-/-- The guard component is never written by execution. -/
-theorem stable_blks {P : Program} {σ : State} {c : Config}
-    (h : Steps P c (.failed σ)) :
-    ∀ {b pc prev s}, c = .running b pc prev s → σ.blks = s.blks := by
-  induction h using Relation.ReflTransGen.head_induction_on with
-  | refl => intro b pc prev s heq; cases heq
-  | head hstep hrest ih =>
-      intro b pc prev s heq
-      subst heq
-      cases hstep with
-      | assign hB hc => exact (ih rfl).trans rfl
-      | havoc v hB hc => exact (ih rfl).trans rfl
-      | phi hB hc harm => exact (ih rfl).trans rfl
-      | assume hB hc hcond => exact ih rfl
-      | assertTrue hB hc hcond => exact ih rfl
-      | assertFalse hB hc hcond => rw [steps_failed_eq hrest]
-      | halt hB hterm => exact absurd hrest steps_done_not_failed
-      | goto hB hterm => exact ih rfl
-      | ifTrue hB hterm hcond => exact ih rfl
-      | ifFalse hB hterm hcond => exact ih rfl
-
-/-- Expressions over stably-defined variables evaluate equally in the
-final and current states. -/
-theorem stable_eval {P : Program} (hfwd : forwardOK P = true) {σ : State}
-    {b pc prev s} (h : Steps P (.running b pc prev s) (.failed σ))
-    {t : Ty} {e : Exp t}
-    (hv : ∀ p ∈ e.vars, DefsBefore P p (b, pc)) :
-    e.eval σ = e.eval s :=
-  eval_congr e (fun p hp => stable hfwd h rfl (hv p hp))
-    (fun q _ => congrFun (stable_blks h rfl) q)
 
 /-! ## More bridges: phis, asserts, lookups -/
 
@@ -336,185 +218,7 @@ theorem singleAssert_unique {P : Program} (hone : singleAssertOK P = true)
   have h3 := h1.trans h2.symm
   simpa only [Prod.mk.injEq] using h3
 
-/-! ## The Suffix abstraction -/
-
-/-- A failing execution suffix, abstracted to final-state facts:
-starting inside block `b` at command index `pc`, entered from `prev`,
-execution reaches the failing assert, visiting the blocks `V` (which
-starts with `b`). One constructor per command kind, sort-generic; note
-there is no constructor for a *passing* assert or for `halt` - both
-are impossible on a failing suffix (proved in `suffix_of_steps`). -/
-inductive Suffix (P : Program) (σ : State) :
-    Nat → Nat → Option Nat → List Nat → Prop where
-  | fail {b pc prev B c} :
-      P.block? b = some B → B.cmds[pc]? = some (.assert c) →
-      σ.regs .bool c = false →
-      Suffix P σ b pc prev [b]
-  | assign {b pc prev V B t x e} :
-      P.block? b = some B → B.cmds[pc]? = some (.assign t x e) →
-      σ.regs t x = Exp.eval σ e →
-      Suffix P σ b (pc + 1) prev V → Suffix P σ b pc prev V
-  | havoc {b pc prev V B t x} :
-      P.block? b = some B → B.cmds[pc]? = some (.havoc t x) →
-      Suffix P σ b (pc + 1) prev V → Suffix P σ b pc prev V
-  | phi {b pc p V B t x arms src} :
-      P.block? b = some B → B.cmds[pc]? = some (.phi t x arms) →
-      lookupArm arms p = some src → σ.regs t x = σ.regs t src →
-      Suffix P σ b (pc + 1) (some p) V → Suffix P σ b pc (some p) V
-  | assume {b pc prev V B φ} :
-      P.block? b = some B → B.cmds[pc]? = some (.assume φ) →
-      Exp.eval σ φ = true →
-      Suffix P σ b (pc + 1) prev V → Suffix P σ b pc prev V
-  | goto {b prev V B b'} :
-      P.block? b = some B → B.term = .goto b' →
-      Suffix P σ b' 0 (some b) V →
-      Suffix P σ b B.cmds.length prev (b :: V)
-  | ifTrue {b prev V B c t e} :
-      P.block? b = some B → B.term = .ifGoto c t e →
-      σ.regs .bool c = true →
-      Suffix P σ t 0 (some b) V →
-      Suffix P σ b B.cmds.length prev (b :: V)
-  | ifFalse {b prev V B c t e} :
-      P.block? b = some B → B.term = .ifGoto c t e →
-      σ.regs .bool c = false →
-      Suffix P σ e 0 (some b) V →
-      Suffix P σ b B.cmds.length prev (b :: V)
-
-/-- Every failing suffix contains a failing assert. -/
-theorem Suffix.fail_fact {P : Program} {σ : State} {b pc prev V}
-    (h : Suffix P σ b pc prev V) :
-    ∃ (bf i cf : Nat) (Bf : Block), P.block? bf = some Bf
-      ∧ Bf.cmds[i]? = some (.assert cf) ∧ σ.regs .bool cf = false := by
-  induction h with
-  | fail hB hc hfalse => exact ⟨_, _, _, _, hB, hc, hfalse⟩
-  | assign _ _ _ _ ih => exact ih
-  | havoc _ _ _ ih => exact ih
-  | phi _ _ _ _ _ ih => exact ih
-  | assume _ _ _ _ ih => exact ih
-  | goto _ _ _ ih => exact ih
-  | ifTrue _ _ _ _ ih => exact ih
-  | ifFalse _ _ _ _ ih => exact ih
-
-/-! ## The master abstraction theorem -/
-
-theorem suffix_of_steps {P : Program} (hfwd : forwardOK P = true)
-    (hssa : ssaOK P = true) (huse : usesOK P = true)
-    (hphi : phiOK P = true) (hone : singleAssertOK P = true) {σ : State}
-    {c : Config} (h : Steps P c (.failed σ)) :
-    ∀ {b pc prev s}, c = .running b pc prev s → ∃ V, Suffix P σ b pc prev V := by
-  induction h using Relation.ReflTransGen.head_induction_on with
-  | refl => intro b pc prev s heq; cases heq
-  | head hstep hrest ih =>
-      intro b pc prev s heq; subst heq
-      cases hstep with
-      | @assign _ _ _ _ B t y e hB hc =>
-          obtain ⟨V, hS⟩ := ih rfl
-          have hu := usesOK_cmd huse hB hc
-          simp only [cmdUsesOK] at hu
-          have hvars := expUsesOK_before hu
-          have hydef : IsDefAt P (t, y) b pc :=
-            ⟨B, _, hB, hc, by simp [Cmd.def?]⟩
-          have hσy : σ.regs t y = e.eval s := by
-            have hy1 : DefsBefore P (t, y) (b, pc + 1) := by
-              intro d j hd
-              obtain ⟨rfl, rfl⟩ := ssa_unique hssa hydef hd
-              simp [posLt]
-            rw [show σ.regs t y = _ from stable hfwd hrest rfl hy1]
-            exact State.upd_regs_self ..
-          have hne : ∀ p ∈ e.vars, p ≠ (t, y) := fun p hp hpy => by
-            have hb := hvars p hp
-            rw [hpy] at hb
-            exact defsBefore_no_def_here hydef hb
-          have heval : e.eval σ = e.eval s := by
-            rw [stable_eval hfwd hrest
-              (fun p hp => defsBefore_succ (hvars p hp))]
-            exact eval_congr e
-              (fun p hp => State.upd_regs_of_ne s (hne p hp) _)
-              (fun q _ => by rw [State.upd_blks])
-          exact ⟨V, .assign hB hc (hσy.trans heval.symm) hS⟩
-      | @havoc _ _ _ _ B t y v hB hc =>
-          obtain ⟨V, hS⟩ := ih rfl
-          exact ⟨V, .havoc hB hc hS⟩
-      | @phi _ _ _ _ B t y arms src hB hc harm =>
-          obtain ⟨V, hS⟩ := ih rfl
-          have hu := usesOK_cmd huse hB hc
-          simp only [cmdUsesOK] at hu
-          have harmOK := List.all_eq_true.mp hu (_, src) (lookup_mem harm)
-          have hple : ∀ d j, IsDefAt P (t, src) d j → d ≤ _ :=
-            armUseOK_le harmOK
-          have hydef : IsDefAt P (t, y) b pc :=
-            ⟨B, _, hB, hc, by simp [Cmd.def?]⟩
-          have hsrc_before₀ : DefsBefore P (t, src) (b, pc) := by
-            intro d j hd
-            have h1 := hple d j hd
-            have h2 := phiArm_lt (phiOK_at hphi hB (List.mem_of_getElem? hc))
-              (lookup_mem harm)
-            simp only [posLt, Bool.or_eq_true, Bool.and_eq_true,
-              decide_eq_true_eq]
-            omega
-          have hsrcy : (t, src) ≠ (t, y) := fun hsy => by
-            rw [hsy] at hsrc_before₀
-            exact defsBefore_no_def_here hydef hsrc_before₀
-          have hσy : σ.regs t y = σ.regs t src := by
-            have hy1 : DefsBefore P (t, y) (b, pc + 1) := by
-              intro d j hd
-              obtain ⟨rfl, rfl⟩ := ssa_unique hssa hydef hd
-              simp [posLt]
-            rw [show σ.regs t y = _ from stable hfwd hrest rfl hy1,
-                show σ.regs t src = _ from
-                  stable hfwd hrest rfl (defsBefore_succ hsrc_before₀)]
-            rw [State.upd_regs_self, State.upd_regs_of_ne s hsrcy]
-          exact ⟨V, .phi hB hc harm hσy hS⟩
-      | @assume _ _ _ _ B φ hB hc hcond =>
-          obtain ⟨V, hS⟩ := ih rfl
-          have hu := usesOK_cmd huse hB hc
-          simp only [cmdUsesOK] at hu
-          have hfact : φ.eval σ = true := by
-            rw [stable_eval hfwd hrest
-              (fun p hp => defsBefore_succ (expUsesOK_before hu p hp))]
-            exact hcond
-          exact ⟨V, .assume hB hc hfact hS⟩
-      | @assertTrue _ _ _ _ B creg hB hc hcond =>
-          obtain ⟨V, hS⟩ := ih rfl
-          obtain ⟨bf, if_, cf, Bf, hBf, hcf, hfalse⟩ := hS.fail_fact
-          obtain ⟨-, -, hccf⟩ := singleAssert_unique hone hBf hcf hB hc
-          have hu := usesOK_cmd huse hB hc
-          simp only [cmdUsesOK] at hu
-          have hd := useOK_before hu
-          have hstable := stable hfwd hrest rfl (defsBefore_succ hd)
-          rw [hccf, hstable, hcond] at hfalse
-          cases hfalse
-      | assertFalse hB hc hcond =>
-          exact ⟨[b], .fail hB hc (steps_failed_eq hrest ▸ hcond)⟩
-      | halt hB hterm =>
-          exact absurd hrest steps_done_not_failed
-      | @goto _ _ _ B b' hB hterm =>
-          obtain ⟨V, hS⟩ := ih rfl
-          exact ⟨b :: V, .goto hB hterm hS⟩
-      | @ifTrue _ _ _ B creg t e hB hterm hcond =>
-          obtain ⟨V, hS⟩ := ih rfl
-          have hu := usesOK_term huse hB
-          simp only [termUsesOK, hterm] at hu
-          have hd := useOK_before hu
-          have hlt : b < t :=
-            (forward_target hfwd hB (by rw [hterm]; simp [termTargets])).1
-          have hfact : σ.regs .bool creg = true := by
-            rw [stable hfwd hrest rfl (defsBefore_next_block hlt hd)]
-            exact hcond
-          exact ⟨b :: V, .ifTrue hB hterm hfact hS⟩
-      | @ifFalse _ _ _ B creg t e hB hterm hcond =>
-          obtain ⟨V, hS⟩ := ih rfl
-          have hu := usesOK_term huse hB
-          simp only [termUsesOK, hterm] at hu
-          have hd := useOK_before hu
-          have hlt : b < e :=
-            (forward_target hfwd hB (by rw [hterm]; simp [termTargets])).1
-          have hfact : σ.regs .bool creg = false := by
-            rw [stable hfwd hrest rfl (defsBefore_next_block hlt hd)]
-            exact hcond
-          exact ⟨b :: V, .ifFalse hB hterm hfact hS⟩
-
-/-! ## Consequences of a Suffix derivation -/
+/-! ## The visited chain -/
 
 /-- Consecutive-pairs predicate over the visited list (self-contained
 substitute for mathlib's chain predicates). -/
@@ -531,43 +235,11 @@ def EdgeTaken (P : Program) (σ : State) (u v : Nat) : Prop :=
       ∃ c t e, B.term = .ifGoto c t e ∧
         ((t = v ∧ σ.regs .bool c = true) ∨ (e = v ∧ σ.regs .bool c = false)))
 
-theorem Suffix.head {P : Program} {σ : State} {b pc prev V}
-    (h : Suffix P σ b pc prev V) : V.head? = some b := by
-  induction h <;> simp_all
-
-theorem chained_cons {R : Nat → Nat → Prop} {a : Nat} {V : List Nat}
-    (hhead : ∀ v, V.head? = some v → R a v) (hch : Chained R V) :
-    Chained R (a :: V) := by
-  cases V with
-  | nil => trivial
-  | cons v V' => exact ⟨hhead v rfl, hch⟩
-
 theorem Chained.imp {R S : Nat → Nat → Prop} (h : ∀ a b, R a b → S a b) :
     ∀ {V : List Nat}, Chained R V → Chained S V
   | [], _ => trivial
   | [_], _ => trivial
   | _ :: _ :: _, ⟨hR, hch⟩ => ⟨h _ _ hR, Chained.imp h hch⟩
-
-theorem Suffix.chain_edge {P : Program} {σ : State} {b pc prev V}
-    (h : Suffix P σ b pc prev V) : Chained (EdgeTaken P σ) V := by
-  induction h with
-  | fail hB hc hfalse => trivial
-  | assign _ _ _ _ ih => exact ih
-  | havoc _ _ _ ih => exact ih
-  | phi _ _ _ _ _ ih => exact ih
-  | assume _ _ _ _ ih => exact ih
-  | goto hB hterm hS ih =>
-      refine chained_cons (fun v hv => ?_) ih
-      obtain rfl := Option.some.inj (hS.head.symm.trans hv)
-      exact ⟨_, hB, Or.inl hterm⟩
-  | ifTrue hB hterm hcond hS ih =>
-      refine chained_cons (fun v hv => ?_) ih
-      obtain rfl := Option.some.inj (hS.head.symm.trans hv)
-      exact ⟨_, hB, Or.inr ⟨_, _, _, hterm, Or.inl ⟨rfl, hcond⟩⟩⟩
-  | ifFalse hB hterm hcond hS ih =>
-      refine chained_cons (fun v hv => ?_) ih
-      obtain rfl := Option.some.inj (hS.head.symm.trans hv)
-      exact ⟨_, hB, Or.inr ⟨_, _, _, hterm, Or.inr ⟨rfl, hcond⟩⟩⟩
 
 /-! ## Edge and predecessor bridges -/
 
@@ -796,123 +468,6 @@ theorem CmdFact.factB_eval {σ : State} {prev : Option Nat} {c : Cmd}
   | havoc t x => cases hf
   | phi t x arms => cases hf
   | assert r => cases hf
-
-/-- Every command of the current block from `pc` on has its fact
-(the single assert being last makes the coverage total). -/
-theorem Suffix.covers {P : Program} {σ : State}
-    (hone : singleAssertOK P = true) {b pc prev V}
-    (h : Suffix P σ b pc prev V) :
-    ∀ B i c', P.block? b = some B → B.cmds[i]? = some c' → pc ≤ i →
-      CmdFact σ prev c' := by
-  induction h with
-  | fail hB hc hfalse =>
-      intro B' i c' hB' hc' hi
-      obtain rfl := Option.some.inj (hB'.symm.trans hB)
-      obtain ⟨b0, i0, c0, B0, heq, hB0, hc0, hlast⟩ := singleAssert_shape hone
-      obtain ⟨rfl, rfl, rfl⟩ := singleAssert_unique hone hB0 hc0 hB hc
-      obtain rfl := Option.some.inj (hB0.symm.trans hB)
-      have hilen := (List.getElem?_eq_some_iff.mp hc').1
-      obtain rfl : i = i0 := by omega
-      obtain rfl := Option.some.inj (hc'.symm.trans hc)
-      simpa [CmdFact] using hfalse
-  | assign hB hc hfact hS ih =>
-      intro B' i c' hB' hc' hi
-      obtain rfl := Option.some.inj (hB'.symm.trans hB)
-      rcases Nat.eq_or_lt_of_le hi with rfl | hlt
-      · obtain rfl := Option.some.inj (hc'.symm.trans hc)
-        simpa [CmdFact] using hfact
-      · exact ih B' i c' hB' hc' hlt
-  | havoc hB hc hS ih =>
-      intro B' i c' hB' hc' hi
-      obtain rfl := Option.some.inj (hB'.symm.trans hB)
-      rcases Nat.eq_or_lt_of_le hi with rfl | hlt
-      · obtain rfl := Option.some.inj (hc'.symm.trans hc)
-        simp [CmdFact]
-      · exact ih B' i c' hB' hc' hlt
-  | phi hB hc harm hfact hS ih =>
-      intro B' i c' hB' hc' hi
-      obtain rfl := Option.some.inj (hB'.symm.trans hB)
-      rcases Nat.eq_or_lt_of_le hi with rfl | hlt
-      · obtain rfl := Option.some.inj (hc'.symm.trans hc)
-        exact ⟨_, _, rfl, harm, hfact⟩
-      · exact ih B' i c' hB' hc' hlt
-  | assume hB hc hfact hS ih =>
-      intro B' i c' hB' hc' hi
-      obtain rfl := Option.some.inj (hB'.symm.trans hB)
-      rcases Nat.eq_or_lt_of_le hi with rfl | hlt
-      · obtain rfl := Option.some.inj (hc'.symm.trans hc)
-        simpa [CmdFact] using hfact
-      · exact ih B' i c' hB' hc' hlt
-  | goto hB hterm hS ih =>
-      intro B' i c' hB' hc' hi
-      obtain rfl := Option.some.inj (hB'.symm.trans hB)
-      have := (List.getElem?_eq_some_iff.mp hc').1
-      omega
-  | ifTrue hB hterm hcond hS ih =>
-      intro B' i c' hB' hc' hi
-      obtain rfl := Option.some.inj (hB'.symm.trans hB)
-      have := (List.getElem?_eq_some_iff.mp hc').1
-      omega
-  | ifFalse hB hterm hcond hS ih =>
-      intro B' i c' hB' hc' hi
-      obtain rfl := Option.some.inj (hB'.symm.trans hB)
-      have := (List.getElem?_eq_some_iff.mp hc').1
-      omega
-
-/-- Consecutive visited pairs `(p, v)`: all of `v`'s commands have facts
-keyed to predecessor `p`. -/
-theorem Suffix.tail_covers {P : Program} {σ : State}
-    (hone : singleAssertOK P = true) {b pc prev V}
-    (h : Suffix P σ b pc prev V) :
-    Chained (fun p v => ∀ (B : Block) (i : Nat) (c' : Cmd),
-      P.block? v = some B → B.cmds[i]? = some c' →
-      CmdFact σ (some p) c') V := by
-  induction h with
-  | fail hB hc hfalse => trivial
-  | assign _ _ _ _ ih => exact ih
-  | havoc _ _ _ ih => exact ih
-  | phi _ _ _ _ _ ih => exact ih
-  | assume _ _ _ _ ih => exact ih
-  | goto hB hterm hS ih =>
-      refine chained_cons (fun v hv => ?_) ih
-      obtain rfl := Option.some.inj (hS.head.symm.trans hv)
-      exact fun B i c' hB' hc' => hS.covers hone B i c' hB' hc' (Nat.zero_le i)
-  | ifTrue hB hterm hcond hS ih =>
-      refine chained_cons (fun v hv => ?_) ih
-      obtain rfl := Option.some.inj (hS.head.symm.trans hv)
-      exact fun B i c' hB' hc' => hS.covers hone B i c' hB' hc' (Nat.zero_le i)
-  | ifFalse hB hterm hcond hS ih =>
-      refine chained_cons (fun v hv => ?_) ih
-      obtain rfl := Option.some.inj (hS.head.symm.trans hv)
-      exact fun B i c' hB' hc' => hS.covers hone B i c' hB' hc' (Nat.zero_le i)
-
-theorem getLast?_cons_of_some {a x : Nat} {V : List Nat}
-    (h : V.getLast? = some x) : (a :: V).getLast? = some x := by
-  cases V with
-  | nil => cases h
-  | cons v V' => rw [List.getLast?_cons_cons]; exact h
-
-/-- The visited list ends at the failing assert's block. -/
-theorem Suffix.last_block {P : Program} {σ : State} {b pc prev V}
-    (h : Suffix P σ b pc prev V) :
-    ∃ (bf : Nat) (Bf : Block) (pcf cf : Nat), V.getLast? = some bf
-      ∧ P.block? bf = some Bf ∧ Bf.cmds[pcf]? = some (.assert cf)
-      ∧ σ.regs .bool cf = false := by
-  induction h with
-  | fail hB hc hfalse => exact ⟨_, _, _, _, rfl, hB, hc, hfalse⟩
-  | assign _ _ _ _ ih => exact ih
-  | havoc _ _ _ ih => exact ih
-  | phi _ _ _ _ _ ih => exact ih
-  | assume _ _ _ _ ih => exact ih
-  | goto hB hterm hS ih =>
-      obtain ⟨bf, Bf, pcf, cf, hlast, h1, h2, h3⟩ := ih
-      exact ⟨bf, Bf, pcf, cf, getLast?_cons_of_some hlast, h1, h2, h3⟩
-  | ifTrue hB hterm hcond hS ih =>
-      obtain ⟨bf, Bf, pcf, cf, hlast, h1, h2, h3⟩ := ih
-      exact ⟨bf, Bf, pcf, cf, getLast?_cons_of_some hlast, h1, h2, h3⟩
-  | ifFalse hB hterm hcond hS ih =>
-      obtain ⟨bf, Bf, pcf, cf, hlast, h1, h2, h3⟩ := ih
-      exact ⟨bf, Bf, pcf, cf, getLast?_cons_of_some hlast, h1, h2, h3⟩
 
 theorem getLast?_mem {V : List Nat} {a : Nat} (h : V.getLast? = some a) :
     a ∈ V := by

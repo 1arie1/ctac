@@ -1,11 +1,10 @@
 import Ttac.VcCfgPath
 
 /-!
-# Spike: a denotational semantics as last-block reachability
+# A denotational semantics as last-block reachability
 
-Third parallel formulation of `checkVC` soundness (alongside the suffix
-proof `VcSound` and the forward-prefix proof `VcPrefix`). The idea
-(Arie): make **every block "execute"** — in topological order, with
+The semantics the checker's soundness is proven against: make **every
+block "execute"** — in topological order, with
 inactive blocks acting as identity *except* that phi nodes are always
 computed as `eval(phiRhs)` (the same guard-selected ITE the VC uses).
 The result is one **total** state whose guard component is the
@@ -24,17 +23,11 @@ just another block reached by the same `reach` rule, so the VC's
 `objective` constraints are EXIT's edge-feasibility/reachability
 constraints — discharged like any other block's, not a special case.
 
-The trust move: take this denotational reading as **the** semantics.
-`Safe_denot` is defined against it, so the checker's soundness is
-`checkVC ∧ Unsat ⇒ Safe_denot` — a by-construction argument with no
-`DefExt`/dominance. The bridge to the operational `Program.Safe`
-(`Adequacy` below: a real execution reaching `.failed` induces a seed
-reaching EXIT) is **factored out** — stated here, owned like a semantics
-lemma.
-
-This file is the U1/U2 spike: it pins the *definitions* (U1), the
-*adequacy statement* (U2), and handles *assume-feasibility* / stuck in
-the guard (U3). It is out-of-tree (not imported by `Ttac.lean`).
+The checker's soundness is `checkVC ∧ Unsat ⇒ Safe_denot` — a
+by-construction argument with no definitional extension and no
+dominance. The bridge to the operational `Program.Safe` (`Adequacy`:
+a real execution reaching `.failed` induces a seed reaching EXIT) is
+stated here and proven in `VcAdequacy`.
 -/
 
 namespace Ttac
@@ -130,7 +123,7 @@ forward path (`hblk`/`hedge`, the structural hypothesis A), the last
 block is reached (`hexit`), the executed-command facts hold (`hfacts`),
 and the phi equations hold by construction (`hphi`, since the fold
 assigns `eval(phiRhs)`) — any path state `w` satisfies the whole VC. No
-`DefExt`, no dominance: CFG constraints and the objective come from
+definitional extension, no dominance: CFG constraints and the objective come from
 `cfgConstraints_sat` (EXIT is just another reached block), guarded facts
 from `factConstraints_sat`, phi equations/at-most-one directly. This is
 the payoff: the checker's local obligation is a clean assembly of the
@@ -1093,7 +1086,7 @@ theorem denotSound_of_expected {P : Program} {vc : Vc.VC}
     fun md hmd => hsat.2 md (hmsub md hmd)⟩
 
 /-- The denotational `checkVC_safe`: an accepted, unsatisfiable VC makes
-the last block unreachable. No `DefExt`, no dominator table, no witness
+the last block unreachable. No dominator table, no witness
 construction — `domClosedOK` is checked by `wellFormed` but never used. -/
 theorem checkVC_safe_denot {P : Program} {vc : Vc.VC}
     (hchk : checkVC P vc = true) (hunsat : Vc.Unsat vc) : Safe_denot P := by

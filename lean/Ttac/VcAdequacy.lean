@@ -609,7 +609,7 @@ theorem adequacy {P : Program} (hwf : wellFormed P = true) : Adequacy P := by
 
 /-- The weakening-table checker is sound for the *operational*
 semantics: `checkVC_safe`-equivalent in statement, proved via the
-denotational model and adequacy — no `DefExt`, no witness. -/
+denotational model and adequacy — no witness construction. -/
 theorem checkVCW_safe {P : Program} {vc : Vc.VC}
     (hchk : checkVCW P vc = true) (hunsat : Vc.Unsat vc) : P.Safe := by
   have hwf : wellFormed P = true := by
@@ -627,7 +627,7 @@ theorem checkVC_safe_via_denot {P : Program} {vc : Vc.VC}
   exact safe_of_safe_denot (adequacy hwf) (checkVC_safe_denot hchk hunsat)
 
 /-- The site-tagged weakening checker, operationally: no global
-expected VC computed, no `DefExt`, no witness. -/
+expected VC computed, no witness construction. -/
 theorem checkVCWAnn_safe {P : Program} {a : Vc.AnnVC}
     (hchk : checkVCWAnn P a = true) (hunsat : a.Unsat) : P.Safe := by
   have hwf : wellFormed P = true := by

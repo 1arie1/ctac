@@ -1,4 +1,3 @@
-import Ttac.DefExt
 import Ttac.Vars
 
 /-!
@@ -30,8 +29,8 @@ equation-style) so `unfold f; split` works in the characterization
 lemmas — equation-style non-recursive defs wrap a vacuous outer match
 that blocks `split`.
 
-Soundness (`VcSound.lean`) only needs the subset direction: every
-member of `expected` is satisfied by the witness built from a failing
+Soundness (`VcDenot.lean`) only needs the subset direction: every
+member of `expected` is satisfied by the denotational run of a failing
 execution, so any `vc ⊆ expected` is satisfiable when the program is
 unsafe.
 -/
@@ -212,21 +211,6 @@ def phiRhs (P : Program) (t : Ty) (arms : PhiArms) : Exp t :=
   | [] => .var t 0
   | a :: r => phiChain P t a r
 
-/-! ## Unguarded definitions
-
-Two command shapes contribute *unguarded* defining equations to the VC:
-phis (of any sort - the ITE chain over predecessor guards) and map
-assignments (the encoder emits stores and aliases as global
-`define-fun`s, never block-guarded). These are exactly the definitional
-extensions of the soundness proof: `unguardedDef?` is shared between
-the expected set below and the witness construction in `VcReplay`, so
-satisfaction is by construction. -/
-
-def unguardedDef? (P : Program) : Cmd → Option DefExt.Def
-  | .phi t x arms => some ⟨t, x, phiRhs P t arms⟩
-  | .assign .map x e => some ⟨.map, x, lower e⟩
-  | _ => none
-
 /-- The map-sorted defining equations, as the VC carries them. Scalar
 phi equations are boolean constraints (`cmdConstraints`); map
 definitions have no boolean form (no map equality operator) and are
@@ -235,28 +219,6 @@ def cmdMapDef? (P : Program) : Cmd → Option (Nat × MExp)
   | .assign .map x e => some (x, lower e)
   | .phi .map x arms => some (x, phiRhs P .map arms)
   | _ => none
-
-theorem cmdMapDef?_unguarded {P : Program} {c : Cmd} {x : Nat} {rhs : MExp}
-    (h : cmdMapDef? P c = some (x, rhs)) :
-    unguardedDef? P c = some ⟨.map, x, rhs⟩ := by
-  cases c with
-  | assign t y e =>
-      cases t with
-      | map =>
-          obtain ⟨rfl, rfl⟩ := Prod.mk.injEq .. |>.mp (Option.some.inj h)
-          rfl
-      | int => cases h
-      | bool => cases h
-  | phi t y arms =>
-      cases t with
-      | map =>
-          obtain ⟨rfl, rfl⟩ := Prod.mk.injEq .. |>.mp (Option.some.inj h)
-          rfl
-      | int => cases h
-      | bool => cases h
-  | havoc t y => cases h
-  | assume φ => cases h
-  | assert r => cases h
 
 /-- Every map definition the encoder is entitled to emit for `P`. -/
 def expectedMapDefs (P : Program) : List (Nat × MExp) :=

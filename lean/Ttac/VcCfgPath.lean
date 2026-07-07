@@ -1,29 +1,18 @@
 import Ttac.VcPrefix
 
 /-!
-# CFG + guarded-fact constraints, satisfied by any path state — dominance-free
+# CFG + guarded-fact constraints, satisfied by any path state
 
 The bwd0 CFG constraints (`cfgConstraintsFor`) and the guarded command
-facts (`factConstraints`) are discharged in `VcSound`/`VcPrefix` through
-the `DefExt.Robust` witness class, which drags in the dominator table
-(`domClosedOK`, `dom_visited`, `useOK_dom`) solely to freeze a
-branch-condition / fact register across *every* state agreeing with the
-witness outside its definitional targets.
-
-This file proves the same constraints against **any** state `w` whose
-guard component is the reachability valuation of a real forward path `V`
-(`hblk : w.blks q = decide (q ∈ V)` for real blocks, edges taken at `w`).
-The signatures take only the CFG side-conditions and the path facts —
-no `domClosedOK`, no `usesOK`, no `DefExt`, no `Robust`. Generalizing
-from the earlier `setBlockVars P V σ` form to arbitrary `w` also removes
-the `σ`-bridge (`eval_congr` on the edge condition) and `guardFreeOK`:
-edge conditions are true at `w` directly (`EdgeTaken.edge_cond`), and a
-command fact holds at `w` directly (`CmdFact.factB_eval`).
-
-Reading: CFG- and command-fact soundness are properties of the *path
-state*, not of dominance. The dominance in the current proofs is an
-artifact of the `Robust`-over-witness-targets formulation. Both lemmas
-apply verbatim to the denotational state `denot P s0` (`VcDenot`).
+facts (`factConstraints`) hold at **any** state `w` whose guard
+component is the reachability valuation of a real forward path `V`
+(`hblk : w.blks q = decide (q ∈ V)` for real blocks, edges taken at
+`w`). The signatures take only the CFG side-conditions and the path
+facts — no dominator table: against one concrete path state an edge
+condition is simply true (`EdgeTaken.edge_cond`) and a command fact
+simply holds (`CmdFact.factB_eval`); there is no quantified witness
+class to freeze registers across. Both lemmas apply verbatim to the
+denotational state `denot P s0` (`VcDenot`).
 -/
 
 namespace Ttac
