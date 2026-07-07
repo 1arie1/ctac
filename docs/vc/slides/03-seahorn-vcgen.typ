@@ -421,16 +421,19 @@ Guard such facts by their triggering block, or prove them globally safe.
     inset: 8pt,
     table.header([*Pitfall*], [*Effect*], [*Failure mode*]),
     [critical edges], [*missing paths* — a real execution is ruled out],
-      [bug silently missed],
+      [bug silently missed \ (unsoundness)],
     [ITE merge without exclusivity], [*infeasible paths* — the formula
-      admits states no execution produces], [spurious counterexample],
+      admits states no execution produces], [spurious counterexample \
+      (incompleteness)],
     [unguarded path-local facts], [*missing paths* — facts from an
-      unvisited block constrain the failing path], [bug silently missed],
+      unvisited block constrain the failing path], [bug silently missed \
+      (unsoundness)],
   )
 }
 
 #v(0.3cm)
 
-Missing paths make the encoder *unsound toward silence*; infeasible
-paths make it *unsound toward noise*. Every encoding change should be
-audited against both directions.
+Missing paths break *soundness*: the tool is silent on a real bug — a
+wrong "proved". Infeasible paths break *completeness*: noise — a false
+alarm on a safe program. Every encoding change should be audited
+against both directions.
