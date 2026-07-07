@@ -60,13 +60,15 @@ the VCGen algorithms precise.]
   Core integer expressions:
 
   #align(center)[
-    $ i ::= n | x | i + i | i - i | i * i | i / i $
+    $ i ::= n | x | i + i | i - i | i * i | i \/ i $
   ]
 
   Boolean expressions:
 
   #align(center)[
-    $ b ::= "true" | "false" | c | i < i | i <= i | b and b $
+    $ b ::= &"true" | "false" | c \
+        | &i < i | i <= i | i = i \
+        | &not b | b and b | b or b $
   ]
 
   `ite` is an expression operator, not a structured statement.
