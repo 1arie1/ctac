@@ -94,6 +94,33 @@ lemma, and the proof layers never mention individual operators.
   completeness loss, never unsound). Main results, sorry-free:
   `checkVCAnn_sound` and `checkVCAnn_safe`, the forward analogues of
   `checkVC_sound`/`checkVC_safe`.
+- `Ttac/VcCfgPath.lean` — the CFG constraints and the guarded command
+  facts discharged against *any* state whose guards are the
+  reachability valuation of a real forward path
+  (`cfgConstraints_sat` / `factConstraints_sat`). No `domClosedOK`, no
+  `usesOK`, no `DefExt`, no `Robust` in the signatures: the dominator
+  table in `VcSound`/`VcPrefix` exists only to freeze registers across
+  the `Robust` witness class, and against one concrete path state
+  there is no class to freeze across.
+- `Ttac/VcDenot.lean` — a third, *denotational* soundness proof.
+  `denot P s0` executes every block in index order (inactive blocks
+  are identity except phis, which always compute the guard-selected
+  `phiRhs` — so the unguarded phi equations hold by construction);
+  guards fold in `assume`-feasibility (`reach ∧ assumesOK`: active
+  means every assume executed-true, stuck means the guard is false),
+  and safety is last-block unreachability (`Safe_denot`; `assert c`
+  reads as `assume c`, the only EXIT in-edge is the failing branch).
+  Lemma B (`denot_sat_of_path`) shows a path state models the whole VC
+  via the `VcCfgPath` lemmas; the by-construction half derives the
+  fold's equations (`FoldFact` freeze + `prefixState` stability), and
+  the reachability core (`denot_adj_edge`) shows the active set is a
+  single taken-edge chain — its engine is `edgeTaken_unique`, needing
+  neither `amoSideOK` nor dominance. Main results, sorry-free:
+  `denot_sat` and `checkVC_safe_denot` (`checkVC` accepts ∧ VC unsat ⇒
+  `Safe_denot`) — the proof never mentions `DefExt`, the dominator
+  table, or a witness construction. `Adequacy` (operational failure ⇒
+  denotational EXIT reached) is the deliberately factored-out bridge
+  to `Program.Safe` (`safe_of_safe_denot`).
 - `TtacExamples/Diamond.lean` — golden deep + shallow embeddings of the
   scalar diamond, shallow safety theorem proved. The Python test suite
   pins the emitter against these shapes; keep them in sync.

@@ -12,3 +12,5 @@ import Ttac.VcTrace
 import Ttac.VcReplay
 import Ttac.VcSound
 import Ttac.VcPrefix
+import Ttac.VcCfgPath
+import Ttac.VcDenot
