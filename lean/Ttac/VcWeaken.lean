@@ -87,12 +87,10 @@ anchor, and every anchor is true at every failing denotational run
 theorem denotSound_of_checkVCW {P : Program} {vc : Vc.VC}
     (hchk : checkVCW P vc = true) : DenotSound P vc := by
   rw [checkVCW, Bool.and_eq_true, Bool.and_eq_true] at hchk
-  obtain ⟨⟨hwf, hmem⟩, hmdefs⟩ := hchk
-  rw [wellFormed] at hwf
-  simp only [Bool.and_eq_true] at hwf
-  obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphi⟩, hamo⟩, hentry⟩, hgf⟩, -⟩, huse⟩ := hwf
+  obtain ⟨⟨hwfb, hmem⟩, hmdefs⟩ := hchk
+  obtain ⟨hwf, -⟩ := wellFormed_iff.mp hwfb
   intro s0 hexit
-  have hsat := denot_sat hone hssa hfwd hphi hamo hentry hgf huse hexit
+  have hsat := denot_sat hwf hexit
   refine ⟨fun c hc => ?_, fun md hmd => hsat.2 md
     (of_decide_eq_true (List.all_eq_true.mp hmdefs md hmd))⟩
   obtain ⟨a, hamem, haw⟩ :=
@@ -195,15 +193,12 @@ theorem denotSound_of_checkVCWAnn {P : Program} {a : Vc.AnnVC}
     DenotSound P { constraints := a.flatten, mapDefs := a.mapDefs } := by
   unfold checkVCWAnn at hchk
   rw [Bool.and_eq_true, Bool.and_eq_true, Bool.and_eq_true] at hchk
-  obtain ⟨⟨⟨hwf, hlen⟩, hall⟩, hobj⟩ := hchk
+  obtain ⟨⟨⟨hwfb, hlen⟩, hall⟩, hobj⟩ := hchk
   rw [decide_eq_true_eq] at hlen
-  have hwf' := hwf
-  rw [wellFormed] at hwf'
-  simp only [Bool.and_eq_true] at hwf'
-  obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphi⟩, hamo⟩, hentry⟩, hgf⟩, -⟩, huse⟩ := hwf'
+  obtain ⟨hwf, -⟩ := wellFormed_iff.mp hwfb
   intro s0 hexit
-  have hsat := denot_sat hone hssa hfwd hphi hamo hentry hgf huse hexit
-  obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hone
+  have hsat := denot_sat hwf hexit
+  obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hwf.one
   refine ⟨fun c hc => ?_, fun md hmd => ?_⟩
   · rw [Vc.AnnVC.flatten, List.mem_append] at hc
     rcases hc with hc | hc
@@ -257,7 +252,7 @@ theorem denotSound_of_checkVCWAnn {P : Program} {a : Vc.AnnVC}
       (List.all_eq_true.mp hcmdb.2 md hmdL)
     obtain ⟨c, hcmem, hcd⟩ := List.mem_filterMap.mp hxmem
     exact Vc.mapDefFrom_sound hxw
-      (denot_mapDef hssa huse hphi hgf hBb hcmem hcd)
+      (denot_mapDef hwf hBb hcmem hcd)
 
 /-- The site-tagged weakening `checkVC_safe`, denotational side. -/
 theorem checkVCWAnn_safe_denot {P : Program} {a : Vc.AnnVC}

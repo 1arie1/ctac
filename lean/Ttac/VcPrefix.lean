@@ -56,21 +56,21 @@ theorem write_ne_of_before {P : Program} {p : Ty × Nat} {v i b pc : Nat}
 /-- A command's coverage fact is unaffected by a write at a strictly-later
 position: target and read registers are defined at-or-before the command, so
 SSA keeps them distinct from the fresh cell. One case per command kind. -/
-theorem cmdFact_freeze {P : Program} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hphi : phiOK P = true) {v i : Nat} {Bv : Block}
+theorem cmdFact_freeze {P : Program} (hwf : WellFormed P)
+    {v i : Nat} {Bv : Block}
     {c' : Cmd} (hBv : P.block? v = some Bv) (hci : Bv.cmds[i]? = some c')
     {b pc : Nat} (hlt : posLt (v, i) (b, pc) = true)
     {t : Ty} {y : Nat} (hydef : IsDefAt P (t, y) b pc) (val : t.denote)
     {s : State} {prev : Option Nat} (hcf : CmdFact s prev c') :
     CmdFact (s.upd t y val) prev c' := by
-  have hu := usesOK_cmd huse hBv hci
+  have hu := usesOK_cmd hwf.uses hBv hci
   simp only [cmdUsesOK] at hu
   cases c' with
   | assign t' y' e' =>
       simp only [CmdFact] at hcf ⊢
       have hy'ne : (t', y') ≠ (t, y) :=
         write_ne_of_before hlt (fun d j hdj => by
-          obtain ⟨rfl, rfl⟩ := ssa_unique hssa ⟨Bv, _, hBv, hci, rfl⟩ hdj
+          obtain ⟨rfl, rfl⟩ := ssa_unique hwf.ssa ⟨Bv, _, hBv, hci, rfl⟩ hdj
           simp [posLt]) hydef
       have hev : e'.eval (s.upd t y val) = e'.eval s :=
         eval_congr e' (fun p hp => State.upd_regs_of_ne s
@@ -82,10 +82,10 @@ theorem cmdFact_freeze {P : Program} (hssa : ssaOK P = true)
   | phi t' y' arms =>
       simp only [CmdFact] at hcf ⊢
       obtain ⟨p, src, hprev, harm, heq⟩ := hcf
-      have harms : phiArmsOK P v arms := phiOK_at hphi hBv (List.mem_of_getElem? hci)
+      have harms : phiArmsOK P v arms := phiOK_at hwf.phi hBv (List.mem_of_getElem? hci)
       have hy'ne : (t', y') ≠ (t, y) :=
         write_ne_of_before hlt (fun d j hdj => by
-          obtain ⟨rfl, rfl⟩ := ssa_unique hssa ⟨Bv, _, hBv, hci, rfl⟩ hdj
+          obtain ⟨rfl, rfl⟩ := ssa_unique hwf.ssa ⟨Bv, _, hBv, hci, rfl⟩ hdj
           simp [posLt]) hydef
       have hsrcne : (t', src) ≠ (t, y) :=
         write_ne_of_before hlt (fun d j hdj => by
@@ -169,8 +169,7 @@ the trace facts hold after it. All the preservation — the edge chain
 (`chained_edgeTaken_upd`), the current-block entry edge, and every earlier
 command's fact (`cmdFact_freeze`) — happens here, so the `assign`/`havoc`/`phi`
 cases only supply `hnew`. This is "the step is simple," made literal. -/
-theorem forwardTrace_write {P : Program} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hfwd : forwardOK P = true) (hphi : phiOK P = true)
+theorem forwardTrace_write {P : Program} (hwf : WellFormed P)
     {b pc : Nat} {prev : Option Nat} {s : State} {B : Block} {t : Ty} {y : Nat}
     {cmd0 : Cmd} (v : t.denote)
     (hB : P.block? b = some B) (hc0 : B.cmds[pc]? = some cmd0)
@@ -192,17 +191,17 @@ theorem forwardTrace_write {P : Program} (hssa : ssaOK P = true)
             ∧ ∀ p, prevv = some p → p ∈ V' ∧ EdgeTaken P (s.upd t y v) p v') := by
   have hpe' : ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P (s.upd t y v) p b :=
     fun p hp => ⟨(hpe p hp).1,
-      edgeTaken_freeze huse (hpe p hp).2 ((hpe p hp).2.lt hfwd) hydef _⟩
+      edgeTaken_freeze hwf.uses (hpe p hp).2 ((hpe p hp).2.lt hwf.fwd) hydef _⟩
   refine ⟨V, hentV, hgl, hmax,
-    chained_edgeTaken_upd huse hfwd hydef _ hmax hedge, hpe', ?_⟩
+    chained_edgeTaken_upd hwf.uses hwf.fwd hydef _ hmax hedge, hpe', ?_⟩
   intro v' i Bv c' hBv hci hvV hlt hna
   rcases show posLt (v', i) (b, pc) = true ∨ (v' = b ∧ i = pc) by
     simp only [posLt, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at hlt ⊢
     omega with hold | ⟨rfl, rfl⟩
   · obtain ⟨prevv, hcf, hec⟩ := hfacts v' i Bv c' hBv hci hvV hold hna
-    exact ⟨prevv, cmdFact_freeze hssa huse hphi hBv hci hold hydef _ hcf,
-      fun p hp => ⟨(hec p hp).1, edgeTaken_freeze huse (hec p hp).2
-        (Nat.lt_of_lt_of_le ((hec p hp).2.lt hfwd) (hmax v' hvV)) hydef _⟩⟩
+    exact ⟨prevv, cmdFact_freeze hwf hBv hci hold hydef _ hcf,
+      fun p hp => ⟨(hec p hp).1, edgeTaken_freeze hwf.uses (hec p hp).2
+        (Nat.lt_of_lt_of_le ((hec p hp).2.lt hwf.fwd) (hmax v' hvV)) hydef _⟩⟩
   · obtain rfl := Option.some.inj (hBv.symm.trans hB)
     obtain rfl := Option.some.inj (hci.symm.trans hc0)
     exact ⟨prev, hnew, hpe'⟩
@@ -264,8 +263,7 @@ every executed non-assert command's `CmdFact` with its edge-connected
 predecessor. Each step establishes its own new fact and freezes the earlier
 ones; block entry appends to `V` and extends the chain. -/
 
-theorem forwardTrace {P : Program} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hfwd : forwardOK P = true) (hphi : phiOK P = true)
+theorem forwardTrace {P : Program} (hwf : WellFormed P)
     {s0 : State} {c : Config} (h : Steps P (Config.init P s0) c) :
     ∀ {b pc prev s}, c = .running b pc prev s →
       ∃ V : List Nat, P.entry ∈ V ∧ V.getLast? = some b ∧ (∀ q ∈ V, q ≤ b)
@@ -293,9 +291,9 @@ theorem forwardTrace {P : Program} (hssa : ssaOK P = true)
           obtain ⟨rfl, rfl, rfl, rfl⟩ := Config.running.inj heq
           obtain ⟨V, hentV, hgl, hmax, hedge, hpe, hfacts⟩ := ih rfl
           have hydef : IsDefAt P (t, y) b pc := ⟨B, _, hB, hc, rfl⟩
-          refine forwardTrace_write hssa huse hfwd hphi (e.eval s) hB hc hydef
+          refine forwardTrace_write hwf (e.eval s) hB hc hydef
             hentV hgl hmax hedge hpe hfacts ?_
-          have hu := usesOK_cmd huse hB hc
+          have hu := usesOK_cmd hwf.uses hB hc
           simp only [cmdUsesOK] at hu
           have hev : e.eval (s.upd t y (e.eval s)) = e.eval s :=
             eval_congr e (fun p hp => State.upd_regs_of_ne s (fun heqp => by
@@ -307,18 +305,18 @@ theorem forwardTrace {P : Program} (hssa : ssaOK P = true)
           intro b2 pc2 prev2 s2 heq
           obtain ⟨rfl, rfl, rfl, rfl⟩ := Config.running.inj heq
           obtain ⟨V, hentV, hgl, hmax, hedge, hpe, hfacts⟩ := ih rfl
-          exact forwardTrace_write hssa huse hfwd hphi v hB hc
+          exact forwardTrace_write hwf v hB hc
             ⟨B, _, hB, hc, rfl⟩ hentV hgl hmax hedge hpe hfacts trivial
       | @phi b pc p s B t y arms src hB hc harm =>
           intro b2 pc2 prev2 s2 heq
           obtain ⟨rfl, rfl, rfl, rfl⟩ := Config.running.inj heq
           obtain ⟨V, hentV, hgl, hmax, hedge, hpe, hfacts⟩ := ih rfl
           have hydef : IsDefAt P (t, y) b pc := ⟨B, _, hB, hc, rfl⟩
-          refine forwardTrace_write hssa huse hfwd hphi (s.regs t src) hB hc hydef
+          refine forwardTrace_write hwf (s.regs t src) hB hc hydef
             hentV hgl hmax hedge hpe hfacts ?_
-          have hu := usesOK_cmd huse hB hc
+          have hu := usesOK_cmd hwf.uses hB hc
           simp only [cmdUsesOK] at hu
-          have harms := phiOK_at hphi hB (List.mem_of_getElem? hc)
+          have harms := phiOK_at hwf.phi hB (List.mem_of_getElem? hc)
           have hsrcne : (t, src) ≠ (t, y) := by
             rintro heqp
             obtain ⟨-, rfl⟩ := Prod.mk.injEq .. |>.mp heqp
@@ -364,7 +362,7 @@ theorem forwardTrace {P : Program} (hssa : ssaOK P = true)
           subst b2
           obtain ⟨V, hentV, hgl, hmax, hedge, -, hfacts⟩ := ih rfl
           exact forwardTrace_enter hB
-            (forward_target hfwd hB (by rw [hterm]; exact List.mem_singleton.mpr rfl)).1
+            (forward_target hwf.fwd hB (by rw [hterm]; exact List.mem_singleton.mpr rfl)).1
             ⟨B, hB, Or.inl hterm⟩ hentV hgl hmax hedge hfacts
       | @ifTrue b prev s B r tgt el hB hterm hcond =>
           intro b2 pc2 prev2 s2 heq
@@ -372,7 +370,7 @@ theorem forwardTrace {P : Program} (hssa : ssaOK P = true)
           subst b2
           obtain ⟨V, hentV, hgl, hmax, hedge, -, hfacts⟩ := ih rfl
           exact forwardTrace_enter hB
-            (forward_target hfwd hB (by rw [hterm]; simp [termTargets])).1
+            (forward_target hwf.fwd hB (by rw [hterm]; simp [termTargets])).1
             ⟨B, hB, Or.inr ⟨r, tgt, el, hterm, Or.inl ⟨rfl, hcond⟩⟩⟩
             hentV hgl hmax hedge hfacts
       | @ifFalse b prev s B r th tgt hB hterm hcond =>
@@ -381,7 +379,7 @@ theorem forwardTrace {P : Program} (hssa : ssaOK P = true)
           subst b2
           obtain ⟨V, hentV, hgl, hmax, hedge, -, hfacts⟩ := ih rfl
           exact forwardTrace_enter hB
-            (forward_target hfwd hB (by rw [hterm]; simp [termTargets])).1
+            (forward_target hwf.fwd hB (by rw [hterm]; simp [termTargets])).1
             ⟨B, hB, Or.inr ⟨r, th, tgt, hterm, Or.inr ⟨rfl, hcond⟩⟩⟩
             hentV hgl hmax hedge hfacts
 
@@ -392,9 +390,7 @@ consume: the visited list (head = entry), the taken-edge chain, per-command
 `CmdFact`s (the assert's `cond = false` comes from the fail step), and the
 failing-block record. The forward replacement for `suffix_of_steps` +
 `Suffix.chain_edge` + `Suffix.head` + `facts_of_suffix` + `Suffix.last_block`. -/
-theorem forwardStructural {P : Program} (hone : singleAssertOK P = true)
-    (hssa : ssaOK P = true) (huse : usesOK P = true) (hfwd : forwardOK P = true)
-    (hphi : phiOK P = true) (hentry : entryOK P = true)
+theorem forwardStructural {P : Program} (hwf : WellFormed P)
     {s0 σ : State} (hrun : Steps P (Config.init P s0) (.failed σ)) :
     ∃ V : List Nat, P.entry ∈ V ∧ V.head? = some P.entry
       ∧ Chained (EdgeTaken P σ) V
@@ -410,21 +406,21 @@ theorem forwardStructural {P : Program} (hone : singleAssertOK P = true)
   · cases hstep with
     | @assertFalse bf pcf prev s Bf cf hBf hcf hfalse =>
         obtain ⟨V, hentV, hgl, hmax, hedge, hpe, hfacts⟩ :=
-          forwardTrace hssa huse hfwd hphi hpre rfl
-        refine ⟨V, hentV, head_eq_entry hentry hfwd hedge hentV, hedge, ?_,
+          forwardTrace hwf hpre rfl
+        refine ⟨V, hentV, head_eq_entry hwf.entry hwf.fwd hedge hentV, hedge, ?_,
           ⟨bf, Bf, pcf, cf, hgl, hBf, hcf, hfalse⟩⟩
         intro v hvV B i c' hB hci
         by_cases hass : ∃ r, c' = .assert r
         · obtain ⟨r, rfl⟩ := hass
-          obtain ⟨rfl, rfl, rfl⟩ := singleAssert_unique hone hB hci hBf hcf
+          obtain ⟨rfl, rfl, rfl⟩ := singleAssert_unique hwf.one hB hci hBf hcf
           exact ⟨prev, by simp only [CmdFact]; exact hfalse, hpe⟩
         · have hna : ∀ r, c' ≠ .assert r := fun r hr => hass ⟨r, hr⟩
           have hpos : posLt (v, i) (bf, pcf) = true := by
             rcases Nat.lt_or_eq_of_le (hmax v hvV) with hh | rfl
             · simp only [posLt, Bool.or_eq_true, decide_eq_true_eq]; exact Or.inl hh
             · have hipcf : i < pcf := by
-                obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, hlastA⟩ := singleAssert_shape hone
-                obtain ⟨hba, hpi, -⟩ := singleAssert_unique hone hBf hcf hBA hcA
+                obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, hlastA⟩ := singleAssert_shape hwf.one
+                obtain ⟨hba, hpi, -⟩ := singleAssert_unique hwf.one hBf hcf hBA hcA
                 have hBBf : B = Bf := Option.some.inj (hB.symm.trans hBf)
                 have hBABf : BA = Bf := by
                   rw [← hba] at hBA; exact Option.some.inj (hBA.symm.trans hBf)

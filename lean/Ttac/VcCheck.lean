@@ -194,6 +194,37 @@ def wellFormed (P : Program) : Bool :=
   singleAssertOK P && ssaOK P && forwardOK P && phiOK P && amoSideOK P
     && entryOK P && guardFreeOK P && domClosedOK P && usesOK P
 
+/-- Prop-level bundle of `wellFormed`'s *program-shape* conjuncts, so
+proof statements take one hypothesis instead of eight. Deliberately
+excludes `domClosedOK` (the dominator-table certificate): the
+denotational/VC development is dominance-free, and keeping `hdc` a
+separate explicit hypothesis makes that boundary visible in the
+signatures — only adequacy consumes it. -/
+structure WellFormed (P : Program) : Prop where
+  one : singleAssertOK P = true
+  ssa : ssaOK P = true
+  fwd : forwardOK P = true
+  phi : phiOK P = true
+  amo : amoSideOK P = true
+  entry : entryOK P = true
+  gf : guardFreeOK P = true
+  uses : usesOK P = true
+
+theorem wellFormed_iff {P : Program} :
+    wellFormed P = true ↔ WellFormed P ∧ domClosedOK P = true := by
+  constructor
+  · intro hwf
+    rw [wellFormed] at hwf
+    simp only [Bool.and_eq_true] at hwf
+    obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphi⟩, hamo⟩, hentry⟩, hgf⟩, hdc⟩,
+      huse⟩ := hwf
+    exact ⟨⟨hone, hssa, hfwd, hphi, hamo, hentry, hgf, huse⟩, hdc⟩
+  · intro ⟨hwf, hdc⟩
+    rw [wellFormed]
+    simp only [Bool.and_eq_true]
+    exact ⟨⟨⟨⟨⟨⟨⟨⟨hwf.one, hwf.ssa⟩, hwf.fwd⟩, hwf.phi⟩, hwf.amo⟩,
+      hwf.entry⟩, hwf.gf⟩, hdc⟩, hwf.uses⟩
+
 /-- The checker: well-formed program, every VC constraint is one the
 bwd0 encoder is entitled to emit, and every map definition is one of
 the program's. Subset is the sound direction - duplicates and

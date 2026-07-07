@@ -130,14 +130,12 @@ theorem inactive_guard_false {P : Program} {s0 : State} {q : Nat}
 /-- The active predecessor of any block is unique: two would violate
 the at-most-one-visited-predecessor fact of the taken-edge chain. -/
 theorem active_pred_unique {P : Program} {s0 : State}
-    (hfwd : forwardOK P = true) (hamo : amoSideOK P = true)
-    (huse : usesOK P = true) (hentry : entryOK P = true)
-    {v : Nat} (hv : v < P.blocks.length) {p q : Nat}
+    (hwf : WellFormed P) {v : Nat} (hv : v < P.blocks.length) {p q : Nat}
     (hpA : p ∈ activeList P s0) (hpp : p ∈ predsOf P v)
     (hqA : q ∈ activeList P s0) (hqp : q ∈ predsOf P v) : q = p := by
   by_cases hqp' : q = p
   · exact hqp'
-  · exact visited_amo hfwd hamo (denot_hedge hfwd huse hentry) hv
+  · exact visited_amo hwf.fwd hwf.amo (denot_hedge hwf) hv
       (two_mem_le_length hqp hpp hqp') hqA hqp hpA hpp
 
 /-! ## The phi step: the taken predecessor's arm carries the fold value -/
@@ -147,10 +145,7 @@ gives `p` an arm, and the fold's `phiRhs` selects exactly that arm's
 source (the taken predecessor is the unique active one). So the
 operational `Step.phi` write is a self-write. -/
 theorem phi_step_value {P : Program} {s0 : State}
-    (hssa : ssaOK P = true) (huse : usesOK P = true)
-    (hphiOK : phiOK P = true) (hfwd : forwardOK P = true)
-    (hamo : amoSideOK P = true) (hentry : entryOK P = true)
-    (hcov : phiCoversOK P = true)
+    (hwf : WellFormed P) (hcov : phiCoversOK P = true)
     {v : Nat} {B : Block} (hB : P.block? v = some B)
     (hvA : v ∈ activeList P s0)
     {t : Ty} {x : Nat} {arms : PhiArms}
@@ -159,7 +154,7 @@ theorem phi_step_value {P : Program} {s0 : State}
     (hpv : EdgeTaken P (denot P s0) p v) :
     ∃ src, lookupArm arms p = some src
       ∧ (denot P s0).regs t x = (denot P s0).regs t src := by
-  have harms := phiOK_at hphiOK hB hc
+  have harms := phiOK_at hwf.phi hB hc
   obtain ⟨cond, hcondmem, -⟩ := hpv.edge_cond
   have hppred : p ∈ predsOf P v := mem_predsOf.mpr ⟨cond, hcondmem⟩
   have hpm : p ∈ arms.map (·.1) := phiCovers_at hcov hB hc hppred
@@ -173,7 +168,7 @@ theorem phi_step_value {P : Program} {s0 : State}
     exact of_decide_eq_true harms.1.2
   have hlk := lookup_of_mem_nodup hmem hnd
   refine ⟨src, hlk, ?_⟩
-  have hdp := denot_phi (s0 := s0) hssa huse hphiOK hB hc
+  have hdp := denot_phi (s0 := s0) hwf hB hc
   have hvlen := (mem_activeList.mp hvA).1
   have hgp := active_guard_true hpA
   have hgq : ∀ q s', (q, s') ∈ arms → q ≠ p →
@@ -181,12 +176,12 @@ theorem phi_step_value {P : Program} {s0 : State}
     intro q s' hqarm hqne
     have hqpred := phiArm_pred harms hqarm
     have hqA : q ∉ activeList P s0 := fun hqA =>
-      hqne (active_pred_unique hfwd hamo huse hentry hvlen hpA hppred hqA hqpred)
+      hqne (active_pred_unique hwf hvlen hpA hppred hqA hqpred)
     have hqe : q ≠ P.entry := fun h => by
-      obtain ⟨he, -⟩ := denot_hentry hfwd huse hvA
+      obtain ⟨he, -⟩ := denot_hentry hwf.fwd hwf.uses hvA
       exact hqA (h ▸ he)
     exact inactive_guard_false hqA hqe
-      (Nat.lt_trans (pred_lt hfwd hqpred) hvlen)
+      (Nat.lt_trans (pred_lt hwf.fwd hqpred) hvlen)
   cases arms with
   | nil => cases hmem
   | cons a rest =>
@@ -199,10 +194,7 @@ theorem phi_step_value {P : Program} {s0 : State}
 `[0, k)`): each step writes the value the state already holds, so the
 state is `denot P s0` throughout. -/
 theorem cmds_run {P : Program} {s0 : State}
-    (hssa : ssaOK P = true) (huse : usesOK P = true)
-    (hphiOK : phiOK P = true) (hgf : guardFreeOK P = true)
-    (hfwd : forwardOK P = true) (hamo : amoSideOK P = true)
-    (hentry : entryOK P = true) (hcov : phiCoversOK P = true)
+    (hwf : WellFormed P) (hcov : phiCoversOK P = true)
     {v : Nat} {B : Block} (hB : P.block? v = some B)
     (hvA : v ∈ activeList P s0) {prev : Option Nat}
     (hprev : v = P.entry ∨ ∃ p, prev = some p ∧ p ∈ activeList P s0
@@ -233,7 +225,7 @@ theorem cmds_run {P : Program} {s0 : State}
       | assign t x e =>
           have hself : (denot P s0).upd t x (e.eval (denot P s0))
               = denot P s0 := by
-            rw [← denot_assign hssa huse hphiOK hgf hB hcj]
+            rw [← denot_assign hwf hB hcj]
             exact State.upd_self ..
           have step : Step P (.running v j prev (denot P s0))
               (.running v (j + 1) prev (denot P s0)) := by
@@ -249,10 +241,9 @@ theorem cmds_run {P : Program} {s0 : State}
           exact Relation.ReflTransGen.head step hrest
       | phi t x arms =>
           rcases hprev with hve | ⟨p, hpeq, hpA, hpv⟩
-          · exact (no_phi_in_entry hphiOK hentry (hve ▸ hB)
+          · exact (no_phi_in_entry hwf.phi hwf.entry (hve ▸ hB)
               (List.mem_of_getElem? hcj)).elim
-          · obtain ⟨src, hlk, hval⟩ := phi_step_value hssa huse hphiOK hfwd
-              hamo hentry hcov hB hvA (List.mem_of_getElem? hcj) hpA hpv
+          · obtain ⟨src, hlk, hval⟩ := phi_step_value hwf hcov hB hvA (List.mem_of_getElem? hcj) hpA hpv
             subst hpeq
             have step : Step P (.running v j (some p) (denot P s0))
                 (.running v (j + 1) (some p) (denot P s0)) := by
@@ -260,27 +251,35 @@ theorem cmds_run {P : Program} {s0 : State}
               rwa [← hval, State.upd_self] at h
             exact Relation.ReflTransGen.head step hrest
       | «assume» φ =>
-          have hev := denot_assume huse hgf hB hcj (mem_activeList.mp hvA).2
+          have hev := denot_assume hwf.uses hwf.gf hB hcj (mem_activeList.mp hvA).2
           exact Relation.ReflTransGen.head (Step.assume hB hcj hev) hrest
       | assert r =>
           exact (hnoassert j _ hcj hjlt r rfl).elim
 
+/-- The failing assert site, packaged: the single assert's block/index/
+condition register, the site facts, and the two denotational failure
+facts (`ok_false`, `active`). Built once in `coadequacy_of_wf` from
+`singleAssert_shape` + `denot_fail`, then threaded through the walk. -/
+structure FailSite (P : Program) (s0 : State) where
+  blk : Nat
+  idx : Nat
+  reg : Nat
+  B : Block
+  sites : Vc.assertSites P = [(blk, idx, reg)]
+  hB : P.block? blk = some B
+  cmd : B.cmds[idx]? = some (.assert reg)
+  last : idx + 1 = B.cmds.length
+  ok_false : (denot P s0).regs .bool reg = false
+  active : blk ∈ activeList P s0
+
 /-- The assert block itself: walk to the assert and fire `assertFalse`. -/
 theorem assert_block_run {P : Program} {s0 : State}
-    (hssa : ssaOK P = true) (huse : usesOK P = true)
-    (hphiOK : phiOK P = true) (hgf : guardFreeOK P = true)
-    (hfwd : forwardOK P = true) (hamo : amoSideOK P = true)
-    (hentry : entryOK P = true) (hcov : phiCoversOK P = true)
-    {aB iA okReg : Nat} {Bf : Block}
-    (hsites : Vc.assertSites P = [(aB, iA, okReg)])
-    (hBf : P.block? aB = some Bf)
-    (hcf : Bf.cmds[iA]? = some (.assert okReg))
-    (hlenA : iA + 1 = Bf.cmds.length)
-    (hok : (denot P s0).regs .bool okReg = false)
-    (hvA : aB ∈ activeList P s0) (prev : Option Nat)
-    (hprev : aB = P.entry ∨ ∃ p, prev = some p ∧ p ∈ activeList P s0
-        ∧ EdgeTaken P (denot P s0) p aB) :
-    Steps P (.running aB 0 prev (denot P s0)) (.failed (denot P s0)) := by
+    (hwf : WellFormed P) (hcov : phiCoversOK P = true)
+    (F : FailSite P s0) (prev : Option Nat)
+    (hprev : F.blk = P.entry ∨ ∃ p, prev = some p ∧ p ∈ activeList P s0
+        ∧ EdgeTaken P (denot P s0) p F.blk) :
+    Steps P (.running F.blk 0 prev (denot P s0)) (.failed (denot P s0)) := by
+  obtain ⟨aB, iA, okReg, Bf, hsites, hBf, hcf, hlenA, hok, hvA⟩ := F
   have hnoassert : ∀ (i : Nat) (c : Cmd), Bf.cmds[i]? = some c → i < iA →
       ∀ r, c ≠ .assert r := by
     intro i c hci hilt r hceq
@@ -291,7 +290,7 @@ theorem assert_block_run {P : Program} {s0 : State}
     have h := List.mem_singleton.mp hmem
     simp only [Prod.mk.injEq] at h
     omega
-  have hrun0 := cmds_run hssa huse hphiOK hgf hfwd hamo hentry hcov
+  have hrun0 := cmds_run hwf hcov
     hBf hvA hprev (by omega) hnoassert iA 0 (by omega) (by omega)
   exact hrun0.tail (Step.assertFalse hBf hcf hok)
 
@@ -301,35 +300,28 @@ theorem assert_block_run {P : Program} {s0 : State}
 walk the commands and fire `assertFalse`; below it, walk the commands,
 take the chain's out-edge (which cannot overshoot `aB`), recurse. -/
 theorem chain_run {P : Program} {s0 : State}
-    (hssa : ssaOK P = true) (huse : usesOK P = true)
-    (hphiOK : phiOK P = true) (hgf : guardFreeOK P = true)
-    (hfwd : forwardOK P = true) (hamo : amoSideOK P = true)
-    (hentry : entryOK P = true) (hcov : phiCoversOK P = true)
-    {aB iA okReg : Nat} {Bf : Block}
-    (hsites : Vc.assertSites P = [(aB, iA, okReg)])
-    (hBf : P.block? aB = some Bf)
-    (hcf : Bf.cmds[iA]? = some (.assert okReg))
-    (hlenA : iA + 1 = Bf.cmds.length)
-    (hok : (denot P s0).regs .bool okReg = false)
-    (haBA : aB ∈ activeList P s0) :
-    ∀ (n v : Nat), aB - v ≤ n → v ∈ activeList P s0 → v ≤ aB →
+    (hwf : WellFormed P) (hcov : phiCoversOK P = true)
+    (F : FailSite P s0) :
+    ∀ (n v : Nat), F.blk - v ≤ n → v ∈ activeList P s0 → v ≤ F.blk →
       ∀ (prev : Option Nat),
         (v = P.entry ∨ ∃ p, prev = some p ∧ p ∈ activeList P s0
             ∧ EdgeTaken P (denot P s0) p v) →
         Steps P (.running v 0 prev (denot P s0)) (.failed (denot P s0)) := by
+  obtain ⟨aB, iA, okReg, Bf, hsites, hBf, hcf, hlenA, hok, haBA⟩ := F
+  dsimp only
   intro n
   induction n with
   | zero =>
       intro v hfuel hvA hvle prev hprev
       obtain rfl : v = aB := by omega
-      exact assert_block_run hssa huse hphiOK hgf hfwd hamo hentry hcov
-        hsites hBf hcf hlenA hok hvA prev hprev
+      exact assert_block_run hwf hcov
+        ⟨v, iA, okReg, Bf, hsites, hBf, hcf, hlenA, hok, hvA⟩ prev hprev
   | succ n ih =>
       intro v hfuel hvA hvle prev hprev
       by_cases hveq : v = aB
       · subst hveq
-        exact assert_block_run hssa huse hphiOK hgf hfwd hamo hentry hcov
-          hsites hBf hcf hlenA hok hvA prev hprev
+        exact assert_block_run hwf hcov
+          ⟨v, iA, okReg, Bf, hsites, hBf, hcf, hlenA, hok, hvA⟩ prev hprev
       have hvlt : v < aB := Nat.lt_of_le_of_ne hvle hveq
       have hvlen := (mem_activeList.mp hvA).1
       obtain ⟨B, hB⟩ : ∃ B, P.block? v = some B :=
@@ -344,9 +336,9 @@ theorem chain_run {P : Program} {s0 : State}
         have h := List.mem_singleton.mp hmem
         simp only [Prod.mk.injEq] at h
         exact hveq h.1
-      have hrun0 := cmds_run hssa huse hphiOK hgf hfwd hamo hentry hcov
+      have hrun0 := cmds_run hwf hcov
         hB hvA hprev le_rfl hnoassert B.cmds.length 0 (by omega) (by omega)
-      have hchain := denot_hedge (s0 := s0) hfwd huse hentry
+      have hchain := denot_hedge (s0 := s0) hwf
       have hlt := chained_of_pairwise (activeList_pairwise P s0)
       obtain ⟨z, hz⟩ : ∃ z, (activeList P s0).getLast? = some z := by
         cases hz : (activeList P s0).getLast? with
@@ -366,7 +358,7 @@ theorem chain_run {P : Program} {s0 : State}
           rcases hbound aB haBA with h | h
           · omega
           · omega
-      have hvn' : v < n' := EdgeTaken.lt hfwd hedge_vn'
+      have hvn' : v < n' := EdgeTaken.lt hwf.fwd hedge_vn'
       have hstep : Step P (.running v B.cmds.length prev (denot P s0))
           (.running n' 0 (some v) (denot P s0)) := by
         obtain ⟨B', hB', hterm⟩ := hedge_vn'
@@ -384,21 +376,17 @@ theorem chain_run {P : Program} {s0 : State}
 
 /-! ## Assembly: the converse, and the completed equivalence -/
 
-theorem coadequacy_of_flags {P : Program}
-    (hone : singleAssertOK P = true) (hssa : ssaOK P = true)
-    (hfwd : forwardOK P = true) (hphiOK : phiOK P = true)
-    (hamo : amoSideOK P = true) (hentry : entryOK P = true)
-    (hgf : guardFreeOK P = true) (huse : usesOK P = true)
+theorem coadequacy_of_wf {P : Program} (hwf : WellFormed P)
     (hcov : phiCoversOK P = true) {s0 : State}
     (hexit : (denot P s0).blks P.blocks.length = true) : P.Unsafe := by
-  obtain ⟨aB, iA, okReg, Bf, hsites, hBf, hcf, hlenA⟩ := singleAssert_shape hone
+  obtain ⟨aB, iA, okReg, Bf, hsites, hBf, hcf, hlenA⟩ := singleAssert_shape hwf.one
   obtain ⟨haBA, hok⟩ := denot_fail hexit aB iA okReg hsites
-  obtain ⟨hentryA, hheadA⟩ := denot_hentry hfwd huse haBA
+  obtain ⟨hentryA, hheadA⟩ := denot_hentry hwf.fwd hwf.uses haBA
   have hElt := chained_of_pairwise (activeList_pairwise P s0)
   have hEle : P.entry ≤ aB := chained_lt_bound hElt hheadA aB haBA
-  have hrun := chain_run hssa huse hphiOK hgf hfwd hamo hentry hcov
-    hsites hBf hcf hlenA hok haBA (aB - P.entry) P.entry le_rfl hentryA hEle
-    none (Or.inl rfl)
+  have hrun := chain_run hwf hcov
+    ⟨aB, iA, okReg, Bf, hsites, hBf, hcf, hlenA, hok, haBA⟩
+    (aB - P.entry) P.entry le_rfl hentryA hEle none (Or.inl rfl)
   exact ⟨denot P s0, denot P s0, hrun⟩
 
 /-- Converse adequacy: a seed reaching EXIT denotationally exhibits a
@@ -408,12 +396,8 @@ self-write and no cross-state agreement is ever argued. -/
 theorem unsafe_of_seed {P : Program} (hwf : wellFormed P = true)
     (hcov : phiCoversOK P = true) (s0 : State)
     (hexit : (denot P s0).blks P.blocks.length = true) : P.Unsafe := by
-  rw [wellFormed] at hwf
-  simp only [Bool.and_eq_true] at hwf
-  obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphiOK⟩, hamo⟩, hentry⟩, hgf⟩, _hdc⟩,
-    huse⟩ := hwf
-  exact coadequacy_of_flags hone hssa hfwd hphiOK hamo hentry hgf huse
-    hcov hexit
+  obtain ⟨hw, -⟩ := wellFormed_iff.mp hwf
+  exact coadequacy_of_wf hw hcov hexit
 
 /-- The complete correspondence: operational unsafety is EXIT
 reachability of the denotational fold. `→` is `adequacy`, `←` is the

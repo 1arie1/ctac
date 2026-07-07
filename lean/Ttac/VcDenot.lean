@@ -157,8 +157,7 @@ theorem eqConstraint_eval {w : State} {t : Ty} {y : Nat} {e : Exp t}
   | map => simp [eqConstraint?] at heq
 
 theorem expected_sat_of_path {P : Program} {w : State} {V : List Nat}
-    (hone : singleAssertOK P = true) (hfwd : forwardOK P = true)
-    (hamo : amoSideOK P = true) (hphiOK : phiOK P = true)
+    (hwf : WellFormed P)
     (hentryV : P.entry ∈ V) (hhead : V.head? = some P.entry)
     (hblk : ∀ q, q < P.blocks.length → w.blks q = decide (q ∈ V))
     (hexit : w.blks P.blocks.length = true)
@@ -172,7 +171,7 @@ theorem expected_sat_of_path {P : Program} {w : State} {V : List Nat}
     (hfail : ∀ aB iA okReg, Vc.assertSites P = [(aB, iA, okReg)] →
       aB ∈ V ∧ w.regs .bool okReg = false) :
     ∀ c ∈ Vc.expected P, c.eval w = true := by
-  obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hone
+  obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hwf.one
   have haBlt : aB < P.blocks.length := (List.getElem?_eq_some_iff.mp hBA).1
   obtain ⟨haBV, hok⟩ := hfail aB iA okReg heqs
   intro c hc
@@ -199,7 +198,7 @@ theorem expected_sat_of_path {P : Program} {w : State} {V : List Nat}
       refine factConstraints_sat hentryV hblt hblk (fun hbV f hf => ?_) c hfc
       obtain ⟨i, hci⟩ := List.mem_iff_getElem?.mp hcmdmem
       exact hfacts b hbV B i _ f hB hci hf
-    · have harms : phiArmsOK P b arms = true := phiOK_at hphiOK hB hcmdmem
+    · have harms : phiArmsOK P b arms = true := phiOK_at hwf.phi hB hcmdmem
       rcases hshape with heq | ⟨hlen2, hcamo⟩
       · -- phi equation, by construction
         exact eqConstraint_eval heq (hphi b B t y arms hB hcmdmem)
@@ -217,7 +216,7 @@ theorem expected_sat_of_path {P : Program} {w : State} {V : List Nat}
           Bool.or_eq_true]
         by_cases h1 : q1 ∈ V
         · by_cases h2 : q2 ∈ V
-          · exact absurd (visited_amo hfwd hamo hedge hblt
+          · exact absurd (visited_amo hwf.fwd hwf.amo hedge hblt
               (two_mem_le_length (phiArm_pred harms hq1arm)
                 (phiArm_pred harms hq2arm) (fun h => hne (by rw [h])))
               h1 (phiArm_pred harms hq1arm) h2 (phiArm_pred harms hq2arm))
@@ -225,7 +224,7 @@ theorem expected_sat_of_path {P : Program} {w : State} {V : List Nat}
           · right; simp [h2]
         · left; simp [h1]
   · -- CFG constraints
-    exact cfgConstraints_sat hfwd hamo hentryV hhead hblk hedge c hc
+    exact cfgConstraints_sat hwf.fwd hwf.amo hentryV hhead hblk hedge c hc
   · -- objective
     rcases List.mem_cons.mp hc with rfl | hc'
     · have hex : (Vc.exitVar P).eval w = true := by
@@ -366,21 +365,21 @@ def FoldFact (P : Program) (W : State) : Cmd → Prop
   | .phi t y arms => W.regs t y = (Vc.phiRhs P t arms).eval W
   | _ => True
 
-theorem foldFact_upd {P : Program} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hphiOK : phiOK P = true) {v i : Nat}
+theorem foldFact_upd {P : Program} (hwf : WellFormed P)
+      {v i : Nat}
     {Bv : Block} {c : Cmd} (hBv : P.block? v = some Bv)
     (hci : Bv.cmds[i]? = some c) {b pc : Nat}
     (hlt : posLt (v, i) (b, pc) = true)
     {t : Ty} {y : Nat} (hydef : IsDefAt P (t, y) b pc) (val : t.denote)
     {W : State} (h : FoldFact P W c) : FoldFact P (W.upd t y val) c := by
-  have hu := usesOK_cmd huse hBv hci
+  have hu := usesOK_cmd hwf.uses hBv hci
   simp only [cmdUsesOK] at hu
   cases c with
   | assign t' y' e =>
       simp only [FoldFact] at h ⊢
       have hy'ne : ((t', y') : Ty × Nat) ≠ (t, y) :=
         write_ne_of_before hlt (fun d j hdj => by
-          obtain ⟨rfl, rfl⟩ := ssa_unique hssa ⟨Bv, _, hBv, hci, rfl⟩ hdj
+          obtain ⟨rfl, rfl⟩ := ssa_unique hwf.ssa ⟨Bv, _, hBv, hci, rfl⟩ hdj
           simp [posLt]) hydef
       have hev : e.eval (W.upd t y val) = e.eval W :=
         eval_congr e (fun p hp => State.upd_regs_of_ne W
@@ -394,13 +393,13 @@ theorem foldFact_upd {P : Program} (hssa : ssaOK P = true)
       simp only [FoldFact] at h ⊢
       have hy'ne : ((t', y') : Ty × Nat) ≠ (t, y) :=
         write_ne_of_before hlt (fun d j hdj => by
-          obtain ⟨rfl, rfl⟩ := ssa_unique hssa ⟨Bv, _, hBv, hci, rfl⟩ hdj
+          obtain ⟨rfl, rfl⟩ := ssa_unique hwf.ssa ⟨Bv, _, hBv, hci, rfl⟩ hdj
           simp [posLt]) hydef
       have hev : (Vc.phiRhs P t' arms).eval (W.upd t y val)
           = (Vc.phiRhs P t' arms).eval W :=
         eval_congr _ (fun p hp => State.upd_regs_of_ne W
           (write_ne_of_before hlt (fun d j hdj => by
-            have := phi_src_lt huse hphiOK hBv hci p hp d j hdj
+            have := phi_src_lt hwf.uses hwf.phi hBv hci p hp d j hdj
             simp only [posLt, Bool.or_eq_true, Bool.and_eq_true,
               decide_eq_true_eq]
             omega) hydef) val)
@@ -411,8 +410,8 @@ theorem foldFact_upd {P : Program} (hssa : ssaOK P = true)
   | assume φ => trivial
   | assert r => trivial
 
-theorem foldFact_denotCmd {P : Program} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hphiOK : phiOK P = true) {v i : Nat}
+theorem foldFact_denotCmd {P : Program} (hwf : WellFormed P)
+      {v i : Nat}
     {Bv : Block} {c : Cmd} (hBv : P.block? v = some Bv)
     (hci : Bv.cmds[i]? = some c) {b j : Nat} {Bb : Block} {c' : Cmd}
     (hBb : P.block? b = some Bb) (hcj : Bb.cmds[j]? = some c')
@@ -420,10 +419,10 @@ theorem foldFact_denotCmd {P : Program} (hssa : ssaOK P = true)
     {W : State} (h : FoldFact P W c) : FoldFact P (denotCmd P W c') c := by
   cases c' with
   | assign t x e =>
-      exact foldFact_upd hssa huse hphiOK hBv hci hlt
+      exact foldFact_upd hwf hBv hci hlt
         ⟨Bb, _, hBb, hcj, rfl⟩ _ h
   | phi t x arms =>
-      exact foldFact_upd hssa huse hphiOK hBv hci hlt
+      exact foldFact_upd hwf hBv hci hlt
         ⟨Bb, _, hBb, hcj, rfl⟩ _ h
   | havoc t x => exact h
   | assume φ => exact h
@@ -479,8 +478,7 @@ theorem posLt_same_block {v i j : Nat} (h : i < j) :
 /-- Fold a block's suffix: previously established equations survive and
 each executed command's equation is established. Fuel-indexed to keep
 the recursion structural. -/
-theorem blockFacts_go {P : Program} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hphiOK : phiOK P = true)
+theorem blockFacts_go {P : Program} (hwf : WellFormed P)
     {v : Nat} {Bv : Block} (hBv : P.block? v = some Bv) :
     ∀ (n j : Nat), Bv.cmds.length ≤ j + n → ∀ (W : State),
       (∀ (i : Nat) (c : Cmd), Bv.cmds[i]? = some c → i < j → FoldFact P W c) →
@@ -503,24 +501,23 @@ theorem blockFacts_go {P : Program} (hssa : ssaOK P = true)
         refine ih (j + 1) (by omega) (denotCmd P W Bv.cmds[j])
           (fun i' c' hci' hi' => ?_) i c hci
         rcases Nat.lt_or_ge i' j with hij | hij
-        · exact foldFact_denotCmd hssa huse hphiOK hBv hci' hBv hcj
+        · exact foldFact_denotCmd hwf hBv hci' hBv hcj
             (posLt_same_block hij) (hinv i' c' hci' hij)
         · have hii : i' = j := by omega
           rw [hii] at hci'
           obtain rfl : c' = Bv.cmds[j] := Option.some.inj (hci'.symm.trans hcj)
-          exact foldFact_establish huse hphiOK hBv hci' W
+          exact foldFact_establish hwf.uses hwf.phi hBv hci' W
       · rw [List.drop_eq_nil_of_le hjlen, List.foldl_nil]
         have hi : i < Bv.cmds.length := (List.getElem?_eq_some_iff.mp hci).1
         exact hinv i c hci (by omega)
 
 /-- End-of-block equations: at the end of block `v`'s command fold,
 every command of `v` satisfies its defining equation. -/
-theorem blockFacts {P : Program} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hphiOK : phiOK P = true)
+theorem blockFacts {P : Program} (hwf : WellFormed P)
     {v : Nat} {Bv : Block} (hBv : P.block? v = some Bv) (W : State) :
     ∀ (i : Nat) (c : Cmd), Bv.cmds[i]? = some c →
       FoldFact P (Bv.cmds.foldl (denotCmd P) W) c := by
-  have h := blockFacts_go hssa huse hphiOK hBv Bv.cmds.length 0
+  have h := blockFacts_go hwf hBv Bv.cmds.length 0
     (by omega) W (fun i c _ hi => absurd hi (by omega))
   simpa using h
 
@@ -607,41 +604,38 @@ theorem phiRhs_blkVars {P : Program} {t : Ty} {arms : PhiArms} :
 
 /-- Every phi equation holds at the final denotational state — at every
 block, visited or not (the fold computed `phiRhs` unconditionally). -/
-theorem denot_phi {P : Program} {s0 : State} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hphiOK : phiOK P = true)
+theorem denot_phi {P : Program} {s0 : State} (hwf : WellFormed P)
     {b : Nat} {Bv : Block} {t : Ty} {y : Nat} {arms : PhiArms}
     (hBv : P.block? b = some Bv) (hmem : (Cmd.phi t y arms) ∈ Bv.cmds) :
     (denot P s0).regs t y = (Vc.phiRhs P t arms).eval (denot P s0) := by
   obtain ⟨i, hci⟩ := List.mem_iff_getElem?.mp hmem
-  have hfact := blockFacts hssa huse hphiOK hBv (prefixState P s0 b) i _ hci
+  have hfact := blockFacts hwf hBv (prefixState P s0 b) i _ hci
   simp only [FoldFact] at hfact
-  have harms : phiArmsOK P b arms = true := phiOK_at hphiOK hBv hmem
+  have harms : phiArmsOK P b arms = true := phiOK_at hwf.phi hBv hmem
   rw [denot_regs_of_defsLe hBv (fun d j hd => by
-      obtain ⟨hdb, -⟩ := ssa_unique hssa ⟨Bv, _, hBv, hci, rfl⟩ hd
+      obtain ⟨hdb, -⟩ := ssa_unique hwf.ssa ⟨Bv, _, hBv, hci, rfl⟩ hd
       omega),
     eval_denot_eq_block hBv _
-      (fun p hp d j hd => Nat.le_of_lt (phi_src_lt huse hphiOK hBv hci p hp d j hd))
+      (fun p hp d j hd => Nat.le_of_lt (phi_src_lt hwf.uses hwf.phi hBv hci p hp d j hd))
       (fun q hq => by
         obtain ⟨s, hqs⟩ := phiRhs_blkVars q hq
         exact phiArm_lt harms hqs)]
   exact hfact
 
 /-- Every assign equation holds at the final denotational state. -/
-theorem denot_assign {P : Program} {s0 : State} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hphiOK : phiOK P = true)
-    (hgf : guardFreeOK P = true)
+theorem denot_assign {P : Program} {s0 : State} (hwf : WellFormed P)
     {b : Nat} {Bv : Block} {i : Nat} {t : Ty} {y : Nat} {e : Exp t}
     (hBv : P.block? b = some Bv) (hci : Bv.cmds[i]? = some (.assign t y e)) :
     (denot P s0).regs t y = e.eval (denot P s0) := by
-  have hfact := blockFacts hssa huse hphiOK hBv (prefixState P s0 b) i _ hci
+  have hfact := blockFacts hwf hBv (prefixState P s0 b) i _ hci
   simp only [FoldFact] at hfact
-  have hu := usesOK_cmd huse hBv hci
+  have hu := usesOK_cmd hwf.uses hBv hci
   simp only [cmdUsesOK] at hu
-  have hgfc := guardFree_at hgf (List.mem_of_getElem? hBv)
+  have hgfc := guardFree_at hwf.gf (List.mem_of_getElem? hBv)
     (List.mem_of_getElem? hci)
   simp only [cmdGuardFree, List.isEmpty_iff] at hgfc
   rw [denot_regs_of_defsLe hBv (fun d j hd => by
-      obtain ⟨hdb, -⟩ := ssa_unique hssa ⟨Bv, _, hBv, hci, rfl⟩ hd
+      obtain ⟨hdb, -⟩ := ssa_unique hwf.ssa ⟨Bv, _, hBv, hci, rfl⟩ hd
       omega),
     eval_denot_eq_block hBv e
       (fun p hp d j hd => by
@@ -699,9 +693,7 @@ theorem denot_hblk {P : Program} {s0 : State} {q : Nat}
 
 /-- The `hfacts` hypothesis: every `factB` fact of an active block holds
 at the final state (assign by its equation, assume by the guard). -/
-theorem denot_factB {P : Program} {s0 : State} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hphiOK : phiOK P = true)
-    (hgf : guardFreeOK P = true) :
+theorem denot_factB {P : Program} {s0 : State} (hwf : WellFormed P) :
     ∀ v ∈ activeList P s0, ∀ (B : Block) (i : Nat) (c' : Cmd) (f : BExp),
       P.block? v = some B → B.cmds[i]? = some c' → c'.factB = some f →
       f.eval (denot P s0) = true := by
@@ -709,10 +701,10 @@ theorem denot_factB {P : Program} {s0 : State} (hssa : ssaOK P = true)
   cases c' with
   | assign t y e =>
       simp only [Cmd.factB] at hf
-      exact eqConstraint_eval hf (denot_assign hssa huse hphiOK hgf hB hci)
+      exact eqConstraint_eval hf (denot_assign hwf hB hci)
   | assume φ =>
       obtain rfl := Option.some.inj hf
-      exact denot_assume huse hgf hB hci (mem_activeList.mp hv).2
+      exact denot_assume hwf.uses hwf.gf hB hci (mem_activeList.mp hv).2
   | havoc t y => cases hf
   | phi t y arms => cases hf
   | assert r => cases hf
@@ -720,9 +712,7 @@ theorem denot_factB {P : Program} {s0 : State} (hssa : ssaOK P = true)
 /-- One site's map definition holds at the final state (assign via
 `lower`-invariance, phi via `denot_phi`) — the per-site form the
 site-tagged checker consumes directly. -/
-theorem denot_mapDef {P : Program} {s0 : State} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hphiOK : phiOK P = true)
-    (hgf : guardFreeOK P = true)
+theorem denot_mapDef {P : Program} {s0 : State} (hwf : WellFormed P)
     {b : Nat} {B : Block} {c : Cmd} {md : Nat × MExp}
     (hB : P.block? b = some B) (hc : c ∈ B.cmds)
     (hcd : Vc.cmdMapDef? P c = some md) :
@@ -731,19 +721,17 @@ theorem denot_mapDef {P : Program} {s0 : State} (hssa : ssaOK P = true)
   obtain ⟨x, rhs⟩ := md
   rcases cmdMapDef?_eq_some hcd with ⟨e, rfl, rfl⟩ | ⟨arms, rfl, rfl⟩
   · rw [Vc.eval_lower]
-    exact denot_assign hssa huse hphiOK hgf hB hci
-  · exact denot_phi hssa huse hphiOK hB (List.mem_of_getElem? hci)
+    exact denot_assign hwf hB hci
+  · exact denot_phi hwf hB (List.mem_of_getElem? hci)
 
 /-- The `hmap` hypothesis: every expected map definition holds at the
 final state. -/
-theorem denot_map {P : Program} {s0 : State} (hssa : ssaOK P = true)
-    (huse : usesOK P = true) (hphiOK : phiOK P = true)
-    (hgf : guardFreeOK P = true) :
+theorem denot_map {P : Program} {s0 : State} (hwf : WellFormed P) :
     ∀ md ∈ Vc.expectedMapDefs P,
       (denot P s0).regs .map md.1 = md.2.eval (denot P s0) := by
   intro md hmd
   obtain ⟨b, B, i, c, hB, hci, hcd⟩ := mem_expectedMapDefs hmd
-  exact denot_mapDef hssa huse hphiOK hgf hB (List.mem_of_getElem? hci) hcd
+  exact denot_mapDef hwf hB (List.mem_of_getElem? hci) hcd
 
 /-- The `hfail` hypothesis: a reached EXIT names the (single) assert
 site — its block active, its condition false. -/
@@ -766,8 +754,7 @@ theorem denot_fail {P : Program} {s0 : State}
 /-- Lemma B, packaged as VC satisfaction: a path state (plus the
 by-construction map definitions `hmap`) is a full model of the VC. -/
 theorem denot_sat_of_path {P : Program} {w : State} {V : List Nat}
-    (hone : singleAssertOK P = true) (hfwd : forwardOK P = true)
-    (hamo : amoSideOK P = true) (hphiOK : phiOK P = true)
+    (hwf : WellFormed P)
     (hentryV : P.entry ∈ V) (hhead : V.head? = some P.entry)
     (hblk : ∀ q, q < P.blocks.length → w.blks q = decide (q ∈ V))
     (hexit : w.blks P.blocks.length = true)
@@ -782,7 +769,7 @@ theorem denot_sat_of_path {P : Program} {w : State} {V : List Nat}
       aB ∈ V ∧ w.regs .bool okReg = false)
     (hmap : ∀ md ∈ Vc.expectedMapDefs P, w.regs .map md.1 = md.2.eval w) :
     Vc.Sat w { constraints := Vc.expected P, mapDefs := Vc.expectedMapDefs P } :=
-  ⟨expected_sat_of_path hone hfwd hamo hphiOK hentryV hhead hblk hexit hedge
+  ⟨expected_sat_of_path hwf hentryV hhead hblk hexit hedge
     hfacts hphi hfail, hmap⟩
 
 /-! ## The capstone: by-construction half done, reachability core isolated
@@ -794,10 +781,7 @@ are exactly the relocated adequacy content; they appear here as the
 only remaining hypotheses. -/
 
 theorem denot_sat_of_reach {P : Program} {s0 : State}
-    (hone : singleAssertOK P = true) (hssa : ssaOK P = true)
-    (hfwd : forwardOK P = true) (hamo : amoSideOK P = true)
-    (hphiOK : phiOK P = true) (huse : usesOK P = true)
-    (hgf : guardFreeOK P = true)
+    (hwf : WellFormed P)
     (hexit : (denot P s0).blks P.blocks.length = true)
     -- the reachability core (Lemma A's remaining obligations):
     (hentryV : P.entry ∈ activeList P s0)
@@ -805,12 +789,12 @@ theorem denot_sat_of_reach {P : Program} {s0 : State}
     (hedge : Chained (EdgeTaken P (denot P s0)) (activeList P s0)) :
     Vc.Sat (denot P s0)
       { constraints := Vc.expected P, mapDefs := Vc.expectedMapDefs P } :=
-  denot_sat_of_path hone hfwd hamo hphiOK hentryV hhead
+  denot_sat_of_path hwf hentryV hhead
     (fun _ hq => denot_hblk hq) hexit hedge
-    (denot_factB hssa huse hphiOK hgf)
-    (fun _ _ _ _ _ hB hmem => denot_phi hssa huse hphiOK hB hmem)
+    (denot_factB hwf)
+    (fun _ _ _ _ _ hB hmem => denot_phi hwf hB hmem)
     (denot_fail hexit)
-    (denot_map hssa huse hphiOK hgf)
+    (denot_map hwf)
 
 /-! ## The reachability core
 
@@ -936,8 +920,7 @@ upper block. The chosen active predecessor `p` of `w` sits at or below
 edge-connected by the induction hypothesis, and edge uniqueness would
 force `q = w > u` — contradiction. -/
 theorem denot_adj_edge {P : Program} {s0 : State}
-    (hfwd : forwardOK P = true) (huse : usesOK P = true)
-    (hentry : entryOK P = true) :
+    (hwf : WellFormed P) :
     ∀ w, w < P.blocks.length → (denot P s0).blks w = true → w ≠ P.entry →
       ∀ u, AdjIn (activeList P s0) u w →
         EdgeTaken P (denot P s0) u w := by
@@ -948,7 +931,7 @@ theorem denot_adj_edge {P : Program} {s0 : State}
       obtain ⟨Bw, hBw⟩ : ∃ B, P.block? w = some B :=
         ⟨P.blocks[w], List.getElem?_eq_getElem hwlt⟩
       obtain ⟨p, hpact, hplt, hpE⟩ :=
-        denot_active_pred hfwd huse hBw hwact hwne
+        denot_active_pred hwf.fwd hwf.uses hBw hwact hwne
       have hpA : p ∈ activeList P s0 :=
         mem_activeList.mpr ⟨by omega, hpact⟩
       have hpu : p ≤ u := by
@@ -963,7 +946,7 @@ theorem denot_adj_edge {P : Program} {s0 : State}
         have hpq : p < q := hadj_pq.2.2.1
         have huw : u < w := hadj.2.2.1
         have hq := mem_activeList.mp hqA
-        have hent := entry_eq_zero hentry
+        have hent := entry_eq_zero hwf.entry
         have hqne : q ≠ P.entry := by omega
         have hqE : EdgeTaken P (denot P s0) p q :=
           ih q (by omega) hq.1 hq.2 hqne p hadj_pq
@@ -1009,18 +992,17 @@ theorem activeList_pairwise (P : Program) (s0 : State) :
 /-! ### The three reachability facts, discharged -/
 
 theorem denot_hedge {P : Program} {s0 : State}
-    (hfwd : forwardOK P = true) (huse : usesOK P = true)
-    (hentry : entryOK P = true) :
+    (hwf : WellFormed P) :
     Chained (EdgeTaken P (denot P s0)) (activeList P s0) := by
   refine chained_of_adj (activeList_pairwise P s0) (fun u w hadj => ?_)
   have hw := mem_activeList.mp hadj.2.1
   have hu := mem_activeList.mp hadj.1
   have hwne : w ≠ P.entry := by
-    have hent := entry_eq_zero hentry
+    have hent := entry_eq_zero hwf.entry
     have huw : u < w := hadj.2.2.1
     have hu0 : 0 ≤ u := Nat.zero_le u
     omega
-  exact denot_adj_edge hfwd huse hentry w hw.1 hw.2 hwne u hadj
+  exact denot_adj_edge hwf w hw.1 hw.2 hwne u hadj
 
 theorem denot_hentry {P : Program} {s0 : State}
     (hfwd : forwardOK P = true) (huse : usesOK P = true)
@@ -1053,18 +1035,15 @@ theorem denot_hentry {P : Program} {s0 : State}
 /-! ### Lemma A complete: a reached EXIT makes the fold a model -/
 
 theorem denot_sat {P : Program} {s0 : State}
-    (hone : singleAssertOK P = true) (hssa : ssaOK P = true)
-    (hfwd : forwardOK P = true) (hphiOK : phiOK P = true)
-    (hamo : amoSideOK P = true) (hentry : entryOK P = true)
-    (hgf : guardFreeOK P = true) (huse : usesOK P = true)
+    (hwf : WellFormed P)
     (hexit : (denot P s0).blks P.blocks.length = true) :
     Vc.Sat (denot P s0)
       { constraints := Vc.expected P, mapDefs := Vc.expectedMapDefs P } := by
-  obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hone
+  obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hwf.one
   obtain ⟨haBV, -⟩ := denot_fail hexit aB iA okReg heqs
-  obtain ⟨hentryV, hhead⟩ := denot_hentry hfwd huse haBV
-  exact denot_sat_of_reach hone hssa hfwd hamo hphiOK huse hgf hexit
-    hentryV hhead (denot_hedge hfwd huse hentry)
+  obtain ⟨hentryV, hhead⟩ := denot_hentry hwf.fwd hwf.uses haBV
+  exact denot_sat_of_reach hwf hexit
+    hentryV hhead (denot_hedge hwf)
 
 /-! ## The semantic admission criterion: weak enough
 
@@ -1096,15 +1075,12 @@ theorem safe_denot_of_denotSound {P : Program} {vc : Vc.VC}
 /-- The expected-membership certificate: a well-formed program's
 expected set is weak enough, hence so is any subset of it. -/
 theorem denotSound_of_expected {P : Program} {vc : Vc.VC}
-    (hone : singleAssertOK P = true) (hssa : ssaOK P = true)
-    (hfwd : forwardOK P = true) (hphiOK : phiOK P = true)
-    (hamo : amoSideOK P = true) (hentry : entryOK P = true)
-    (hgf : guardFreeOK P = true) (huse : usesOK P = true)
+    (hwf : WellFormed P)
     (hsub : ∀ c ∈ vc.constraints, c ∈ Vc.expected P)
     (hmsub : ∀ md ∈ vc.mapDefs, md ∈ Vc.expectedMapDefs P) :
     DenotSound P vc := by
   intro s0 hexit
-  have hsat := denot_sat hone hssa hfwd hphiOK hamo hentry hgf huse hexit
+  have hsat := denot_sat hwf hexit
   exact ⟨fun c hc => hsat.1 c (hsub c hc),
     fun md hmd => hsat.2 md (hmsub md hmd)⟩
 
@@ -1114,12 +1090,10 @@ construction — `domClosedOK` is checked by `wellFormed` but never used. -/
 theorem checkVC_safe_denot {P : Program} {vc : Vc.VC}
     (hchk : checkVC P vc = true) (hunsat : Vc.Unsat vc) : Safe_denot P := by
   rw [checkVC, Bool.and_eq_true, Bool.and_eq_true] at hchk
-  obtain ⟨⟨hwf, hmem⟩, hmdefs⟩ := hchk
-  rw [wellFormed] at hwf
-  simp only [Bool.and_eq_true] at hwf
-  obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphi⟩, hamo⟩, hentry⟩, hgf⟩, -⟩, huse⟩ := hwf
+  obtain ⟨⟨hwfb, hmem⟩, hmdefs⟩ := hchk
+  obtain ⟨hwf, -⟩ := wellFormed_iff.mp hwfb
   exact safe_denot_of_denotSound
-    (denotSound_of_expected hone hssa hfwd hphi hamo hentry hgf huse
+    (denotSound_of_expected hwf
       (fun c hc => of_decide_eq_true (List.all_eq_true.mp hmem c hc))
       (fun md hmd => of_decide_eq_true (List.all_eq_true.mp hmdefs md hmd)))
     hunsat

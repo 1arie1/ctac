@@ -51,7 +51,12 @@ lemma, and the proof layers never mention individual operators.
   `Exp.blk` atom, disjoint from program registers by construction)
   plus per-constraint and per-map-definition membership in the
   expected sets. Definition and use checks run uniformly over
-  `(sort, register)` pairs via `Cmd.def?` and `Exp.vars`.
+  `(sort, register)` pairs via `Cmd.def?` and `Exp.vars`. The Prop
+  bundle `WellFormed P` (via `wellFormed_iff`) packages the eight
+  program-shape conjuncts so proof statements take one `hwf` and
+  project fields (`hwf.ssa`, …); `domClosedOK` is deliberately NOT a
+  field — it stays an explicit hypothesis, so "takes `hdc`" marks the
+  dominance boundary in the signature language (only adequacy does).
 - `Ttac/VcLemmas.lean` — evaluation lemmas for the fold constructors
   (`eval_mkImp`, `eval_mkOr`, `eval_mkIte`, ...) and the
   semantics-preservation of the lowering mirror (`eval_lower`).

@@ -223,9 +223,7 @@ lemma (actual predecessor's guard true by G1, others false by G2 +
 `visited_amo`). -/
 theorem adq_denotCmd_agree {P : Program} {σ : State} {V : List Nat}
     {bf : Nat}
-    (hfwd : forwardOK P = true)
-    (hphi : phiOK P = true) (hamo : amoSideOK P = true)
-    (hgf : guardFreeOK P = true) (huse : usesOK P = true)
+    (hwf : WellFormed P)
     (hedge : Chained (EdgeTaken P σ) V)
     (hdomV : ∀ u ∈ V, ∀ d ∈ domOf P u, d ∈ V)
     (hentryV : P.entry ∈ V)
@@ -247,9 +245,9 @@ theorem adq_denotCmd_agree {P : Program} {σ : State} {V : List Nat}
   | assign t y e =>
       by_cases hkV : k ∈ V
       · -- clean write of the σ-value
-        have hu := usesOK_cmd huse hB hci
+        have hu := usesOK_cmd hwf.uses hB hci
         simp only [cmdUsesOK] at hu
-        have hgfc := guardFree_at hgf (List.mem_of_getElem? hB)
+        have hgfc := guardFree_at hwf.gf (List.mem_of_getElem? hB)
           (List.mem_of_getElem? hci)
         simp only [cmdGuardFree, List.isEmpty_iff] at hgfc
         have hev : e.eval W = e.eval σ :=
@@ -280,7 +278,7 @@ theorem adq_denotCmd_agree {P : Program} {σ : State} {V : List Nat}
         obtain ⟨p, src, rfl, harm, hval⟩ := hcf
         obtain ⟨hpV, -⟩ := hprev p rfl
         have harms : phiArmsOK P k arms = true :=
-          phiOK_at hphi hB (List.mem_of_getElem? hci)
+          phiOK_at hwf.phi hB (List.mem_of_getElem? hci)
         have hparm : (p, src) ∈ arms := lookup_mem harm
         have hplt : p < k := phiArm_lt harms hparm
         -- the actual predecessor's guard is true
@@ -295,7 +293,7 @@ theorem adq_denotCmd_agree {P : Program} {σ : State} {V : List Nat}
           intro q s' hqarm hqp
           have hqlt : q < k := phiArm_lt harms hqarm
           by_cases hqV : q ∈ V
-          · exact absurd (visited_amo hfwd hamo hedge hklt
+          · exact absurd (visited_amo hwf.fwd hwf.amo hedge hklt
               (two_mem_le_length (phiArm_pred harms hqarm)
                 (phiArm_pred harms hparm) hqp)
               hqV (phiArm_pred harms hqarm) hpV (phiArm_pred harms hparm)) hqp
@@ -304,7 +302,7 @@ theorem adq_denotCmd_agree {P : Program} {σ : State} {V : List Nat}
             rw [if_neg hqe]
             exact hG2 q hqlt hqV (Nat.lt_of_lt_of_le hqlt (hmaxV k hkV))
         -- the selected value is the σ-value
-        have hu := usesOK_cmd huse hB hci
+        have hu := usesOK_cmd hwf.uses hB hci
         simp only [cmdUsesOK] at hu
         have hsrc_clean : CleanReg P V (t, src) :=
           clean_of_armUse hdomV hpV
@@ -331,9 +329,7 @@ theorem adq_denotCmd_agree {P : Program} {σ : State} {V : List Nat}
 
 /-- Fold a block's command suffix, preserving clean agreement. -/
 theorem adq_cmds_agree {P : Program} {σ : State} {V : List Nat} {bf : Nat}
-    (hfwd : forwardOK P = true)
-    (hphi : phiOK P = true) (hamo : amoSideOK P = true)
-    (hgf : guardFreeOK P = true) (huse : usesOK P = true)
+    (hwf : WellFormed P)
     (hedge : Chained (EdgeTaken P σ) V)
     (hdomV : ∀ u ∈ V, ∀ d ∈ domOf P u, d ∈ V)
     (hentryV : P.entry ∈ V) (hmaxV : ∀ v ∈ V, v ≤ bf)
@@ -359,7 +355,7 @@ theorem adq_cmds_agree {P : Program} {σ : State} {V : List Nat} {bf : Nat}
           List.getElem?_eq_getElem hjlen
         rw [List.drop_eq_getElem_cons hjlen, List.foldl_cons]
         refine ih (j + 1) (by omega) _
-          (adq_denotCmd_agree hfwd hphi hamo hgf huse hedge hdomV
+          (adq_denotCmd_agree hwf hedge hdomV
             hentryV hmaxV hB hfactsK hcj hagree hG1 hG2)
           (fun q hqk hqV => by rw [denotCmd_blks]; exact hG1 q hqk hqV)
           (fun q hqk hqV hqbf => by
@@ -373,8 +369,7 @@ theorem adq_cmds_agree {P : Program} {σ : State} {V : List Nat} {bf : Nat}
 processed-true and the taken edge's condition is a clean read; its
 assumes hold at σ and transport by cleanliness. -/
 theorem adq_guard_visited {P : Program} {σ : State} {V : List Nat}
-    (hfwd : forwardOK P = true) (hgf : guardFreeOK P = true)
-    (huse : usesOK P = true)
+    (hwf : WellFormed P)
     (hedge : Chained (EdgeTaken P σ) V) (hhead : V.head? = some P.entry)
     (hdomV : ∀ u ∈ V, ∀ d ∈ domOf P u, d ∈ V)
     {k : Nat} {B : Block} (hB : P.block? k = some B) (hkV : k ∈ V)
@@ -401,12 +396,12 @@ theorem adq_guard_visited {P : Program} {σ : State} {V : List Nat}
             · exact h
       obtain ⟨p, hpV, hE, -⟩ := chained_pred hedge hedge hkt
       obtain ⟨cond, hcondmem, hcondσ⟩ := hE.edge_cond
-      have hplt : p < k := hE.lt hfwd
+      have hplt : p < k := hE.lt hwf.fwd
       obtain ⟨hbnil, hbvars⟩ := edge_cond_vars hcondmem
       have hcondW : cond.eval Wc = cond.eval σ := by
         refine eval_eq_of_agree hagree cond (fun q hq => ?_) hbnil
         obtain ⟨r, B', t', e', rfl, hB', hterm'⟩ := hbvars q hq
-        have hterm_use := usesOK_term huse hB'
+        have hterm_use := usesOK_term hwf.uses hB'
         simp only [termUsesOK, hterm'] at hterm_use
         exact clean_of_use hdomV hpV (useOK_dom hterm_use)
       apply List.any_eq_true.mpr
@@ -420,9 +415,9 @@ theorem adq_guard_visited {P : Program} {σ : State} {V : List Nat}
         obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hc
         obtain ⟨prev, hcf, -⟩ := hfactsK i _ hi
         simp only [CmdFact] at hcf
-        have hu := usesOK_cmd huse hB hi
+        have hu := usesOK_cmd hwf.uses hB hi
         simp only [cmdUsesOK] at hu
-        have hgfc := guardFree_at hgf (List.mem_of_getElem? hB) hc
+        have hgfc := guardFree_at hwf.gf (List.mem_of_getElem? hB) hc
         simp only [cmdGuardFree, List.isEmpty_iff] at hgfc
         show φ.eval Wc = true
         rw [eval_eq_of_agree hagree φ
@@ -477,9 +472,7 @@ theorem adq_guard_unvisited {P : Program} {σ : State} {V : List Nat}
 /-! ## The main induction over the fold -/
 
 theorem adq_prefix {P : Program} {σ : State} {V : List Nat} {bf : Nat}
-    (hfwd : forwardOK P = true) (hphi : phiOK P = true)
-    (hamo : amoSideOK P = true) (hgf : guardFreeOK P = true)
-    (huse : usesOK P = true)
+    (hwf : WellFormed P)
     (hedge : Chained (EdgeTaken P σ) V) (hhead : V.head? = some P.entry)
     (hlast : V.getLast? = some bf)
     (hdomV : ∀ u ∈ V, ∀ d ∈ domOf P u, d ∈ V)
@@ -499,7 +492,7 @@ theorem adq_prefix {P : Program} {σ : State} {V : List Nat} {bf : Nat}
         obtain rfl := Option.some.inj hhead
         exact List.mem_cons_self ..
   have hmaxV : ∀ v ∈ V, v ≤ bf :=
-    chained_le_getLast (hedge.imp fun _ _ h => h.lt hfwd) hlast
+    chained_le_getLast (hedge.imp fun _ _ h => h.lt hwf.fwd) hlast
   intro k
   induction k with
   | zero =>
@@ -519,7 +512,7 @@ theorem adq_prefix {P : Program} {σ : State} {V : List Nat} {bf : Nat}
         fun hkV i c hci => hfacts k hkV _ i c hB hci
       have hagree' : RegsAgree P V
           (P.blocks[k].cmds.foldl (denotCmd P) (prefixState P σ k)) σ := by
-        have h := adq_cmds_agree hfwd hphi hamo hgf huse hedge hdomV
+        have h := adq_cmds_agree hwf hedge hdomV
           hentryV hmaxV hB hfactsK P.blocks[k].cmds.length 0 (by omega)
           (prefixState P σ k) hagree hG1 hG2
         simpa using h
@@ -550,7 +543,7 @@ theorem adq_prefix {P : Program} {σ : State} {V : List Nat} {bf : Nat}
           exact hG1 q hqk hqV
         · obtain rfl : q = k := by omega
           rw [hblk_self]
-          exact adq_guard_visited hfwd hgf huse hedge hhead hdomV hB hqV
+          exact adq_guard_visited hwf hedge hhead hdomV hB hqV
             (hfactsK hqV) hagree'
             (fun q' hq' hq'V => by rw [hblkc]; exact hG1 q' hq' hq'V)
       · intro q hq hqV hqbf
@@ -559,7 +552,7 @@ theorem adq_prefix {P : Program} {σ : State} {V : List Nat} {bf : Nat}
           exact hG2 q hqk hqV hqbf
         · obtain rfl : q = k := by omega
           rw [hblk_self,
-            adq_guard_unvisited hfwd huse hedge hlast hentryV hdomV hqV
+            adq_guard_unvisited hwf.fwd hwf.uses hedge hlast hentryV hdomV hqV
               hqbf hagree'
               (fun q' hq' hq'V hq'bf => by
                 rw [hblkc]; exact hG2 q' hq' hq'V hq'bf)]
@@ -570,23 +563,19 @@ theorem adq_prefix {P : Program} {σ : State} {V : List Nat} {bf : Nat}
 /-- **An operational failure reaches EXIT denotationally.** The seed is
 the final operational state; the single assert's block is active with a
 false condition, so `reachExit` fires. -/
-theorem adequacy_of_flags {P : Program}
-    (hone : singleAssertOK P = true) (hssa : ssaOK P = true)
-    (hfwd : forwardOK P = true) (hphi : phiOK P = true)
-    (hamo : amoSideOK P = true) (hentry : entryOK P = true)
-    (hgf : guardFreeOK P = true) (hdc : domClosedOK P = true)
-    (huse : usesOK P = true) : Adequacy P := by
+theorem adequacy_of_wf {P : Program} (hwf : WellFormed P)
+    (hdc : domClosedOK P = true) : Adequacy P := by
   rintro ⟨s0op, σ, hrun⟩
   obtain ⟨V, hentryV, hhead, hedge, hfacts, bf, Bf, pcf, cf, hlastV,
     hBf, hcf, hcffalse⟩ :=
-    forwardStructural hone hssa huse hfwd hphi hentry hrun
+    forwardStructural hwf hrun
   refine ⟨σ, ?_⟩
   rw [denot_blks_exit]
-  have hdomV := dom_visited hdc hfwd hedge hhead
-  obtain ⟨hagree, hG1, -⟩ := adq_prefix hfwd hphi hamo hgf huse hedge
+  have hdomV := dom_visited hdc hwf.fwd hedge hhead
+  obtain ⟨hagree, hG1, -⟩ := adq_prefix hwf hedge
     hhead hlastV hdomV hfacts P.blocks.length (Nat.le_refl _)
-  obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hone
-  obtain ⟨hb, -, hc⟩ := singleAssert_unique hone hBf hcf hBA hcA
+  obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hwf.one
+  obtain ⟨hb, -, hc⟩ := singleAssert_unique hwf.one hBf hcf hBA hcA
   unfold reachExit
   rw [heqs]
   simp only [List.any_cons, List.any_nil, Bool.or_false, Bool.and_eq_true,
@@ -594,16 +583,14 @@ theorem adequacy_of_flags {P : Program}
   have haBlt : aB < P.blocks.length := (List.getElem?_eq_some_iff.mp hBA).1
   have haBV : aB ∈ V := hb ▸ getLast?_mem hlastV
   refine ⟨hG1 aB haBlt haBV, ?_⟩
-  have hu := usesOK_cmd huse hBA hcA
+  have hu := usesOK_cmd hwf.uses hBA hcA
   simp only [cmdUsesOK] at hu
   rw [hagree .bool okReg (clean_of_use hdomV haBV (useOK_dom hu)), ← hc]
   exact hcffalse
 
 theorem adequacy {P : Program} (hwf : wellFormed P = true) : Adequacy P := by
-  rw [wellFormed] at hwf
-  simp only [Bool.and_eq_true] at hwf
-  obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphi⟩, hamo⟩, hentry⟩, hgf⟩, hdc⟩, huse⟩ := hwf
-  exact adequacy_of_flags hone hssa hfwd hphi hamo hentry hgf hdc huse
+  obtain ⟨hw, hdc⟩ := wellFormed_iff.mp hwf
+  exact adequacy_of_wf hw hdc
 
 /-! ## The full operational chain through the denotational proof -/
 
