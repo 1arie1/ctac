@@ -142,6 +142,13 @@ lemma, and the proof layers never mention individual operators.
   row) in the VC syntax. Soundness composes through `DenotSound`:
   `denotSound_of_checkVCW` and `checkVCW_safe_denot`. Strictly
   generalizes `checkVC`'s admission (membership = the reflexivity row).
+  The site-tagged variant `checkVCWAnn` (over `Vc.AnnVC` buckets)
+  consults only the tagged site's own anchors — `cfgConstraintsFor P b`
+  / the block's `cmdConstraints` / the objective pair — so the checker
+  never computes the global `Vc.expected` at all; the expected set
+  survives only proof-side (per-site anchors embed into it,
+  `denot_sat` supplies their truth). `checkVCWAnn_safe_denot`, and
+  operationally `checkVCWAnn_safe` (`VcAdequacy`).
 - `Ttac/VcAdequacy.lean` — the adequacy proof: an operational failure
   reaches EXIT denotationally (`adequacy : wellFormed P → Adequacy P`).
   The seed is the final operational state σ; *clean* registers (every

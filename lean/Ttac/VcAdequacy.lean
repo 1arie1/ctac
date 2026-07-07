@@ -626,4 +626,14 @@ theorem checkVC_safe_via_denot {P : Program} {vc : Vc.VC}
     exact hchk.1.1
   exact safe_of_safe_denot (adequacy hwf) (checkVC_safe_denot hchk hunsat)
 
+/-- The site-tagged weakening checker, operationally: no global
+expected VC computed, no `DefExt`, no witness. -/
+theorem checkVCWAnn_safe {P : Program} {a : Vc.AnnVC}
+    (hchk : checkVCWAnn P a = true) (hunsat : a.Unsat) : P.Safe := by
+  have hwf : wellFormed P = true := by
+    rw [checkVCWAnn, Bool.and_eq_true, Bool.and_eq_true, Bool.and_eq_true,
+      Bool.and_eq_true] at hchk
+    exact hchk.1.1.1.1
+  exact safe_of_safe_denot (adequacy hwf) (checkVCWAnn_safe_denot hchk hunsat)
+
 end Ttac

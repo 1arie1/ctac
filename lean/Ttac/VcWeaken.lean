@@ -104,4 +104,120 @@ theorem checkVCW_safe_denot {P : Program} {vc : Vc.VC}
     (hchk : checkVCW P vc = true) (hunsat : Vc.Unsat vc) : Safe_denot P :=
   safe_denot_of_denotSound (denotSound_of_checkVCW hchk) hunsat
 
+/-! ## Site-tagged admission: the global anchor pool eliminated
+
+`checkVCW` still materializes `expected P` as one flat anchor pool.
+With site-tagged candidates (`Vc.AnnVC`), admission consults only the
+tagged site's own anchors — `cfgConstraintsFor P b` for a cfg-bucket
+constraint, the block's `cmdConstraints` for a command-bucket one, the
+two `objective` anchors — so nothing resembling the global expected VC
+is ever computed by the checker. `Vc.expected` survives only in the
+*proof* (the per-site anchors embed into it, and `denot_sat` supplies
+their truth); the checker itself is per-site. -/
+
+/-- Per-site anchors embed into the expected set (proof-side only). -/
+theorem mem_expected_of_cfgFor {P : Program} {aB iA okReg : Nat}
+    (heqs : Vc.assertSites P = [(aB, iA, okReg)])
+    {S : Nat} (hS : S < P.blocks.length) {c : BExp}
+    (hc : c ∈ Vc.cfgConstraintsFor P S) : c ∈ Vc.expected P := by
+  unfold Vc.expected
+  rw [heqs, List.mem_append, List.mem_append]
+  left; right
+  rw [Vc.cfgConstraints_eq, List.mem_flatten]
+  exact ⟨_, List.mem_map.mpr ⟨S, List.mem_range.mpr hS, rfl⟩, hc⟩
+
+theorem mem_expected_of_cmd {P : Program} {aB iA okReg : Nat}
+    (heqs : Vc.assertSites P = [(aB, iA, okReg)])
+    {b : Nat} {B : Block} (hB : P.block? b = some B) {c : BExp}
+    (hc : c ∈ (B.cmds.map (Vc.cmdConstraints P b)).flatten) :
+    c ∈ Vc.expected P := by
+  unfold Vc.expected
+  rw [heqs, List.mem_append, List.mem_append]
+  left; left
+  rw [List.mem_flatten]
+  exact ⟨_, List.mem_map.mpr
+    ⟨(B, b), List.mem_zipIdx_iff_getElem?.mpr hB, rfl⟩, hc⟩
+
+theorem mem_expected_of_objective {P : Program} {aB iA okReg : Nat}
+    (heqs : Vc.assertSites P = [(aB, iA, okReg)]) {c : BExp}
+    (hc : c ∈ Vc.objective P aB okReg) : c ∈ Vc.expected P := by
+  unfold Vc.expected
+  rw [heqs, List.mem_append]
+  exact Or.inr hc
+
+/-- The site-tagged weakening checker: each bucket constraint must
+weaken from one of *its own site's* anchors. No global anchor pool. -/
+def checkVCWAnn (P : Program) (a : Vc.AnnVC) : Bool :=
+  wellFormed P
+    && decide (a.perBlock.length = P.blocks.length)
+    && (a.perBlock.zipIdx.all fun (bk, b) =>
+          bk.cfg.all (fun c =>
+              (Vc.cfgConstraintsFor P b).any (fun x => Vc.weakensFrom x c))
+            && (match P.blocks[b]? with
+                | some B => bk.cmds.flatten.all (fun c =>
+                    ((B.cmds.map (Vc.cmdConstraints P b)).flatten).any
+                      (fun x => Vc.weakensFrom x c))
+                | none => false))
+    && (match Vc.assertSites P with
+        | [(aB, _, okReg)] => a.objective.all (fun c =>
+            (Vc.objective P aB okReg).any (fun x => Vc.weakensFrom x c))
+        | _ => false)
+    && a.mapDefs.all (fun md => decide (md ∈ Vc.expectedMapDefs P))
+
+theorem denotSound_of_checkVCWAnn {P : Program} {a : Vc.AnnVC}
+    (hchk : checkVCWAnn P a = true) :
+    DenotSound P { constraints := a.flatten, mapDefs := a.mapDefs } := by
+  unfold checkVCWAnn at hchk
+  rw [Bool.and_eq_true, Bool.and_eq_true, Bool.and_eq_true,
+    Bool.and_eq_true] at hchk
+  obtain ⟨⟨⟨⟨hwf, hlen⟩, hall⟩, hobj⟩, hmap⟩ := hchk
+  rw [decide_eq_true_eq] at hlen
+  have hwf' := hwf
+  rw [wellFormed] at hwf'
+  simp only [Bool.and_eq_true] at hwf'
+  obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphi⟩, hamo⟩, hentry⟩, hgf⟩, -⟩, huse⟩ := hwf'
+  intro s0 hexit
+  have hsat := denot_sat hone hssa hfwd hphi hamo hentry hgf huse hexit
+  obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hone
+  refine ⟨fun c hc => ?_, fun md hmd => hsat.2 md
+    (of_decide_eq_true (List.all_eq_true.mp hmap md hmd))⟩
+  rw [Vc.AnnVC.flatten, List.mem_append] at hc
+  rcases hc with hc | hc
+  · rw [List.mem_flatten] at hc
+    obtain ⟨L, hL, hcL⟩ := hc
+    rw [List.mem_map] at hL
+    obtain ⟨bk, hbk, rfl⟩ := hL
+    obtain ⟨b, hb⟩ := List.mem_iff_getElem?.mp hbk
+    have hbzip : (bk, b) ∈ a.perBlock.zipIdx :=
+      List.mem_zipIdx_iff_getElem?.mpr hb
+    have hblt : b < P.blocks.length := by
+      have := (List.getElem?_eq_some_iff.mp hb).1
+      omega
+    obtain ⟨hcfgb, hcmdb⟩ := Bool.and_eq_true .. |>.mp
+      (List.all_eq_true.mp hall (bk, b) hbzip)
+    rw [List.mem_append] at hcL
+    rcases hcL with hcfg | hcmds
+    · obtain ⟨x, hxmem, hxw⟩ := List.any_eq_true.mp
+        (List.all_eq_true.mp hcfgb c hcfg)
+      exact Vc.weakensFrom_sound hxw
+        (hsat.1 x (mem_expected_of_cfgFor heqs hblt hxmem))
+    · have hBb : P.blocks[b]? = some P.blocks[b] :=
+        List.getElem?_eq_getElem hblt
+      simp only [hBb] at hcmdb
+      obtain ⟨x, hxmem, hxw⟩ := List.any_eq_true.mp
+        (List.all_eq_true.mp hcmdb c hcmds)
+      exact Vc.weakensFrom_sound hxw
+        (hsat.1 x (mem_expected_of_cmd heqs hBb hxmem))
+  · rw [heqs] at hobj
+    obtain ⟨x, hxmem, hxw⟩ := List.any_eq_true.mp
+      (List.all_eq_true.mp hobj c hc)
+    exact Vc.weakensFrom_sound hxw
+      (hsat.1 x (mem_expected_of_objective heqs hxmem))
+
+/-- The site-tagged weakening `checkVC_safe`, denotational side. -/
+theorem checkVCWAnn_safe_denot {P : Program} {a : Vc.AnnVC}
+    (hchk : checkVCWAnn P a = true) (hunsat : a.Unsat) : Safe_denot P :=
+  safe_denot_of_denotSound (denotSound_of_checkVCWAnn hchk)
+    (fun ⟨w, hs⟩ => hunsat ⟨w, hs⟩)
+
 end Ttac

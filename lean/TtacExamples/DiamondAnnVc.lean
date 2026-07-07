@@ -41,4 +41,29 @@ flat `checkVC`.) -/
 example : Vc.checkVCAnn prog { annvc with objective := [.blk 42] } = false := by
   native_decide
 
+/-! ## The site-tagged weakening checker on the same golden -/
+
+/-- `checkVCWAnn` accepts the untouched annotated golden (reflexivity). -/
+theorem annvc_ok_weak : checkVCWAnn prog annvc = true := by native_decide
+
+/-- A weakened annotated VC: block 3's command bucket carries an
+or-introduced variant of the `ok` fact; `checkVCAnn`'s membership test
+rejects it, the weakening table accepts it, with the same safety
+conclusion — and admission consulted only block 3's own anchors. -/
+def annvcWeak : Vc.AnnVC :=
+  { annvc with
+      perBlock := annvc.perBlock.take 3 ++
+        [{ cfg := Vc.cfgConstraintsFor prog 3
+           cmds := [[
+             -- (or (=> BLK_join (= ok (<= 0 y))) BLK_pos) — or-introduction
+             .or (.imp (.blk 3)
+                 (.eqB (.var .bool 1) (.le (.litI 0) (.var .int 3)))) (.blk 1)]] }] }
+
+example : Vc.checkVCAnn prog annvcWeak = false := by native_decide
+
+theorem annvcWeak_ok : checkVCWAnn prog annvcWeak = true := by native_decide
+
+theorem annvcWeak_implies_safe : Vc.AnnVC.Unsat annvcWeak → prog.Safe :=
+  checkVCWAnn_safe annvcWeak_ok
+
 end TtacExamples.Diamond
