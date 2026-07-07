@@ -57,18 +57,21 @@ the VCGen algorithms precise.]
     $ "bytemap" mapsto "Int" -> "Int" $
   ]
 ][
-  Core integer expressions:
+  Integer expressions:
 
   #align(center)[
-    $ i ::= n | x | i + i | i - i | i * i | i \/ i $
+    $ i ::= &n | x | M[i] \
+        | &i + i | i - i | i * i | i \/ i \
+        | &"ite"(b, i, i) $
   ]
 
   Boolean expressions:
 
   #align(center)[
     $ b ::= &"true" | "false" | c \
-        | &i < i | i <= i | i = i \
-        | &not b | b and b | b or b $
+        | &i < i | i <= i | i = i | b = b \
+        | &not b | b and b | b or b \
+        | &"ite"(c, b, b) $
   ]
 
   `ite` is an expression operator, not a structured statement.
