@@ -44,6 +44,14 @@ def upd (s : State) (t : Ty) (x : Nat) (v : t.denote) : State :=
 @[simp] theorem upd_blks (s : State) (t : Ty) (x : Nat) (v : t.denote) :
     (s.upd t x v).blks = s.blks := rfl
 
+/-- Writing back the value already present is the identity. This is what
+lets an execution seeded with a fold's final state stay pointwise equal
+to it: every re-computed write is a self-write. -/
+@[simp] theorem upd_self (s : State) (t : Ty) (x : Nat) :
+    s.upd t x (s.regs t x) = s := by
+  show { s with regs := _ } = s
+  rw [Function.update_eq_self, Function.update_eq_self]
+
 /-- Pair form of the disequality lemmas: the reader's `(sort, index)`
 differs from the writer's. -/
 theorem upd_regs_of_ne (s : State) {t u : Ty} {x y : Nat}

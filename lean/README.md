@@ -154,6 +154,19 @@ lemma, and the proof layers never mention individual operators.
   reads them. Closes the operational chain: `checkVCW_safe` and
   `checkVC_safe_via_denot` — the `checkVC_safe` statement by a fully
   independent path, with no witness construction.
+- `Ttac/VcCoadequacy.lean` — the converse: a seed reaching EXIT
+  denotationally replays as a real failing execution
+  (`unsafe_of_seed`), completing the picture
+  (`safe_iff_safe_denot : P.Safe ↔ Safe_denot P`). The run is seeded
+  with `denot P s0` *itself*, so every write is a self-write
+  (`State.upd_self`) and the state is constant along the run — no
+  agreement invariant and, unlike adequacy, **no dominance**
+  (`domClosedOK` unused). Needs one check beyond `wellFormed`:
+  `phiCoversOK` (every predecessor of a phi block has an arm; kept out
+  of `wellFormed` since the soundness direction never needs it).
+  Coverage is genuinely necessary — at an uncovered taken predecessor
+  the machine is stuck at the phi while the fold falls through to the
+  unguarded last arm, so `denot` strictly over-approximates there.
 - `TtacExamples/Diamond.lean` — golden deep + shallow embeddings of the
   scalar diamond, shallow safety theorem proved. The Python test suite
   pins the emitter against these shapes; keep them in sync.
@@ -172,8 +185,10 @@ lemma, and the proof layers never mention individual operators.
 - `TtacExamples/DiamondCex.lean` — counterexample certificate for an
   unsafe diamond variant: a seed reaching EXIT certified by
   `native_decide` and lifted to `¬ Safe_denot` via
-  `not_safe_denot_of_seed` (and a non-driving seed shown not to
-  certify); pins the `ttac cex-check` emitter's shapes.
+  `not_safe_denot_of_seed`, then to operational `prog.Unsafe` via
+  `unsafe_of_seed` (converse adequacy; `wellFormed` + `phiCoversOK`
+  checked by `native_decide`). A non-driving seed is shown not to
+  certify. Pins the `ttac cex-check` emitter's shapes.
 
 ## Building
 

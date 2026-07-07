@@ -73,6 +73,19 @@ theorem cex_ok : (denot prog seed).blks prog.blocks.length = true := by
 theorem prog_not_safe_denot : ¬Safe_denot prog :=
   not_safe_denot_of_seed seed cex_ok
 
+/-! ## The operational upgrade (converse adequacy)
+
+With `wellFormed` and phi coverage checked, the denotational
+counterexample replays as a real operational execution: the program is
+`Program.Unsafe`, not merely denotationally so. -/
+
+theorem wf_ok : wellFormed prog = true := by native_decide
+
+theorem cov_ok : phiCoversOK prog = true := by native_decide
+
+theorem prog_unsafe : prog.Unsafe :=
+  unsafe_of_seed wf_ok cov_ok seed cex_ok
+
 /-- A non-driving seed does not certify: `x = 5` keeps the diamond's
 broken arm harmless (`y = 4`), so EXIT stays unreached and
 `native_decide` on `= true` would fail — completeness loss, never a
