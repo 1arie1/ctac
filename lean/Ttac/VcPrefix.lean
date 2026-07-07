@@ -392,12 +392,7 @@ failing-block record. The forward replacement for `suffix_of_steps` +
 `Suffix.chain_edge` + `Suffix.head` + `facts_of_suffix` + `Suffix.last_block`. -/
 theorem forwardStructural {P : Program} (hwf : WellFormed P)
     {s0 σ : State} (hrun : Steps P (Config.init P s0) (.failed σ)) :
-    ∃ V : List Nat, P.entry ∈ V ∧ V.head? = some P.entry
-      ∧ Chained (EdgeTaken P σ) V
-      ∧ (∀ v ∈ V, ∀ (B : Block) (i : Nat) (c' : Cmd),
-          P.block? v = some B → B.cmds[i]? = some c' →
-          ∃ prev : Option Nat, CmdFact σ prev c'
-            ∧ ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P σ p v)
+    ∃ V : List Nat, TakenPath P σ V ∧ TraceFacts P σ V
       ∧ (∃ (bf : Nat) (Bf : Block) (pcf cf : Nat), V.getLast? = some bf
           ∧ P.block? bf = some Bf ∧ Bf.cmds[pcf]? = some (.assert cf)
           ∧ σ.regs .bool cf = false) := by
@@ -407,9 +402,10 @@ theorem forwardStructural {P : Program} (hwf : WellFormed P)
     | @assertFalse bf pcf prev s Bf cf hBf hcf hfalse =>
         obtain ⟨V, hentV, hgl, hmax, hedge, hpe, hfacts⟩ :=
           forwardTrace hwf hpre rfl
-        refine ⟨V, hentV, head_eq_entry hwf.entry hwf.fwd hedge hentV, hedge, ?_,
+        refine ⟨V,
+          ⟨hentV, head_eq_entry hwf.entry hwf.fwd hedge hentV, hedge⟩, ?_,
           ⟨bf, Bf, pcf, cf, hgl, hBf, hcf, hfalse⟩⟩
-        intro v hvV B i c' hB hci
+        intro v hvV B hB i c' hci
         by_cases hass : ∃ r, c' = .assert r
         · obtain ⟨r, rfl⟩ := hass
           obtain ⟨rfl, rfl, rfl⟩ := singleAssert_unique hwf.one hB hci hBf hcf

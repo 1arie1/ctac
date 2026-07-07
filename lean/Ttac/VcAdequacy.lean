@@ -229,9 +229,7 @@ theorem adq_denotCmd_agree {P : Program} {σ : State} {V : List Nat}
     (hentryV : P.entry ∈ V)
     (hmaxV : ∀ v ∈ V, v ≤ bf)
     {k : Nat} {B : Block} (hB : P.block? k = some B)
-    (hfactsK : k ∈ V → ∀ (i : Nat) (c : Cmd), B.cmds[i]? = some c →
-      ∃ prev : Option Nat, CmdFact σ prev c
-        ∧ ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P σ p k)
+    (hfactsK : k ∈ V → TraceFactsAt P σ V k B)
     {i : Nat} {c : Cmd} (hci : B.cmds[i]? = some c)
     {W : State} (hagree : RegsAgree P V W σ)
     (hG1 : ∀ q, q < k → q ∈ V → W.blks q = true)
@@ -334,9 +332,7 @@ theorem adq_cmds_agree {P : Program} {σ : State} {V : List Nat} {bf : Nat}
     (hdomV : ∀ u ∈ V, ∀ d ∈ domOf P u, d ∈ V)
     (hentryV : P.entry ∈ V) (hmaxV : ∀ v ∈ V, v ≤ bf)
     {k : Nat} {B : Block} (hB : P.block? k = some B)
-    (hfactsK : k ∈ V → ∀ (i : Nat) (c : Cmd), B.cmds[i]? = some c →
-      ∃ prev : Option Nat, CmdFact σ prev c
-        ∧ ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P σ p k) :
+    (hfactsK : k ∈ V → TraceFactsAt P σ V k B) :
     ∀ (n j : Nat), B.cmds.length ≤ j + n → ∀ (W : State),
       RegsAgree P V W σ →
       (∀ q, q < k → q ∈ V → W.blks q = true) →
@@ -373,9 +369,7 @@ theorem adq_guard_visited {P : Program} {σ : State} {V : List Nat}
     (hedge : Chained (EdgeTaken P σ) V) (hhead : V.head? = some P.entry)
     (hdomV : ∀ u ∈ V, ∀ d ∈ domOf P u, d ∈ V)
     {k : Nat} {B : Block} (hB : P.block? k = some B) (hkV : k ∈ V)
-    (hfactsK : ∀ (i : Nat) (c : Cmd), B.cmds[i]? = some c →
-      ∃ prev : Option Nat, CmdFact σ prev c
-        ∧ ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P σ p k)
+    (hfactsK : TraceFactsAt P σ V k B)
     {Wc : State} (hagree : RegsAgree P V Wc σ)
     (hG1 : ∀ q, q < k → q ∈ V → Wc.blks q = true) :
     (reach P Wc k && assumesOK Wc B) = true := by
@@ -473,24 +467,15 @@ theorem adq_guard_unvisited {P : Program} {σ : State} {V : List Nat}
 
 theorem adq_prefix {P : Program} {σ : State} {V : List Nat} {bf : Nat}
     (hwf : WellFormed P)
-    (hedge : Chained (EdgeTaken P σ) V) (hhead : V.head? = some P.entry)
-    (hlast : V.getLast? = some bf)
+    (hpath : TakenPath P σ V) (hlast : V.getLast? = some bf)
     (hdomV : ∀ u ∈ V, ∀ d ∈ domOf P u, d ∈ V)
-    (hfacts : ∀ v ∈ V, ∀ (B : Block) (i : Nat) (c : Cmd),
-      P.block? v = some B → B.cmds[i]? = some c →
-      ∃ prev : Option Nat, CmdFact σ prev c
-        ∧ ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P σ p v) :
+    (hfacts : TraceFacts P σ V) :
     ∀ k, k ≤ P.blocks.length →
       RegsAgree P V (prefixState P σ k) σ
       ∧ (∀ q, q < k → q ∈ V → (prefixState P σ k).blks q = true)
       ∧ (∀ q, q < k → q ∉ V → q < bf →
           (prefixState P σ k).blks q = false) := by
-  have hentryV : P.entry ∈ V := by
-    cases V with
-    | nil => cases hhead
-    | cons v0 rest =>
-        obtain rfl := Option.some.inj hhead
-        exact List.mem_cons_self ..
+  obtain ⟨hentryV, hhead, hedge⟩ := hpath
   have hmaxV : ∀ v ∈ V, v ≤ bf :=
     chained_le_getLast (hedge.imp fun _ _ h => h.lt hwf.fwd) hlast
   intro k
@@ -505,11 +490,8 @@ theorem adq_prefix {P : Program} {σ : State} {V : List Nat} {bf : Nat}
       have hk : k < P.blocks.length := by omega
       obtain ⟨hagree, hG1, hG2⟩ := ih (by omega)
       have hB : P.block? k = some P.blocks[k] := List.getElem?_eq_getElem hk
-      have hfactsK : k ∈ V → ∀ (i : Nat) (c : Cmd),
-          P.blocks[k].cmds[i]? = some c →
-          ∃ prev : Option Nat, CmdFact σ prev c
-            ∧ ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P σ p k :=
-        fun hkV i c hci => hfacts k hkV _ i c hB hci
+      have hfactsK : k ∈ V → TraceFactsAt P σ V k P.blocks[k] :=
+        fun hkV => hfacts k hkV _ hB
       have hagree' : RegsAgree P V
           (P.blocks[k].cmds.foldl (denotCmd P) (prefixState P σ k)) σ := by
         have h := adq_cmds_agree hwf hedge hdomV
@@ -566,14 +548,15 @@ false condition, so `reachExit` fires. -/
 theorem adequacy_of_wf {P : Program} (hwf : WellFormed P)
     (hdc : domClosedOK P = true) : Adequacy P := by
   rintro ⟨s0op, σ, hrun⟩
-  obtain ⟨V, hentryV, hhead, hedge, hfacts, bf, Bf, pcf, cf, hlastV,
+  obtain ⟨V, hpath, hfacts, bf, Bf, pcf, cf, hlastV,
     hBf, hcf, hcffalse⟩ :=
     forwardStructural hwf hrun
   refine ⟨σ, ?_⟩
+  show (denot P σ).blks P.blocks.length = true
   rw [denot_blks_exit]
-  have hdomV := dom_visited hdc hwf.fwd hedge hhead
-  obtain ⟨hagree, hG1, -⟩ := adq_prefix hwf hedge
-    hhead hlastV hdomV hfacts P.blocks.length (Nat.le_refl _)
+  have hdomV := dom_visited hdc hwf.fwd hpath.chain hpath.head
+  obtain ⟨hagree, hG1, -⟩ := adq_prefix hwf hpath
+    hlastV hdomV hfacts P.blocks.length (Nat.le_refl _)
   obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hwf.one
   obtain ⟨hb, -, hc⟩ := singleAssert_unique hwf.one hBf hcf hBA hcA
   unfold reachExit

@@ -298,6 +298,11 @@ def Sat (w : State) (vc : VC) : Prop :=
   (∀ c ∈ vc.constraints, c.eval w = true)
     ∧ ∀ md ∈ vc.mapDefs, w.regs .map md.1 = md.2.eval w
 
+/-- The full VC the bwd0 encoder is entitled to emit — the reference
+object the by-construction lemmas satisfy. -/
+def expectedVC (P : Program) : VC :=
+  { constraints := expected P, mapDefs := expectedMapDefs P }
+
 def Unsat (vc : VC) : Prop := ¬∃ w, Sat w vc
 
 end Vc

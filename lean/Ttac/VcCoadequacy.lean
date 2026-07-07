@@ -188,17 +188,21 @@ theorem phi_step_value {P : Program} {s0 : State}
       rw [hdp]
       exact phiChain_eval_select a rest hlk hgp hgq
 
+/-- The phi-resolution invariant threaded through the walk: at entry
+there is no predecessor to resolve (`phiOK` forbids entry phis);
+elsewhere `prev` is the taken-edge active predecessor. -/
+abbrev PrevOK (P : Program) (s0 : State) (prev : Option Nat) (v : Nat) : Prop :=
+  v = P.entry ∨ ∃ p, prev = some p ∧ p ∈ activeList P s0
+    ∧ EdgeTaken P (denot P s0) p v
+
 /-! ## The command walk: every write is a self-write -/
 
-/-- Walk an active block's commands from `j` up to `k` (no asserts in
-`[0, k)`): each step writes the value the state already holds, so the
-state is `denot P s0` throughout. -/
-theorem cmds_run {P : Program} {s0 : State}
+/-- Fuel-carrying core of `cmds_run`. -/
+theorem cmds_run_go {P : Program} {s0 : State}
     (hwf : WellFormed P) (hcov : phiCoversOK P = true)
     {v : Nat} {B : Block} (hB : P.block? v = some B)
     (hvA : v ∈ activeList P s0) {prev : Option Nat}
-    (hprev : v = P.entry ∨ ∃ p, prev = some p ∧ p ∈ activeList P s0
-        ∧ EdgeTaken P (denot P s0) p v)
+    (hprev : PrevOK P s0 prev v)
     {k : Nat} (hk : k ≤ B.cmds.length)
     (hnoassert : ∀ (i : Nat) (c : Cmd), B.cmds[i]? = some c → i < k →
       ∀ r, c ≠ .assert r) :
@@ -256,6 +260,22 @@ theorem cmds_run {P : Program} {s0 : State}
       | assert r =>
           exact (hnoassert j _ hcj hjlt r rfl).elim
 
+/-- Walk an active block's commands from `j` up to `k` (no asserts in
+`[0, k)`): each step writes the value the state already holds, so the
+state is `denot P s0` throughout. -/
+theorem cmds_run {P : Program} {s0 : State}
+    (hwf : WellFormed P) (hcov : phiCoversOK P = true)
+    {v : Nat} {B : Block} (hB : P.block? v = some B)
+    (hvA : v ∈ activeList P s0) {prev : Option Nat}
+    (hprev : PrevOK P s0 prev v)
+    {k : Nat} (hk : k ≤ B.cmds.length)
+    (hnoassert : ∀ (i : Nat) (c : Cmd), B.cmds[i]? = some c → i < k →
+      ∀ r, c ≠ .assert r)
+    {j : Nat} (hj : j ≤ k) :
+    Steps P (.running v j prev (denot P s0))
+      (.running v k prev (denot P s0)) :=
+  cmds_run_go hwf hcov hB hvA hprev hk hnoassert k j (by omega) hj
+
 /-- The failing assert site, packaged: the single assert's block/index/
 condition register, the site facts, and the two denotational failure
 facts (`ok_false`, `active`). Built once in `coadequacy_of_wf` from
@@ -276,8 +296,7 @@ structure FailSite (P : Program) (s0 : State) where
 theorem assert_block_run {P : Program} {s0 : State}
     (hwf : WellFormed P) (hcov : phiCoversOK P = true)
     (F : FailSite P s0) (prev : Option Nat)
-    (hprev : F.blk = P.entry ∨ ∃ p, prev = some p ∧ p ∈ activeList P s0
-        ∧ EdgeTaken P (denot P s0) p F.blk) :
+    (hprev : PrevOK P s0 prev F.blk) :
     Steps P (.running F.blk 0 prev (denot P s0)) (.failed (denot P s0)) := by
   obtain ⟨aB, iA, okReg, Bf, hsites, hBf, hcf, hlenA, hok, hvA⟩ := F
   have hnoassert : ∀ (i : Nat) (c : Cmd), Bf.cmds[i]? = some c → i < iA →
@@ -291,21 +310,17 @@ theorem assert_block_run {P : Program} {s0 : State}
     simp only [Prod.mk.injEq] at h
     omega
   have hrun0 := cmds_run hwf hcov
-    hBf hvA hprev (by omega) hnoassert iA 0 (by omega) (by omega)
+    hBf hvA hprev (by omega) hnoassert (j := 0) (Nat.zero_le _)
   exact hrun0.tail (Step.assertFalse hBf hcf hok)
 
 /-! ## The chain walk: follow the taken edges down to the assert block -/
 
-/-- From any active block `v ≤ aB`, the run reaches `.failed`: at `aB`
-walk the commands and fire `assertFalse`; below it, walk the commands,
-take the chain's out-edge (which cannot overshoot `aB`), recurse. -/
-theorem chain_run {P : Program} {s0 : State}
+/-- Fuel-carrying core of `chain_run`. -/
+theorem chain_run_go {P : Program} {s0 : State}
     (hwf : WellFormed P) (hcov : phiCoversOK P = true)
     (F : FailSite P s0) :
     ∀ (n v : Nat), F.blk - v ≤ n → v ∈ activeList P s0 → v ≤ F.blk →
-      ∀ (prev : Option Nat),
-        (v = P.entry ∨ ∃ p, prev = some p ∧ p ∈ activeList P s0
-            ∧ EdgeTaken P (denot P s0) p v) →
+      ∀ (prev : Option Nat), PrevOK P s0 prev v →
         Steps P (.running v 0 prev (denot P s0)) (.failed (denot P s0)) := by
   obtain ⟨aB, iA, okReg, Bf, hsites, hBf, hcf, hlenA, hok, haBA⟩ := F
   dsimp only
@@ -337,7 +352,7 @@ theorem chain_run {P : Program} {s0 : State}
         simp only [Prod.mk.injEq] at h
         exact hveq h.1
       have hrun0 := cmds_run hwf hcov
-        hB hvA hprev le_rfl hnoassert B.cmds.length 0 (by omega) (by omega)
+        hB hvA hprev le_rfl hnoassert (j := 0) (Nat.zero_le _)
       have hchain := denot_hedge (s0 := s0) hwf
       have hlt := chained_of_pairwise (activeList_pairwise P s0)
       obtain ⟨z, hz⟩ : ∃ z, (activeList P s0).getLast? = some z := by
@@ -374,6 +389,17 @@ theorem chain_run {P : Program} {s0 : State}
         (Or.inr ⟨v, rfl, hvA, hedge_vn'⟩)
       exact (hrun0.tail hstep).trans hrest
 
+/-- From any active block at or below the failing one, the run reaches
+`.failed`: at the assert block walk the commands and fire
+`assertFalse`; below it, walk the commands, take the chain's out-edge
+(which cannot overshoot the assert block), recurse. -/
+theorem chain_run {P : Program} {s0 : State}
+    (hwf : WellFormed P) (hcov : phiCoversOK P = true)
+    (F : FailSite P s0) {v : Nat} (hvA : v ∈ activeList P s0)
+    (hvle : v ≤ F.blk) (prev : Option Nat) (hprev : PrevOK P s0 prev v) :
+    Steps P (.running v 0 prev (denot P s0)) (.failed (denot P s0)) :=
+  chain_run_go hwf hcov F F.blk v (by omega) hvA hvle prev hprev
+
 /-! ## Assembly: the converse, and the completed equivalence -/
 
 theorem coadequacy_of_wf {P : Program} (hwf : WellFormed P)
@@ -386,7 +412,7 @@ theorem coadequacy_of_wf {P : Program} (hwf : WellFormed P)
   have hEle : P.entry ≤ aB := chained_lt_bound hElt hheadA aB haBA
   have hrun := chain_run hwf hcov
     ⟨aB, iA, okReg, Bf, hsites, hBf, hcf, hlenA, hok, haBA⟩
-    (aB - P.entry) P.entry le_rfl hentryA hEle none (Or.inl rfl)
+    hentryA hEle none (Or.inl rfl)
   exact ⟨denot P s0, denot P s0, hrun⟩
 
 /-- Converse adequacy: a seed reaching EXIT denotationally exhibits a

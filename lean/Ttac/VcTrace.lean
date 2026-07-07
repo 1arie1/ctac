@@ -469,6 +469,29 @@ theorem CmdFact.factB_eval {σ : State} {prev : Option Nat} {c : Cmd}
   | phi t x arms => cases hf
   | assert r => cases hf
 
+/-- The path skeleton every argument walks: the entry block is on the
+visited list and heads it, and consecutive members are taken edges at
+`σ`. -/
+structure TakenPath (P : Program) (σ : State) (V : List Nat) : Prop where
+  entry_mem : P.entry ∈ V
+  head : V.head? = some P.entry
+  chain : Chained (EdgeTaken P σ) V
+
+/-- Command facts of one block `k` along a visited list: every command
+has its `CmdFact` at `σ`, with a phi predecessor that is itself visited
+via a taken edge. -/
+def TraceFactsAt (P : Program) (σ : State) (V : List Nat) (k : Nat)
+    (B : Block) : Prop :=
+  ∀ (i : Nat) (c' : Cmd), B.cmds[i]? = some c' →
+    ∃ prev : Option Nat, CmdFact σ prev c'
+      ∧ ∀ p, prev = some p → p ∈ V ∧ EdgeTaken P σ p k
+
+/-- Per-block command facts along the whole visited list. The interface
+between the operational facts producer (`forwardStructural`) and the
+adequacy fold. -/
+def TraceFacts (P : Program) (σ : State) (V : List Nat) : Prop :=
+  ∀ v ∈ V, ∀ B : Block, P.block? v = some B → TraceFactsAt P σ V v B
+
 theorem getLast?_mem {V : List Nat} {a : Nat} (h : V.getLast? = some a) :
     a ∈ V := by
   induction V with

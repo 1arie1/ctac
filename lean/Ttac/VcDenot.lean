@@ -95,6 +95,14 @@ no "unsafe" notion; this is pure reachability of the last block. -/
 def Safe_denot (P : Program) : Prop :=
   ∀ s0 : State, (denot P s0).blks P.blocks.length = false
 
+/-- The seed drives the denotational fold into the synthetic last
+block — THE proposition of this development: a counterexample is a seed
+with `ReachesExit`; safety is that no seed has it. Reducible so
+`native_decide` certificates and Bool-level proofs see the equation
+directly. -/
+abbrev ReachesExit (P : Program) (s0 : State) : Prop :=
+  (denot P s0).blks P.blocks.length = true
+
 /-! ## The adequacy seam (factored out)
 
 `Adequacy P` is the only obligation that ties the denotational reading
@@ -105,7 +113,7 @@ computation), stated VC-free and — the bet — proved once,
 language-generically, rather than re-entangled per command in a
 robustness lemma. -/
 def Adequacy (P : Program) : Prop :=
-  P.Unsafe → ∃ s0 : State, (denot P s0).blks P.blocks.length = true
+  P.Unsafe → ∃ s0 : State, ReachesExit P s0
 
 /-- Given adequacy, denotational safety transfers to operational safety.
 This is the whole point of the factoring: our checker proves
@@ -123,8 +131,10 @@ into a seed is certified by evaluation (`native_decide`); no trace or
 proof object is needed. A wrong seed merely fails to evaluate to `true`
 (completeness loss, never a soundness hole). -/
 theorem not_safe_denot_of_seed {P : Program} (s0 : State)
-    (h : (denot P s0).blks P.blocks.length = true) : ¬Safe_denot P :=
-  fun hs => by rw [hs s0] at h; exact Bool.false_ne_true h
+    (h : ReachesExit P s0) : ¬Safe_denot P := fun hs => by
+  have h' : (denot P s0).blks P.blocks.length = true := h
+  rw [hs s0] at h'
+  exact Bool.false_ne_true h' 
 
 /-! ## Lemma B: a path state is a model, by construction (dominance-free)
 
@@ -736,10 +746,11 @@ theorem denot_map {P : Program} {s0 : State} (hwf : WellFormed P) :
 /-- The `hfail` hypothesis: a reached EXIT names the (single) assert
 site — its block active, its condition false. -/
 theorem denot_fail {P : Program} {s0 : State}
-    (hexit : (denot P s0).blks P.blocks.length = true) :
+    (hexit : ReachesExit P s0) :
     ∀ aB iA okReg, Vc.assertSites P = [(aB, iA, okReg)] →
       aB ∈ activeList P s0 ∧ (denot P s0).regs .bool okReg = false := by
   intro aB iA okReg hsites
+  have hexit : (denot P s0).blks P.blocks.length = true := hexit
   rw [denot_blks_exit, reachExit, hsites] at hexit
   simp only [List.any_cons, List.any_nil, Bool.or_false,
     Bool.and_eq_true, Bool.not_eq_true'] at hexit
@@ -768,7 +779,7 @@ theorem denot_sat_of_path {P : Program} {w : State} {V : List Nat}
     (hfail : ∀ aB iA okReg, Vc.assertSites P = [(aB, iA, okReg)] →
       aB ∈ V ∧ w.regs .bool okReg = false)
     (hmap : ∀ md ∈ Vc.expectedMapDefs P, w.regs .map md.1 = md.2.eval w) :
-    Vc.Sat w { constraints := Vc.expected P, mapDefs := Vc.expectedMapDefs P } :=
+    Vc.Sat w (Vc.expectedVC P) :=
   ⟨expected_sat_of_path hwf hentryV hhead hblk hexit hedge
     hfacts hphi hfail, hmap⟩
 
@@ -782,15 +793,12 @@ only remaining hypotheses. -/
 
 theorem denot_sat_of_reach {P : Program} {s0 : State}
     (hwf : WellFormed P)
-    (hexit : (denot P s0).blks P.blocks.length = true)
-    -- the reachability core (Lemma A's remaining obligations):
-    (hentryV : P.entry ∈ activeList P s0)
-    (hhead : (activeList P s0).head? = some P.entry)
-    (hedge : Chained (EdgeTaken P (denot P s0)) (activeList P s0)) :
-    Vc.Sat (denot P s0)
-      { constraints := Vc.expected P, mapDefs := Vc.expectedMapDefs P } :=
-  denot_sat_of_path hwf hentryV hhead
-    (fun _ hq => denot_hblk hq) hexit hedge
+    (hexit : ReachesExit P s0)
+    -- the reachability core (Lemma A's remaining obligation):
+    (hpath : TakenPath P (denot P s0) (activeList P s0)) :
+    Vc.Sat (denot P s0) (Vc.expectedVC P) :=
+  denot_sat_of_path hwf hpath.entry_mem hpath.head
+    (fun _ hq => denot_hblk hq) hexit hpath.chain
     (denot_factB hwf)
     (fun _ _ _ _ _ hB hmem => denot_phi hwf hB hmem)
     (denot_fail hexit)
@@ -1036,14 +1044,13 @@ theorem denot_hentry {P : Program} {s0 : State}
 
 theorem denot_sat {P : Program} {s0 : State}
     (hwf : WellFormed P)
-    (hexit : (denot P s0).blks P.blocks.length = true) :
-    Vc.Sat (denot P s0)
-      { constraints := Vc.expected P, mapDefs := Vc.expectedMapDefs P } := by
+    (hexit : ReachesExit P s0) :
+    Vc.Sat (denot P s0) (Vc.expectedVC P) := by
   obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hwf.one
   obtain ⟨haBV, -⟩ := denot_fail hexit aB iA okReg heqs
   obtain ⟨hentryV, hhead⟩ := denot_hentry hwf.fwd hwf.uses haBV
   exact denot_sat_of_reach hwf hexit
-    hentryV hhead (denot_hedge hwf)
+    ⟨hentryV, hhead, denot_hedge hwf⟩
 
 /-! ## The semantic admission criterion: weak enough
 
@@ -1060,7 +1067,7 @@ the annotation — can be added without touching the theorems below. -/
 
 /-- `vc` is *weak enough* for the denotational semantics. -/
 def DenotSound (P : Program) (vc : Vc.VC) : Prop :=
-  ∀ s0 : State, (denot P s0).blks P.blocks.length = true →
+  ∀ s0 : State, ReachesExit P s0 →
     Vc.Sat (denot P s0) vc
 
 /-- Soundness from weakness alone: an unsatisfiable, weak-enough VC
