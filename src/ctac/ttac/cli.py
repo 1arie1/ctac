@@ -600,6 +600,70 @@ def ann_vc_check(
         typer.echo("generated (not validated)")
 
 
+@app.command("cex-check")
+def cex_check(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    model: Path = typer.Argument(..., help="Solver model (z3/SMT-LIB or TAC) from `ttac vcgen --solve --model`."),
+    output: Path = typer.Option(
+        ..., "-o", "--output", help="Directory for the generated Lean project."
+    ),
+    name: str = typer.Option(None, "--name", help="Lean module name (default: from FILE)."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing output directory."),
+    build: bool = typer.Option(
+        True, "--build/--no-build", help="Run 'lake build' (the certification verdict)."
+    ),
+    kernel: bool = typer.Option(
+        False, "--kernel", help="Prove cex_ok by kernel `decide` instead of `native_decide`."
+    ),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Certify a solver `sat` verdict by denotational replay: the model becomes a seed, Lean evaluates the semantics on it."""
+    from .lean import write_cex_check_project
+    from .lean.naming import module_name_for
+    from .lean.vccheck import generate_cex_check
+
+    if not model.is_file():
+        typer.echo(f"error: no such file: {model}", err=True)
+        raise typer.Exit(2)
+    program = _parse_or_exit(file)
+    module_name = name or module_name_for(file)
+    try:
+        res = generate_cex_check(
+            program,
+            model.read_text(encoding="utf-8"),
+            module_name=module_name,
+            source=None if file == "-" else Path(file).name,
+            model_source=model.name,
+            kernel=kernel,
+        )
+    except VcCheckError as exc:
+        for msg in exc.errors:
+            typer.echo(f"error: {msg}", err=True)
+        raise typer.Exit(1) from exc
+
+    try:
+        written = write_cex_check_project(res, output, force=force)
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    if res.missing:
+        typer.echo(
+            f"note: {len(res.missing)} register(s) absent from the model, "
+            f"seeded with defaults: {', '.join(res.missing)}",
+            err=True,
+        )
+    for path in written:
+        typer.echo(f"wrote: {path}")
+    _ = plain
+    if build:
+        _run_lake_build(output)
+        typer.echo("cex-check: certified")
+    else:
+        typer.echo(f"next: cd {output} && lake exe cache get && lake build")
+        typer.echo("generated (not certified)")
+
+
 def _run_lake_build(output: Path, *, with_mathlib: bool = True) -> None:
     import shutil
     import subprocess

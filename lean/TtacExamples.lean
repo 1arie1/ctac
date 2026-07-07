@@ -1,4 +1,5 @@
 import TtacExamples.BytemapVc
 import TtacExamples.Diamond
+import TtacExamples.DiamondCex
 import TtacExamples.DiamondVc
 import TtacExamples.DiamondAnnVc

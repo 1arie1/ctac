@@ -107,7 +107,12 @@ lemma, and the proof layers never mention individual operators.
   `Safe_denot`) — the proof never constructs a witness and never
   consults the dominator table. `Adequacy` (operational failure ⇒
   denotational EXIT reached) is the factored-out bridge to
-  `Program.Safe` (`safe_of_safe_denot`), proven in `VcAdequacy`.
+  `Program.Safe` (`safe_of_safe_denot`), proven in `VcAdequacy`. The
+  SAT direction is `not_safe_denot_of_seed`: `denot` is a computable
+  fold, so a solver model transpiled into a seed state refutes
+  `Safe_denot` by evaluation (`native_decide`) — no trace, no proof
+  object; a wrong seed fails to certify, never certifies wrongly
+  (`ttac cex-check`).
 - `Ttac/VcWeaken.lean` — the weakening-table admission checker.
   `checkVC` admits a constraint only byte-identical to `expected P`, so
   every encoder fold must be mirrored exactly; `checkVCW` instead
@@ -164,6 +169,11 @@ lemma, and the proof layers never mention individual operators.
   (`Vc.AnnVC`) accepted by `checkVCWAnn` via `native_decide`, threaded
   through `checkVCAnn_safe` (and a tampered annotation rejected);
   confirms the forward checker accepts a real program's buckets.
+- `TtacExamples/DiamondCex.lean` — counterexample certificate for an
+  unsafe diamond variant: a seed reaching EXIT certified by
+  `native_decide` and lifted to `¬ Safe_denot` via
+  `not_safe_denot_of_seed` (and a non-driving seed shown not to
+  certify); pins the `ttac cex-check` emitter's shapes.
 
 ## Building
 

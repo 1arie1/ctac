@@ -116,6 +116,16 @@ theorem safe_of_safe_denot {P : Program} (had : Adequacy P)
   obtain ⟨s0, hs0⟩ := had hu
   exact absurd (h s0) (by rw [hs0]; simp)
 
+/-- Counterexample certificate: a seed whose denotational run reaches
+the last block refutes `Safe_denot`. Since `denot` is a computable fold,
+the hypothesis is a closed `Bool` equation — a solver model transpiled
+into a seed is certified by evaluation (`native_decide`); no trace or
+proof object is needed. A wrong seed merely fails to evaluate to `true`
+(completeness loss, never a soundness hole). -/
+theorem not_safe_denot_of_seed {P : Program} (s0 : State)
+    (h : (denot P s0).blks P.blocks.length = true) : ¬Safe_denot P :=
+  fun hs => by rw [hs s0] at h; exact Bool.false_ne_true h
+
 /-! ## Lemma B: a path state is a model, by construction (dominance-free)
 
 Given the *denotational-execution facts* — the guard valuation is a real

@@ -142,3 +142,21 @@ def write_vc_check_project(
     write(f"{result.module_name}/Vc.lean", result.vc_text)
     write(f"{result.module_name}/Check.lean", result.check_text)
     return written
+
+
+def write_cex_check_project(
+    result, out_dir: Path, *, force: bool = False
+) -> list[Path]:
+    """Write a `ttac cex-check` project (Deep + Cex seed + Check)."""
+    lib = locate_ttac_lib()
+    _prepare_out_dir(out_dir, force)
+    written: list[Path] = []
+    write = _writer(out_dir, written)
+
+    _copy_library(lib, out_dir, written)
+    write("lakefile.toml", _lakefile(result.module_name, _mathlib_rev(lib)))
+    write(f"{result.module_name}.lean", result.root_text)
+    write(f"{result.module_name}/Deep.lean", result.deep_text)
+    write(f"{result.module_name}/Cex.lean", result.cex_text)
+    write(f"{result.module_name}/Check.lean", result.check_text)
+    return written

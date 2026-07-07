@@ -8,17 +8,25 @@ proving properties of the program itself).
 """
 
 from .encode import LeanPrecheck, LeanResult, generate_lean, validate_for_lean
-from .project import locate_ttac_lib, write_lean_project, write_vc_check_project
-from .vccheck import VcCheckResult, generate_vc_check
+from .project import (
+    locate_ttac_lib,
+    write_cex_check_project,
+    write_lean_project,
+    write_vc_check_project,
+)
+from .vccheck import CexCheckResult, VcCheckResult, generate_cex_check, generate_vc_check
 
 __all__ = [
+    "CexCheckResult",
     "LeanPrecheck",
     "LeanResult",
     "VcCheckResult",
+    "generate_cex_check",
     "generate_lean",
     "generate_vc_check",
     "locate_ttac_lib",
     "validate_for_lean",
+    "write_cex_check_project",
     "write_lean_project",
     "write_vc_check_project",
 ]
