@@ -127,6 +127,21 @@ lemma, and the proof layers never mention individual operators.
   table, or a witness construction. `Adequacy` (operational failure ⇒
   denotational EXIT reached) is the deliberately factored-out bridge
   to `Program.Safe` (`safe_of_safe_denot`).
+- `Ttac/VcWeaken.lean` — the weakening-table admission checker.
+  `checkVC` admits a constraint only byte-identical to `expected P`, so
+  every encoder fold must be mirrored exactly; `checkVCW` instead
+  accepts any constraint that **weakens from** some anchor. Two tables,
+  two growth axes: the *anchor* table is the existing per-instruction
+  machinery (`Cmd.factB` → `cmdConstraints`, ...; adding a command = a
+  `factB` row + its `denot` case), and the *closure* table
+  (`Vc.weakensFrom`: reflexivity, trivial-true, or-introduction,
+  hypothesis-introduction; adding a vcgen simplification = a row here)
+  carries one obligation per row — its case in `weakensFrom_sound`:
+  if a formula is accepted as a weakening, it is a weakening. Complex
+  simplifications will carry witnesses (rewrite chains replayed row by
+  row) in the VC syntax. Soundness composes through `DenotSound`:
+  `denotSound_of_checkVCW` and `checkVCW_safe_denot`. Strictly
+  generalizes `checkVC`'s admission (membership = the reflexivity row).
 - `TtacExamples/Diamond.lean` — golden deep + shallow embeddings of the
   scalar diamond, shallow safety theorem proved. The Python test suite
   pins the emitter against these shapes; keep them in sync.

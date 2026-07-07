@@ -62,4 +62,32 @@ example :
       = false := by
   native_decide
 
+/-! ## The weakening-table checker on the same golden -/
+
+/-- `checkVCW` accepts the untouched golden (the reflexivity row). -/
+theorem vc_ok_weak : checkVCW prog { constraints := vc } = true := by
+  native_decide
+
+/-- A genuinely weakened VC: an or-introduced disjunct on the `c`
+definition and an introduced hypothesis on the `y` phi equation.
+`checkVC`'s byte-equality admission rejects it; the weakening table
+accepts it, and acceptance carries the same safety conclusion. -/
+def vcWeak : List BExp := [
+  -- (assert (or (= c (<= 0 x)) BLK_neg)) — or-introduction
+  .or (.eqB (.var .bool 0) (.le (.litI 0) (.var .int 0))) (.blk 2),
+  -- (assert (=> BLK_join (= y (ite BLK_pos y1 y2)))) — hypothesis-introduction
+  .imp (.blk 3) (.eqI (.var .int 3) (.ite (.blk 1) (.var .int 1) (.var .int 2))),
+  -- (assert BLK_EXIT) — unchanged (reflexivity)
+  .blk 4]
+
+example : checkVC prog { constraints := vcWeak } = false := by
+  native_decide
+
+theorem vcWeak_ok : checkVCW prog { constraints := vcWeak } = true := by
+  native_decide
+
+theorem vcWeak_implies_safe_denot :
+    Vc.Unsat { constraints := vcWeak } → Safe_denot prog :=
+  checkVCW_safe_denot vcWeak_ok
+
 end TtacExamples.Diamond
