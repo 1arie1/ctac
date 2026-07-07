@@ -22,11 +22,11 @@ open Ttac
 def annvc : Vc.AnnVC where
   perBlock := prog.blocks.zipIdx.map fun (B, b) =>
     { cfg := Vc.cfgConstraintsFor prog b
-      cmds := B.cmds.map (Vc.cmdConstraints prog b) }
+      cmds := B.cmds.map (Vc.cmdConstraints prog b)
+      maps := B.cmds.filterMap (Vc.cmdMapDef? prog) }
   objective := match Vc.assertSites prog with
     | [(aB, _, okReg)] => Vc.objective prog aB okReg
     | _ => []
-  mapDefs := Vc.expectedMapDefs prog
 
 theorem annvc_ok : checkVCWAnn prog annvc = true := by native_decide
 
@@ -49,6 +49,7 @@ def annvcWeak : Vc.AnnVC :=
   { annvc with
       perBlock := annvc.perBlock.take 3 ++
         [{ cfg := Vc.cfgConstraintsFor prog 3
+           maps := []
            cmds := [[
              -- (or (=> BLK_join (= ok (<= 0 y))) BLK_pos) — or-introduction
              .or (.imp (.blk 3)

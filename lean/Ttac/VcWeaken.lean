@@ -145,8 +145,32 @@ theorem mem_expected_of_objective {P : Program} {aB iA okReg : Nat}
   rw [heqs, List.mem_append]
   exact Or.inr hc
 
+namespace Vc
+
+/-- The map-definition rewrite table. Map definitions are satisfied as
+*equalities*, so rows must be eval-equalities, not weakenings (dropping
+a definition is already free by subset). One Bool row per shape; each
+row's obligation is its case in `mapDefFrom_sound`. v1 is reflexivity;
+future rows admit vcgen's map-side simplifications (e.g. shadowed-store
+elimination) — genuine `Function.update` equalities in the `Int → Int`
+semantics. -/
+def mapDefFrom (a md : Nat × MExp) : Bool :=
+  decide (md = a)
+
+/-- The table's contract: an accepted definition is eval-equal to its
+anchor. One case per row. -/
+theorem mapDefFrom_sound {a md : Nat × MExp} {w : State}
+    (h : mapDefFrom a md = true)
+    (ha : w.regs .map a.1 = a.2.eval w) :
+    w.regs .map md.1 = md.2.eval w := by
+  obtain rfl := of_decide_eq_true h
+  exact ha
+
+end Vc
+
 /-- The site-tagged weakening checker: each bucket constraint must
-weaken from one of *its own site's* anchors. No global anchor pool. -/
+weaken from, and each bucket map definition rewrite from, one of *its
+own site's* anchors. No global anchor pool of any kind. -/
 def checkVCWAnn (P : Program) (a : Vc.AnnVC) : Bool :=
   wellFormed P
     && decide (a.perBlock.length = P.blocks.length)
@@ -157,20 +181,21 @@ def checkVCWAnn (P : Program) (a : Vc.AnnVC) : Bool :=
                 | some B => bk.cmds.flatten.all (fun c =>
                     ((B.cmds.map (Vc.cmdConstraints P b)).flatten).any
                       (fun x => Vc.weakensFrom x c))
+                    && bk.maps.all (fun md =>
+                        (B.cmds.filterMap (Vc.cmdMapDef? P)).any
+                          (fun x => Vc.mapDefFrom x md))
                 | none => false))
     && (match Vc.assertSites P with
         | [(aB, _, okReg)] => a.objective.all (fun c =>
             (Vc.objective P aB okReg).any (fun x => Vc.weakensFrom x c))
         | _ => false)
-    && a.mapDefs.all (fun md => decide (md ∈ Vc.expectedMapDefs P))
 
 theorem denotSound_of_checkVCWAnn {P : Program} {a : Vc.AnnVC}
     (hchk : checkVCWAnn P a = true) :
     DenotSound P { constraints := a.flatten, mapDefs := a.mapDefs } := by
   unfold checkVCWAnn at hchk
-  rw [Bool.and_eq_true, Bool.and_eq_true, Bool.and_eq_true,
-    Bool.and_eq_true] at hchk
-  obtain ⟨⟨⟨⟨hwf, hlen⟩, hall⟩, hobj⟩, hmap⟩ := hchk
+  rw [Bool.and_eq_true, Bool.and_eq_true, Bool.and_eq_true] at hchk
+  obtain ⟨⟨⟨hwf, hlen⟩, hall⟩, hobj⟩ := hchk
   rw [decide_eq_true_eq] at hlen
   have hwf' := hwf
   rw [wellFormed] at hwf'
@@ -179,12 +204,42 @@ theorem denotSound_of_checkVCWAnn {P : Program} {a : Vc.AnnVC}
   intro s0 hexit
   have hsat := denot_sat hone hssa hfwd hphi hamo hentry hgf huse hexit
   obtain ⟨aB, iA, okReg, BA, heqs, hBA, hcA, -⟩ := singleAssert_shape hone
-  refine ⟨fun c hc => ?_, fun md hmd => hsat.2 md
-    (of_decide_eq_true (List.all_eq_true.mp hmap md hmd))⟩
-  rw [Vc.AnnVC.flatten, List.mem_append] at hc
-  rcases hc with hc | hc
-  · rw [List.mem_flatten] at hc
-    obtain ⟨L, hL, hcL⟩ := hc
+  refine ⟨fun c hc => ?_, fun md hmd => ?_⟩
+  · rw [Vc.AnnVC.flatten, List.mem_append] at hc
+    rcases hc with hc | hc
+    · rw [List.mem_flatten] at hc
+      obtain ⟨L, hL, hcL⟩ := hc
+      rw [List.mem_map] at hL
+      obtain ⟨bk, hbk, rfl⟩ := hL
+      obtain ⟨b, hb⟩ := List.mem_iff_getElem?.mp hbk
+      have hbzip : (bk, b) ∈ a.perBlock.zipIdx :=
+        List.mem_zipIdx_iff_getElem?.mpr hb
+      have hblt : b < P.blocks.length := by
+        have := (List.getElem?_eq_some_iff.mp hb).1
+        omega
+      obtain ⟨hcfgb, hcmdb⟩ := Bool.and_eq_true .. |>.mp
+        (List.all_eq_true.mp hall (bk, b) hbzip)
+      rw [List.mem_append] at hcL
+      rcases hcL with hcfg | hcmds
+      · obtain ⟨x, hxmem, hxw⟩ := List.any_eq_true.mp
+          (List.all_eq_true.mp hcfgb c hcfg)
+        exact Vc.weakensFrom_sound hxw
+          (hsat.1 x (mem_expected_of_cfgFor heqs hblt hxmem))
+      · have hBb : P.blocks[b]? = some P.blocks[b] :=
+          List.getElem?_eq_getElem hblt
+        simp only [hBb, Bool.and_eq_true] at hcmdb
+        obtain ⟨x, hxmem, hxw⟩ := List.any_eq_true.mp
+          (List.all_eq_true.mp hcmdb.1 c hcmds)
+        exact Vc.weakensFrom_sound hxw
+          (hsat.1 x (mem_expected_of_cmd heqs hBb hxmem))
+    · rw [heqs] at hobj
+      obtain ⟨x, hxmem, hxw⟩ := List.any_eq_true.mp
+        (List.all_eq_true.mp hobj c hc)
+      exact Vc.weakensFrom_sound hxw
+        (hsat.1 x (mem_expected_of_objective heqs hxmem))
+  · -- map definitions: per-site anchor + rewrite table
+    rw [Vc.AnnVC.mapDefs, List.mem_flatten] at hmd
+    obtain ⟨L, hL, hmdL⟩ := hmd
     rw [List.mem_map] at hL
     obtain ⟨bk, hbk, rfl⟩ := hL
     obtain ⟨b, hb⟩ := List.mem_iff_getElem?.mp hbk
@@ -193,26 +248,16 @@ theorem denotSound_of_checkVCWAnn {P : Program} {a : Vc.AnnVC}
     have hblt : b < P.blocks.length := by
       have := (List.getElem?_eq_some_iff.mp hb).1
       omega
-    obtain ⟨hcfgb, hcmdb⟩ := Bool.and_eq_true .. |>.mp
+    obtain ⟨-, hcmdb⟩ := Bool.and_eq_true .. |>.mp
       (List.all_eq_true.mp hall (bk, b) hbzip)
-    rw [List.mem_append] at hcL
-    rcases hcL with hcfg | hcmds
-    · obtain ⟨x, hxmem, hxw⟩ := List.any_eq_true.mp
-        (List.all_eq_true.mp hcfgb c hcfg)
-      exact Vc.weakensFrom_sound hxw
-        (hsat.1 x (mem_expected_of_cfgFor heqs hblt hxmem))
-    · have hBb : P.blocks[b]? = some P.blocks[b] :=
-        List.getElem?_eq_getElem hblt
-      simp only [hBb] at hcmdb
-      obtain ⟨x, hxmem, hxw⟩ := List.any_eq_true.mp
-        (List.all_eq_true.mp hcmdb c hcmds)
-      exact Vc.weakensFrom_sound hxw
-        (hsat.1 x (mem_expected_of_cmd heqs hBb hxmem))
-  · rw [heqs] at hobj
+    have hBb : P.blocks[b]? = some P.blocks[b] :=
+      List.getElem?_eq_getElem hblt
+    simp only [hBb, Bool.and_eq_true] at hcmdb
     obtain ⟨x, hxmem, hxw⟩ := List.any_eq_true.mp
-      (List.all_eq_true.mp hobj c hc)
-    exact Vc.weakensFrom_sound hxw
-      (hsat.1 x (mem_expected_of_objective heqs hxmem))
+      (List.all_eq_true.mp hcmdb.2 md hmdL)
+    obtain ⟨c, hcmem, hcd⟩ := List.mem_filterMap.mp hxmem
+    exact Vc.mapDefFrom_sound hxw
+      (denot_mapDef hssa huse hphi hgf hBb hcmem hcd)
 
 /-- The site-tagged weakening `checkVC_safe`, denotational side. -/
 theorem checkVCWAnn_safe_denot {P : Program} {a : Vc.AnnVC}

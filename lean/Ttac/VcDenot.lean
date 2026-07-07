@@ -707,8 +707,25 @@ theorem denot_factB {P : Program} {s0 : State} (hssa : ssaOK P = true)
   | phi t y arms => cases hf
   | assert r => cases hf
 
-/-- The `hmap` hypothesis: every map definition holds at the final
-state (assign via `lower`-invariance, phi via `denot_phi`). -/
+/-- One site's map definition holds at the final state (assign via
+`lower`-invariance, phi via `denot_phi`) — the per-site form the
+site-tagged checker consumes directly. -/
+theorem denot_mapDef {P : Program} {s0 : State} (hssa : ssaOK P = true)
+    (huse : usesOK P = true) (hphiOK : phiOK P = true)
+    (hgf : guardFreeOK P = true)
+    {b : Nat} {B : Block} {c : Cmd} {md : Nat × MExp}
+    (hB : P.block? b = some B) (hc : c ∈ B.cmds)
+    (hcd : Vc.cmdMapDef? P c = some md) :
+    (denot P s0).regs .map md.1 = md.2.eval (denot P s0) := by
+  obtain ⟨i, hci⟩ := List.mem_iff_getElem?.mp hc
+  obtain ⟨x, rhs⟩ := md
+  rcases cmdMapDef?_eq_some hcd with ⟨e, rfl, rfl⟩ | ⟨arms, rfl, rfl⟩
+  · rw [Vc.eval_lower]
+    exact denot_assign hssa huse hphiOK hgf hB hci
+  · exact denot_phi hssa huse hphiOK hB (List.mem_of_getElem? hci)
+
+/-- The `hmap` hypothesis: every expected map definition holds at the
+final state. -/
 theorem denot_map {P : Program} {s0 : State} (hssa : ssaOK P = true)
     (huse : usesOK P = true) (hphiOK : phiOK P = true)
     (hgf : guardFreeOK P = true) :
@@ -716,11 +733,7 @@ theorem denot_map {P : Program} {s0 : State} (hssa : ssaOK P = true)
       (denot P s0).regs .map md.1 = md.2.eval (denot P s0) := by
   intro md hmd
   obtain ⟨b, B, i, c, hB, hci, hcd⟩ := mem_expectedMapDefs hmd
-  obtain ⟨x, rhs⟩ := md
-  rcases cmdMapDef?_eq_some hcd with ⟨e, rfl, rfl⟩ | ⟨arms, rfl, rfl⟩
-  · rw [Vc.eval_lower]
-    exact denot_assign hssa huse hphiOK hgf hB hci
-  · exact denot_phi hssa huse hphiOK hB (List.mem_of_getElem? hci)
+  exact denot_mapDef hssa huse hphiOK hgf hB (List.mem_of_getElem? hci) hcd
 
 /-- The `hfail` hypothesis: a reached EXIT names the (single) assert
 site — its block active, its condition false. -/

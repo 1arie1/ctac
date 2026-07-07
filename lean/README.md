@@ -125,11 +125,16 @@ lemma, and the proof layers never mention individual operators.
   generalizes `checkVC`'s admission (membership = the reflexivity row).
   The site-tagged variant `checkVCWAnn` (over `Vc.AnnVC` buckets)
   consults only the tagged site's own anchors — `cfgConstraintsFor P b`
-  / the block's `cmdConstraints` / the objective pair — so the checker
-  never computes the global `Vc.expected` at all; the expected set
-  survives only proof-side (per-site anchors embed into it,
-  `denot_sat` supplies their truth). `checkVCWAnn_safe_denot`, and
-  operationally `checkVCWAnn_safe` (`VcAdequacy`).
+  / the block's `cmdConstraints` / the block's `cmdMapDef?` outputs /
+  the objective pair — so the checker never computes the global
+  `Vc.expected` or `Vc.expectedMapDefs` at all; the expected sets
+  survive only proof-side (per-site anchors embed into them,
+  `denot_sat`/`denot_mapDef` supply their truth). Map definitions are
+  equalities, so their table (`Vc.mapDefFrom`) is a *sound-rewrite*
+  table — rows must be eval-equalities (v1: reflexivity; future rows
+  admit vcgen's map-side simplifications such as shadowed-store
+  elimination). `checkVCWAnn_safe_denot`, and operationally
+  `checkVCWAnn_safe` (`VcAdequacy`).
 - `Ttac/VcAdequacy.lean` — the adequacy proof: an operational failure
   reaches EXIT denotationally (`adequacy : wellFormed P → Adequacy P`).
   The seed is the final operational state σ; *clean* registers (every

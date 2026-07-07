@@ -279,19 +279,21 @@ def expected_vc(
     return out
 
 
-def expected_map_defs(
+def expected_map_buckets(
     program: ast.Program, num: Numbering, types: dict[str, Ty]
-) -> list[tuple[int, Term]]:
-    """Mirror of ``Ttac.Vc.expectedMapDefs``: one entry per map
-    assignment (store/alias, lowered) and per map phi (the same folded
-    ITE chain the boolean phi constraint uses)."""
+) -> list[list[tuple[int, Term]]]:
+    """Per-block mirror of ``B.cmds.filterMap (Vc.cmdMapDef? P)``: one
+    entry per map assignment (store/alias, lowered) and per map phi
+    (the same folded ITE chain the boolean phi constraint uses), filed
+    under the defining block."""
     entry = num.entry_index
 
     def guard(b: int) -> Term:
         return TRUE if b == entry else ("blk", b)
 
-    out: list[tuple[int, Term]] = []
+    out: list[list[tuple[int, Term]]] = []
     for block in program.blocks:
+        defs: list[tuple[int, Term]] = []
         for cmd in block.commands:
             if (
                 isinstance(cmd, (ast.Assign, ast.Phi))
@@ -299,7 +301,7 @@ def expected_map_defs(
             ):
                 target = num.map_regs[cmd.target.name]
                 if isinstance(cmd, ast.Assign):
-                    out.append((target, lower_mexpr(cmd.rhs, num, types)))
+                    defs.append((target, lower_mexpr(cmd.rhs, num, types)))
                 else:
                     chain: Term = ("varM", num.map_regs[cmd.arms[-1].value])
                     for arm in reversed(cmd.arms[:-1]):
@@ -308,8 +310,19 @@ def expected_map_defs(
                             ("varM", num.map_regs[arm.value]),
                             chain,
                         )
-                    out.append((target, chain))
+                    defs.append((target, chain))
+        out.append(defs)
     return out
+
+
+def expected_map_defs(
+    program: ast.Program, num: Numbering, types: dict[str, Ty]
+) -> list[tuple[int, Term]]:
+    """Mirror of ``Ttac.Vc.expectedMapDefs``: the per-block map
+    definitions, flattened."""
+    return [
+        md for defs in expected_map_buckets(program, num, types) for md in defs
+    ]
 
 
 def expected_buckets(

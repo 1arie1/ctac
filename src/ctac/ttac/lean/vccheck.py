@@ -21,6 +21,7 @@ from .vc import VcAssert, VcMapDef, build_vc_symbols, render_top, transpile_vc
 from .vc_expected import (
     VcMismatch,
     expected_buckets,
+    expected_map_buckets,
     expected_map_defs,
     expected_vc,
     precheck_diff,
@@ -294,11 +295,35 @@ def _bucket_terms(asserts: list[VcAssert]) -> str:
     return "[" + ", ".join(render_top(a.term) for a in asserts) + "]"
 
 
+def _bucket_map_defs(
+    map_defs: list[VcMapDef],
+    maps_pb: list[list[tuple[int, object]]],
+) -> tuple[list[list[VcMapDef]], list[VcMapDef]]:
+    n = len(maps_pb)
+    map_b: list[list[VcMapDef]] = [[] for _ in range(n)]
+    unmatched: list[VcMapDef] = []
+    sets = [set(x) for x in maps_pb]
+    for md in map_defs:
+        for b in range(n):
+            if (md.target, md.term) in sets[b]:
+                map_b[b].append(md)
+                break
+        else:
+            unmatched.append(md)
+    return map_b, unmatched
+
+
+def _bucket_maps(map_defs: list[VcMapDef]) -> str:
+    return "[" + ", ".join(
+        f"({md.target}, {render_top(md.term)})" for md in map_defs
+    ) + "]"
+
+
 def _ann_vc_module(
     cfg_b: list[list[VcAssert]],
     cmd_b: list[list[VcAssert]],
+    map_b: list[list[VcMapDef]],
     obj: list[VcAssert],
-    map_defs: list[VcMapDef],
     module_name: str,
     numbering: Numbering,
     smt_source: str | None,
@@ -314,12 +339,11 @@ def _ann_vc_module(
             f"    {{ cfg := {_bucket_terms(cfg_b[b])},"
         )
         block_lines.append(
-            f"      cmds := [{_bucket_terms(cmd_b[b])}] }}{sep}"
+            f"      cmds := [{_bucket_terms(cmd_b[b])}],"
         )
-    if map_defs:
-        map_lines = ["  mapDefs := [", *_render_map_def_entries(map_defs)]
-    else:
-        map_lines = ["  mapDefs := []"]
+        block_lines.append(
+            f"      maps := {_bucket_maps(map_b[b])} }}{sep}"
+        )
     lines = [
         emit._header(smt_source, tool="ttac ann-vc-check"),
         "import Ttac",
@@ -333,7 +357,6 @@ def _ann_vc_module(
         *block_lines,
         "  ]",
         f"  objective := {_bucket_terms(obj)}",
-        *map_lines,
         "",
         f"end {module_name}.Vc",
         "",
@@ -399,6 +422,13 @@ def generate_ann_vc_check(
             f"assert not in any block generator (line {a.line}): {a.source}"
             for a in unmatched
         ))
+    maps_pb = expected_map_buckets(program, numbering, pre.types)
+    map_b, unmatched_maps = _bucket_map_defs(map_defs, maps_pb)
+    if unmatched_maps:
+        raise VcCheckError(tuple(
+            f"map def not in any block generator (line {md.line}): {md.source}"
+            for md in unmatched_maps
+        ))
 
     return AnnVcCheckResult(
         module_name=module_name,
@@ -407,7 +437,7 @@ def generate_ann_vc_check(
             tool="ttac ann-vc-check",
         ),
         vc_text=_ann_vc_module(
-            cfg_b, cmd_b, obj, map_defs, module_name, numbering, smt_source
+            cfg_b, cmd_b, map_b, obj, module_name, numbering, smt_source
         ),
         check_text=_ann_check_module(module_name, kernel),
         root_text="\n".join([

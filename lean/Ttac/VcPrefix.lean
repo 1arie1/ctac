@@ -438,13 +438,12 @@ theorem forwardStructural {P : Program} (hone : singleAssertOK P = true)
 
 /-! ## The annotated VC
 
-An untrusted, pre-bucketed VC: per block, its CFG constraints and its
-per-command constraints; plus the objective and the map definitions. Blocks
-are listed in program (topological) order, index `= ` block index. The checker
-validates each bucket *locally* against the encoder's own generators
-(`cfgConstraintsFor` / `cmdConstraints` / `objective` / `expectedMapDefs`) — a
-decidable per-site equality — so the soundness proof consumes the structure
-rather than searching for the site that produced each constraint. -/
+An untrusted, pre-bucketed VC: per block, its CFG constraints, its
+per-command constraints, and its map definitions; plus the objective.
+Blocks are listed in program (topological) order, index `= ` block
+index. The checker validates each bucket *locally* against the tagged
+site's own generators, so the soundness proof consumes the structure
+rather than searching for the site that produced each entry. -/
 
 namespace Vc
 
@@ -465,25 +464,29 @@ theorem cfgConstraints_eq (P : Program) :
     cfgConstraints P =
       ((List.range P.blocks.length).map (cfgConstraintsFor P)).flatten := rfl
 
-/-- One block's annotated buckets: its CFG constraints and, per command, that
-command's constraints. -/
+/-- One block's annotated buckets: its CFG constraints, per command that
+command's constraints, and the block's map definitions. -/
 structure BlockBucket where
   cfg : List BExp
   cmds : List (List BExp)
+  maps : List (Nat × MExp)
 deriving Repr, DecidableEq
 
-/-- The whole annotated VC: per-block buckets (in block-index order), the
-objective, and the map definitions. -/
+/-- The whole annotated VC: per-block buckets (in block-index order) and
+the objective. Map definitions live in their blocks' buckets. -/
 structure AnnVC where
   perBlock : List BlockBucket
   objective : List BExp
-  mapDefs : List (Nat × MExp)
 deriving Repr, DecidableEq
 
 /-- The plain constraint list an annotated VC denotes (buckets flattened, then
 the objective). The map definitions stay separate, as in `Vc.VC`. -/
 def AnnVC.flatten (a : AnnVC) : List BExp :=
   (a.perBlock.map fun bk => bk.cfg ++ bk.cmds.flatten).flatten ++ a.objective
+
+/-- The flat map-definition list an annotated VC denotes. -/
+def AnnVC.mapDefs (a : AnnVC) : List (Nat × MExp) :=
+  (a.perBlock.map (·.maps)).flatten
 
 /-- Satisfaction: every flattened constraint is true and every map definition
 holds as a `Prop`-level function equality. -/

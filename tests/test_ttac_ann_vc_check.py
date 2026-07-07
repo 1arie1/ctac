@@ -64,7 +64,7 @@ def test_diamond_ann_check_module_is_forward():
 def test_bytemap_ann_has_map_defs():
     res = _ann(fx.BYTEMAP_PHI, module_name="Bytemap")
     assert res.unmatched == ()
-    assert "mapDefs := [" in res.vc_text
+    assert "maps := [(" in res.vc_text
 
 
 def test_ann_rejects_alien_assert():
