@@ -1050,6 +1050,48 @@ theorem denot_sat {P : Program} {s0 : State}
   exact denot_sat_of_reach hone hssa hfwd hamo hphiOK huse hgf hexit
     hentryV hhead (denot_hedge hfwd huse hentry)
 
+/-! ## The semantic admission criterion: weak enough
+
+With one concrete model per failing run — `denot P s0` — "the VC is
+weak enough" has a direct semantic definition, with no expected set:
+every failing denotational run models it. Any over-approximation of
+the runs qualifies, and anything weaker than an admissible VC is
+trivially admissible. Soundness needs nothing else
+(`safe_denot_of_denotSound`). The expected set is thereby demoted to
+its proper role: membership is ONE decidable certificate of
+`DenotSound` (`denotSound_of_expected`), not part of the soundness
+statement. Looser certificates — a per-site weakening table keyed by
+the annotation — can be added without touching the theorems below. -/
+
+/-- `vc` is *weak enough* for the denotational semantics. -/
+def DenotSound (P : Program) (vc : Vc.VC) : Prop :=
+  ∀ s0 : State, (denot P s0).blks P.blocks.length = true →
+    Vc.Sat (denot P s0) vc
+
+/-- Soundness from weakness alone: an unsatisfiable, weak-enough VC
+makes the last block unreachable. -/
+theorem safe_denot_of_denotSound {P : Program} {vc : Vc.VC}
+    (h : DenotSound P vc) (hunsat : Vc.Unsat vc) : Safe_denot P := by
+  intro s0
+  cases hb : (denot P s0).blks P.blocks.length with
+  | false => rfl
+  | true => exact absurd ⟨denot P s0, h s0 hb⟩ hunsat
+
+/-- The expected-membership certificate: a well-formed program's
+expected set is weak enough, hence so is any subset of it. -/
+theorem denotSound_of_expected {P : Program} {vc : Vc.VC}
+    (hone : singleAssertOK P = true) (hssa : ssaOK P = true)
+    (hfwd : forwardOK P = true) (hphiOK : phiOK P = true)
+    (hamo : amoSideOK P = true) (hentry : entryOK P = true)
+    (hgf : guardFreeOK P = true) (huse : usesOK P = true)
+    (hsub : ∀ c ∈ vc.constraints, c ∈ Vc.expected P)
+    (hmsub : ∀ md ∈ vc.mapDefs, md ∈ Vc.expectedMapDefs P) :
+    DenotSound P vc := by
+  intro s0 hexit
+  have hsat := denot_sat hone hssa hfwd hphiOK hamo hentry hgf huse hexit
+  exact ⟨fun c hc => hsat.1 c (hsub c hc),
+    fun md hmd => hsat.2 md (hmsub md hmd)⟩
+
 /-- The denotational `checkVC_safe`: an accepted, unsatisfiable VC makes
 the last block unreachable. No `DefExt`, no dominator table, no witness
 construction — `domClosedOK` is checked by `wellFormed` but never used. -/
@@ -1060,16 +1102,10 @@ theorem checkVC_safe_denot {P : Program} {vc : Vc.VC}
   rw [wellFormed] at hwf
   simp only [Bool.and_eq_true] at hwf
   obtain ⟨⟨⟨⟨⟨⟨⟨⟨hone, hssa⟩, hfwd⟩, hphi⟩, hamo⟩, hentry⟩, hgf⟩, -⟩, huse⟩ := hwf
-  intro s0
-  cases hb : (denot P s0).blks P.blocks.length with
-  | false => rfl
-  | true =>
-      exfalso
-      have hsat := denot_sat hone hssa hfwd hphi hamo hentry hgf huse hb
-      refine hunsat ⟨denot P s0, fun c hc => ?_, fun md hmd => ?_⟩
-      · exact hsat.1 c (of_decide_eq_true
-          (List.all_eq_true.mp hmem c hc))
-      · exact hsat.2 md (of_decide_eq_true
-          (List.all_eq_true.mp hmdefs md hmd))
+  exact safe_denot_of_denotSound
+    (denotSound_of_expected hone hssa hfwd hphi hamo hentry hgf huse
+      (fun c hc => of_decide_eq_true (List.all_eq_true.mp hmem c hc))
+      (fun md hmd => of_decide_eq_true (List.all_eq_true.mp hmdefs md hmd)))
+    hunsat
 
 end Ttac

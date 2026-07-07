@@ -115,8 +115,14 @@ lemma, and the proof layers never mention individual operators.
   fold's equations (`FoldFact` freeze + `prefixState` stability), and
   the reachability core (`denot_adj_edge`) shows the active set is a
   single taken-edge chain — its engine is `edgeTaken_unique`, needing
-  neither `amoSideOK` nor dominance. Main results, sorry-free:
-  `denot_sat` and `checkVC_safe_denot` (`checkVC` accepts ∧ VC unsat ⇒
+  neither `amoSideOK` nor dominance. The soundness statement is
+  factored through the semantic admission criterion `DenotSound`
+  ("weak enough": every failing denotational run models the VC) —
+  `safe_denot_of_denotSound` needs nothing else, and the expected set
+  is demoted to one decidable certificate (`denotSound_of_expected`);
+  looser certificates (a per-site weakening table) can be added
+  without touching soundness. Main results, sorry-free: `denot_sat`
+  and `checkVC_safe_denot` (`checkVC` accepts ∧ VC unsat ⇒
   `Safe_denot`) — the proof never mentions `DefExt`, the dominator
   table, or a witness construction. `Adequacy` (operational failure ⇒
   denotational EXIT reached) is the deliberately factored-out bridge
