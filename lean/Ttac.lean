@@ -15,6 +15,7 @@ import Ttac.VcDenot
 import Ttac.VcWeaken
 import Ttac.VcAdequacy
 import Ttac.VcCoadequacy
+import Ttac.Product
 
 /-!
 # Ttac: a verified checker development for `ttac` VCs
@@ -40,6 +41,9 @@ The headline theorems:
   execution, `P.Unsafe`.
 * `safe_iff_safe_denot` (`VcCoadequacy`) — the complete picture: the
   operational and denotational safety notions coincide.
+* `product_transfer` (`Product`) — rw-eq's certificate, verified: a
+  safe idealized product program plus a safe rewrite implies the
+  original is safe (`product_transfer_safe` is the operational form).
 
 Layer map: `Ast`/`State`/`Eval`/`Vars` — the language and its
 evaluation; `Semantics`/`Safety` — the operational small-step semantics
@@ -52,5 +56,6 @@ dominance-free path lemmas; `VcDenot` — the denotational semantics,
 `ReachesExit`, and Lemma B (`denot_sat`); `VcWeaken` — the
 weakening/rewrite-table checkers (`checkVCW`, `checkVCWAnn`);
 `VcAdequacy` — operational ⇒ denotational (the only dominance
-consumer); `VcCoadequacy` — the converse, and the equivalence.
+consumer); `VcCoadequacy` — the converse, and the equivalence;
+`Product` — the idealized rw-eq product and its safety transfer.
 -/

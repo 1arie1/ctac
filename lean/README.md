@@ -172,6 +172,19 @@ lemma, and the proof layers never mention individual operators.
   Coverage is genuinely necessary — at an uncovered taken predecessor
   the machine is stuck at the phi while the fold falls through to the
   unguarded last arm, so `denot` strictly over-approximates there.
+- `Ttac/Product.lean` — the idealized rw-eq product (lockstep
+  fragment) and its verified safety transfer:
+  `product_transfer : Safe_denot (product A B) → Safe_denot B →
+  Safe_denot A` (operational form `product_transfer_safe`). Two copies
+  in disjoint register namespaces (`pv j i = 3*i + j`), CHKs only at
+  the observables (branch agreement, B-assume validity, assert
+  pairing), paired havocs equated (`x₁ := x₀` — the simulation's input
+  correspondence). Proof: the coadequacy self-write seeding, doubled —
+  the A-copy fold is the identity, B-copy junk is confined to
+  registers defined in A-dead blocks and isolated by dominance (the
+  table is shared with A under lockstep). Dominance and phi coverage
+  are needed on `B` only — the asymmetry mirrors adequacy vs.
+  coadequacy.
 - `TtacExamples/Diamond.lean` — golden deep + shallow embeddings of the
   scalar diamond, shallow safety theorem proved. The Python test suite
   pins the emitter against these shapes; keep them in sync.
