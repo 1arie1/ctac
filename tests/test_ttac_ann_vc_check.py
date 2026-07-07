@@ -1,9 +1,9 @@
-"""Annotated vc-check: the forward `Ttac.Vc.AnnVC` / `checkVCAnn` path.
+"""Annotated vc-check: the denotational `Ttac.Vc.AnnVC` / `checkVCWAnn` path.
 
 The annotator transpiles the same smt2 as the flat path, then files each
 assert into the block bucket (CFG / commands) or objective whose encoder
 generator contains it. These tests pin the bucketing and the emitted
-module shapes; the Lean `checkVCAnn` + `DiamondAnnVc` golden verify the
+module shapes; the Lean `checkVCWAnn` + `DiamondAnnVc` golden verify the
 checker itself.
 """
 
@@ -55,9 +55,9 @@ def test_diamond_ann_module_shape():
 
 def test_diamond_ann_check_module_is_forward():
     res = _ann()
-    assert "Ttac.Vc.checkVCAnn Deep.prog Vc.vc = true" in res.check_text
+    assert "Ttac.checkVCWAnn Deep.prog Vc.vc = true" in res.check_text
     assert "Ttac.Vc.AnnVC.Unsat Vc.vc → Deep.prog.Safe" in res.check_text
-    assert "Ttac.checkVCAnn_safe vc_ok" in res.check_text
+    assert "Ttac.checkVCWAnn_safe vc_ok" in res.check_text
     assert "native_decide" in res.check_text
 
 
@@ -97,7 +97,7 @@ def test_ann_vc_check_cli_generates(tmp_path):
     assert vc_files, "no Vc.lean written"
     assert "Ttac.Vc.AnnVC" in vc_files[0].read_text()
     check_files = list(out.glob("*/Check.lean"))
-    assert "checkVCAnn_safe" in check_files[0].read_text()
+    assert "checkVCWAnn_safe" in check_files[0].read_text()
 
 
 @pytest.mark.skipif(shutil.which("lake") is None, reason="lake not on PATH")

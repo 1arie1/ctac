@@ -233,12 +233,16 @@ def _render_map_def_entries(map_defs: list[VcMapDef]) -> list[str]:
 
 
 # ------------------------------------------------------------------------
-# Annotated vc-check: the forward pipeline (Ttac.Vc.AnnVC / checkVCAnn).
+# Annotated vc-check: the denotational pipeline (Ttac.Vc.AnnVC / checkVCWAnn).
 #
 # The transpiled smt2 asserts are the same as the flat path; the annotator
 # just *files* each one into the bucket (block CFG, a block's commands, or
 # the objective) whose generator contains it. The bucketing is untrusted:
-# the Lean `checkVCAnn` re-checks the per-bucket subset membership.
+# the Lean `checkVCWAnn` re-checks per site that each constraint weakens
+# from one of the tagged site's own anchors (membership = the reflexivity
+# row of the weakening table, so generator-verbatim filing passes). A
+# constraint vcgen has simplified past the filing rule below would need
+# weakening-aware filing here; today's output is generator-verbatim.
 # ------------------------------------------------------------------------
 
 
@@ -346,16 +350,18 @@ def _ann_check_module(module_name: str, kernel: bool) -> str:
         "",
         f"namespace {module_name}",
         "",
-        "/-- Every bucket of the annotated VC is a subset of the block's",
-        "encoder generators (validated locally, per site). -/",
-        "theorem vc_ok : Ttac.Vc.checkVCAnn Deep.prog Vc.vc = true := by",
+        "/-- Every bucket constraint weakens from one of its own site's",
+        "anchors (the weakening-table admission, validated per site; the",
+        "global expected VC is never computed). -/",
+        "theorem vc_ok : Ttac.checkVCWAnn Deep.prog Vc.vc = true := by",
         f"  {tactic}",
         "",
         "/-- The solver's `unsat` verdict on the smt2 file is",
         "`Ttac.Vc.AnnVC.Unsat Vc.vc` modulo the transpilation; under that",
-        "premise the program is safe, by the forward `checkVCAnn_safe`. -/",
+        "premise the program is safe, by the denotational route",
+        "(`checkVCWAnn_safe`: adequacy + weak-enough admission). -/",
         "theorem vc_implies_safe : Ttac.Vc.AnnVC.Unsat Vc.vc → Deep.prog.Safe :=",
-        "  Ttac.checkVCAnn_safe vc_ok",
+        "  Ttac.checkVCWAnn_safe vc_ok",
         "",
         f"end {module_name}",
         "",

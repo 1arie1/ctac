@@ -559,7 +559,7 @@ def ann_vc_check(
     ),
     plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
 ) -> None:
-    """Validate an SMT VC via the forward proof: a site-annotated AnnVC checked by `checkVCAnn_safe`."""
+    """Validate an SMT VC via the denotational proof: a site-annotated AnnVC checked by `checkVCWAnn_safe`."""
     from .lean import write_vc_check_project
     from .lean.naming import module_name_for
     from .lean.vccheck import generate_ann_vc_check
