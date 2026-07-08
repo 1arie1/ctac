@@ -2,10 +2,10 @@ import Ttac
 import Ttac.ProductStutter
 
 /-!
-# Golden reference: the surgical rw-eq product (stuttering exploration)
+# Golden reference: the surgical rw-eq product (stuttering mode)
 
-Two rewrite pairs pin the `productS` construction before any proof
-exists.
+Two rewrite pairs pin the `productS` construction and wire the
+transfer theorems.
 
 `progA5`/`progB4` is the `cfg-simplify` shape: the rewrite drops a
 fall-through stutter block, so one arm of the diamond reaches the
@@ -207,5 +207,20 @@ def shiftBbad : Program :=
 example : (denot (productS shiftA shiftBbad mtShift) (dup (seedX 5))).blks
     (productS shiftA shiftBbad mtShift).blocks.length = true := by
   native_decide
+
+/-! ## The transfer theorems wire up on both pairs -/
+
+example (hP : Safe_denot (productS progA5 progB4 mt5))
+    (hB : Safe_denot progB4) : Safe_denot progA5 :=
+  stutter_transfer
+    (wellFormed_iff.mp (by native_decide)).1
+    (wellFormed_iff.mp (by native_decide)).1
+    (wellFormed_iff.mp (by native_decide : wellFormed progB4 = true)).2
+    (by native_decide) hP hB
+
+example (hP : Safe_denot (productS shiftA shiftB mtShift))
+    (hB : shiftB.Safe) : shiftA.Safe :=
+  stutter_transfer_safe (by native_decide) (by native_decide)
+    (by native_decide) (by native_decide) (by native_decide) hP hB
 
 end TtacExamples.ProductStutterDemo

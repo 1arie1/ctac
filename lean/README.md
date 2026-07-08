@@ -185,6 +185,20 @@ lemma, and the proof layers never mention individual operators.
   table is shared with A under lockstep). Dominance and phi coverage
   are needed on `B` only — the asymmetry mirrors adequacy vs.
   coadequacy.
+- `Ttac/ProductStutter.lean` — the rw-eq product under CFG surgery
+  (stuttering mode): the rewrite drops single-predecessor fall-through
+  blocks (`cfg-simplify`'s shape); the block matching is untrusted
+  witness data validated by the decidable `surgeryOK` (the Lean-side
+  `sim_precheck`), and B-copy phis are re-keyed on A's CFG with
+  sources routed through each predecessor's owning matched block.
+  `stutter_transfer` proves the safety transfer with *fewer*
+  hypotheses than lockstep predicted: no `domClosedOK A` (A-side
+  dominance is replaced by walking B's closure facts along the
+  matched projection of A's active path) and no `phiCoversOK B` (the
+  routing check subsumes coverage). The implementation's DEST/IN_DEST
+  ghost flags turn out to be unnecessary in the idealized fragment —
+  the shape that needs them requires a critical edge, which
+  `amoSideOK` forbids.
 - `TtacExamples/Diamond.lean` — golden deep + shallow embeddings of the
   scalar diamond, shallow safety theorem proved. The Python test suite
   pins the emitter against these shapes; keep them in sync.

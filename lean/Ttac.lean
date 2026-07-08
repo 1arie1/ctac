@@ -16,6 +16,7 @@ import Ttac.VcWeaken
 import Ttac.VcAdequacy
 import Ttac.VcCoadequacy
 import Ttac.Product
+import Ttac.ProductStutter
 
 /-!
 # Ttac: a verified checker development for `ttac` VCs
@@ -44,6 +45,9 @@ The headline theorems:
 * `product_transfer` (`Product`) — rw-eq's certificate, verified: a
   safe idealized product program plus a safe rewrite implies the
   original is safe (`product_transfer_safe` is the operational form).
+* `stutter_transfer` (`ProductStutter`) — the same under CFG surgery:
+  the rewrite may drop fall-through blocks, with the block matching as
+  validated witness data (`surgeryOK`).
 
 Layer map: `Ast`/`State`/`Eval`/`Vars` — the language and its
 evaluation; `Semantics`/`Safety` — the operational small-step semantics
@@ -57,5 +61,6 @@ dominance-free path lemmas; `VcDenot` — the denotational semantics,
 weakening/rewrite-table checkers (`checkVCW`, `checkVCWAnn`);
 `VcAdequacy` — operational ⇒ denotational (the only dominance
 consumer); `VcCoadequacy` — the converse, and the equivalence;
-`Product` — the idealized rw-eq product and its safety transfer.
+`Product` — the idealized rw-eq product and its safety transfer;
+`ProductStutter` — the same under CFG surgery (stuttering mode).
 -/
