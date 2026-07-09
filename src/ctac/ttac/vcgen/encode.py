@@ -29,6 +29,7 @@ from ctac.ttac.ast import Ty
 from ctac.ttac.errors import VcGenError
 from ctac.ttac.transform import merge_asserts
 
+from .gamma import GammaPlan, encoder_atoms, plan_gammas, term_to_smt, tgamma_rhs_term
 from .lower import TtacLowerer
 
 _TY_TO_SORT_NAME = {Ty.INT: "int", Ty.BOOL: "bool", Ty.BYTEMAP: "bytemap"}
@@ -41,6 +42,7 @@ class VcResult:
     assert_block: str
     asserts_before: int
     merged: bool
+    gamma_sites: int = 0
 
 
 def _assert_sites(program: ast.Program) -> list[tuple[str, int, str]]:
@@ -52,7 +54,15 @@ def _assert_sites(program: ast.Program) -> list[tuple[str, int, str]]:
     ]
 
 
-def generate_vc(program: ast.Program, *, cfg_encoding: str = "bwd0") -> VcResult:
+def generate_vc(
+    program: ast.Program, *, cfg_encoding: str = "bwd0", merge: str = "phi"
+) -> VcResult:
+    if merge not in ("phi", "gamma"):
+        raise VcGenError(f"unknown merge mode {merge!r}; available: phi, gamma")
+    return _generate_vc(program, cfg_encoding=cfg_encoding, merge=merge)
+
+
+def _generate_vc(program: ast.Program, *, cfg_encoding: str, merge: str) -> VcResult:
     sites = _assert_sites(program)
     if not sites:
         raise VcGenError("no assertion to verify")
@@ -97,10 +107,17 @@ def generate_vc(program: ast.Program, *, cfg_encoding: str = "bwd0") -> VcResult
             return true()
         return vc.const("BLK_" + sanitize_name(label), Bool)
 
+    gamma_plan = plan_gammas(program, types) if merge == "gamma" else GammaPlan()
+
     for block in program.blocks:
         with vc.block(block.label, guard=guard(block.label)) as b:
-            for cmd in block.commands:
-                _emit_command(vc, b, lower, symbol_sorts, guard, block.label, cmd)
+            for i, cmd in enumerate(block.commands):
+                if (block.label, i) in gamma_plan.sites:
+                    _emit_gamma(vc, lower, program, symbol_sorts, gamma_plan,
+                                block.label, i, cmd)
+                else:
+                    _emit_command(vc, b, lower, symbol_sorts, guard,
+                                  block.label, cmd)
 
     _emit_cfg(vc, lower, program, guard, entry, cfg_encoding)
 
@@ -114,6 +131,34 @@ def generate_vc(program: ast.Program, *, cfg_encoding: str = "bwd0") -> VcResult
         assert_block=assert_block,
         asserts_before=asserts_before,
         merged=merged,
+        gamma_sites=len(gamma_plan.sites),
+    )
+
+
+def _emit_gamma(vc, lower, program, sorts, plan, block_label, i, cmd) -> None:
+    """A planned phi site: the total gamma `x = ite(K1, v1, ... phiRhs)`
+    with the thin-gate case guards inlined, rendered from the same term
+    mirror the annotator's anchors use (so the transpiled constraint
+    matches the checker's rebuilt anchor verbatim)."""
+    blocks = ttac_cfg.block_by_label(program)
+    var_atom, cond_atom, guard_atom = encoder_atoms(program.entry, sanitize_name)
+    name = cmd.target.name
+    vc.const(name, lower.sort_of(name))
+    rhs = tgamma_rhs_term(
+        plan.sites[(block_label, i)],
+        cmd.arms,
+        plan.gates,
+        blocks,
+        is_int=sorts.get(name) == "int",
+        var_atom=var_atom,
+        cond_atom=cond_atom,
+        guard_atom=guard_atom,
+    )
+    eq = ("eqI" if sorts.get(name) == "int" else "eqB", ("sym", name), rhs)
+    vc.raw_fact(
+        term_to_smt(eq),
+        origin="gamma-def",
+        comment=f"gamma merge for {name}",
     )
 
 

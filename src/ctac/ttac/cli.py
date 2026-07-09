@@ -360,6 +360,11 @@ def desugar(
 def vcgen(
     file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
     cfg_encoding: str = typer.Option("bwd0", "--cfg-encoding", help="CFG-constraint encoding."),
+    merge: str = typer.Option(
+        "phi", "--merge",
+        help="Value-merge encoding: 'phi' (block-guard ITE chains) or "
+        "'gamma' (sea_gate-style thin gates over branch conditions).",
+    ),
     output: Path = typer.Option(None, "-o", "--output", help="Write the SMT-LIB VC here."),
     solve: bool = typer.Option(False, "--solve", help="Run z3 on the VC immediately."),
     model: Path = typer.Option(None, "--model", help="On sat, write the z3 model here."),
@@ -370,7 +375,7 @@ def vcgen(
     """Generate a seahorn-style SMT VC (merges multiple asserts first)."""
     program = _parse_or_exit(file)
     try:
-        res = generate_vc(program, cfg_encoding=cfg_encoding)
+        res = generate_vc(program, cfg_encoding=cfg_encoding, merge=merge)
     except (VcGenError, TtacTypeError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
@@ -380,6 +385,8 @@ def vcgen(
             f"note: merged {res.asserts_before} assertions into a single __UA_ERROR sink",
             err=True,
         )
+    if merge == "gamma":
+        typer.echo(f"note: gamma merge applied at {res.gamma_sites} phi site(s)", err=True)
 
     if output is not None:
         output.write_text(res.smt_text, encoding="utf-8")
@@ -557,20 +564,29 @@ def ann_vc_check(
     kernel: bool = typer.Option(
         False, "--kernel", help="Prove vc_ok by kernel `decide` instead of `native_decide`."
     ),
+    merge: str = typer.Option(
+        "phi", "--merge",
+        help="Value-merge encoding of the smt2: 'phi' (checkVCWAnn) or "
+        "'gamma' (sea_gate-style, checkVCGAnn with certificates).",
+    ),
     plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
 ) -> None:
     """Validate an SMT VC via the denotational proof: a site-annotated AnnVC checked by `checkVCWAnn_safe`."""
     from .lean import write_vc_check_project
     from .lean.naming import module_name_for
-    from .lean.vccheck import generate_ann_vc_check
+    from .lean.vccheck import generate_ann_vc_check, generate_gann_vc_check
 
     if not smt2.is_file():
         typer.echo(f"error: no such file: {smt2}", err=True)
         raise typer.Exit(2)
+    if merge not in ("phi", "gamma"):
+        typer.echo(f"error: unknown merge mode {merge!r}; available: phi, gamma", err=True)
+        raise typer.Exit(2)
     program = _parse_or_exit(file)
     module_name = name or module_name_for(file)
+    generate = generate_gann_vc_check if merge == "gamma" else generate_ann_vc_check
     try:
-        res = generate_ann_vc_check(
+        res = generate(
             program,
             smt2.read_text(encoding="utf-8"),
             module_name=module_name,

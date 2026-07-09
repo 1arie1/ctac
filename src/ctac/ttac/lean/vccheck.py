@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from ctac.solver.smt2 import parse as parse_smt2
 from ctac.ttac import ast
 from ctac.ttac.analysis import cfg
+from ctac.ttac.ast import Ty
 from ctac.ttac.errors import VcCheckError
 
 from . import emit
@@ -19,6 +20,7 @@ from .encode import validate_for_lean
 from .naming import Numbering, build_numbering
 from .vc import VcAssert, VcMapDef, build_vc_symbols, render_top, transpile_vc
 from .vc_expected import (
+    TRUE,
     VcMismatch,
     expected_buckets,
     expected_map_buckets,
@@ -565,6 +567,244 @@ def generate_cex_check(
         ]),
         numbering=numbering,
         missing=missing,
+    )
+
+
+# ------------------------------------------------------------------------
+# gamma ann-vc-check: the sea_gate hybrid pipeline (Ttac.Vc.GAnnVC /
+# checkVCGAnn). The transpile-and-file flow is the classical one; phi
+# sites the gamma plan covers file their total-gamma defining equation
+# against the plan's rebuilt anchor, and the module carries the
+# certificates (cases, gate table, valuation table) the Lean checker
+# validates per site.
+# ------------------------------------------------------------------------
+
+
+def _tgamma_anchor_term(plan, cases, cmd, blocks_by_label, num, types):
+    is_int = types[cmd.target.name] is Ty.INT
+    regs = num.int_regs if is_int else num.bool_regs
+    var_tag = "varI" if is_int else "varB"
+
+    def var_atom(name):
+        return (var_tag, regs[name])
+
+    def cond_atom(name):
+        return ("varB", num.bool_regs[name])
+
+    def guard_atom(label):
+        b = num.block_index[label]
+        return TRUE if b == num.entry_index else ("blk", b)
+
+    from ctac.ttac.vcgen.gamma import tgamma_rhs_term
+
+    rhs = tgamma_rhs_term(
+        cases, cmd.arms, plan.gates, blocks_by_label,
+        is_int=is_int, var_atom=var_atom, cond_atom=cond_atom,
+        guard_atom=guard_atom,
+    )
+    eq_op = "eqI" if is_int else "eqB"
+    return (eq_op, (var_tag, regs[cmd.target.name]), rhs)
+
+
+def _render_row(row, num) -> str:
+    parent = "none" if row.parent is None else f"some {row.parent}"
+    side = "true" if row.side else "false"
+    ctrl = num.block_index[row.ctrl]
+    return f"{{ parent := {parent}, ctrl := {ctrl}, side := {side} }}"
+
+
+def _render_tgammas(entries, num, types, blocks_by_label) -> str:
+    if not entries:
+        return "[]"
+    parts = []
+    for ci, label, cases in entries:
+        cmd = blocks_by_label[label].commands[ci]
+        is_int = types[cmd.target.name] is Ty.INT
+        regs = num.int_regs if is_int else num.bool_regs
+        case_parts = []
+        for case in cases:
+            covers = ", ".join(
+                str(num.block_index[p]) for p in case.covers
+            )
+            case_parts.append(
+                f"{{ row := {_render_row(case.row, num)}, "
+                f"src := {regs[case.src]}, covers := [{covers}] }}"
+            )
+        parts.append(f"({ci}, {{ cases := [{', '.join(case_parts)}] }})")
+    return "[" + ", ".join(parts) + "]"
+
+
+def _render_val(plan, program, num) -> list[str]:
+    rows = []
+    for b, block in enumerate(program.blocks):
+        claims = plan.val.get(block.label, ())
+        entries = sorted(
+            (num.bool_regs[name], val) for name, val in claims
+        )
+        row = ", ".join(
+            f"({reg}, {'true' if val else 'false'})" for reg, val in entries
+        )
+        sep = "," if b + 1 < len(program.blocks) else ""
+        rows.append(f"    [{row}]{sep}")
+    return rows
+
+
+def _render_gates(plan, num) -> str:
+    if not plan.gates:
+        return "[]"
+    parts = []
+    for gate in plan.gates:
+        rows = ", ".join(_render_row(r, num) for r in gate.rows)
+        parts.append(
+            f"{{ block := {num.block_index[gate.block]}, rows := [{rows}] }}"
+        )
+    return "[" + ", ".join(parts) + "]"
+
+
+def _gann_vc_module(
+    cfg_b, cmd_b, map_b, obj, tgammas_pb, plan, program, num, types,
+    module_name, smt_source,
+) -> str:
+    blocks_by_label = {b.label: b for b in program.blocks}
+    block_lines: list[str] = []
+    for b in range(len(cfg_b)):
+        label = program.blocks[b].label
+        sep = "," if b + 1 < len(cfg_b) else ""
+        block_lines.append(f"    -- block {b} ({label})")
+        block_lines.append(f"    {{ cfg := {_bucket_terms(cfg_b[b])},")
+        block_lines.append(f"      cmds := [{_bucket_terms(cmd_b[b])}],")
+        block_lines.append(f"      maps := {_bucket_maps(map_b[b])},")
+        block_lines.append(
+            "      tgammas := "
+            f"{_render_tgammas(tgammas_pb[b], num, types, blocks_by_label)}"
+            f" }}{sep}"
+        )
+    lines = [
+        emit._header(smt_source, tool="ttac ann-vc-check --merge gamma"),
+        "import Ttac",
+        "",
+        f"namespace {module_name}.Vc",
+        "",
+        "open Ttac",
+        "",
+        "def vc : Ttac.Vc.GAnnVC where",
+        "  perBlock := [",
+        *block_lines,
+        "  ]",
+        f"  objective := {_bucket_terms(obj)}",
+        "  val := [",
+        *_render_val(plan, program, num),
+        "  ]",
+        f"  gates := {_render_gates(plan, num)}",
+        "",
+        f"end {module_name}.Vc",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _gann_check_module(module_name: str, kernel: bool) -> str:
+    tactic = "decide" if kernel else "native_decide"
+    return "\n".join([
+        "/- Generated by `ttac ann-vc-check --merge gamma`. DO NOT EDIT. -/",
+        f"import {module_name}.Deep",
+        f"import {module_name}.Vc",
+        "",
+        f"namespace {module_name}",
+        "",
+        "/-- Every bucket constraint weakens from one of its own site's",
+        "anchors, with the certified gamma constraints (validated against",
+        "the valuation/gate/postdominator certificates) added to each",
+        "block's anchor pool. -/",
+        "theorem vc_ok : Ttac.checkVCGAnn Deep.prog Vc.vc = true := by",
+        f"  {tactic}",
+        "",
+        "/-- The solver's `unsat` verdict on the smt2 file is",
+        "`Ttac.Vc.GAnnVC.Unsat Vc.vc` modulo the transpilation; under that",
+        "premise the program is safe (`checkVCGAnn_safe`). -/",
+        "theorem vc_implies_safe : Ttac.Vc.GAnnVC.Unsat Vc.vc → Deep.prog.Safe :=",
+        "  Ttac.checkVCGAnn_safe vc_ok",
+        "",
+        f"end {module_name}",
+        "",
+    ])
+
+
+def generate_gann_vc_check(
+    program: ast.Program,
+    smt2_source: str,
+    *,
+    module_name: str,
+    source: str | None = None,
+    smt_source: str | None = None,
+    kernel: bool = False,
+) -> AnnVcCheckResult:
+    from ctac.ttac.vcgen.gamma import plan_gammas
+
+    pre = validate_for_lean(program, maps=True)
+    errors = list(pre.errors) + _program_errors(program)
+    if errors:
+        raise VcCheckError(tuple(errors))
+
+    numbering = build_numbering(program, pre.types)
+    smt = parse_smt2(smt2_source)
+    syms, sym_errors = build_vc_symbols(program, numbering, pre.types, smt)
+    asserts, map_defs, transpile_errors = transpile_vc(smt, syms)
+    smt_errors = sym_errors + transpile_errors
+    if smt_errors:
+        raise VcCheckError(tuple(smt_errors))
+
+    plan = plan_gammas(program, pre.types)
+    blocks_by_label = {b.label: b for b in program.blocks}
+    cfg_pb, cmd_pb, objective = expected_buckets(program, numbering, pre.types)
+    tgammas_pb: list[list] = [[] for _ in program.blocks]
+    for (label, ci), cases in sorted(
+        plan.sites.items(), key=lambda kv: (numbering.block_index[kv[0][0]], kv[0][1])
+    ):
+        b = numbering.block_index[label]
+        cmd = blocks_by_label[label].commands[ci]
+        anchor = _tgamma_anchor_term(
+            plan, cases, cmd, blocks_by_label, numbering, pre.types
+        )
+        cmd_pb[b] = cmd_pb[b] + [anchor]
+        tgammas_pb[b].append((ci, label, cases))
+
+    cfg_b, cmd_b, obj, unmatched = _bucket_asserts(
+        asserts, cfg_pb, cmd_pb, objective
+    )
+    if unmatched:
+        raise VcCheckError(tuple(
+            f"assert not in any block generator (line {a.line}): {a.source}"
+            for a in unmatched
+        ))
+    maps_pb = expected_map_buckets(program, numbering, pre.types)
+    map_b, unmatched_maps = _bucket_map_defs(map_defs, maps_pb)
+    if unmatched_maps:
+        raise VcCheckError(tuple(
+            f"map def not in any block generator (line {md.line}): {md.source}"
+            for md in unmatched_maps
+        ))
+
+    return AnnVcCheckResult(
+        module_name=module_name,
+        deep_text=emit.deep_module(
+            program, numbering, pre.types, module_name, source,
+            tool="ttac ann-vc-check",
+        ),
+        vc_text=_gann_vc_module(
+            cfg_b, cmd_b, map_b, obj, tgammas_pb, plan, program, numbering,
+            pre.types, module_name, smt_source,
+        ),
+        check_text=_gann_check_module(module_name, kernel),
+        root_text="\n".join([
+            f"import {module_name}.Deep",
+            f"import {module_name}.Vc",
+            f"import {module_name}.Check",
+            "",
+        ]),
+        numbering=numbering,
+        n_asserts=len(asserts),
+        unmatched=tuple(unmatched),
     )
 
 

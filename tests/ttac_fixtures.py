@@ -142,6 +142,82 @@ join:
   halt
 """
 
+# docs/vc/sections/seabmc-vcgen.typ Thin-GSSA example, with the critical
+# edges split (as the bwd0 pipeline requires); mirrors the golden
+# lean/TtacExamples/GammaVc.lean TwoRegion program. An outer branch
+# selects two regions with local branches and joins, reconverging at n.
+TWO_REGION = """\
+entry:
+  c1 := havoc
+  if c1 goto a else b
+
+a:
+  c2 := havoc
+  v_a0 := 10
+  if c2 goto x else a_split
+
+x:
+  v_x := 2
+  goto a_join
+
+a_split:
+  goto a_join
+
+a_join:
+  v_a := phi [x: v_x, a_split: v_a0]
+  goto n
+
+b:
+  c3 := havoc
+  v_b0 := 20
+  if c3 goto y else b_split
+
+y:
+  v_y := 3
+  goto b_join
+
+b_split:
+  goto b_join
+
+b_join:
+  v_b := phi [y: v_y, b_split: v_b0]
+  goto n
+
+n:
+  v := phi [a_join: v_a, b_join: v_b]
+  ok := 0 < v
+  assert ok
+  halt
+"""
+
+# Crossing paths: j's arrival via m is not decidable from any dominating
+# branch (the claims at m intersect to nothing), so the gamma planner
+# must fall back to the classical phi constraint.
+CROSSING_JOIN = """\
+entry:
+  c := havoc
+  d := havoc
+  if c goto a else b
+
+a:
+  x1 := 1
+  if d goto j else m
+
+b:
+  x2 := 2
+  if d goto m else j
+
+m:
+  x3 := 3
+  goto j
+
+j:
+  x := phi [a: x1, b: x2, m: x3]
+  ok := 0 <= x
+  assert ok
+  halt
+"""
+
 # Single scalar block: havoc / assign / assume / assert / halt.
 SCALAR_STRAIGHT = """\
 entry:
