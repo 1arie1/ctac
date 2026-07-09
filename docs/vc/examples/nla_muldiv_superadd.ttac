@@ -1,0 +1,23 @@
+// Safe (UNSAT): same-denominator floor mul-div is superadditive.
+//   x,y,p >= 0, q >= 1  ==>  floor(x*p/q) + floor(y*p/q) <= floor((x+y)*p/q).
+// Rounding down splits pessimistically: two conversions never exceed the joint one.
+entry:
+  x := havoc
+  y := havoc
+  p := havoc
+  q := havoc
+  assume 0 <= x
+  assume 0 <= y
+  assume 0 <= p
+  assume 1 <= q
+  nx := x * p
+  ny := y * p
+  fx := nx / q
+  fy := ny / q
+  sxy := x + y
+  nxy := sxy * p
+  fxy := nxy / q
+  lhs := fx + fy
+  ok := lhs <= fxy
+  assert ok
+  halt

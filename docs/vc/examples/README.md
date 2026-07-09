@@ -19,6 +19,13 @@ and the solver finds a counterexample.
 | `practical_share_burn_monotonicity.ttac` | unsat | reduced share-burn monotonicity: proportional conversion, exact-balance branches, min caps |
 | `practical_withdrawal_summary.ttac` | unsat | reduced withdrawal summary: utilization branch, mode selection, capped withdrawal |
 | `practical_delegate_clear.ttac` | sat | reduced account delegate-clear flow: unpack state, authorize, repack, assert delegate cleared |
+| `nla_muldiv_roundtrip.ttac` | unsat | floor/ceil mul-div round-trip `ceil(floor(a*b/c)*c/b) <= a`; nonlinear, no guarding assume |
+| `nla_muldiv_monotone.ttac` | unsat | floor mul-div monotone in the numerator: `sa<=sb => floor(sa*p/q)<=floor(sb*p/q)` |
+| `nla_muldiv_superadd.ttac` | unsat | same-denominator superadditivity: `floor(x*p/q)+floor(y*p/q)<=floor((x+y)*p/q)` |
+| `nla_toassets_additivity.ttac` | unsat | ERC4626 `toAssetsDown` additivity with adjusted totals (nested mul-divs) |
+| `nla_convert_cap.ttac` | unsat | multi-block: exact/proportional branch + phi, `assets <= total_assets` (nonlinear on one arm) |
+| `nla_share_burn_unguarded.ttac` | unsat | `practical_share_burn` with the ordering `assume` removed: branch-derived div monotonicity across phi merges |
+| `nla_fee_waterfall.ttac` | unsat | large (34 blocks): 8-stage waivable-fee waterfall, solvency `0 <= v_final` |
 
 ## Commands
 
@@ -77,13 +84,44 @@ survive regeneration). `--build` runs the lake build directly.
 project is pure core Lean (no `Ttac` library, no mathlib) and builds in
 under a second.
 
-`ttac lean` accepts the scalar fragment: `int`/`bool` registers, pure
-SSA (phi fine, no dynamic definitions), loop-free CFG, no
-use-before-def. Bytemaps and references are rejected (the shallow
-embedding has no map story yet), so of the examples in this directory
-only `safe_scalar_diamond.ttac` is inside the fragment. Its
-hand-written golden twin is `lean/TtacExamples/Diamond.lean` (same
-program, shallow safety theorem proved).
+`ttac lean` accepts the scalar fragment: `int`/`bool` registers,
+loop-free CFG, no use-before-def. Dynamic (multi-block) definitions are
+converted to phi form automatically (a DSA->SSA precondition pass), so
+the `practical_*` and `nla_*` scalar programs transpile directly
+without hand-rewriting the merges. Bytemaps and references are still
+rejected (the shallow embedding has no map story yet).
+
+Worked shallow proofs for three of these programs live as a package in
+the repo's Lean project, `lean/TtacShallow/` (open `lean/` in VS Code):
+
+The proofs trace a difficulty ladder — from a one-shot tactic on the
+assume-guarded programs, through core-Lean division lemmas, to a
+`nlinarith` search:
+
+The `z3` column is the solve time on the `ttac vcgen` output (best of 5,
+z3 4.17.0; also recorded in each Lean file header):
+
+| Module | Source | z3 | Proof | Needs |
+|---|---|--:|---|---|
+| `TtacShallow/ShareBurn.lean` | `practical_share_burn_monotonicity.ttac` | ~6ms | `unfold; simp; omega` one-shot (assume-guarded; linear after abstraction) | core |
+| `TtacShallow/Withdrawal.lean` | `practical_withdrawal_summary.ttac` | ~6ms | same one-shot (+ `Bool.and_eq_true`) | core |
+| `TtacShallow/Monotone.lean` | `nla_muldiv_monotone.ttac` | ~8ms | `Int.ediv_le_ediv` ∘ `mul_le_mul_of_nonneg_right` (two lemmas) | core |
+| `TtacShallow/Superadd.lean` | `nla_muldiv_superadd.ttac` | ~9ms | two floor lower bounds + `le_ediv_iff_mul_le`, `omega` glue | core |
+| `TtacShallow/Roundtrip.lean` | `nla_muldiv_roundtrip.ttac` | ~10ms | floor lower bound + `Int.ediv_le_iff_le_mul`; `omega` alone fails | core |
+| `TtacShallow/ConvertCap.lean` | `nla_convert_cap.ttac` | ~9ms | *multi-block*: branch split, `exact` arm `omega`, `prop` arm the div upper bound behind a phi | core |
+| `TtacShallow/ShareBurnU.lean` | `nla_share_burn_unguarded.ttac` | ~17ms | *multi-block*: shared min-cap lemma + 4-way branch split, each deriving the ordering differently (2 vacuous, 1 div bound, 1 div monotone) | core |
+| `TtacShallow/Additivity.lean` | `nla_toassets_additivity.ttac` | ~28ms | tight (depends on the div remainders); the two full div characterizations + `nlinarith` | Mathlib |
+| `TtacShallow/FeeWaterfall.lean` | `nla_fee_waterfall.ttac` | ~345ms | *large, 34 blocks*: bottom-up per-stage lemma, linear in the 8 stages (no 2^8 branch blow-up) | core |
+
+Every nonlinear obligation defeats `omega` alone (it abstracts the
+`ediv`/`mul` atoms). The `nla_muldiv_*`, `ConvertCap`, `ShareBurnU`, and
+`FeeWaterfall` proofs stay in core Lean by supplying the
+`Int.ediv`/`Int.emod` identities and letting `omega` finish the linear
+part; `Additivity` is tight enough that it needs `nlinarith` (hence
+Mathlib). Each file keeps the `ttac lean`-emitted `Shallow` embedding
+verbatim and adds a hand-written `shallow_safe` theorem; all are
+axiom-clean. The single-embedding golden twin for the diamond is
+`lean/TtacExamples/Diamond.lean`.
 
 ## Verified VC validation (`ttac vc-check`)
 

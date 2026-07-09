@@ -1,0 +1,30 @@
+// Safe (UNSAT): ERC4626-style toAssetsDown additivity with adjusted totals.
+//   toAssetsDown(s, TA, TS) = floor(s*TA/TS).
+//   ax  = toAssetsDown(x,       TA,      TS)
+//   ay  = toAssetsDown(y,       TA + ax, TS + x)   -- totals adjusted after x
+//   axy = toAssetsDown(x + y,   TA,      TS)
+//   assert:  ax + ay <= axy   (converting x then y yields no more than x+y at once).
+// The nlsat-hard share-accounting additivity: nested mul-divs, a variable
+// denominator that itself depends on an earlier floor mul-div.
+entry:
+  x := havoc
+  y := havoc
+  TA := havoc
+  TS := havoc
+  assume 0 <= x
+  assume 0 <= y
+  assume 0 <= TA
+  assume 1 <= TS
+  nx := x * TA
+  ax := nx / TS
+  TA2 := TA + ax
+  TS2 := TS + x
+  ny := y * TA2
+  ay := ny / TS2
+  sxy := x + y
+  nxy := sxy * TA
+  axy := nxy / TS
+  lhs := ax + ay
+  ok := lhs <= axy
+  assert ok
+  halt

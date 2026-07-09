@@ -1,6 +1,6 @@
 name = "ttac"
 version = "0.1.0"
-defaultTargets = ["Ttac", "TtacExamples"]
+defaultTargets = ["Ttac", "TtacExamples", "TtacShallow"]
 
 [[require]]
 name = "mathlib"
@@ -12,3 +12,6 @@ name = "Ttac"
 
 [[lean_lib]]
 name = "TtacExamples"
+
+[[lean_lib]]
+name = "TtacShallow"

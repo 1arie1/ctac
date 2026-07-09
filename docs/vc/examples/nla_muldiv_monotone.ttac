@@ -1,0 +1,18 @@
+// Safe (UNSAT): floor mul-div is monotone in the numerator operand.
+//   sa <= sb, p >= 0, q >= 1  ==>  floor(sa*p/q) <= floor(sb*p/q).
+// The core rounding-down monotonicity behind share/asset conversions.
+entry:
+  sa := havoc
+  sb := havoc
+  p := havoc
+  q := havoc
+  assume sa <= sb
+  assume 0 <= p
+  assume 1 <= q
+  na := sa * p
+  nb := sb * p
+  fa := na / q
+  fb := nb / q
+  ok := fa <= fb
+  assert ok
+  halt
