@@ -137,6 +137,33 @@ join:
     assert any("pure SSA" in e for e in _errors(src))
 
 
+def test_generate_auto_converts_dynamic_to_ssa():
+    # Same dynamic-merge program `validate_for_lean` rejects: `generate_lean`
+    # runs the SSA precondition first and succeeds.
+    src = """\
+entry:
+  c := havoc
+  if c goto L else R
+
+L:
+  x := 1
+  goto join
+
+R:
+  x := 2
+  goto join
+
+join:
+  ok := 0 <= x
+  assert ok
+  halt
+"""
+    res = _gen(src)
+    assert res.shallow_text is not None
+    assert "phi" not in res.shallow_text  # phi is lowered, not left as a marker
+    assert "x_L" in res.shallow_text and "x_R" in res.shallow_text
+
+
 def test_validate_rejects_use_before_def():
     src = "entry:\n  y := x + 1\n  halt\n"
     assert any("used before it is defined" in e for e in _errors(src))

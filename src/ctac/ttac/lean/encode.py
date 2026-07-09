@@ -23,6 +23,7 @@ from ctac.ttac.analysis.cfg import to_digraph
 from ctac.ttac.ast import Ty
 from ctac.ttac.errors import LeanGenError, TtacTypeError
 from ctac.ttac.pretty import cmd_str, expr_str
+from ctac.ttac.transform.ssa import to_ssa
 
 from . import emit
 from .liveness import BlockLiveness, block_liveness
@@ -242,6 +243,7 @@ def generate_lean(
 ) -> LeanResult:
     if not deep and not shallow:
         raise ValueError("at least one of deep/shallow must be requested")
+    program = to_ssa(program).program
     pre = validate_for_lean(program)
     if pre.errors:
         raise LeanGenError(pre.errors)
