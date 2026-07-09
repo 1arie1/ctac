@@ -14,6 +14,8 @@ import Ttac.VcCfgPath
 import Ttac.VcDenot
 import Ttac.VcWeaken
 import Ttac.VcAdequacy
+import Ttac.VcVal
+import Ttac.VcGamma
 import Ttac.VcCoadequacy
 import Ttac.Product
 import Ttac.ProductStutter
@@ -35,6 +37,10 @@ The headline theorems:
   UNSAT implies `Program.Safe`.
 * `checkVC_safe_via_denot` (`VcAdequacy`) — the same for the flat
   membership checker `checkVC`.
+* `checkVCGAnn_safe` (`VcGamma`) — the sea_gate hybrid encoding: phi
+  equations replaced by guarded gammas over branch-register gates,
+  admitted per site by a covers certificate checked against the
+  valuation table (`VcVal`).
 * `not_safe_denot_of_seed` (`VcDenot`) — SAT certificates: a seed with
   `ReachesExit` (checked by `native_decide`) refutes `Safe_denot`.
 * `unsafe_of_seed` (`VcCoadequacy`) — its operational upgrade: under
@@ -60,7 +66,10 @@ dominance-free path lemmas; `VcDenot` — the denotational semantics,
 `ReachesExit`, and Lemma B (`denot_sat`); `VcWeaken` — the
 weakening/rewrite-table checkers (`checkVCW`, `checkVCWAnn`);
 `VcAdequacy` — operational ⇒ denotational (the only dominance
-consumer); `VcCoadequacy` — the converse, and the equivalence;
+consumer); `VcVal` — the valuation-table certificate and the
+three-valued evaluator; `VcGamma` — the gamma-merge checker
+(`checkVCGAnn`) for the sea_gate hybrid encoding;
+`VcCoadequacy` — the converse, and the equivalence;
 `Product` — the idealized rw-eq product and its safety transfer;
 `ProductStutter` — the same under CFG surgery (stuttering mode).
 -/

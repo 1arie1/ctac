@@ -3,5 +3,6 @@ import TtacExamples.Diamond
 import TtacExamples.DiamondCex
 import TtacExamples.DiamondVc
 import TtacExamples.DiamondAnnVc
+import TtacExamples.GammaVc
 import TtacExamples.ProductDemo
 import TtacExamples.ProductStutterDemo
