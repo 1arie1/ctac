@@ -43,6 +43,20 @@ def gammaBucketCmds (P : Program) (b : Nat) (B : Block)
               else [])
     | _, c => Vc.cmdConstraints P b c
 
+/-- The total-form twin: phi slots carrying a total-gamma certificate
+emit the bare defining equation over the gate-cased ITE with `phiRhs`
+tail. -/
+def tgammaBucketCmds (P : Program) (gt : Vc.GateTable) (b : Nat)
+    (B : Block) (gs : List (Nat × Vc.TGammaCert)) : List (List BExp) :=
+  B.cmds.zipIdx.map fun (c, i) =>
+    match gs.find? (fun ig => decide (ig.1 = i)), c with
+    | some ig, Cmd.phi t x arms =>
+        (Vc.tgammaConstraint? P gt t x arms ig.2).toList
+          ++ (if 2 ≤ arms.length then
+                Vc.amoClauses (arms.map fun a => Vc.guardOf P a.1)
+              else [])
+    | _, c => Vc.cmdConstraints P b c
+
 /-! ## The diamond, gamma-merged -/
 
 namespace Diamond
@@ -102,6 +116,35 @@ example :
           { bk with gammas := bk.gammas.map fun ig =>
               (ig.1, ⟨[⟨.var .bool 0, 2, [1]⟩]⟩) } } = false := by
   native_decide
+
+/-! ### The total form
+
+`y = ite(c, y1, phiRhs)` as an unguarded definition. The single case's
+controller is the entry branch itself (`parent := none` — entry
+dominates the assert block), oriented toward `pos`; the join
+postdominates `pos` toward the assert block, so a firing case forces
+the join. No gate table needed. -/
+
+def tcert : Vc.TGammaCert := ⟨[⟨⟨none, 0, true⟩, 1, [1]⟩]⟩
+
+def tgammasAt (b : Nat) : List (Nat × Vc.TGammaCert) :=
+  if b = 3 then [(0, tcert)] else []
+
+def tgvc : Vc.GAnnVC where
+  perBlock := prog.blocks.zipIdx.map fun (B, b) =>
+    { cfg := Vc.cfgConstraintsFor prog b
+      cmds := tgammaBucketCmds prog [] b B (tgammasAt b)
+      maps := B.cmds.filterMap (Vc.cmdMapDef? prog)
+      tgammas := tgammasAt b }
+  objective := match Vc.assertSites prog with
+    | [(aB, _, okReg)] => Vc.objective prog aB okReg
+    | _ => []
+  val := val
+
+theorem tgvc_ok : checkVCGAnn prog tgvc = true := by native_decide
+
+theorem tgvc_implies_safe : Vc.GAnnVC.Unsat tgvc → prog.Safe :=
+  checkVCGAnn_safe tgvc_ok
 
 end Diamond
 
@@ -193,6 +236,53 @@ example :
           [(1, false), (0, true)], [], [(0, false)],
           [(2, true), (0, false)], [(2, false), (0, false)], [], []] }
       = false := by
+  native_decide
+
+/-! ### The total form
+
+The doc's materialized thin gates as a real gate table: `G_a`/`G_b`
+(the region gates) hang off the entry branch; the local joins' cases
+reference them as parents, so their guards are the two-hop
+`G_region ∧ c_local` conjunctions; the final join's case is the entry
+branch itself. -/
+
+def gates : Vc.GateTable := [
+  ⟨1, [⟨none, 0, true⟩]⟩,    -- G_a  = c1
+  ⟨5, [⟨none, 0, false⟩]⟩]   -- G_b  = ¬c1
+
+def tgammasAt : Nat → List (Nat × Vc.TGammaCert)
+  | 4 => [(0, ⟨[⟨⟨some 0, 1, true⟩, 1, [2]⟩]⟩)]  -- v_a: G_a ∧ c2 ⇒ v_x
+  | 8 => [(0, ⟨[⟨⟨some 1, 5, true⟩, 4, [6]⟩]⟩)]  -- v_b: G_b ∧ c3 ⇒ v_y
+  | 9 => [(0, ⟨[⟨⟨none, 0, true⟩, 2, [4]⟩]⟩)]    -- v:   c1 ⇒ v_a
+  | _ => []
+
+def tgvcWith (tg : Nat → List (Nat × Vc.TGammaCert)) : Vc.GAnnVC where
+  perBlock := prog.blocks.zipIdx.map fun (B, b) =>
+    { cfg := Vc.cfgConstraintsFor prog b
+      cmds := tgammaBucketCmds prog gates b B (tg b)
+      maps := B.cmds.filterMap (Vc.cmdMapDef? prog)
+      tgammas := tg b }
+  objective := match Vc.assertSites prog with
+    | [(aB, _, okReg)] => Vc.objective prog aB okReg
+    | _ => []
+  val := val
+  gates := gates
+
+def tgvc : Vc.GAnnVC := tgvcWith tgammasAt
+
+theorem tgvc_ok : checkVCGAnn prog tgvc = true := by native_decide
+
+theorem tgvc_implies_safe : Vc.GAnnVC.Unsat tgvc → prog.Safe :=
+  checkVCGAnn_safe tgvc_ok
+
+/-- A wrong-side controller at `b_join` (`c1`'s *then* edge, which
+selects the other region and forces nothing toward `b_join`): the
+postdominator side condition rejects the case. -/
+example :
+    checkVCGAnn prog
+      (tgvcWith fun b =>
+        if b = 8 then [(0, ⟨[⟨⟨none, 0, true⟩, 4, [6]⟩]⟩)]
+        else tgammasAt b) = false := by
   native_decide
 
 end TwoRegion
