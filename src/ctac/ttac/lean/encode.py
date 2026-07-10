@@ -240,6 +240,7 @@ def generate_lean(
     source: str | None = None,
     deep: bool = True,
     shallow: bool = True,
+    nested: bool = False,
 ) -> LeanResult:
     if not deep and not shallow:
         raise ValueError("at least one of deep/shallow must be requested")
@@ -247,6 +248,20 @@ def generate_lean(
     pre = validate_for_lean(program)
     if pre.errors:
         raise LeanGenError(pre.errors)
+    if nested and shallow:
+        # An unreachable block has no immediate dominator to nest under,
+        # and it may jump to a join whose let rec is out of scope at top
+        # level - there is no sound flat placement to mix in.
+        graph = to_digraph(program)
+        reachable = nx.descendants(graph, program.entry) | {program.entry}
+        unreachable = sorted(b.label for b in program.blocks if b.label not in reachable)
+        if unreachable:
+            raise LeanGenError(tuple(
+                f"block '{label}' is unreachable from entry; nested shallow "
+                "emission places blocks by dominator - drop the block or "
+                "use the flat (non-nested) emission"
+                for label in unreachable
+            ))
 
     numbering = build_numbering(program, pre.types)
     live = block_liveness(program)
@@ -260,7 +275,10 @@ def generate_lean(
         else None
     )
     shallow_text = (
-        emit.shallow_module(program, numbering, pre.types, live, names, module_name, source)
+        emit.shallow_module(
+            program, numbering, pre.types, live, names, module_name, source,
+            nested=nested,
+        )
         if shallow
         else None
     )

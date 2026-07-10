@@ -10,6 +10,8 @@ a one-line diff here.
 
 from __future__ import annotations
 
+import networkx as nx
+
 from ctac.ttac import ast
 from ctac.ttac.analysis import cfg
 from ctac.ttac.ast import Ty
@@ -352,7 +354,7 @@ def _call_str(
     pred_label: str,
     succ_label: str,
     program: ast.Program,
-    live: BlockLiveness,
+    params_of: dict[str, tuple[str, ...]],
     names: ShallowNames,
 ) -> str:
     by_label = {b.label: b for b in program.blocks}
@@ -362,7 +364,7 @@ def _call_str(
         if isinstance(c, ast.Phi)
     }
     args = []
-    for param in live.params[succ_label]:
+    for param in params_of[succ_label]:
         phi = phi_by_target.get(param)
         if phi is not None:
             arm = next(a for a in phi.arms if a.label == pred_label)
@@ -376,22 +378,27 @@ def _call_str(
 def _shallow_body(
     block: ast.Block,
     program: ast.Program,
-    live: BlockLiveness,
+    params_of: dict[str, tuple[str, ...]],
     names: ShallowNames,
     types: dict[str, Ty],
+    prefix: tuple[str, ...] = (),
 ) -> list[str]:
     term = block.terminator
     if isinstance(term, ast.Halt):
         lines = ["True"]
     elif isinstance(term, ast.Goto):
-        lines = [_call_str(block.label, term.target, program, live, names)]
+        lines = [_call_str(block.label, term.target, program, params_of, names)]
     elif isinstance(term, ast.IfGoto):
         cond = names.regs[term.cond]
-        then_call = _call_str(block.label, term.then_target, program, live, names)
-        else_call = _call_str(block.label, term.else_target, program, live, names)
+        then_call = _call_str(block.label, term.then_target, program, params_of, names)
+        else_call = _call_str(block.label, term.else_target, program, params_of, names)
         lines = [f"({cond} = true → {then_call}) ∧ ({cond} = false → {else_call})"]
     else:
         raise TypeError(f"unsupported terminator {type(term).__name__}")
+    # Nested child block-defs are part of the continuation: they sit after
+    # every command of this block (they may read its lets) and before the
+    # terminator Prop, so an assert wrap correctly parenthesizes them in.
+    lines = [*prefix, *lines]
 
     for cmd in reversed(block.commands):
         if isinstance(cmd, ast.Phi):
@@ -423,6 +430,51 @@ def _shallow_body(
     return lines
 
 
+def _dominator_children(program: ast.Program) -> dict[str, list[str]]:
+    """Dominator-tree children per block, reverse-topologically ordered.
+
+    Reverse topological sibling order puts every join before its
+    predecessors, so a `let rec` block-def is always in scope at its
+    call sites (a join's idom dominates all the join's predecessors).
+    """
+    graph = cfg.to_digraph(program)
+    idom = nx.immediate_dominators(graph, program.entry)
+    pos = {label: i for i, label in enumerate(cfg.topo_order(program))}
+    children: dict[str, list[str]] = {b.label: [] for b in program.blocks}
+    for label, dom in idom.items():
+        if label != program.entry:
+            children[dom].append(label)
+    for kids in children.values():
+        kids.sort(key=lambda lb: pos[lb], reverse=True)
+    return children
+
+
+def _nested_block_lines(
+    label: str,
+    program: ast.Program,
+    by_label: dict[str, ast.Block],
+    children: dict[str, list[str]],
+    live: BlockLiveness,
+    names: ShallowNames,
+    types: dict[str, Ty],
+) -> list[str]:
+    params = " ".join(
+        f"({names.regs[p]} : {_ty_str(types[p])})" for p in live.phi_targets[label]
+    )
+    head = f"let rec {names.block_defs[label]}{' ' + params if params else ''} : Prop :="
+    prefix = tuple(
+        ln
+        for child in children[label]
+        for ln in _nested_block_lines(
+            child, program, by_label, children, live, names, types
+        )
+    )
+    body = _shallow_body(
+        by_label[label], program, live.phi_targets, names, types, prefix=prefix
+    )
+    return [head, *(f"  {ln}" for ln in body)]
+
+
 def shallow_module(
     program: ast.Program,
     num: Numbering,
@@ -431,6 +483,8 @@ def shallow_module(
     names: ShallowNames,
     module_name: str,
     source: str | None = None,
+    *,
+    nested: bool = False,
 ) -> str:
     by_label = {b.label: b for b in program.blocks}
     lines = [
@@ -439,18 +493,47 @@ def shallow_module(
         f"namespace {module_name}.Shallow",
         "",
         "/-!",
-        "Blocks in reverse topological order; each `ok_<label>` states",
-        '"execution from the top of <label> never fails an assert".',
-        "-/",
     ]
-    for label in reversed(cfg.topo_order(program)):
-        block = by_label[label]
-        params = " ".join(
-            f"({names.regs[p]} : {_ty_str(types[p])})" for p in live.params[label]
+    if nested:
+        lines.extend([
+            "Blocks nested by immediate dominator (`let rec`); parameters are",
+            "phi targets only - live-ins are captured lexically. Each",
+            '`ok_<label>` states "execution from the top of <label> never',
+            'fails an assert".',
+            "-/",
+        ])
+        assert program.entry is not None
+        children = _dominator_children(program)
+        entry = by_label[program.entry]
+        prefix = tuple(
+            ln
+            for child in children[program.entry]
+            for ln in _nested_block_lines(
+                child, program, by_label, children, live, names, types
+            )
         )
-        sig = f"def {names.block_defs[label]}{' ' + params if params else ''} : Prop :="
-        lines.extend(["", sig])
-        lines.extend(f"  {ln}" for ln in _shallow_body(block, program, live, names, types))
+        body = _shallow_body(
+            entry, program, live.phi_targets, names, types, prefix=prefix
+        )
+        lines.extend(["", f"def {names.block_defs[program.entry]} : Prop :="])
+        lines.extend(f"  {ln}" for ln in body)
+    else:
+        lines.extend([
+            "Blocks in reverse topological order; each `ok_<label>` states",
+            '"execution from the top of <label> never fails an assert".',
+            "-/",
+        ])
+        for label in reversed(cfg.topo_order(program)):
+            block = by_label[label]
+            params = " ".join(
+                f"({names.regs[p]} : {_ty_str(types[p])})" for p in live.params[label]
+            )
+            sig = f"def {names.block_defs[label]}{' ' + params if params else ''} : Prop :="
+            lines.extend(["", sig])
+            lines.extend(
+                f"  {ln}"
+                for ln in _shallow_body(block, program, live.params, names, types)
+            )
     lines.extend(["", f"end {module_name}.Shallow", ""])
     return "\n".join(lines)
 

@@ -42,6 +42,25 @@ header). "Needs" is `core` (dependency-free core Lean) or `Mathlib`.
 | [`Additivity`](./Additivity.lean) | [`nla_toassets_additivity`](../../docs/vc/examples/nla_toassets_additivity.ttac) | 1 | ~28ms | tight (depends on the div remainders); the two full div characterizations + `nlinarith` | Mathlib |
 | [`FeeWaterfall`](./FeeWaterfall.lean) | [`nla_fee_waterfall`](../../docs/vc/examples/nla_fee_waterfall.ttac) | 34 | ~345ms | large: 8-stage waivable-fee waterfall; a bottom-up per-stage lemma keeps the proof **linear in the stages** (no 2⁸ branch blow-up) | core |
 
+## Nested (dominator-tree) variants
+
+Three of the examples also exist in the **nested** shallow form
+(`ttac lean --nested`): blocks are `let rec` defs inside their
+immediate dominator's body instead of top-level defs, so live-ins are
+captured lexically ("SSA is functional programming") and parameters
+shrink to phi targets only — `FeeWaterfall`'s `ok_stage1` drops from 18
+declared parameters to 0. The elaborator lambda-lifts each `let rec`
+into a named constant (`ok_entry.ok_join_a.ok_join_b`, nesting-path
+qualified), so the merge-point-lemma proof pattern carries over
+unchanged; only the `unfold` spellings and capture-order argument
+lists differ.
+
+| Nested variant | Flat twin | What it demonstrates |
+|---|---|---|
+| [`NestedConvertCap`](./NestedConvertCap.lean) | `ConvertCap` | minimal case: `ok_join` keeps only its phi target |
+| [`NestedShareBurnU`](./NestedShareBurnU.lean) | `ShareBurnU` | the folded-merge lemma (`join_b_mono`) against a lifted nested constant |
+| [`NestedFeeWaterfall`](./NestedFeeWaterfall.lean) | `FeeWaterfall` | zero-parameter stage defs; the linear `safe_stage` chain re-proved verbatim |
+
 ## What the ladder shows
 
 - **Assume-guarded programs** (`ShareBurn`, `Withdrawal`) reduce to
@@ -77,7 +96,7 @@ directory in VS Code to browse the proofs with the Lean server.
 
 ```bash
 cd lean
-lake build TtacShallow          # builds all nine examples (~2s after Mathlib is cached)
+lake build TtacShallow          # nine examples + three nested variants (~2s after Mathlib is cached)
 ```
 
 `ShareBurn`, `Withdrawal`, `Monotone`, `Superadd`, `Roundtrip`,

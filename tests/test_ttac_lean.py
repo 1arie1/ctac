@@ -230,6 +230,68 @@ def test_shallow_text_pins():
     assert text.index("def ok_neg") < text.index("def ok_entry")
 
 
+def test_nested_shallow_text_pins():
+    res = generate_lean(
+        parse_program(fx.SCALAR_DIAMOND), module_name="Diamond", nested=True
+    )
+    text = res.shallow_text
+    # One top-level def; every other block is a let rec under its idom.
+    assert text.count("def ok_") == 1
+    assert "def ok_entry : Prop :=" in text
+    # Parameters are phi targets only: join keeps y, pos/neg lose their
+    # threaded live-in x (captured lexically).
+    assert "let rec ok_join (y : Int) : Prop :=" in text
+    assert "let rec ok_pos : Prop :=" in text
+    assert "let rec ok_neg : Prop :=" in text
+    # Call sites still pass the phi arm values, nothing else.
+    assert "ok_join y1" in text
+    assert "ok_join y2" in text
+    assert "(c = true → ok_pos) ∧ (c = false → ok_neg)" in text
+    # Join is defined before its predecessors (reverse topological siblings).
+    assert text.index("let rec ok_join") < text.index("let rec ok_pos")
+    # Deep text is unaffected by nesting.
+    assert "def prog : Program where" in res.deep_text
+
+
+def test_nested_assert_parenthesizes_let_rec_continuation():
+    src = """\
+entry:
+  x := havoc
+  ok0 := x <= x
+  assert ok0
+  c := 0 <= x
+  if c goto pos else neg
+
+pos:
+  y1 := x + 1
+  goto join
+
+neg:
+  y2 := 0 - x
+  goto join
+
+join:
+  y := phi [pos: y1, neg: y2]
+  ok := 0 <= y
+  assert ok
+  halt
+"""
+    res = generate_lean(parse_program(src), module_name="Prog", nested=True)
+    # The assert continuation (nested let recs + terminator) is one
+    # parenthesized group under the conjunction.
+    assert "ok0 = true ∧\n  (let c" in res.shallow_text
+    assert res.shallow_text.count("(let") == 1
+
+
+def test_nested_rejects_unreachable_block():
+    src = fx.SCALAR_DIAMOND + "\ndead:\n  d := 1\n  halt\n"
+    with pytest.raises(LeanGenError) as exc:
+        generate_lean(parse_program(src), module_name="Prog", nested=True)
+    assert any("unreachable" in e for e in exc.value.errors)
+    # Flat emission still accepts the same program.
+    generate_lean(parse_program(src), module_name="Prog", nested=False)
+
+
 def test_shallow_assume_and_division():
     src = """\
 entry:
@@ -306,6 +368,18 @@ def test_cli_name_override(tmp_path):
     assert result.exit_code == 0
     assert (out / "Diamond" / "Deep.lean").is_file()
     assert 'defaultTargets = ["Diamond"]' in (out / "lakefile.toml").read_text()
+
+
+def test_cli_nested_flag(tmp_path):
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["lean", _write(tmp_path, fx.SCALAR_DIAMOND), "-o", str(out),
+         "--no-deep", "--nested", "--plain"],
+    )
+    assert result.exit_code == 0
+    text = (out / "Prog" / "Shallow.lean").read_text()
+    assert "let rec ok_join (y : Int) : Prop :=" in text
 
 
 def test_cli_existing_dir_needs_force(tmp_path):

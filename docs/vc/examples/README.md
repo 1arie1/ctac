@@ -82,7 +82,11 @@ theorem stubs (generated once, never overwritten — proofs written there
 survive regeneration). `--build` runs the lake build directly.
 `--no-deep` / `--no-shallow` select a single embedding; a shallow-only
 project is pure core Lean (no `Ttac` library, no mathlib) and builds in
-under a second.
+under a second. `--nested` switches the shallow embedding from
+top-level per-block defs to `let rec` defs nested under each block's
+immediate dominator: live-ins are then captured lexically and block
+parameters shrink to phi targets only (see
+`lean/TtacShallow/README.md`, "Nested variants").
 
 `ttac lean` accepts the scalar fragment: `int`/`bool` registers,
 loop-free CFG, no use-before-def. Dynamic (multi-block) definitions are
@@ -91,8 +95,9 @@ the `practical_*` and `nla_*` scalar programs transpile directly
 without hand-rewriting the merges. Bytemaps and references are still
 rejected (the shallow embedding has no map story yet).
 
-Worked shallow proofs for three of these programs live as a package in
-the repo's Lean project, `lean/TtacShallow/` (open `lean/` in VS Code):
+Worked shallow proofs for nine of these programs live as a package in
+the repo's Lean project, `lean/TtacShallow/` (open `lean/` in VS Code),
+plus nested-emission (`--nested`) variants of three of them:
 
 The proofs trace a difficulty ladder — from a one-shot tactic on the
 assume-guarded programs, through core-Lean division lemmas, to a

@@ -440,6 +440,12 @@ def lean(
     shallow: bool = typer.Option(
         True, "--shallow/--no-shallow", help="Emit the shallow embedding (per-block Props)."
     ),
+    nested: bool = typer.Option(
+        False,
+        "--nested",
+        help="Nest shallow block Props by immediate dominator (let rec); "
+        "parameters are phi targets only.",
+    ),
     force: bool = typer.Option(False, "--force", help="Overwrite an existing output directory."),
     build: bool = typer.Option(False, "--build", help="Run 'lake build' on the result."),
     plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
@@ -456,7 +462,8 @@ def lean(
     source = None if file == "-" else Path(file).name
     try:
         res = generate_lean(
-            program, module_name=module_name, source=source, deep=deep, shallow=shallow
+            program, module_name=module_name, source=source, deep=deep,
+            shallow=shallow, nested=nested,
         )
     except LeanGenError as exc:
         for msg in exc.errors:
