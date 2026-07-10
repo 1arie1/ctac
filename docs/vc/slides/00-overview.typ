@@ -31,6 +31,12 @@
   #text(size: 44pt, weight: "bold")[VC Generation]
   #v(0.2cm)
   #text(size: 28pt)[Overview]
+  #v(0.8cm)
+  #text(size: 18pt, weight: "medium", fill: muted)[Crafted by Arie Gurfinkel]
+  #linebreak()
+  #text(size: 16pt, fill: muted)[Made by Codex 🤖]
+  #v(0.7cm)
+  #image("assets/waterloo-engineering-logo-horiz-rgb.png", width: 8.6cm)
 ]
 
 == Is This Program Safe?
