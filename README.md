@@ -23,6 +23,19 @@ manual — drill into `--help` for flag-level detail.
 
 Python **3.11+** (3.14 is fine). From the repo root:
 
+With [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync
+uv run ctac --help
+uv run pytest
+```
+
+`uv sync` installs the project and its development dependencies into
+`.venv`; use `uv run` to run commands in that environment.
+
+With pip:
+
 ```bash
 python3.14 -m venv .venv
 .venv/bin/pip install -U pip
