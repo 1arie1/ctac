@@ -1,0 +1,31 @@
+// Safe (UNSAT): converted assets never exceed the total. Multi-block: an
+// exact/proportional branch merged by a phi, with the nonlinear floor mul-div
+// on the proportional arm only.
+//   assets = (shares == total_shares) ? total_assets : floor(total_assets*shares/total_shares)
+//   assume 0 <= shares <= total_shares, 0 <= total_assets, 1 <= total_shares
+//   assert assets <= total_assets
+entry:
+  total_assets := havoc
+  total_shares := havoc
+  shares := havoc
+  assume 0 <= total_assets
+  assume 1 <= total_shares
+  assume 0 <= shares
+  assume shares <= total_shares
+  is_exact := shares == total_shares
+  if is_exact goto exact else prop
+
+exact:
+  assets_e := total_assets
+  goto join
+
+prop:
+  raw := total_assets * shares
+  assets_p := raw / total_shares
+  goto join
+
+join:
+  assets := phi [exact: assets_e, prop: assets_p]
+  ok := assets <= total_assets
+  assert ok
+  halt

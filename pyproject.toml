@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 ctac = "ctac.tool.main:main"
+ttac = "ctac.ttac.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ctac"]

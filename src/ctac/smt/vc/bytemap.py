@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ctac.smt.util import at_most_one_terms
 from ctac.smt.vc.config import BytemapConfig, FactKind
-from ctac.smt.vc.terms import Int, Term, app, eq, term
+from ctac.smt.vc.terms import Int, Term, app, eq, ite, term
 
 _MAP_PARAM = "idx"
 
@@ -75,6 +76,27 @@ class UfDefineFunBytemap:
                 Int,
             ),
         )
+
+    def phi(self, name: str, cases: list[tuple[Term, MapTerm]]) -> MapTerm:
+        """DSA merge of maps at a join, pointwise: a ``define-fun`` whose
+        body is the folded ite chain over predecessor guards (last arm
+        is the else-default), plus the same unguarded at-most-one
+        clauses over the guards that ``VCBuilder.dynamic_def`` emits for
+        scalar merges - without them z3 can mark several predecessors
+        reachable and pick either arm."""
+        if not cases:
+            raise ValueError("bytemap phi requires at least one arm")
+
+        def body(param: Term) -> Term:
+            value = app(cases[-1][1].name, [param], Int)
+            for arm_guard, arm_map in reversed(cases[:-1]):
+                value = ite(arm_guard, app(arm_map.name, [param], Int), value, Int)
+            return value
+
+        result = self.define(name, body)
+        for clause in at_most_one_terms([g.text for g, _ in cases]):
+            self.vc.raw_fact(clause, kind=FactKind.ASSUME, origin="dsa-amo")
+        return result
 
     def select(self, map_term: MapTerm, index: Term) -> Term:
         raw = app(map_term.name, [index], Int)

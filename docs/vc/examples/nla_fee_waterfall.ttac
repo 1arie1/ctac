@@ -1,0 +1,192 @@
+// Safe (UNSAT): fee waterfall solvency. A balance passes through K stages;
+// each stage takes a proportional floor mul-div fee (rate/scale of the
+// current balance), waivable via a branch. Assert the final balance is
+// still >= 0 -- you never pay out more than you hold. Large multi-block
+// nonlinear: a branch+phi diamond per stage, K nonlinear fees chained.
+entry:
+  scale := havoc
+  v0 := havoc
+  assume 1 <= scale
+  assume 0 <= v0
+  rate1 := havoc
+  assume 0 <= rate1
+  assume rate1 <= scale
+  waive1 := havoc
+  rate2 := havoc
+  assume 0 <= rate2
+  assume rate2 <= scale
+  waive2 := havoc
+  rate3 := havoc
+  assume 0 <= rate3
+  assume rate3 <= scale
+  waive3 := havoc
+  rate4 := havoc
+  assume 0 <= rate4
+  assume rate4 <= scale
+  waive4 := havoc
+  rate5 := havoc
+  assume 0 <= rate5
+  assume rate5 <= scale
+  waive5 := havoc
+  rate6 := havoc
+  assume 0 <= rate6
+  assume rate6 <= scale
+  waive6 := havoc
+  rate7 := havoc
+  assume 0 <= rate7
+  assume rate7 <= scale
+  waive7 := havoc
+  rate8 := havoc
+  assume 0 <= rate8
+  assume rate8 <= scale
+  waive8 := havoc
+  goto stage1
+
+stage1:
+  raw1 := v0 * rate1
+  fee1 := raw1 / scale
+  if waive1 goto waived1 else charged1
+
+waived1:
+  effw1 := 0
+  goto merge1
+
+charged1:
+  effc1 := fee1
+  goto merge1
+
+merge1:
+  eff1 := phi [waived1: effw1, charged1: effc1]
+  v1 := v0 - eff1
+  goto stage2
+
+stage2:
+  raw2 := v1 * rate2
+  fee2 := raw2 / scale
+  if waive2 goto waived2 else charged2
+
+waived2:
+  effw2 := 0
+  goto merge2
+
+charged2:
+  effc2 := fee2
+  goto merge2
+
+merge2:
+  eff2 := phi [waived2: effw2, charged2: effc2]
+  v2 := v1 - eff2
+  goto stage3
+
+stage3:
+  raw3 := v2 * rate3
+  fee3 := raw3 / scale
+  if waive3 goto waived3 else charged3
+
+waived3:
+  effw3 := 0
+  goto merge3
+
+charged3:
+  effc3 := fee3
+  goto merge3
+
+merge3:
+  eff3 := phi [waived3: effw3, charged3: effc3]
+  v3 := v2 - eff3
+  goto stage4
+
+stage4:
+  raw4 := v3 * rate4
+  fee4 := raw4 / scale
+  if waive4 goto waived4 else charged4
+
+waived4:
+  effw4 := 0
+  goto merge4
+
+charged4:
+  effc4 := fee4
+  goto merge4
+
+merge4:
+  eff4 := phi [waived4: effw4, charged4: effc4]
+  v4 := v3 - eff4
+  goto stage5
+
+stage5:
+  raw5 := v4 * rate5
+  fee5 := raw5 / scale
+  if waive5 goto waived5 else charged5
+
+waived5:
+  effw5 := 0
+  goto merge5
+
+charged5:
+  effc5 := fee5
+  goto merge5
+
+merge5:
+  eff5 := phi [waived5: effw5, charged5: effc5]
+  v5 := v4 - eff5
+  goto stage6
+
+stage6:
+  raw6 := v5 * rate6
+  fee6 := raw6 / scale
+  if waive6 goto waived6 else charged6
+
+waived6:
+  effw6 := 0
+  goto merge6
+
+charged6:
+  effc6 := fee6
+  goto merge6
+
+merge6:
+  eff6 := phi [waived6: effw6, charged6: effc6]
+  v6 := v5 - eff6
+  goto stage7
+
+stage7:
+  raw7 := v6 * rate7
+  fee7 := raw7 / scale
+  if waive7 goto waived7 else charged7
+
+waived7:
+  effw7 := 0
+  goto merge7
+
+charged7:
+  effc7 := fee7
+  goto merge7
+
+merge7:
+  eff7 := phi [waived7: effw7, charged7: effc7]
+  v7 := v6 - eff7
+  goto stage8
+
+stage8:
+  raw8 := v7 * rate8
+  fee8 := raw8 / scale
+  if waive8 goto waived8 else charged8
+
+waived8:
+  effw8 := 0
+  goto merge8
+
+charged8:
+  effc8 := fee8
+  goto merge8
+
+merge8:
+  eff8 := phi [waived8: effw8, charged8: effc8]
+  v8 := v7 - eff8
+  goto done
+
+done:
+  ok := 0 <= v8
+  assert ok
+  halt

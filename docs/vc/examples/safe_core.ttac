@@ -1,0 +1,22 @@
+// Safe (UNSAT): the assert in `ok` only runs when `c` is true.
+// From docs/vc/sections/syntax-semantics.typ.
+entry:
+  M := havoc
+  i := havoc
+  limit := havoc
+  x := M[i]
+  y := x + 1
+  M2 := M[i := y]
+  c := y <= limit
+  if c goto ok else bad
+
+ok:
+  assert c
+  goto exit
+
+bad:
+  assume not c
+  goto exit
+
+exit:
+  halt

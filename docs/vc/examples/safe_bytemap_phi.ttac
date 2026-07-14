@@ -1,0 +1,23 @@
+// Safe (UNSAT): both branches store v at i into their own map version;
+// the phi-merged map reads back v at i on every path.
+entry:
+  M := havoc
+  i := havoc
+  v := havoc
+  c := havoc
+  if c goto left else right
+
+left:
+  M1 := M[i := v]
+  goto join
+
+right:
+  M2 := M[i := v]
+  goto join
+
+join:
+  M3 := phi [left: M1, right: M2]
+  x := M3[i]
+  ok := x == v
+  assert ok
+  halt

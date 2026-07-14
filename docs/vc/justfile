@@ -1,0 +1,10 @@
+pdf := "vcgen.pdf"
+slides := "00-overview 01-syntax-semantics-demo 02-well-formedness 03-seahorn-vcgen 04-boogie-vcgen 05-seabmc-vcgen 06-references-borrowing"
+slides_all := "vcgen-slides.pdf"
+
+build:
+	typst compile main.typ {{pdf}}
+
+slides:
+	for s in {{slides}}; do typst compile --root . slides/$s.typ $s.pdf; done
+	typst compile --root . slides/vcgen-slides.typ {{slides_all}}

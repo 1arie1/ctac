@@ -1,0 +1,10 @@
+// Safe (UNSAT): store v at i, read it back -> always equals v.
+entry:
+  M := havoc
+  i := havoc
+  v := havoc
+  M2 := M[i := v]
+  x := M2[i]
+  ok := x == v
+  assert ok
+  halt

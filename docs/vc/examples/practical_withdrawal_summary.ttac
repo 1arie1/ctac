@@ -1,0 +1,70 @@
+// Safe (UNSAT): distilled from a larger TAC withdrawal-summary proof.
+// Keeps the utilization branch, mode-dependent amount selection, fixed-point
+// scaling, and final "summary amount is within the requested/available bounds".
+entry:
+  liquidity := havoc
+  debt_before := havoc
+  reserves := havoc
+  deposit_shares := havoc
+  total_deposit_shares := havoc
+  request := havoc
+  price := havoc
+  mode := havoc
+  assume debt_before <= liquidity
+  liquid_after_debt := liquidity - debt_before
+  assume reserves <= liquid_after_debt
+  available_cash := liquid_after_debt - reserves
+  assume 1 <= total_deposit_shares
+  assume deposit_shares <= total_deposit_shares
+  assume 1 <= request
+  assume 1 <= price
+  assume mode == 1 or mode == 2
+
+  old_util := debt_before * 100 / liquidity
+  hypothetical_debt := debt_before + request
+  new_util := hypothetical_debt * 100 / liquidity
+  utilization_rises := old_util < new_util
+  if utilization_rises goto elevated_rate else base_rate
+
+base_rate:
+  rate := 100
+  goto rate_join
+
+elevated_rate:
+  rate := 150
+  goto rate_join
+
+rate_join:
+  share_value_raw := available_cash * deposit_shares
+  share_value := share_value_raw / total_deposit_shares
+  priced_value := share_value * price / rate
+  assume priced_value <= available_cash
+  is_repay_mode := mode == 1
+  if is_repay_mode goto repay_mode else withdraw_mode
+
+repay_mode:
+  candidate := priced_value
+  goto candidate_join
+
+withdraw_mode:
+  candidate := available_cash
+  goto candidate_join
+
+candidate_join:
+  request_is_smaller := request < candidate
+  if request_is_smaller goto cap_request else cap_available
+
+cap_request:
+  withdraw_amount := request
+  goto assert_block
+
+cap_available:
+  withdraw_amount := candidate
+  goto assert_block
+
+assert_block:
+  ok_request := withdraw_amount <= request
+  ok_cash := withdraw_amount <= available_cash
+  ok := ok_request and ok_cash
+  assert ok
+  halt

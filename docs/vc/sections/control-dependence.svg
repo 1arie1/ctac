@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="330" viewBox="0 0 760 330" role="img" aria-label="Control-dependence example">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      .node { fill: #f8fafc; stroke: #64748b; stroke-width: 2; rx: 8; }
+      .branch { fill: #eff6ff; stroke: #0369a1; stroke-width: 2.4; rx: 8; }
+      .dependent { fill: #ecfdf5; stroke: #047857; stroke-width: 2.4; rx: 8; }
+      .bypass { fill: #fff7ed; stroke: #c2410c; stroke-width: 2; rx: 8; }
+      .edge { stroke: #334155; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .focus { stroke: #0369a1; stroke-width: 3.2; fill: none; marker-end: url(#arrow); }
+      .text { font-family: Menlo, Consolas, monospace; font-size: 18px; fill: #0f172a; text-anchor: middle; dominant-baseline: middle; }
+      .label { font-family: Libertinus Serif, Georgia, serif; font-size: 16px; fill: #334155; text-anchor: middle; }
+      .small { font-family: Libertinus Serif, Georgia, serif; font-size: 15px; fill: #475569; text-anchor: middle; }
+      .caption { font-family: Libertinus Serif, Georgia, serif; font-size: 18px; font-weight: 700; fill: #0369a1; text-anchor: middle; }
+    </style>
+  </defs>
+
+  <text class="caption" x="380" y="28">Control dependence: b1 depends on the branch at b2</text>
+
+  <rect class="branch" x="330" y="55" width="100" height="48"/>
+  <text class="text" x="380" y="79">b2</text>
+  <text class="small" x="380" y="122">branch</text>
+
+  <rect class="node" x="170" y="150" width="100" height="48"/>
+  <text class="text" x="220" y="174">s</text>
+
+  <rect class="bypass" x="490" y="150" width="100" height="48"/>
+  <text class="text" x="540" y="174">t</text>
+
+  <rect class="dependent" x="170" y="235" width="100" height="48"/>
+  <text class="text" x="220" y="259">b1</text>
+
+  <rect class="node" x="490" y="235" width="100" height="48"/>
+  <text class="text" x="540" y="259">exit</text>
+
+  <path class="focus" d="M 336 101 C 300 125 265 135 230 150"/>
+  <text class="label" x="270" y="111">true</text>
+
+  <path class="edge" d="M 424 101 C 460 125 500 135 532 150"/>
+  <text class="label" x="490" y="111">false</text>
+
+  <path class="focus" d="M 220 198 L 220 235"/>
+  <text class="label" x="144" y="219">all paths from s</text>
+
+  <path class="edge" d="M 270 259 L 490 259"/>
+  <path class="edge" d="M 540 198 L 540 235"/>
+
+  <text class="small" x="220" y="315">b1 postdominates s</text>
+  <text class="small" x="540" y="315">bypass: b1 does not postdominate b2</text>
+</svg>

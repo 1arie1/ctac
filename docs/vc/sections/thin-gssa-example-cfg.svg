@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="520" viewBox="0 0 760 520" role="img" aria-label="Thin GSSA example CFG">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0369a1"/>
+    </marker>
+    <style>
+      .cluster { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.5; stroke-dasharray: 7 6; rx: 12; }
+      .entry { fill: #eff6ff; stroke: #0369a1; stroke-width: 2.4; rx: 8; }
+      .region { fill: #ecfdf5; stroke: #047857; stroke-width: 2.2; rx: 8; }
+      .local { fill: #fff7ed; stroke: #c2410c; stroke-width: 2; rx: 8; }
+      .target { fill: #fefce8; stroke: #a16207; stroke-width: 2.4; rx: 8; }
+      .edge { stroke: #334155; stroke-width: 2.1; fill: none; marker-end: url(#arrow); }
+      .main { stroke: #0369a1; stroke-width: 3; fill: none; marker-end: url(#arrow-blue); }
+      .text { font-family: Menlo, Consolas, monospace; font-size: 17px; fill: #0f172a; text-anchor: middle; dominant-baseline: middle; }
+      .label { font-family: Libertinus Serif, Georgia, serif; font-size: 16px; fill: #334155; text-anchor: middle; }
+      .blue { fill: #0369a1; font-weight: 700; }
+      .orange { fill: #c2410c; font-weight: 700; }
+      .label-bg { fill: white; stroke: #e2e8f0; stroke-width: 1; rx: 5; }
+      .caption { font-family: Libertinus Serif, Georgia, serif; font-size: 18px; font-weight: 700; fill: #0369a1; text-anchor: middle; }
+    </style>
+  </defs>
+
+  <text class="caption" x="380" y="28">CFG for the Thin GSSA example</text>
+
+  <rect class="entry" x="330" y="55" width="100" height="48"/>
+  <text class="text" x="380" y="79">entry</text>
+
+  <rect class="cluster" x="58" y="130" width="280" height="245"/>
+  <text class="label blue" x="198" y="153">a-region selected by c1</text>
+
+  <rect class="cluster" x="422" y="130" width="280" height="245"/>
+  <text class="label blue" x="562" y="153">b-region selected by not c1</text>
+
+  <rect class="region" x="148" y="175" width="100" height="48"/>
+  <text class="text" x="198" y="199">a</text>
+
+  <rect class="local" x="88" y="275" width="100" height="48"/>
+  <text class="text" x="138" y="299">x</text>
+
+  <rect class="region" x="208" y="275" width="100" height="48"/>
+  <text class="text" x="258" y="299">a_join</text>
+
+  <rect class="region" x="512" y="175" width="100" height="48"/>
+  <text class="text" x="562" y="199">b</text>
+
+  <rect class="local" x="572" y="275" width="100" height="48"/>
+  <text class="text" x="622" y="299">y</text>
+
+  <rect class="region" x="452" y="275" width="100" height="48"/>
+  <text class="text" x="502" y="299">b_join</text>
+
+  <rect class="target" x="330" y="430" width="100" height="48"/>
+  <text class="text" x="380" y="454">n</text>
+
+  <path class="main" d="M 337 102 C 285 118 235 145 205 175"/>
+  <rect class="label-bg" x="275" y="121" width="34" height="22"/>
+  <text class="label blue" x="292" y="138">c1</text>
+
+  <path class="main" d="M 423 102 C 475 118 525 145 555 175"/>
+  <rect class="label-bg" x="452" y="121" width="58" height="22"/>
+  <text class="label blue" x="481" y="138">not c1</text>
+
+  <path class="edge" d="M 174 223 C 150 244 140 256 138 275"/>
+  <rect class="label-bg" x="124" y="236" width="34" height="22"/>
+  <text class="label orange" x="141" y="253">c2</text>
+
+  <path class="edge" d="M 222 223 C 245 244 256 256 258 275"/>
+  <rect class="label-bg" x="240" y="236" width="58" height="22"/>
+  <text class="label" x="269" y="253">not c2</text>
+
+  <path class="edge" d="M 188 299 L 208 299"/>
+
+  <path class="edge" d="M 586 223 C 610 244 620 256 622 275"/>
+  <rect class="label-bg" x="604" y="236" width="34" height="22"/>
+  <text class="label orange" x="621" y="253">c3</text>
+
+  <path class="edge" d="M 538 223 C 515 244 504 256 502 275"/>
+  <rect class="label-bg" x="462" y="236" width="58" height="22"/>
+  <text class="label" x="491" y="253">not c3</text>
+
+  <path class="edge" d="M 572 299 L 552 299"/>
+
+  <path class="main" d="M 258 323 C 280 370 320 405 362 430"/>
+  <path class="main" d="M 502 323 C 480 370 440 405 398 430"/>
+
+  <rect class="label-bg" x="230" y="386" width="130" height="24"/>
+  <text class="label blue" x="295" y="403">incoming c1</text>
+  <rect class="label-bg" x="400" y="386" width="158" height="24"/>
+  <text class="label blue" x="479" y="403">incoming not c1</text>
+</svg>
