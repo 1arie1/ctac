@@ -138,7 +138,7 @@ The main case is a reference to an integer cell:
 
 == Borrow Commands
 
-```text
+```tac
 r := borrow M[i]
 r, M2 := borrow_mut M[i]
 q := borrow_ref r
