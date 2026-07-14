@@ -1,13 +1,13 @@
 = Overview
 
-This document describes the foundations of verification-condition generation
-for ctac.
+This document presents verification-condition generation for ctac through a
+small explanatory language and three VC generation algorithms.
 
 The purpose is not to mirror the current implementation module-by-module.
-Instead, the goal is to define the mathematical objects, semantic conventions,
-and proof obligations that a VC generator for TAC should satisfy. The
-implementation can then be evaluated against this foundation, and future
-encoder variants can share the same vocabulary.
+Instead, the goal is to define a common program model and use it to explain how
+different encodings represent control flow, data flow, and assertion failure.
+The presentation also identifies the program forms and soundness conditions on
+which those encodings rely.
 
 The small language used in this document is *Tiny TAC*, abbreviated `ttac`.
 It is a TAC-like core language for explaining VC generation, not a complete
@@ -15,10 +15,11 @@ description of the implementation input format.
 
 == Scope
 
-We start with loop-free `ttac` programs that have a distinguished entry block and
-a single assertion site. Multi-assert programs are treated as a preprocessing
-problem: they may be transformed into an equivalent single-assert program
-before VC generation.
+We start with loop-free `ttac` programs in single-entry single-exit (SESE) form.
+The core VCGen problem uses single-assume single-assert (SASA) form: the
+distinguished exit block contains one accumulated assumption and one purified
+assertion. Programs with assumptions or assertions elsewhere are reduced to
+this form before the core encodings are applied.
 
 At this level, a VC generator consumes:
 
@@ -26,12 +27,12 @@ At this level, a VC generator consumes:
 - commands inside each block,
 - a symbol table and sort information,
 - `ttac` expressions over scalars and maps,
-- the assertion whose failure reachability is being queried.
+- an exit assumption and assertion whose failure is being queried.
 
 It produces an SMT formula whose satisfiability answers the assertion-failure
 question:
 
-$ "sat"("VC"(P, A)) <=> "there exists an execution of P reaching a failure of A" $
+$ "sat"("VCGen"(P)) <=> "P has an unsafe entry-to-exit execution" $
 
 Thus, an unsatisfiable VC means the assertion is proved for the encoded
 program semantics.
@@ -41,38 +42,38 @@ program semantics.
 The foundational presentation should answer these questions:
 
 - What is the `ttac` program model used by VC generation?
-- What does it mean for a block or command to be reachable?
+- Which well-formed program representations do the encodings require?
 - How are assignments, havoc, assume, branch, and assert commands interpreted?
-- How are path conditions represented?
-- How are scalar expressions lowered to SMT?
-- How are bytemaps and other map-like values modeled?
-- Which side conditions are required before VC generation?
-- Which transformations are semantic preprocessing, and which are encoding
-  choices?
+- How do explicit reachability, weakest-precondition equations, and gated SSA
+  represent the same path semantics?
+- Which optimizations and side conditions preserve soundness?
+- How can references and borrows be compiled into the core language using
+  prophecy-style values?
 
 == Document Plan
 
-The intended structure is:
+The document is organized as follows:
 
-1. Program model: blocks, commands, symbols, expressions, and control flow.
-2. Operational intuition: executions, feasibility, and assertion failure.
-3. VC shape: reachability variables, command constraints, and failure query.
-4. Expression semantics: arithmetic, bit-vector-like integer domains, and
-   uninterpreted operations.
-5. Map semantics: reads, writes, and finite update chains.
-6. Preconditions and preprocessing: acyclicity, single assertion, critical
-   edges, and well-formed definitions.
-7. Soundness statement: what it means for the generated VC to be sound with
-   respect to `ttac` executions.
+1. *Syntax and semantics* defines Tiny TAC types, expressions, bytemaps,
+   commands, basic blocks, and executions.
+2. *Well-formed programs* defines SESE, SSA, DSA, and SASA, and states the
+   safety query used by VC generation.
+3. *VC generation algorithms* develops three encodings of that query:
+   SeaHorn-style explicit block reachability, Boogie-style backward block
+   equations, and SeaBMC-style gated SSA. It also discusses encoding variants,
+   soundness pitfalls, Thin GSSA, and cone-of-influence reduction.
+4. *References and borrowing* extends Tiny TAC with constant and mutable
+   references, then compiles them back to the core language using reference
+   triples and prophecy-style promises.
 
 == Conventions
 
 We use $P$ for a `ttac` program, $B$ for the set of basic blocks, and
-$"entry"$ for the entry block. A block $b in B$ has a sequence of commands and
-zero or more successor blocks. Reachability of a block is represented
-abstractly by a Boolean predicate $R_b$.
+$"entry"$ and $"exit"$ for its distinguished entry and exit blocks. A block
+$b in B$ has a sequence of commands followed by a terminator. Where an encoding
+uses explicit block reachability, it writes the Boolean variable $bb_b$.
 
-When we write $"VC"(P, A)$, $A$ denotes the selected assertion site. The VC is
-oriented toward bug finding: satisfiable means an assertion-failure execution
-exists, and unsatisfiable means no such execution exists under the modeled
-semantics.
+When we write $"VCGen"(P)$, $P$ is understood to satisfy the program-form
+requirements of the algorithm under discussion. The formula is oriented toward
+bug finding: satisfiable means an unsafe execution exists, and unsatisfiable
+means no such execution exists under the modeled semantics.

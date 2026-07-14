@@ -1,6 +1,6 @@
 #set document(
   title: "ctac VC Generation",
-  author: "ctac contributors",
+  author: "Arie Gurfinkel",
 )
 
 #set page(
@@ -19,7 +19,8 @@
 
 #align(center)[
   #text(size: 18pt, weight: "bold")[VC Generation] \
-  #text(size: 11pt)[Arie Gurfinkel]
+  #text(size: 11pt)[Crafted by Arie Gurfinkel] \
+  #text(size: 11pt)[Made by Codex]
 ]
 
 #outline(title: "Contents")
