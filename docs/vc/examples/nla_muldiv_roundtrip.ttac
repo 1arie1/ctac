@@ -1,0 +1,27 @@
+// Safe (UNSAT): floor/ceil mul-div round-trip invariant, distilled to pure
+// integer arithmetic:  ceil( floor(a*b/c) * c / b )  <=  a   for a>=0, b>=1, c>=1.
+// (Convert shares to assets by a floor mul-div, convert back by a ceil mul-div:
+//  you cannot recover more than you started with.)
+//
+// Nonlinear: two variable products (a*b, q*c) and two variable-denominator
+// divisions (a floor div by c, a ceil div by b, the latter written (qc+b-1)/b).
+// z3 closes the clean form in ~10ms, but the shallow Lean embedding cannot use
+// `omega` (it abstracts every mul/ediv) -- the proof needs the floor lower bound
+// q*c <= a*b plus `Int.ediv_le_iff_le_mul`. Contrast the guarded practical_*
+// examples, where an `assume` hands over the ordering and `omega` alone closes.
+entry:
+  a := havoc
+  b := havoc
+  c := havoc
+  assume 0 <= a
+  assume 1 <= b
+  assume 1 <= c
+  ab := a * b
+  q := ab / c
+  qc := q * c
+  num := qc + b
+  num1 := num - 1
+  r := num1 / b
+  ok := r <= a
+  assert ok
+  halt

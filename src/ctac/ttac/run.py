@@ -320,8 +320,15 @@ class _Interp:
         arm = next((a for a in cmd.arms if a.label == prev), None)
         if arm is None:
             self.warnings.append(f"phi {t}: no arm for predecessor {prev!r}")
-            self.store.pop(t, None)
+            (self.memory if self._is_bytemap(t) else self.store).pop(t, None)
             return ("phi: no matching arm", None, False)
+        if self._is_bytemap(t):
+            try:
+                self.memory[t] = self._lookup_map(arm.value)
+            except UnknownValueError:
+                self.memory.pop(t, None)
+                return ("phi: unknown", None, False)
+            return ("bytemap phi", None, False)
         try:
             v = self.get_symbol(arm.value)
         except UnknownValueError:

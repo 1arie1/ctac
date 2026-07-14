@@ -14,6 +14,7 @@ from __future__ import annotations
 from .cfg_slice import restrict_to_block
 from .desugar import DesugarResult, desugar_refs
 from .single_assert import to_single_assert
+from .ssa import SsaResult, to_ssa
 from .ua import (
     MergeResult,
     SplitOutput,
@@ -26,6 +27,8 @@ from .ua import (
 __all__ = [
     "restrict_to_block",
     "to_single_assert",
+    "SsaResult",
+    "to_ssa",
     "DesugarResult",
     "desugar_refs",
     "MergeResult",

@@ -1,0 +1,17 @@
+name = "ttac"
+version = "0.1.0"
+defaultTargets = ["Ttac", "TtacExamples", "TtacShallow"]
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.31.0"
+
+[[lean_lib]]
+name = "Ttac"
+
+[[lean_lib]]
+name = "TtacExamples"
+
+[[lean_lib]]
+name = "TtacShallow"

@@ -17,7 +17,13 @@ import typer
 from . import ast, parse_program, pretty
 from .analysis import analyze_types, check_dsa, extract_def_use
 from .ast import Ty
-from .errors import TtacParseError, TtacTypeError, VcGenError
+from .errors import (
+    LeanGenError,
+    TtacParseError,
+    TtacTypeError,
+    VcCheckError,
+    VcGenError,
+)
 from .run import RunConfig, run_program
 from .stats import collect_stats, stats_to_dict
 from .transform import desugar_refs, merge_asserts, split_asserts
@@ -354,6 +360,11 @@ def desugar(
 def vcgen(
     file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
     cfg_encoding: str = typer.Option("bwd0", "--cfg-encoding", help="CFG-constraint encoding."),
+    merge: str = typer.Option(
+        "phi", "--merge",
+        help="Value-merge encoding: 'phi' (block-guard ITE chains) or "
+        "'gamma' (sea_gate-style thin gates over branch conditions).",
+    ),
     output: Path = typer.Option(None, "-o", "--output", help="Write the SMT-LIB VC here."),
     solve: bool = typer.Option(False, "--solve", help="Run z3 on the VC immediately."),
     model: Path = typer.Option(None, "--model", help="On sat, write the z3 model here."),
@@ -364,7 +375,7 @@ def vcgen(
     """Generate a seahorn-style SMT VC (merges multiple asserts first)."""
     program = _parse_or_exit(file)
     try:
-        res = generate_vc(program, cfg_encoding=cfg_encoding)
+        res = generate_vc(program, cfg_encoding=cfg_encoding, merge=merge)
     except (VcGenError, TtacTypeError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from exc
@@ -374,6 +385,8 @@ def vcgen(
             f"note: merged {res.asserts_before} assertions into a single __UA_ERROR sink",
             err=True,
         )
+    if merge == "gamma":
+        typer.echo(f"note: gamma merge applied at {res.gamma_sites} phi site(s)", err=True)
 
     if output is not None:
         output.write_text(res.smt_text, encoding="utf-8")
@@ -412,6 +425,286 @@ def _run_solver(res, model: Path | None, timeout: int | None, z3: str | None) ->
     typer.echo(out.status)
     if out.status == "sat" and model is not None:
         model.write_text(out.model_text, encoding="utf-8")
+
+
+@app.command()
+def lean(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    output: Path = typer.Option(
+        ..., "-o", "--output", help="Directory for the generated Lean project."
+    ),
+    name: str = typer.Option(None, "--name", help="Lean module name (default: from FILE)."),
+    deep: bool = typer.Option(
+        True, "--deep/--no-deep", help="Emit the deep embedding (Ttac term + semantics)."
+    ),
+    shallow: bool = typer.Option(
+        True, "--shallow/--no-shallow", help="Emit the shallow embedding (per-block Props)."
+    ),
+    nested: bool = typer.Option(
+        False,
+        "--nested",
+        help="Nest shallow block Props by immediate dominator (let rec); "
+        "parameters are phi targets only.",
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing output directory."),
+    build: bool = typer.Option(False, "--build", help="Run 'lake build' on the result."),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Emit a Lean 4 project with deep + shallow embeddings (scalar, loop-free SSA only)."""
+    from .lean import generate_lean, write_lean_project
+    from .lean.naming import module_name_for
+
+    if not deep and not shallow:
+        typer.echo("error: nothing to emit (--no-deep and --no-shallow)", err=True)
+        raise typer.Exit(2)
+    program = _parse_or_exit(file)
+    module_name = name or module_name_for(file)
+    source = None if file == "-" else Path(file).name
+    try:
+        res = generate_lean(
+            program, module_name=module_name, source=source, deep=deep,
+            shallow=shallow, nested=nested,
+        )
+    except LeanGenError as exc:
+        for msg in exc.errors:
+            typer.echo(f"error: {msg}", err=True)
+        raise typer.Exit(1) from exc
+    try:
+        written = write_lean_project(res, output, force=force)
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    if res.asserts == 0:
+        typer.echo("note: program has no assert; the safety theorems are vacuous", err=True)
+    for path in written:
+        typer.echo(f"wrote: {path}")
+    _ = plain
+    if build:
+        _run_lake_build(output, with_mathlib=res.deep_text is not None)
+    else:
+        cache = "lake exe cache get && " if res.deep_text is not None else ""
+        typer.echo(f"next: cd {output} && {cache}lake build")
+
+
+@app.command("vc-check")
+def vc_check(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    smt2: Path = typer.Argument(..., help="SMT-LIB VC produced by `ttac vcgen`."),
+    output: Path = typer.Option(
+        ..., "-o", "--output", help="Directory for the generated Lean project."
+    ),
+    name: str = typer.Option(None, "--name", help="Lean module name (default: from FILE)."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing output directory."),
+    build: bool = typer.Option(
+        True, "--build/--no-build", help="Run 'lake build' (the validation verdict)."
+    ),
+    precheck: bool = typer.Option(
+        True, "--precheck/--no-precheck", help="Diagnostic Python-side constraint diff."
+    ),
+    kernel: bool = typer.Option(
+        False, "--kernel", help="Prove vc_ok by kernel `decide` instead of `native_decide`."
+    ),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Validate an SMT VC against its program via a Lean-checked proof (single-assert, scalar, loop-free SSA)."""
+    from .lean import generate_vc_check, write_vc_check_project
+    from .lean.naming import module_name_for
+
+    if not smt2.is_file():
+        typer.echo(f"error: no such file: {smt2}", err=True)
+        raise typer.Exit(2)
+    program = _parse_or_exit(file)
+    module_name = name or module_name_for(file)
+    try:
+        res = generate_vc_check(
+            program,
+            smt2.read_text(encoding="utf-8"),
+            module_name=module_name,
+            source=None if file == "-" else Path(file).name,
+            smt_source=smt2.name,
+            precheck=precheck,
+            kernel=kernel,
+        )
+    except VcCheckError as exc:
+        for msg in exc.errors:
+            typer.echo(f"error: {msg}", err=True)
+        raise typer.Exit(1) from exc
+
+    try:
+        written = write_vc_check_project(res, output, force=force)
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    for m in res.mismatches:
+        typer.echo(f"precheck mismatch ({m.kind}): {m.detail}", err=True)
+    if res.mismatches:
+        typer.echo(
+            f"precheck: {len(res.mismatches)} mismatch(es) "
+            "(diagnostic only; the Lean build is authoritative)",
+            err=True,
+        )
+    for path in written:
+        typer.echo(f"wrote: {path}")
+    _ = plain
+    if build:
+        _run_lake_build(output)
+        typer.echo("vc-check: validated")
+    else:
+        typer.echo(f"next: cd {output} && lake exe cache get && lake build")
+        typer.echo("generated (not validated)")
+
+
+@app.command("ann-vc-check")
+def ann_vc_check(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    smt2: Path = typer.Argument(..., help="SMT-LIB VC produced by `ttac vcgen`."),
+    output: Path = typer.Option(
+        ..., "-o", "--output", help="Directory for the generated Lean project."
+    ),
+    name: str = typer.Option(None, "--name", help="Lean module name (default: from FILE)."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing output directory."),
+    build: bool = typer.Option(
+        True, "--build/--no-build", help="Run 'lake build' (the validation verdict)."
+    ),
+    kernel: bool = typer.Option(
+        False, "--kernel", help="Prove vc_ok by kernel `decide` instead of `native_decide`."
+    ),
+    merge: str = typer.Option(
+        "phi", "--merge",
+        help="Value-merge encoding of the smt2: 'phi' (checkVCWAnn) or "
+        "'gamma' (sea_gate-style, checkVCGAnn with certificates).",
+    ),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Validate an SMT VC via the denotational proof: a site-annotated AnnVC checked by `checkVCWAnn_safe`."""
+    from .lean import write_vc_check_project
+    from .lean.naming import module_name_for
+    from .lean.vccheck import generate_ann_vc_check, generate_gann_vc_check
+
+    if not smt2.is_file():
+        typer.echo(f"error: no such file: {smt2}", err=True)
+        raise typer.Exit(2)
+    if merge not in ("phi", "gamma"):
+        typer.echo(f"error: unknown merge mode {merge!r}; available: phi, gamma", err=True)
+        raise typer.Exit(2)
+    program = _parse_or_exit(file)
+    module_name = name or module_name_for(file)
+    generate = generate_gann_vc_check if merge == "gamma" else generate_ann_vc_check
+    try:
+        res = generate(
+            program,
+            smt2.read_text(encoding="utf-8"),
+            module_name=module_name,
+            source=None if file == "-" else Path(file).name,
+            smt_source=smt2.name,
+            kernel=kernel,
+        )
+    except VcCheckError as exc:
+        for msg in exc.errors:
+            typer.echo(f"error: {msg}", err=True)
+        raise typer.Exit(1) from exc
+
+    try:
+        written = write_vc_check_project(res, output, force=force)
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    for path in written:
+        typer.echo(f"wrote: {path}")
+    _ = plain
+    if build:
+        _run_lake_build(output)
+        typer.echo("ann-vc-check: validated")
+    else:
+        typer.echo(f"next: cd {output} && lake exe cache get && lake build")
+        typer.echo("generated (not validated)")
+
+
+@app.command("cex-check")
+def cex_check(
+    file: str = typer.Argument(..., help="Tiny TAC file, or '-' for stdin."),
+    model: Path = typer.Argument(..., help="Solver model (z3/SMT-LIB or TAC) from `ttac vcgen --solve --model`."),
+    output: Path = typer.Option(
+        ..., "-o", "--output", help="Directory for the generated Lean project."
+    ),
+    name: str = typer.Option(None, "--name", help="Lean module name (default: from FILE)."),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing output directory."),
+    build: bool = typer.Option(
+        True, "--build/--no-build", help="Run 'lake build' (the certification verdict)."
+    ),
+    kernel: bool = typer.Option(
+        False, "--kernel", help="Prove cex_ok by kernel `decide` instead of `native_decide`."
+    ),
+    plain: bool = typer.Option(False, "--plain", help="Deterministic ASCII output."),
+) -> None:
+    """Certify a solver `sat` verdict by denotational replay: the model becomes a seed, Lean evaluates the semantics on it."""
+    from .lean import write_cex_check_project
+    from .lean.naming import module_name_for
+    from .lean.vccheck import generate_cex_check
+
+    if not model.is_file():
+        typer.echo(f"error: no such file: {model}", err=True)
+        raise typer.Exit(2)
+    program = _parse_or_exit(file)
+    module_name = name or module_name_for(file)
+    try:
+        res = generate_cex_check(
+            program,
+            model.read_text(encoding="utf-8"),
+            module_name=module_name,
+            source=None if file == "-" else Path(file).name,
+            model_source=model.name,
+            kernel=kernel,
+        )
+    except VcCheckError as exc:
+        for msg in exc.errors:
+            typer.echo(f"error: {msg}", err=True)
+        raise typer.Exit(1) from exc
+
+    try:
+        written = write_cex_check_project(res, output, force=force)
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    if res.missing:
+        typer.echo(
+            f"note: {len(res.missing)} register(s) absent from the model, "
+            f"seeded with defaults: {', '.join(res.missing)}",
+            err=True,
+        )
+    for path in written:
+        typer.echo(f"wrote: {path}")
+    _ = plain
+    if build:
+        _run_lake_build(output)
+        typer.echo("cex-check: certified")
+    else:
+        typer.echo(f"next: cd {output} && lake exe cache get && lake build")
+        typer.echo("generated (not certified)")
+
+
+def _run_lake_build(output: Path, *, with_mathlib: bool = True) -> None:
+    import shutil
+    import subprocess
+
+    if shutil.which("lake") is None:
+        typer.echo("error: lake not found on PATH (install elan, or omit --build)", err=True)
+        raise typer.Exit(2)
+    if with_mathlib:
+        # Fetch the shared mathlib olean cache first; without it the build
+        # compiles mathlib from source. Failure (e.g. offline) is not fatal.
+        fetch = subprocess.run(["lake", "exe", "cache", "get"], cwd=output)
+        if fetch.returncode != 0:
+            typer.echo("warning: 'lake exe cache get' failed; build may be slow", err=True)
+    result = subprocess.run(["lake", "build"], cwd=output)
+    if result.returncode != 0:
+        typer.echo("error: lake build failed", err=True)
+        raise typer.Exit(1)
+    typer.echo("build: ok")
 
 
 def main() -> None:

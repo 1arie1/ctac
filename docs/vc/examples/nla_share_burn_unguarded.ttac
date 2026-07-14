@@ -1,0 +1,69 @@
+// Safe (UNSAT): unguarded share-burn monotonicity -- the same program as
+// practical_share_burn_monotonicity.ttac but WITHOUT the `assume assets_a <=
+// assets_b`. Now the ordering of the two converted amounts must be DERIVED
+// from the exact/proportional branches (div monotonicity / bound), across the
+// phi merges, before the two min-caps give `burn_a <= burn_b`. Multi-block +
+// nonlinear: the hardest of the family for the shallow embedding.
+entry:
+  total_assets := havoc
+  total_shares := havoc
+  shares_a := havoc
+  shares_b := havoc
+  user_balance := havoc
+  assume 1 <= total_assets
+  assume 1 <= total_shares
+  assume shares_a < shares_b
+  assume shares_b <= total_shares
+  is_exact_a := shares_a == total_shares
+  if is_exact_a goto exact_a else proportional_a
+
+exact_a:
+  assets_a := total_assets
+  goto join_a
+
+proportional_a:
+  assets_a_raw := total_assets * shares_a
+  assets_a := assets_a_raw / total_shares
+  goto join_a
+
+join_a:
+  is_exact_b := shares_b == total_shares
+  if is_exact_b goto exact_b else proportional_b
+
+exact_b:
+  assets_b := total_assets
+  goto join_b
+
+proportional_b:
+  assets_b_raw := total_assets * shares_b
+  assets_b := assets_b_raw / total_shares
+  goto join_b
+
+join_b:
+  cap_a_left := user_balance < assets_a
+  if cap_a_left goto cap_a_user else cap_a_assets
+
+cap_a_user:
+  burn_a := user_balance
+  goto join_cap_a
+
+cap_a_assets:
+  burn_a := assets_a
+  goto join_cap_a
+
+join_cap_a:
+  cap_b_left := user_balance < assets_b
+  if cap_b_left goto cap_b_user else cap_b_assets
+
+cap_b_user:
+  burn_b := user_balance
+  goto join_cap_b
+
+cap_b_assets:
+  burn_b := assets_b
+  goto join_cap_b
+
+join_cap_b:
+  ok := burn_a <= burn_b
+  assert ok
+  halt
