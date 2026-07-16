@@ -35,6 +35,10 @@
   #text(size: 18pt, weight: "medium", fill: muted)[Crafted by Arie Gurfinkel]
   #linebreak()
   #text(size: 16pt, fill: muted)[Made by Codex 🤖]
+  #linebreak()
+  #text(size: 14pt, fill: accent)[
+    #link("https://github.com/1arie1/ctac")[github.com/1arie1/ctac]
+  ]
   #v(0.7cm)
   #image("assets/waterloo-engineering-logo-horiz-rgb.png", width: 8.6cm)
 ]
